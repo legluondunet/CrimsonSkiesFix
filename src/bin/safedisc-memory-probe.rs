@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize,Ordering};
 
 const DLL_SIZE: usize = 138_752;
 const DLL_SHA256: &str = "dc43dbae45a8bfc39299ab0d1d5dbc72302f3bc37faf7c3b41e8ffdf4c6838ff";
@@ -24,6 +25,76 @@ extern "system" {
     fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetLastError() -> u32;
+    fn GetCurrentProcess() -> *mut c_void;
+    fn ReadProcessMemory(process: *mut c_void, addr: *const c_void,
+        destination: *mut c_void, size: usize, read: *mut usize) -> i32;
+    fn AddVectoredExceptionHandler(first: u32,
+        callback: Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>) -> *mut c_void;
+    fn RemoveVectoredExceptionHandler(handle: *mut c_void) -> u32;
+}
+
+// Read-only exception instrumentation: records the first few observed access
+// violations without patching code or changing the exception disposition.
+// The Win32 exception record is a 32-bit ABI struct: this helper is x86 ONLY.
+#[repr(C)]
+struct ExceptionRecord {
+    code:u32, flags:u32, inner:*const ExceptionRecord,
+    address:*const c_void, parameter_count:u32, information:[usize;15]
+}
+#[repr(C)]
+struct ExceptionPointers {
+    record:*const ExceptionRecord,
+    context:*const c_void
+}
+const MAX_EXCEPTIONS:usize=12;
+static SEEN:AtomicUsize=AtomicUsize::new(0);
+static FAULTS:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+static READ_TARGETS:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+static SNAP_LO:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+static SNAP_HI:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+static SNAP_LEN:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+
+unsafe extern "system" fn observe_exception(info:*mut ExceptionPointers)->i32 {
+    // EXCEPTION_CONTINUE_SEARCH: observe only. Leave the SEH flow unchanged.
+    if info.is_null() || (*info).record.is_null() {return 0;}
+    let record=&*(*info).record;
+    if record.code!=0xC0000005 {return 0;}
+    let index=SEEN.fetch_add(1,Ordering::SeqCst);
+    if index>=MAX_EXCEPTIONS {return 0;}
+    FAULTS[index].store(record.address as usize,Ordering::SeqCst);
+    if record.parameter_count>=2 {
+        READ_TARGETS[index].store(record.information[1],Ordering::SeqCst);
+    }
+    let mut snippet=[0u8;8];
+    let mut read=0usize;
+    let ok=ReadProcessMemory(GetCurrentProcess(),record.address,
+       snippet.as_mut_ptr().cast::<c_void>(),snippet.len(),&mut read);
+    if ok!=0 && read==snippet.len() {
+        SNAP_LO[index].store(u32::from_le_bytes(snippet[0..4].try_into().unwrap()) as usize,Ordering::SeqCst);
+        SNAP_HI[index].store(u32::from_le_bytes(snippet[4..8].try_into().unwrap()) as usize,Ordering::SeqCst);
+        SNAP_LEN[index].store(read,Ordering::SeqCst);
+    }
+    0
+}
+fn print_exception_trace() {
+    let total=SEEN.load(Ordering::SeqCst);
+    println!("Vectored observer: {} access violation(s), first {} recorded (no handler altered)",
+        total,total.min(MAX_EXCEPTIONS));
+    for i in 0..total.min(MAX_EXCEPTIONS) {
+        let ip=FAULTS[i].load(Ordering::SeqCst);
+        let target=READ_TARGETS[i].load(Ordering::SeqCst);
+        let n=SNAP_LEN[i].load(Ordering::SeqCst);
+        if n==8 {
+            let lo=SNAP_LO[i].load(Ordering::SeqCst) as u32;
+            let hi=SNAP_HI[i].load(Ordering::SeqCst) as u32;
+            println!("AV #{:02}: EIP=0x{:08X}, memory operand=0x{:08X}, live 8 bytes={:08X}{:08X}",
+                i+1,ip,target,lo.swap_bytes(),hi.swap_bytes());
+        } else {
+            println!("AV #{:02}: EIP=0x{:08X}, memory operand=0x{:08X}, instruction bytes unreadable",
+                i+1,ip,target);
+        }
+    }
+    println!("The observed live bytes are diagnostic data, NOT proof of a working decoder.");
 }
 
 fn sha256(input: &[u8]) -> String {
@@ -135,13 +206,16 @@ fn run() -> Result<(),String> {
     let mut args=env::args_os().skip(1);
     let (mut dll,mut output)=(None::<PathBuf>,None::<PathBuf>);
     let mut map_only=false;
+    let mut trace_exceptions=false;
     while let Some(arg)=args.next() {
         if arg=="--dll" {dll=Some(args.next().ok_or("Missing --dll path")?.into());}
         else if arg=="--output" {output=Some(args.next().ok_or("Missing --output path")?.into());}
         else if arg=="--map-only" {map_only=true;}
-        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin]",arg));}
+        else if arg=="--trace-exceptions" {trace_exceptions=true;}
+        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin [--trace-exceptions]]",arg));}
     }
     let dll=dll.ok_or("--dll is required")?;
+    if map_only && trace_exceptions {return Err("--trace-exceptions requires normal DLL initialization, not --map-only".into());}
     if map_only && output.is_some() {return Err("--map-only does not create an output; do not pass --output".into());}
     if !map_only && output.is_none() {return Err("--output is required unless --map-only is set".into());}
     let canonical_dll=fs::canonicalize(&dll).map_err(|e|e.to_string())?;
@@ -196,17 +270,29 @@ fn run() -> Result<(),String> {
     }
     eprintln!("WARNING: loading this game DRM DLL executes its initialization code.");
     eprintln!("Run ONLY the verified DLL in an isolated Wine prefix/test environment.");
-    let image=unsafe {
+    let (image,load_error)=unsafe {
+        let observer=if trace_exceptions {
+            let handle=AddVectoredExceptionHandler(1,Some(observe_exception));
+            if handle.is_null(){return Err(format!("AddVectoredExceptionHandler failed: {}",GetLastError()));}
+            handle
+        } else {std::ptr::null_mut()};
         let module=LoadLibraryW(wide.as_ptr());
-        if module.is_null() {
-            let code=GetLastError();
-            let hint=if code==998 {" (ERROR_NOACCESS: invalid memory access during load; may involve DLL initialization)"} else {""};
-            return Err(format!("LoadLibraryW failed: Windows error {}{}. The module was not loaded; no snapshot written.",code,hint));
-        }
-        let bytes=std::slice::from_raw_parts((module as *const u8).add(TXT_RVA),TXT_VSIZE).to_vec();
-        let _=FreeLibrary(module);
-        bytes
+        // Save GetLastError immediately; any subsequent Windows API can reset it.
+        let error=if module.is_null(){Some(GetLastError())}else{None};
+        let bytes=if !module.is_null(){
+            let section=std::slice::from_raw_parts((module as *const u8).add(TXT_RVA),TXT_VSIZE).to_vec();
+            let _=FreeLibrary(module);
+            Some(section)
+        } else {None};
+        if !observer.is_null(){let _=RemoveVectoredExceptionHandler(observer);}
+        (bytes,error)
     };
+    if trace_exceptions {print_exception_trace();}
+    if let Some(code)=load_error {
+        let hint=if code==998 {" (ERROR_NOACCESS: invalid memory access during load; may involve DLL initialization)"} else {""};
+        return Err(format!("LoadLibraryW failed: Windows error {}{}. No memory snapshot written.",code,hint));
+    }
+    let image=image.ok_or("Loader returned neither DLL image nor failure code")?;
     let changes=old.iter().zip(image.iter()).filter(|(a,b)|a!=b).count();
     println!("Verified DLL SHA-256: {}",DLL_SHA256);
     println!(".txt RVA: 0x{:X}, length {}",TXT_RVA,TXT_VSIZE);
