@@ -87,6 +87,25 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Follow-up: map-only succeeds; differences match relocation count
+
+The user ran `safedisc-memory-probe.exe --dll dplayerx.dll --map-only` under Wine Staging 11.17. Image mapping succeeded, and the helper reported **214 changed bytes over the 30,321-byte `.txt` virtual section**, with entropy dropping only **7.9808 → 7.9797**. No code was executed and no snapshot was created.
+
+Independent inspection of the *exact original DLL's* `.reloc` directory at RVA `0x27000` (raw offset `0x20A00`, size `0xE64`) identifies **exactly 214 `IMAGE_REL_BASED_HIGHLOW` (type 3) relocation entries within `.txt`**. This one-to-one count is strong evidence that the observed differences are ordinary PE base relocation adjustments rather than unpacked code.
+
+The updated x86 helper now reconstructs the `.txt` section's expected mapped contents using the actual `LoadLibraryExW` load base minus the DLL's preferred base `0x008E0000`. It reports **how many mapped bytes remain different after applying the exact PE relocation table**, distinguishing relocations from any additional change. The user's updated runtime result is still needed to verify that this residual is zero.
+
+The original `LoadLibraryW` error 998 is therefore **after basic PE mapping**. The precise failure point (import resolution versus initialization / obfuscated code) is not yet identified. To capture the Wine exception trace without modifying the originals, use an isolated Wine prefix:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all,+seh,+loaddll \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --output ./dplayerx-txt-memory.bin > safedisc-load.log 2>&1
+grep -Ei 'exception|seh:|dplayerx|ERROR:|err:' safedisc-load.log | tail -n 100
+```
+
+Inspect and privately retain `safedisc-load.log`; there may be long, noisy Wine traces. **Do not publish a full proprietary memory snapshot**, if one is eventually generated. A Wine exception trace does not itself implement a SafeDisc bypass.
+
 ## 2026-10-25: Wine LoadLibraryW failure 998
 
 The first experimental x86 helper was run on **Wine Staging 11.17** using the exact verified DLL in a fresh Wine prefix. It passed the file hash check, but **`LoadLibraryW` returned error 998 (`ERROR_NOACCESS`)**. No snapshot was written. The loader error is compatible with an invalid memory access or protection logic during DLL loading, but the reported error **does not identify an exact faulting instruction**, so we cannot yet say it is definitely `DllMain`.
