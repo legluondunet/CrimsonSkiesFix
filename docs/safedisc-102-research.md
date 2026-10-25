@@ -87,6 +87,26 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-25: Wine LoadLibraryW failure 998
+
+The first experimental x86 helper was run on **Wine Staging 11.17** using the exact verified DLL in a fresh Wine prefix. It passed the file hash check, but **`LoadLibraryW` returned error 998 (`ERROR_NOACCESS`)**. No snapshot was written. The loader error is compatible with an invalid memory access or protection logic during DLL loading, but the reported error **does not identify an exact faulting instruction**, so we cannot yet say it is definitely `DllMain`.
+
+Static PE inspection establishes:
+
+- The DLL entry point is **RVA `0xFD20`** in the readable `.text` section.
+- Its startup path calls functions at RVA `0x9770` and `0xFC00`. Disassembly near RVA `0x9770` shows obfuscated control-flow and accesses during startup.
+- Declared imports are from **`KERNEL32.dll` and `USER32.dll`** only; a missing third-party imported DLL has not been found.
+- The DLL has **no TLS callback directory** in its PE data directory. This narrows, but does not prove, the likely initialization path.
+
+The diagnostic helper now offers **`--map-only`**, which uses `LoadLibraryExW(..., DONT_RESOLVE_DLL_REFERENCES)` to map the PE image **without resolving its imports or running `DllMain`**. It **does not execute the DLL or save a snapshot**:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
+  --dll ./dplayerx.dll --map-only
+```
+
+If map-only works, but ordinary `LoadLibraryW` fails with 998, the failure occurs during import handling or initialization rather than basic PE image mapping. If map-only fails too, investigate PE image mapping first. **Any differences between memory mapping and raw disk data in map-only mode can be relocations and must not be mistaken for decrypted code**.
+
 ## Experimental 32-bit in-memory DLL observer
 
 The Windows-only CI additionally builds a standalone **`safedisc-memory-probe.exe`** for **Windows x86**, because `dplayerx.dll` is 32-bit. It is opt-in and completely separate from the main 64-bit resolution patcher.
