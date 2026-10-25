@@ -109,6 +109,14 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### SafeDisc v1 standalone DLL limitations
+
+The matching `dplayerx.dll` has a protected DLL-attach path: entry RVA `0xFD20` calls `_DllMain@12` (RVA `0x9770`), which reaches the exact observed error location in protected `.txt` (RVA `0x7212`). The same DLL statically references the `\\\\.\\Secdrv` device and calls `CreateFileA` to open it. The original SafeDisc loader also references `Secdrv` and `drvmgt.dll`.
+
+This explains why standalone `LoadLibraryW` under an isolated Wine prefix **cannot be assumed to reproduce the original game's decryption conditions**. The open-source [SafeDiscShim](https://github.com/RibShark/SafeDiscShim/issues/17) project independently documents SafeDisc 1 requiring its driver emulation **before** the original `dplayerx.dll` attaches. Therefore, the observed stage-2 `.txt` modifications are **not** a validated, callable cipher implementation. The existing `--analyze-stages` command also verifies this startup path **offline** against the exact hash-verified DLL; no driver, hooks, or game execution are required.
+
+This project still seeks an **autonomous decryption of the original game EXE/ICD**, not a replacement executable, but no autonomous SafeDisc 1.50.20 decoder has been completed yet.
+
 ### Compare two captured SafeDisc stages offline (no DLL execution)
 
 After capturing stage 1 and stage 2 from the same original **SafeDisc 1.50.20** DLL, the Windows x86 research helper can compare both snapshots against the user's original `dplayerx.dll` without loading or executing it:
