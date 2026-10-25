@@ -109,6 +109,23 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### Compare DLL initialization with a temporary Secdrv alias (research only)
+
+In Wine Staging 11.17, the user's `--test-secdrv-alias` **successfully** opened a temporary DOS-device alias `Secdrv -> \Device\Null`. This resolves the name, but it is **not SafeDisc driver emulation**: the null device cannot handle the vendor IOCTL commands or decrypt an ICD.
+
+The **opt-in** `--load-with-secdrv-alias` mode retains the same temporary mapping for the duration of `LoadLibraryW`, while collecting the existing exception trace. It is intentionally disabled by default and refuses to replace a pre-existing device name.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all,+file,+loaddll \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --load-with-secdrv-alias \
+  --output ./dplayerx-alias-memory.bin > safedisc-alias.log 2>&1
+
+grep -Ei 'Secdrv|NtDeviceIoControlFile|Vectored observer|AV #|ERROR:|alias' safedisc-alias.log | tail -n 90
+```
+
+**Caution:** unlike the name-only test, this **runs the exact hash-verified protected DLL's initialization code**, which can crash, hang, or terminate the helper. Use only in an expendable Wine prefix, never on a normal Windows installation. On ordinary return the helper requests removal of its own temporary alias; abnormal termination can prevent cleanup. This does **not** implement the SafeDisc IOCTL protocol or automatic EXE/ICD decryption. Do not upload any potentially generated proprietary memory capture to GitHub.
+
 ### SafeDisc driver availability: reversible name-resolution test
 
 The complete Wine Staging 11.17 research log confirms **1,902 failed attempts to open `\\\\.\\Secdrv`** while the exact protected `dplayerx.dll` initializes; all returned `STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034)`. This missing device is confirmed, but it is not yet proven to be the sole cause of the subsequent access violation / error 998.
