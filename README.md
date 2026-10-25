@@ -55,7 +55,7 @@ Optional reference comparison:
   --reference "C:\Backups\Crimson Skies\Unpacked\CRIMSON.EXE"
 ```
 
-This is an **analysis command, not a decryption command**. The `DECRPE` bytes have not yielded a validated TEA key. The automatic unpacker remains unimplemented and no proprietary game bytes are included in the codebase. See [research notes](docs/safedisc-102-research.md).
+This is an **analysis command, not a decryption command**. The program now recognizes the **SafeDisc 1.50.20** protection version from both original files. That revision has an extra decryption layer using **`dplayerx.dll`** before TEA, so `DECRPE` bytes alone do not yield a usable decoder. The automatic unpacker remains unimplemented and no proprietary game bytes are included in the codebase. If you have the matching `dplayerx.dll`, provide it for **read-only inspection** with `--dplayerx PATH`. See [research notes](docs/safedisc-102-research.md). See [research notes](docs/safedisc-102-research.md).
 
 ### Check your file's SHA-256
 
