@@ -254,13 +254,14 @@ fn discover_rof(exe: &Path) -> Option<PathBuf> {
 }
 #[derive(Default)]
 struct Options {
-    command:String,exe:Option<PathBuf>,icd:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
+    command:String,exe:Option<PathBuf>,icd:Option<PathBuf>,reference:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
     unpacked:Option<PathBuf>,allow_replacement:bool,wine:Option<bool>,dll:Option<PathBuf>,
 }
 fn help() {
     println!("Crimson Skies patcher (Rust, no crates)\n\
 Usage:\n\
   crimson-patcher status --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--dll roffile.dll] [--wine]\n\
+  crimson-patcher probe --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--reference LOCAL_UNPACKED_EXE]\n\
   crimson-patcher apply --exe CRIMSON.EXE [--icd CRIMSON.ICD] --width 1920 --height 1080 [--fov 105]\n\
       [--unpacked LOCAL_WIDESCREEN_EXE --accept-local-replacement] [--wine|--no-wine] [--dll PATH]\n\
   crimson-patcher restore --exe CRIMSON.EXE [--wine|--no-wine] [--dll PATH]\n\
@@ -273,11 +274,12 @@ fn parse_args() -> Result<Options> {
     let mut argv=env::args().skip(1);
     let mut args=Options {command:argv.next().unwrap_or_default(),..Default::default()};
     if args.command=="--help" || args.command=="-h" {help();process::exit(0)}
-    if !["status","apply","restore"].contains(&args.command.as_str()) { help();return Err("expected status, apply, or restore".into()); }
+    if !["status","probe","apply","restore"].contains(&args.command.as_str()) { help();return Err("expected status, apply, or restore".into()); }
     while let Some(key)=argv.next() {
         match key.as_str() {
             "--exe"=>args.exe=Some(PathBuf::from(argv.next().ok_or("missing --exe value")?)),
             "--icd"=>args.icd=Some(PathBuf::from(argv.next().ok_or("missing --icd value")?)),
+            "--reference"=>args.reference=Some(PathBuf::from(argv.next().ok_or("missing --reference value")?)),
             "--width"=>args.width=Some(argv.next().ok_or("missing width")?.parse().map_err(|_|"invalid width")?),
             "--height"=>args.height=Some(argv.next().ok_or("missing height")?.parse().map_err(|_|"invalid height")?),
             "--fov"=>args.fov=Some(argv.next().ok_or("missing fov")?.parse().map_err(|_|"invalid FOV")?),
@@ -291,6 +293,10 @@ fn parse_args() -> Result<Options> {
         }
     }
     if args.exe.is_none() {return Err("--exe is mandatory".into());}
+    if args.reference.is_some() && args.command!="probe" {return Err("--reference is only valid for probe".into());}
+    if args.command=="probe" && (args.dll.is_some() || args.width.is_some() || args.height.is_some() || args.fov.is_some() || args.unpacked.is_some() || args.allow_replacement || args.wine.is_some()) {
+        return Err("probe accepts only --exe, --icd and optional --reference".into());
+    }
     if args.command!="apply" && (args.width.is_some()||args.height.is_some()||args.fov.is_some()||args.unpacked.is_some()||args.allow_replacement) { return Err("patch options only valid for apply".into()); }
     if args.command=="apply" && (args.width.is_some()!=args.height.is_some()) {return Err("--width and --height must be specified together".into());}
     Ok(args)
@@ -343,6 +349,77 @@ fn validate_protected_pair(options: &Options, exe: &Path, kind: ExeKind) -> Resu
     }
 }
 
+
+fn section_ranges(data: &[u8]) -> Result<Vec<(String, usize, usize)>> {
+    let pe=valid_pe(data)?;
+    let count=read_u16(data,pe+6)? as usize;
+    let optional=read_u16(data,pe+20)? as usize;
+    let start=(pe+24).checked_add(optional).ok_or("section header overflow")?;
+    let mut ranges=Vec::new();
+    if count>96 {return Err("unreasonable PE section count".into());}
+    for i in 0..count {
+        let sh=start.checked_add(i.checked_mul(40).ok_or("section offset overflow")?).ok_or("section offset overflow")?;
+        let h=data.get(sh..sh+40).ok_or("truncated PE section header")?;
+        let name=String::from_utf8_lossy(&h[..8]).trim_end_matches('\0').to_string();
+        let len=read_u32(data,sh+16)? as usize;
+        let offset=read_u32(data,sh+20)? as usize;
+        if data.get(offset..offset.checked_add(len).ok_or("section length overflow")?).is_none() {
+            return Err(format!("truncated PE section {}",name));
+        }
+        ranges.push((name,offset,len));
+    }
+    Ok(ranges)
+}
+fn byte_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {return 0.0;}
+    let mut counts=[0usize;256];
+    for b in data {counts[*b as usize]+=1;}
+    let n=data.len() as f64;
+    counts.iter().filter(|&&x|x>0).map(|&x|{
+        let p=x as f64/n;
+        -p*p.log2()
+    }).sum()
+}
+fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>) -> Result<()> {
+    if classify_exe(exe)!=ExeKind::Protected || icd.len()!=ICD_102_LEN || sha256(icd)!=ICD_102_SHA {
+        return Err("probe requires the verified original SafeDisc 1.0.2.0 EXE and ICD".into());
+    }
+    println!("SafeDisc 1.0.2.0 research probe (read only)");
+    println!("Protected loader SHA-256: {}",sha256(exe));
+    println!("ICD SHA-256: {}",sha256(icd));
+    println!("ICD byte length: {} ({} bytes beyond unpacked widescreen reference size)",icd.len(),icd.len().saturating_sub(EXE_LEN));
+    let marker=b"DECRPE\\0\\0";
+    let matches:Vec<_>=exe.windows(marker.len()).enumerate().filter(|(_,w)|*w==marker).map(|(i,_)|i).collect();
+    if matches.len()!=1 {return Err("SafeDisc loader DECRPE marker is not unique".into());}
+    let pos=matches[0];
+    println!("DECRPE marker at loader file offset 0x{:X}",pos);
+    if let Some(raw)=exe.get(pos+8..pos+24) {
+        print!("16 bytes following marker (UNVERIFIED key material): ");
+        for b in raw {print!("{:02X}",b);}
+        println!();
+    }
+    println!("WARNING: DECRPE data is not itself a verified TEA key. No decryption is attempted.");
+    let icd_sections=section_ranges(icd)?;
+    let ref_sections=match reference {
+        Some(r) if classify_exe(r)==ExeKind::Widescreen => Some(section_ranges(r)?),
+        Some(_)=>return Err("reference must be an already verified widescreen executable (read-only comparison)".into()),
+        None=>None,
+    };
+    for (name,off,len) in icd_sections {
+        let data=&icd[off..off+len];
+        print!("ICD {:8} raw={:#08x} size={:7} entropy={:.3} bits/byte",name,off,len,byte_entropy(data));
+        if let (Some(reference),Some(ref ranges))=(reference,&ref_sections) {
+            if let Some((_,ro,rl))=ranges.iter().find(|(n,_,_)|n==&name) {
+                let n=len.min(*rl);
+                let changes=data[..n].iter().zip(reference[*ro..*ro+n].iter()).filter(|(a,b)|a!=b).count();
+                print!(" vs reference: {} / {} bytes changed ({:.2}%)",changes,n,100.0*changes as f64/n.max(1) as f64);
+            }
+        }
+        println!();
+    }
+    Ok(())
+}
+
 fn report_exe(data: &[u8]) {
     let state=classify_exe(data);
     println!("EXE: {state:?}; bytes: {}; SHA-256: {}",data.len(),sha256(data));
@@ -367,6 +444,13 @@ fn run(options: Options) -> Result<()> {
     report_exe(&before);
     let kind=classify_exe(&before);
     validate_protected_pair(&options, exe, kind)?;
+    if options.command=="probe" {
+        if kind!=ExeKind::Protected {return Err("probe requires the verified SafeDisc 1.0.2.0 loader EXE".into());}
+        let icd_path=options.icd.clone().or_else(||exe.parent().and_then(|parent|find_ci_child(parent,"CRIMSON.ICD"))).ok_or("probe requires CRIMSON.ICD")?;
+        let icd_data=inspect_file(&icd_path)?;
+        let reference=match &options.reference {Some(path)=>Some(inspect_file(path)?),None=>None};
+        return research_probe(&before,&icd_data,reference.as_deref());
+    }
     let exe_backup=backup_path(exe,false);
     let backup=optional_file(&exe_backup)?;
     if let Some(ref b)=backup {
@@ -458,6 +542,10 @@ mod tests {
     #[test] fn fov_4x3() {assert!((horizontal_fov(80.0,1024,768)-80.0).abs()<1e-10);}
     #[test] fn fov_16x9() {assert!((horizontal_fov(80.0,1920,1080)-96.418).abs()<0.03);}
     #[test] fn dimensions() {assert!(geometry(1920,1080).is_ok());assert!(geometry(1,0).is_err());}
+    #[test] fn probe_entropy_and_sections() {
+        assert_eq!(byte_entropy(&[0u8;64]),0.0);
+        assert!((byte_entropy(&[0u8,1u8])-1.0).abs()<1e-10);
+    }
     #[test] fn supported_protected_hash_is_102() {
         assert_eq!(PROTECTED_102_SHA, "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736");
         assert_eq!(ICD_102_LEN, 2_580_578);
