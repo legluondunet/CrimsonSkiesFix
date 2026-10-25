@@ -57,6 +57,20 @@ Optional reference comparison:
 
 This is an **analysis command, not a decryption command**. The program now recognizes the **SafeDisc 1.50.20** protection version from both original files. That revision has an extra decryption layer using **`dplayerx.dll`** before TEA, so `DECRPE` bytes alone do not yield a usable decoder. The automatic unpacker remains unimplemented and no proprietary game bytes are included in the codebase. If you have the matching `dplayerx.dll`, provide it for **read-only inspection** with `--dplayerx PATH`. See [research notes](docs/safedisc-102-research.md). See [research notes](docs/safedisc-102-research.md).
 
+### Experimental dplayerx.dll memory observation (Windows x86)
+
+The Windows-only CI also builds an **optional 32-bit research utility**, `safedisc-memory-probe.exe`, distributed separately under the **`safedisc-memory-probe-win32`** artifact. This is **not part of the patcher**, and it does not crack SafeDisc. Its sole purpose is to test whether the protected `.txt` section of the exact verified `dplayerx.dll` changes after loading the DLL into an isolated Windows/Wine process.
+
+**Safety warning:** unlike the read-only `probe` command above, the helper invokes `LoadLibraryW`, which **executes DLL initialization code** and may crash or have side effects. Use **only your hash-verified DLL**, copied into an expendable test directory under an **isolated Wine prefix**. It does not modify the original EXE/ICD/DLL files and it refuses to overwrite an existing snapshot. A DLL that refuses to initialize without the game loader is an expected possible outcome.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" wineboot -u
+WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
+    --dll ./dplayerx.dll --output ./dplayerx-txt-memory.bin
+```
+
+Please share the **textual command output** first; any snapshot may contain copyrighted code and should **not** be committed to the repository. Successful section loading/decryption alone is not a working SafeDisc unpacker. See [research notes](docs/safedisc-102-research.md).
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
