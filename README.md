@@ -105,7 +105,7 @@ cargo test
 cargo build --release
 ```
 
-The native binary is at `target/release/crimson-patcher` (Windows: `.exe`). **No Python is required by users of the compiled release.** GitHub Actions builds/test Linux and Windows versions; it does not bundle copyrighted game files.
+The native binary is at `target/release/crimson-patcher` (Windows: `.exe`). **No Python is required by users of the compiled release.** GitHub Actions builds/tests native Linux and Windows versions and also produces a statically linked Linux musl x86_64 build; no copyrighted game files are bundled.
 
 ## Safety and limitations
 
