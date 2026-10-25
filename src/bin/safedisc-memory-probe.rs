@@ -397,13 +397,11 @@ impl Drop for SecdrvAlias {
     }
 }
 fn null_terminated(s:&str)->Vec<u16>{s.encode_utf16().chain(std::iter::once(0)).collect()}
-fn test_secdrv_alias()->Result<(),String> {
+fn create_secdrv_alias()->Result<SecdrvAlias,String> {
     const RAW:u32=0x00000001;
     const QUIET:u32=0x00000008;
-    const INVALID_HANDLE:usize=usize::MAX;
     let device=null_terminated("Secdrv");
     let target=null_terminated(r"\Device\Null");
-    let name=null_terminated(r"\\.\Secdrv");
     let mut existing=[0u16;2048];
     let n=unsafe{QueryDosDeviceW(device.as_ptr(),existing.as_mut_ptr(),existing.len() as u32)};
     if n!=0 {
@@ -416,21 +414,32 @@ fn test_secdrv_alias()->Result<(),String> {
     if unsafe{DefineDosDeviceW(RAW|QUIET,device.as_ptr(),target.as_ptr())}==0 {
         return Err(format!("DefineDosDeviceW failed: Windows error {}",unsafe{GetLastError()}));
     }
-    let _cleanup=SecdrvAlias{device,target};
-    println!("Created an ephemeral Secdrv -> \\Device\\Null DOS-device alias for this diagnostic.");
+    println!("Temporary Secdrv -> \\Device\\Null DOS-device alias created.");
+    Ok(SecdrvAlias{device,target})
+}
+
+fn probe_secdrv_alias_open()->bool {
+    const INVALID_HANDLE:usize=usize::MAX;
+    let name=null_terminated(r"\\.\Secdrv");
     let handle=unsafe {
         CreateFileW(name.as_ptr(),0xC0000000,0x00000003,std::ptr::null_mut(),
             3,0x80,std::ptr::null_mut())
     };
     if handle as usize==INVALID_HANDLE {
-        println!("CreateFileW(\\\\.\\Secdrv) still fails: Windows error {}",unsafe{GetLastError()});
-        println!("The DOS alias does not provide a working Secdrv device in this environment.");
-    } else {
-        let _=unsafe{CloseHandle(handle)};
-        println!("CreateFileW(\\\\.\\Secdrv) succeeded using a *null-device alias*.");
-        println!("No SafeDisc IOCTL protocol is supported. A null device is NOT a substitute for secdrv.sys.");
+        println!("CreateFileW(\\\\.\\Secdrv) failed with Windows error {}",unsafe{GetLastError()});
+        return false;
     }
-    println!("No protected DLL code executed, no game files modified. Alias removal follows.");
+    let _=unsafe{CloseHandle(handle)};
+    println!("CreateFileW(\\\\.\\Secdrv) succeeded with the *null device alias*.");
+    true
+}
+fn test_secdrv_alias()->Result<(),String> {
+    let alias=create_secdrv_alias()?;
+    let opened=probe_secdrv_alias_open();
+    println!("No SafeDisc IOCTL protocol is supported. A null device is NOT a substitute for secdrv.sys.");
+    drop(alias);
+    println!("Temporary Secdrv alias cleanup requested; no protected DLL code executed.");
+    if !opened{return Err("Wine could not open the test alias".into());}
     Ok(())
 }
 
@@ -537,11 +546,13 @@ fn run() -> Result<(),String> {
     let mut capture_stages=None::<PathBuf>;
     let mut analyze_stages=None::<(PathBuf,PathBuf)>;
     let mut test_alias=false;
+    let mut load_with_alias=false;
     while let Some(arg)=args.next() {
         if arg=="--dll" {dll=Some(args.next().ok_or("Missing --dll path")?.into());}
         else if arg=="--output" {output=Some(args.next().ok_or("Missing --output path")?.into());}
         else if arg=="--map-only" {map_only=true;}
         else if arg=="--test-secdrv-alias" {test_alias=true;}
+        else if arg=="--load-with-secdrv-alias" {load_with_alias=true;}
         else if arg=="--trace-exceptions" {trace_exceptions=true;}
         else if arg=="--capture-stages" {capture_stages=Some(args.next().ok_or("Missing --capture-stages prefix")?.into());}
         else if arg=="--analyze-stages" {
@@ -549,14 +560,17 @@ fn run() -> Result<(),String> {
             let two=args.next().ok_or("Missing stage 2 file")?;
             analyze_stages=Some((one.into(),two.into()));
         }
-        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--test-secdrv-alias | --map-only | --analyze-stages STAGE1 STAGE2 | --output dplayerx-txt-memory.bin [--trace-exceptions [--capture-stages PREFIX]]]",arg));}
+        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--test-secdrv-alias | --map-only | --analyze-stages STAGE1 STAGE2 | --output dplayerx-txt-memory.bin [--trace-exceptions [--capture-stages PREFIX]] [--load-with-secdrv-alias]]",arg));}
     }
     let dll=dll.ok_or("--dll is required")?;
-    if analyze_stages.is_some() && (map_only || trace_exceptions || capture_stages.is_some() || output.is_some() || test_alias){
+    if analyze_stages.is_some() && (map_only || trace_exceptions || capture_stages.is_some() || output.is_some() || test_alias || load_with_alias){
         return Err("--analyze-stages is an offline-only mode and cannot be combined with other modes".into());
     }
-    if test_alias && (map_only || trace_exceptions || capture_stages.is_some() || output.is_some()) {
+    if test_alias && (map_only || trace_exceptions || capture_stages.is_some() || output.is_some() || load_with_alias) {
         return Err("--test-secdrv-alias cannot be combined with other modes".into());
+    }
+    if load_with_alias && (map_only || !trace_exceptions) {
+        return Err("--load-with-secdrv-alias requires --trace-exceptions and cannot be used with --map-only".into());
     }
     if map_only && trace_exceptions {return Err("--trace-exceptions requires normal DLL initialization, not --map-only".into());}
     if capture_stages.is_some() && !trace_exceptions {return Err("--capture-stages requires --trace-exceptions".into());}
@@ -627,6 +641,16 @@ fn run() -> Result<(),String> {
     if !snapshots.is_empty() {
         STAGE_DUMP_ADDR.store(snapshots.as_mut_ptr() as usize,Ordering::SeqCst);
     }
+    let secdrv_alias=if load_with_alias {
+        println!("EXPERIMENT: loading the verified DRM DLL with a temporary null-device Secdrv alias.");
+        println!("Alias does not implement the SafeDisc protocol or any driver IOCTL responses.");
+        let alias=create_secdrv_alias()?;
+        if !probe_secdrv_alias_open() {
+            drop(alias);
+            return Err("Secdrv alias could not be opened; not attempting protected DLL initialization".into());
+        }
+        Some(alias)
+    } else {None};
     let (image,load_error)=unsafe {
         let observer=if trace_exceptions {
             let handle=AddVectoredExceptionHandler(1,Some(observe_exception));
@@ -645,6 +669,10 @@ fn run() -> Result<(),String> {
         (bytes,error)
     };
     STAGE_DUMP_ADDR.store(0,Ordering::SeqCst);
+    // Always request alias cleanup after LoadLibraryW returns, before reporting
+    // its result. A failed load and a successful load follow the same path.
+    drop(secdrv_alias);
+    if load_with_alias {println!("Temporary Secdrv alias cleanup requested.");}
     if trace_exceptions {print_exception_trace();}
     if let Some(ref prefix)=capture_stages {
         write_private_stage_files(prefix,&snapshots,old)?;
