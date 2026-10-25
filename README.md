@@ -1,6 +1,6 @@
 # Crimson Skies Patcher (Rust)
 
-A command-line patcher for the **Windows PC release of Microsoft Crimson Skies (2000)**. It changes resolution and widescreen field of view (FOV), can apply a narrowly verified Wine/Proton crash workaround, and preserves the original game files before writing changes.
+A command-line patcher for the **verified Windows PC Crimson Skies 1.0.2.0 (2000) binary family**. It changes resolution and widescreen field of view (FOV), can apply a narrowly verified Wine/Proton crash workaround, and preserves the original game files before writing changes.
 
 **Experimental:** the supported binary modifications have been checked, but gameplay compatibility across all missions, editions, Windows and Wine/Proton has **not** been established. This tool operates on files you already own and does not ship or download copyrighted game files.
 
@@ -11,7 +11,7 @@ A command-line patcher for the **Windows PC release of Microsoft Crimson Skies (
 | **Resolution** | Modifies width and height in a **recognized, already-unpacked widescreen** `CRIMSON.EXE`. |
 | **Automatic FOV** | Restores the 60°/80° widescreen reference angles, so the existing widescreen game patch adapts horizontal FOV to the screen aspect ratio. **No `--fov` is needed.** |
 | **Optional custom FOV** | `--fov DEGREES` adjusts the reference angles for a target horizontal FOV. |
-| **SafeDisc** | **Does not decrypt/unpack SafeDisc.** For two recognized protected EXEs, it can substitute a **separately provided, verified, already-unpacked widescreen EXE**, with explicit consent and backup. |
+| **SafeDisc** | **Does not decrypt/unpack SafeDisc.** For the recognized **SafeDisc 1.0.2.0 EXE and matching ICD pair**, it can substitute a **separately provided, verified, already-unpacked widescreen EXE**, with explicit consent and backup. |
 | **Wine / Proton** | Optionally applies [CrimsonSkies-Wine-Fix](https://github.com/thehack904/CrimsonSkies-Wine-Fix) to **one exact `roffile.dll` build** to address Preferences / Quit Mission crashes. |
 | **Safety** | Identifies file versions, checks backups, refuses unknown files, avoids unnecessary writes, saves originals before modifications and supports restoration. |
 
@@ -19,20 +19,20 @@ The patcher is written in Rust using **only the standard library**: no external 
 
 ## Compatible game versions
 
-**Supported game:** *Crimson Skies* (**2000, Windows PC**), limited to the binary variants listed here. This is **not** a claim of support for all retail editions, languages, fan patches, or digital releases.
+**Supported game:** *Crimson Skies* **1.0.2.0** (**2000, Windows PC**), limited to the exact binary variants listed here. Version 1.0.0.1 is **not supported**. This is **not** a claim of support for all retail editions, languages, fan patches, or digital releases.
 
-**Identification is by SHA-256 / verified widescreen structure, not by a commercial version number.** We have **not verified** whether these EXEs belong to version 1.0, 1.01, 1.02, or any particular language, and therefore make no such claim.
+**Version 1.0.2.0** was identified from the supplied Windows PE version resources. Identification still uses SHA-256 / verified widescreen structure, **not the version string alone**. Other regional or repackaged 1.02 binaries are not automatically supported.
 
 | Recognized executable | Size | SHA-256 | Available operations |
 | --- | ---: | --- | --- |
 | Unpacked widescreen, 1920×1080 reference | 2,580,480 bytes | `5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67` | Resolution, FOV, backup, restore |
 | Unpacked widescreen, 1920×1200 reference | 2,580,480 bytes | `612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d` | Resolution, FOV, backup, restore |
-| SafeDisc-protected variant A | 344,851 bytes | `675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736` | Identify; optional local replacement **only** |
-| SafeDisc-protected variant B | 344,851 bytes | `7d6029471d4e5f2c7f4b08ce86c0ffd1f9bc8c697cf3952695fd68ff011f25a1` | Identify; optional local replacement **only** |
+| **SafeDisc 1.02 loader `CRIMSON.EXE`** | 344,851 bytes | `675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736` | Verify paired ICD; optional local replacement **only** |
+| **SafeDisc 1.02 payload `CRIMSON.ICD`** | 2,580,578 bytes | `0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b` | Verify only; encrypted executable, **not yet decrypted** |
 
 The widescreen family is recognized **after normalizing only the four modifiable values** (width, height, two FOV reference angles), so an EXE subsequently modified by this tool can still be recognized. Older `CSFIX.dll` / `DDRAW.dll` executable variants are **not confirmed to include the same widescreen implementation** and are intentionally refused.
 
-**If you only have a protected SafeDisc EXE, this program cannot turn it into an unpacked EXE by itself.** A recognized unpacked EXE and recognized protected EXE are not necessarily equivalent retail builds. Keep backups and test the game.
+**When patching the protected 1.02 release, the EXE/ICD pair is required.** Place an unmodified `CRIMSON.ICD` beside the recognized SafeDisc `CRIMSON.EXE`, or pass `--icd PATH`. The SHA-256 of **both** files is checked before any replacement. **The program cannot decrypt the ICD by itself yet.** A recognized unpacked EXE and protected EXE are not necessarily equivalent retail builds. See [SafeDisc 1.02 research notes](docs/safedisc-102-research.md). Keep backups and test the game.
 
 ### Check your file's SHA-256
 
@@ -89,17 +89,18 @@ Omit `--fov` on the next apply command to **restore automatic aspect-based FOV**
 
 ### If your EXE is SafeDisc-protected
 
-This is **not** a SafeDisc unpacker. If you already own one of the supported **unpacked widescreen** EXEs, store it separately and explicitly authorize **replacement** of your protected EXE after backup:
+This is **not** a SafeDisc unpacker. The 1.02 protected EXE **and companion ICD** are both verified first. If you already own one of the supported **unpacked widescreen** EXEs, store it separately and explicitly authorize **replacement** of your protected EXE after backup:
 
 ```powershell
 .\crimson-patcher.exe apply `
   --exe "C:\Games\Crimson Skies\CRIMSON.EXE" `
+  --icd "C:\Games\Crimson Skies\CRIMSON.ICD" `
   --unpacked "C:\Backups\Crimson Skies\Unpacked\CRIMSON.EXE" `
   --accept-local-replacement `
   --width 1920 --height 1080 --no-wine
 ```
 
-`--unpacked` and `--accept-local-replacement` are required. The supplied EXE is verified against the supported widescreen family; **the patcher cannot establish whether it is identical in gameplay content to the user's retail build**.
+`--icd` is optional if the matching `CRIMSON.ICD` is beside the protected EXE; it is always hash-checked. `--unpacked` and `--accept-local-replacement` remain required until autonomous decryption is implemented and validated. The supplied EXE is verified against the supported widescreen family; **the patcher cannot establish whether it is identical in gameplay content to the user's retail build**.
 
 ## How to use — Linux / Wine
 
@@ -191,8 +192,8 @@ Output: `target/release/crimson-patcher.exe` on Windows or `target/release/crims
 
 ## Safety, limitations and license
 
-- **No autonomous SafeDisc removal:** a local compatible, unpacked EXE is required to replace a recognized protected EXE; no proprietary EXE/DLL is distributed.
-- **Not universal:** unknown EXE/DLL binaries are refused. Commercial patch numbers, languages and all digital releases have **not** been validated.
+- **SafeDisc 1.02 EXE+ICD only:** both files are verified by SHA-256. **No autonomous SafeDisc removal yet:** a local compatible, unpacked EXE is required for replacement; no proprietary EXE/DLL is distributed.
+- **Not universal:** unknown EXE/ICD/DLL binaries are refused. The examined original pair reports **1.0.2.0**, but other editions, languages and digital releases have **not** been validated.
 - Widescreen visuals, interface proportions and long-session game behavior still need testing.
 - A successful binary edit does not establish compatibility of the modified game.
 - Do not patch while the game is running.
