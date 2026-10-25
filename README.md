@@ -109,6 +109,19 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### SafeDisc driver availability: reversible name-resolution test
+
+The complete Wine Staging 11.17 research log confirms **1,902 failed attempts to open `\\\\.\\Secdrv`** while the exact protected `dplayerx.dll` initializes; all returned `STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034)`. This missing device is confirmed, but it is not yet proven to be the sole cause of the subsequent access violation / error 998.
+
+The optional 32-bit research helper has a strictly opt-in `--test-secdrv-alias` mode. It checks whether the isolated Wine environment can temporarily resolve the name `Secdrv` through a DOS-device alias to the null device, **without loading the SafeDisc DLL or emulating driver requests**:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll --test-secdrv-alias
+```
+
+Unlike the offline stage comparison, this command **temporarily modifies the DOS-device namespace** inside the test environment and removes only its own mapping during normal cleanup. Run it only in a throwaway Wine prefix; an abrupt process termination may prevent cleanup. The test refuses to replace an existing mapping, does not touch original game files, does not execute `dplayerx.dll`, and does not implement SafeDisc IOCTL responses. A successful alias test **is not** a working SafeDisc driver or an ICD decoder.
+
 ### SafeDisc v1 standalone DLL limitations
 
 The matching `dplayerx.dll` has a protected DLL-attach path: entry RVA `0xFD20` calls `_DllMain@12` (RVA `0x9770`), which reaches the exact observed error location in protected `.txt` (RVA `0x7212`). The same DLL statically references the `\\\\.\\Secdrv` device and calls `CreateFileA` to open it. The original SafeDisc loader also references `Secdrv` and `drvmgt.dll`.
