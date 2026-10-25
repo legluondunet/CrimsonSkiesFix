@@ -87,6 +87,30 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-25: protected DLL changes its code during initialization
+
+The user ran `--trace-exceptions` against the exact verified `dplayerx.dll` with the isolated Wine prefix and `WINEDEBUG=-all`. The helper reported **9 first-chance access violations**. The first **eight** were at **EIP `0x0094BCCD`** (DLL RVA `0x1BCCD`) with fault target `0xFFFFFFFF`; all observed the same **live** 8 bytes as on disk:
+
+```text
+RVA 0x1BCCD, original = live = CD 01 75 08 8B D2 90 90
+```
+
+The ninth exception was at **EIP `0x00937212`** (DLL RVA `0x7212`) and recorded invalid target **`0xF1563002`**. Its **live code differs from the original DLL**:
+
+```text
+RVA 0x7212, file raw offset 0x6612
+Original: D4 50 31 C2 C1 CC 5B 04
+In-memory: 13 89 A6 35 33 F1 D4 57
+```
+
+**Crucial controlled comparison:** inspection of the exact DLL's relocation table shows **no relocation entries in or overlapping either 8-byte interval** (nor near `0x7212` within the preceding four bytes). The PE base-relocation delta cannot explain the **eight changed bytes in the `.txt` instruction stream**. This is the first directly observed runtime modification in `.txt`, likely during the protection's initialization. It **does not yet prove successful decryption** of the relevant modifier routines, or that the actual game could complete SafeDisc initialization.
+
+The eight repeated access violations at `CD 01` and its obfuscated surrounding branches are consistent with a protection/exception control-flow mechanism but do **not** prove the exception is deliberately handled in the original supported Windows environment. `INT 1` (`CD 01`) is distinct from `INT1` (`F1`).
+
+For the next discriminator, the x86 research helper now samples **16 live bytes at both candidate decoder RVAs** (`0x65BE`, `0x6621`) at **two separate stages**: the first `.txt2` access violation and the first `.txt` access violation. `VirtualQuery` supplies the image's actual allocation base; `ReadProcessMemory` observes only the requested regions and does not change exception disposition. This may show whether the modifier routines also change between the observed stages, without writing a proprietary binary dump.
+
+The decoder remains **not implemented**, and the DLL still fails `LoadLibraryW` with Windows error 998 after these observations.
+
 ## Next test: inspect actual first-chance exception instruction bytes
 
 The first matched Wine SEH entry occurs immediately after the native `dplayerx.dll` load, at `EIP=0x0094BCCD` (DLL load base `0x00930000`; `RVA=0x1BCCD`; `.txt2` raw offset `0x19ECD`). The exception is `0xC0000005`, an attempted **read** (`ExceptionInformation[0]=0`) from **`0xFFFFFFFF`** (`ExceptionInformation[1]`). Wine then dispatches a handler; it is not yet known if this is an intentionally handled protection fault or a loader failure.
