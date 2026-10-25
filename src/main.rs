@@ -388,8 +388,8 @@ fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>) -> Result<()
     println!("Protected loader SHA-256: {}",sha256(exe));
     println!("ICD SHA-256: {}",sha256(icd));
     println!("ICD byte length: {} ({} bytes beyond unpacked widescreen reference size)",icd.len(),icd.len().saturating_sub(EXE_LEN));
-    let marker=b"DECRPE\\0\\0";
-    let matches:Vec<_>=exe.windows(marker.len()).enumerate().filter(|(_,w)|*w==marker).map(|(i,_)|i).collect();
+    let marker=b"DECRPE\0\0";
+    let matches:Vec<_>=exe.windows(marker.len()).enumerate().filter(|(_,w)|*w==&marker[..]).map(|(i,_)|i).collect();
     if matches.len()!=1 {return Err("SafeDisc loader DECRPE marker is not unique".into());}
     let pos=matches[0];
     println!("DECRPE marker at loader file offset 0x{:X}",pos);
