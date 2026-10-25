@@ -1,121 +1,200 @@
 # Crimson Skies Patcher (Rust)
 
-A conservative **dependency-free Rust** command-line patcher for locally owned copies of **Microsoft Crimson Skies (2000)**. It handles resolution, aspect-based FOV, optional Wine/Proton `roffile.dll` compatibility and original-file backups.
+A command-line patcher for the **Windows PC release of Microsoft Crimson Skies (2000)**. It changes resolution and widescreen field of view (FOV), can apply a narrowly verified Wine/Proton crash workaround, and preserves the original game files before writing changes.
 
-**Status: experimental.** The byte-level patches were analyzed from supplied game files; changes still need testing in-game. This program does **not** crack/decrypt/unpack SafeDisc. For a recognized SafeDisc EXE, it can *instead use a user-provided, locally owned, verified unpacked widescreen EXE*. It never downloads, embeds, or distributes proprietary game code. Do not assume different regional/retail releases are interchangeable; check in-game behavior.
+**Experimental:** the supported binary modifications have been checked, but gameplay compatibility across all missions, editions, Windows and Wine/Proton has **not** been established. This tool operates on files you already own and does not ship or download copyrighted game files.
 
-## Features
+## What does the patch do?
 
-- A Windows x64 release executable that also runs under Wine on Linux; Linux-native builds are possible from source but are not distributed by CI. No Python and **no external Rust crates**.
-- Recognize only examined x86 EXEs by exact SafeDisc SHA-256 or normalized SHA-256 for a compatible widescreen build. Unknown builds are refused.
-- Patch resolution; preserve the existing widescreen patch's automatic FOV scaling (4:3 baseline 60/80 degrees), or specify a horizontal FOV explicitly.
-- Detect when the requested EXE patch is already applied; do not write unnecessarily.
-- Optionally convert a *recognized SafeDisc-protected* copy into the compatible widescreen form **using another EXE supplied by the user**. This is a local replacement, not SafeDisc reverse engineering. **It requires explicit consent** (`--accept-local-replacement`).
-- Under Linux/Wine, attempt the verified [`roffile.dll` NUL guard](https://github.com/thehack904/CrimsonSkies-Wine-Fix) if found in `GOSDATA/ASSETS/BINARIES/`; specify `--dll PATH` when the directory is different. On Windows, this fix runs only if a Wine environment is detected or when `--wine` / `--dll` is specified.
-- Verify the original ROF DLL full-file SHA-256; map the target **RVA to file offset** using PE sections; refuse unrecognized DLLs.
-- **Create a backup before modifying any original**, use exclusive backup creation, validate existing backups, write through a same-folder temporary file, and offer explicit restore.
+| Feature | Behavior |
+| --- | --- |
+| **Resolution** | Modifies width and height in a **recognized, already-unpacked widescreen** `CRIMSON.EXE`. |
+| **Automatic FOV** | Restores the 60°/80° widescreen reference angles, so the existing widescreen game patch adapts horizontal FOV to the screen aspect ratio. **No `--fov` is needed.** |
+| **Optional custom FOV** | `--fov DEGREES` adjusts the reference angles for a target horizontal FOV. |
+| **SafeDisc** | **Does not decrypt/unpack SafeDisc.** For two recognized protected EXEs, it can substitute a **separately provided, verified, already-unpacked widescreen EXE**, with explicit consent and backup. |
+| **Wine / Proton** | Optionally applies [CrimsonSkies-Wine-Fix](https://github.com/thehack904/CrimsonSkies-Wine-Fix) to **one exact `roffile.dll` build** to address Preferences / Quit Mission crashes. |
+| **Safety** | Identifies file versions, checks backups, refuses unknown files, avoids unnecessary writes, saves originals before modifications and supports restoration. |
 
-## Supported EXE builds
+The patcher is written in Rust using **only the standard library**: no external crates or Python runtime. GitHub Actions distributes a **Windows x64** `crimson-patcher.exe`, which also runs through **Wine on Linux**. The game EXE being patched is 32-bit x86.
 
-| Variant | SHA-256 | Supported actions |
-| --- | --- | --- |
-| Widescreen 1920×1080 | `5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67` | Resolution / FOV / restore |
-| Widescreen 1920×1200 | `612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d` | Resolution / FOV / restore |
-| Known SafeDisc variant A | `675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736` | Identify; local replacement only |
-| Known SafeDisc variant B | `7d6029471d4e5f2c7f4b08ce86c0ffd1f9bc8c697cf3952695fd68ff011f25a1` | Identify; local replacement only |
+## Compatible game versions
 
-Supported widescreen images are recognized **after normalizing only the four adjustable values** (width, height, 60° reference, 80° reference), so subsequent edits made by this patcher can also be recognized. The older 2,580,480-byte `CSFIX.dll` and `DDRAW.dll` variants with zeroes at those offsets are **not** confirmed to contain the same widescreen code; they are deliberately refused.
+**Supported game:** *Crimson Skies* (**2000, Windows PC**), limited to the binary variants listed here. This is **not** a claim of support for all retail editions, languages, fan patches, or digital releases.
 
-This tool does not establish that the supplied unpacked executable is equivalent to a particular retail/SafeDisc build. Retain a complete backup of the installation and test compatibility.
+**Identification is by SHA-256 / verified widescreen structure, not by a commercial version number.** We have **not verified** whether these EXEs belong to version 1.0, 1.01, 1.02, or any particular language, and therefore make no such claim.
 
-## Usage
+| Recognized executable | Size | SHA-256 | Available operations |
+| --- | ---: | --- | --- |
+| Unpacked widescreen, 1920×1080 reference | 2,580,480 bytes | `5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67` | Resolution, FOV, backup, restore |
+| Unpacked widescreen, 1920×1200 reference | 2,580,480 bytes | `612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d` | Resolution, FOV, backup, restore |
+| SafeDisc-protected variant A | 344,851 bytes | `675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736` | Identify; optional local replacement **only** |
+| SafeDisc-protected variant B | 344,851 bytes | `7d6029471d4e5f2c7f4b08ce86c0ffd1f9bc8c697cf3952695fd68ff011f25a1` | Identify; optional local replacement **only** |
 
-Quit the game and Wine processes first. Keep any unpacked game EXEs on **your local disk**, never in this Git repository.
+The widescreen family is recognized **after normalizing only the four modifiable values** (width, height, two FOV reference angles), so an EXE subsequently modified by this tool can still be recognized. Older `CSFIX.dll` / `DDRAW.dll` executable variants are **not confirmed to include the same widescreen implementation** and are intentionally refused.
 
-Inspect the game files:
+**If you only have a protected SafeDisc EXE, this program cannot turn it into an unpacked EXE by itself.** A recognized unpacked EXE and recognized protected EXE are not necessarily equivalent retail builds. Keep backups and test the game.
 
-```bash
-crimson-patcher status --exe '/path/to/Crimson Skies/CRIMSON.EXE'
+### Check your file's SHA-256
+
+Windows PowerShell:
+
+```powershell
+Get-FileHash "C:\Games\Crimson Skies\CRIMSON.EXE" -Algorithm SHA256
 ```
 
-Change resolution, using **automatic aspect-correct FOV**:
+Linux:
 
 ```bash
-crimson-patcher apply --exe '/path/to/Crimson Skies/CRIMSON.EXE' --width 2560 --height 1440
+sha256sum "/path/to/Crimson Skies/CRIMSON.EXE"
 ```
 
-Change resolution with an optional target horizontal FOV:
+A hash can differ if the file was **already modified by this patcher**; the `status` command also checks its normalized widescreen signature.
+
+## Download (Windows x64 / Wine)
+
+1. Open [GitHub Actions — Build and test Rust patcher (Windows)](https://github.com/legluondunet/crimson-skies-resolution-patcher/actions/workflows/build.yml).
+2. Open the latest successful workflow run.
+3. Under **Artifacts**, download **`crimson-patcher-windows-x64`** and extract `crimson-patcher.exe`.
+4. Copy the patcher to your game directory, or point `--exe` at the installed game executable.
+
+**Only Windows x64 is built by GitHub Actions.** Linux users run this Windows EXE through Wine. No Python installation is needed. Linux-native compilation is still possible manually from source.
+
+**Before patching:** exit Crimson Skies and all Wine/Proton processes using its files. Keep a separate copy of the entire installation during initial testing.
+
+## How to use — Windows
+
+Run the following in **PowerShell** from the directory containing `crimson-patcher.exe`. Change the sample installation path.
+
+**1. Inspect without patching:**
+
+```powershell
+.\crimson-patcher.exe status --exe "C:\Games\Crimson Skies\CRIMSON.EXE" --no-wine
+```
+
+**2. Patch resolution and calculate FOV automatically** (requires a compatible, already-unpacked widescreen EXE):
+
+```powershell
+.\crimson-patcher.exe apply --exe "C:\Games\Crimson Skies\CRIMSON.EXE" --width 1920 --height 1080 --no-wine
+```
+
+You can also select another resolution, for example `--width 2560 --height 1440` or `--width 3440 --height 1440`, subject to the tool's resolution and aspect-ratio checks.
+
+**3. Optional custom horizontal FOV (105°):**
+
+```powershell
+.\crimson-patcher.exe apply --exe "C:\Games\Crimson Skies\CRIMSON.EXE" --width 1920 --height 1080 --fov 105 --no-wine
+```
+
+Omit `--fov` on the next apply command to **restore automatic aspect-based FOV**.
+
+### If your EXE is SafeDisc-protected
+
+This is **not** a SafeDisc unpacker. If you already own one of the supported **unpacked widescreen** EXEs, store it separately and explicitly authorize **replacement** of your protected EXE after backup:
+
+```powershell
+.\crimson-patcher.exe apply `
+  --exe "C:\Games\Crimson Skies\CRIMSON.EXE" `
+  --unpacked "C:\Backups\Crimson Skies\Unpacked\CRIMSON.EXE" `
+  --accept-local-replacement `
+  --width 1920 --height 1080 --no-wine
+```
+
+`--unpacked` and `--accept-local-replacement` are required. The supplied EXE is verified against the supported widescreen family; **the patcher cannot establish whether it is identical in gameplay content to the user's retail build**.
+
+## How to use — Linux / Wine
+
+Download the **Windows** build and, for these examples, place `crimson-patcher.exe` in your Crimson Skies directory:
 
 ```bash
-crimson-patcher apply --exe '/path/to/Crimson Skies/CRIMSON.EXE' --width 1920 --height 1080 --fov 105
+cd "$HOME/Games/Crimson Skies"
+wine ./crimson-patcher.exe status --exe CRIMSON.EXE --no-wine
 ```
 
-For a **recognized SafeDisc image**, explicitly provide one of your own compatible unpacked widescreen game executables. This **replaces** the protected image after backing it up; it is **not** an automatic SafeDisc unpacker:
+Patch resolution and automatically adjust FOV **without changing the optional DLL**:
 
 ```bash
-crimson-patcher apply --exe '/path/to/Crimson Skies/CRIMSON.EXE' \
-  --unpacked '/path/to/your/compatible/unpacked/CRIMSON.EXE' \
-  --accept-local-replacement --width 1920 --height 1080
+wine ./crimson-patcher.exe apply --exe CRIMSON.EXE --width 1920 --height 1080 --no-wine
 ```
 
-Under native Linux, Wine compatibility mode is automatically selected. If your `roffile.dll` is not at the expected relative path, provide it explicitly:
+To **require the Wine ROF workaround**, add `--wine`. The DLL is normally searched for under `GOSDATA/ASSETS/BINARIES/roffile.dll` relative to the EXE:
 
 ```bash
-crimson-patcher apply --exe '/path/to/Crimson Skies/CRIMSON.EXE' \
-  --width 1920 --height 1080 \
-  --dll '/path/to/Crimson Skies/GOSDATA/ASSETS/BINARIES/roffile.dll'
+wine ./crimson-patcher.exe apply --exe CRIMSON.EXE --width 1920 --height 1080 --wine
 ```
 
-Use `--wine` to request strict Wine DLL detection/failure if the file is missing, or `--no-wine` to skip the optional DLL modification completely. Use `--dll` to request a particular DLL explicitly even when Wine auto-detection is off.
+If the DLL has a different location, provide `--dll PATH`. With `--wine`, missing or unsupported DLLs **cause the operation to fail before changes are written**. `--no-wine` disables *automatic* DLL handling; supplying `--dll` explicitly still requests that DLL.
 
-Restore original EXE and optional DLL from their own verified backups:
+Without `--wine` or `--no-wine`, the program tries to detect Wine from environment variables and attempts the optional fix when a compatible DLL is found. If using a recognized SafeDisc EXE, add the local `--unpacked PATH --accept-local-replacement` arguments shown above.
 
-```bash
-crimson-patcher restore --exe '/path/to/Crimson Skies/CRIMSON.EXE' --wine
-```
+## How automatic FOV works
 
-Original backups have the suffixes `.crimson-original.bak` for the EXE and `.before-nul-guard` for the ROF DLL. **Backups are never overwritten.** Keep the installation backup until you have tested the entire game. When the selected modifications are already present, the program reports that nothing needs changing.
-
-### Automatic FOV
-
-The widescreen-patched game calculates its expected horizontal FOV from the stored reference angles:
+The widescreen game patch uses baseline reference angles of **60° and 80°**. Without `--fov`, our tool restores those constants and the game adjusts the effective horizontal FOV according to the image ratio:
 
 ```text
-horizontal_fov = 2 * atan(tan(reference_angle / 2) * ((width / height) / (4 / 3)))
+horizontal_fov = 2 * atan(tan(reference_fov / 2) * ((width / height) / (4 / 3)))
 ```
 
-Thus 1920×1080 and 2560×1440 give the same aspect-based FOV (about **96.4°** for the 80° reference mode). If no `--fov` is given, the tool **resets** its reference constants to 80°/60° for consistent automatic scaling, even if a custom FOV had been written earlier.
+For the **80° reference**:
 
-## ROF fix: scope and attribution
+| Resolution | Format | Calculated horizontal FOV |
+| --- | --- | ---: |
+| 1024×768 | 4:3 | 80° |
+| 1920×1200 | 16:10 | ~90.4° |
+| 1920×1080 | 16:9 | ~96.4° |
+| 2560×1440 | 16:9 | ~96.4° |
 
-The ROF NUL-guard idea, verified SHA-256, instruction context, and RVA come from **thehack904's MIT-licensed [CrimsonSkies-Wine-Fix](https://github.com/thehack904/CrimsonSkies-Wine-Fix)**. The exact verified original DLL SHA-256 is:
+It is the **aspect ratio**, not pixel count alone, that affects FOV. The values are theoretical and should be confirmed in-game. Custom `--fov` accepts 10°–160°.
+
+## Wine/Proton `roffile.dll` compatibility fix
+
+Adapted from [thehack904 / CrimsonSkies-Wine-Fix](https://github.com/thehack904/CrimsonSkies-Wine-Fix) (MIT license). The upstream workaround targets a parser bug involved in crashes when opening **Preferences** or selecting **Quit Mission**.
+
+**Only this exact original `roffile.dll` is recognized**:
 
 ```text
 1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a
 ```
 
-At RVA `0x231E`, the fix replaces `INC ESI` (`46`) with `NOP` (`90`) in `80 3E 20 7D 01 46 89 37`. It does **not** modify Windows, Wine, or Proton itself. Only one DLL build is verified; other ROF builds are intentionally not patched. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+At **RVA `0x231E`**, the patch changes one instruction byte: `INC ESI` (`46`) → `NOP` (`90`), after PE section mapping and byte-context verification. Different DLL versions are **not** patched. The fix does not change Wine, Proton or Windows itself. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for license attribution and upstream scope.
+
+## Backups, already-patched detection and restore
+
+- **Before writing:** checks EXE/DLL compatibility and verifies any existing backup. Unknown or invalid versions are refused; an unchanged result is reported instead of written again.
+- **EXE backup:** `CRIMSON.EXE.crimson-original.bak` (the source filename plus `.crimson-original.bak`).
+- **DLL backup:** `roffile.dll.before-nul-guard`.
+- **Existing backups are never overwritten.** Changed files are written via same-directory temporary files, with a post-write check.
+- **Restore uses the saved backup**. If you originally patched an already-unpacked EXE, restoration does not create a SafeDisc EXE that was never backed up. Backup files remain after restoration.
+- Keep an independent game-directory backup in case of file-system errors or crashes.
+
+Restore just the EXE on Windows:
+
+```powershell
+.\crimson-patcher.exe restore --exe "C:\Games\Crimson Skies\CRIMSON.EXE" --no-wine
+```
+
+Restore the EXE and supported ROF DLL under Wine:
+
+```bash
+wine ./crimson-patcher.exe restore --exe CRIMSON.EXE --wine
+```
 
 ## Build from source
 
-Install a Rust toolchain **at build time**, then run:
+Rust toolchain required for compilation only; **no external crates**:
 
 ```bash
 cargo test
 cargo build --release
 ```
 
-The locally compiled binary is at `target/release/crimson-patcher` on Linux or `target/release/crimson-patcher.exe` on Windows. **No Python is required by users of the compiled release.** GitHub Actions builds and tests **Windows x64 only**, then uploads `crimson-patcher-windows-x64` as a workflow artifact. Run the Windows executable directly on Windows or through Wine on Linux (for example, `wine crimson-patcher.exe status --exe '/path/to/Crimson Skies/CRIMSON.EXE'`). Linux-native builds remain possible manually with Rust installed; no copyrighted game files are bundled.
+Output: `target/release/crimson-patcher.exe` on Windows or `target/release/crimson-patcher` when built natively on Linux. **GitHub Actions compiles/tests and uploads Windows x64 only.**
 
-## Safety and limitations
+## Safety, limitations and license
 
-- Stop the game before applying/restoring a patch; never modify loaded binaries.
-- Exact versions only. Unknown EXEs/DLLs fail closed; a matching size or PE version is **not sufficient**.
-- SafeDisc conversion cannot be completed from the protected EXE alone with this implementation. You need a compatible unpacked local image, and swapping executable builds may affect compatibility.
-- The ROF workaround has only been validated for one DLL build and may not fix every crash. See upstream limitations.
-- A patch succeeding at the byte level is not evidence of gameplay compatibility.
-- The program preflights requested edits and uses verified backups; an unexpected crash or storage failure still merits manual inspection before retrying.
+- **No autonomous SafeDisc removal:** a local compatible, unpacked EXE is required to replace a recognized protected EXE; no proprietary EXE/DLL is distributed.
+- **Not universal:** unknown EXE/DLL binaries are refused. Commercial patch numbers, languages and all digital releases have **not** been validated.
+- Widescreen visuals, interface proportions and long-session game behavior still need testing.
+- A successful binary edit does not establish compatibility of the modified game.
+- Do not patch while the game is running.
 
-## License
-
-Original Rust code: **GPL-3.0-or-later**, copyright © 2026 **legluondunet**. ROF-compatible behavior was based on the MIT-licensed work by thehack904 (attribution in `THIRD_PARTY_NOTICES.md`). Crimson Skies and its game files remain the property of their rights holders. This project is not affiliated with Microsoft.
+Original Rust code: **GPL-3.0-or-later**, copyright © 2026 **legluondunet**. The ROF workaround is adapted from MIT-licensed work by **thehack904**; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Crimson Skies and the game files belong to their respective rights holders. This independent community tool is not affiliated with Microsoft.
