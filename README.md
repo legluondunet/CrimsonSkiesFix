@@ -82,6 +82,18 @@ WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
 
 This mode **does not execute DLL initialization**, does not require `--output`, and writes no file. It cannot recover the SafeDisc decryptor; mapped-vs-disk changes may be relocations and do not establish decryption. Please share only the text result. See [SafeDisc research](docs/safedisc-102-research.md).
 
+### Inspect first-chance DLL faults (experimental)
+
+On Wine Staging 11.17, the standalone 32-bit memory helper can map the verified DLL in `--map-only` mode, but a normal `LoadLibraryW` fails with **error 998**. The first observed exception is an invalid read at `dplayerx.dll` **RVA `0x1BCCD`**. To check whether its actual instructions in memory differ from the encrypted/obfuscated on-disk bytes, download the latest **`safedisc-memory-probe-win32`** artifact and run:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --output ./dplayerx-txt-trace.bin
+```
+
+This adds a passive vectored-exception observer before the existing normal `LoadLibraryW` attempt. It logs the first 12 access-violation addresses and live instruction bytes without changing exception handling, execution registers, or original files. **Loading the DLL still executes its initialization and can fail/crash**, so use only the exact verified DLL in a throwaway Wine prefix. The output filename is required for the existing tool interface; with load error 998 **no memory snapshot is written**. Share the **console text**, not any potential proprietary binary snapshot.
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
