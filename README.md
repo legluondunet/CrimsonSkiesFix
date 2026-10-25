@@ -6,7 +6,7 @@ A conservative **dependency-free Rust** command-line patcher for locally owned c
 
 ## Features
 
-- Native Linux and Windows binaries; the Windows build can run under Wine. No Python and **no external Rust crates**.
+- A Windows x64 release executable that also runs under Wine on Linux; Linux-native builds are possible from source but are not distributed by CI. No Python and **no external Rust crates**.
 - Recognize only examined x86 EXEs by exact SafeDisc SHA-256 or normalized SHA-256 for a compatible widescreen build. Unknown builds are refused.
 - Patch resolution; preserve the existing widescreen patch's automatic FOV scaling (4:3 baseline 60/80 degrees), or specify a horizontal FOV explicitly.
 - Detect when the requested EXE patch is already applied; do not write unnecessarily.
@@ -105,7 +105,7 @@ cargo test
 cargo build --release
 ```
 
-The native binary is at `target/release/crimson-patcher` (Windows: `.exe`). **No Python is required by users of the compiled release.** GitHub Actions builds/tests native Linux and Windows versions and also produces a statically linked Linux musl x86_64 build; no copyrighted game files are bundled.
+The locally compiled binary is at `target/release/crimson-patcher` on Linux or `target/release/crimson-patcher.exe` on Windows. **No Python is required by users of the compiled release.** GitHub Actions builds and tests **Windows x64 only**, then uploads `crimson-patcher-windows-x64` as a workflow artifact. Run the Windows executable directly on Windows or through Wine on Linux (for example, `wine crimson-patcher.exe status --exe '/path/to/Crimson Skies/CRIMSON.EXE'`). Linux-native builds remain possible manually with Rust installed; no copyrighted game files are bundled.
 
 ## Safety and limitations
 
