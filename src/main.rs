@@ -17,10 +17,10 @@ const FOV80: usize = 0x2040A0;
 const DEFAULT_60: [u8; 4] = [0x92, 0x0A, 0x86, 0x3F];
 const DEFAULT_80: [u8; 4] = [0xC2, 0xB8, 0xB2, 0x3F];
 const EXE_NORMALIZED_SHA: &str = "5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67";
-const PROTECTED_SHAS: [&str; 2] = [
-    "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736",
-    "7d6029471d4e5f2c7f4b08ce86c0ffd1f9bc8c697cf3952695fd68ff011f25a1",
-];
+// Verified Windows PC 1.0.2.0 SafeDisc v1 loader / companion executable.
+const PROTECTED_102_SHA: &str = "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736";
+const ICD_102_SHA: &str = "0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b";
+const ICD_102_LEN: usize = 2_580_578;
 const ROF_ORIGINAL_SHA: &str = "1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a";
 const ROF_RVA: u32 = 0x231E;
 const ROF_ORIGINAL: [u8; 8] = [0x80, 0x3E, 0x20, 0x7D, 0x01, 0x46, 0x89, 0x37];
@@ -111,7 +111,7 @@ enum ExeKind { Protected, Widescreen, Unknown }
 fn classify_exe(data: &[u8]) -> ExeKind {
     if valid_pe(data).is_err() { return ExeKind::Unknown; }
     let sha=sha256(data);
-    if PROTECTED_SHAS.contains(&sha.as_str()) { return ExeKind::Protected; }
+    if sha == PROTECTED_102_SHA { return ExeKind::Protected; }
     if data.len()!=EXE_LEN { return ExeKind::Unknown; }
     let mut normalized=data.to_vec();
     write_u32(&mut normalized,WIDTH,1920);
@@ -254,18 +254,19 @@ fn discover_rof(exe: &Path) -> Option<PathBuf> {
 }
 #[derive(Default)]
 struct Options {
-    command:String,exe:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
+    command:String,exe:Option<PathBuf>,icd:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
     unpacked:Option<PathBuf>,allow_replacement:bool,wine:Option<bool>,dll:Option<PathBuf>,
 }
 fn help() {
     println!("Crimson Skies patcher (Rust, no crates)\n\
 Usage:\n\
-  crimson-patcher status --exe CRIMSON.EXE [--dll roffile.dll] [--wine]\n\
-  crimson-patcher apply --exe CRIMSON.EXE --width 1920 --height 1080 [--fov 105]\n\
+  crimson-patcher status --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--dll roffile.dll] [--wine]\n\
+  crimson-patcher apply --exe CRIMSON.EXE [--icd CRIMSON.ICD] --width 1920 --height 1080 [--fov 105]\n\
       [--unpacked LOCAL_WIDESCREEN_EXE --accept-local-replacement] [--wine|--no-wine] [--dll PATH]\n\
   crimson-patcher restore --exe CRIMSON.EXE [--wine|--no-wine] [--dll PATH]\n\
 Wine DLL support auto-enables on native Linux and detectable Wine environments.\n\
-SafeDisc conversion REQUIRES the user's own verified unpacked EXE; this tool cannot decrypt SafeDisc.\n\
+SafeDisc 1.02: both the original loader EXE and companion ICD are verified before replacement.\n\
+No autonomous SafeDisc decryption yet: replacement REQUIRES the user's own verified unpacked EXE.\n\
 The retail EXE, DLL, and game files are NEVER bundled.");
 }
 fn parse_args() -> Result<Options> {
@@ -276,6 +277,7 @@ fn parse_args() -> Result<Options> {
     while let Some(key)=argv.next() {
         match key.as_str() {
             "--exe"=>args.exe=Some(PathBuf::from(argv.next().ok_or("missing --exe value")?)),
+            "--icd"=>args.icd=Some(PathBuf::from(argv.next().ok_or("missing --icd value")?)),
             "--width"=>args.width=Some(argv.next().ok_or("missing width")?.parse().map_err(|_|"invalid width")?),
             "--height"=>args.height=Some(argv.next().ok_or("missing height")?.parse().map_err(|_|"invalid height")?),
             "--fov"=>args.fov=Some(argv.next().ok_or("missing fov")?.parse().map_err(|_|"invalid FOV")?),
@@ -305,6 +307,42 @@ fn target_dll(options: &Options, exe: &Path) -> Result<Option<PathBuf>> {
         None=>{eprintln!("NOTE: roffile.dll not found, skipping optional Wine fix (use --dll PATH to locate it).");Ok(None)}
     }
 }
+/// Verify the exact SafeDisc 1.0.2.0 ICD before attempting any protected-EXE
+/// replacement. The ICD contains encrypted code and is NOT itself an unpacked EXE.
+fn check_original_icd(path: &Path) -> Result<()> {
+    let data = inspect_file(path)?;
+    if data.len() != ICD_102_LEN || valid_pe(&data).is_err() || sha256(&data) != ICD_102_SHA {
+        return Err(format!(
+            "unsupported CRIMSON.ICD: expected the verified 1.0.2.0 ICD (SHA-256 {}); no files changed",
+            ICD_102_SHA
+        ));
+    }
+    println!("ICD: original SafeDisc 1.0.2.0 verified (SHA-256 {}) at {}", ICD_102_SHA, path.display());
+    Ok(())
+}
+
+fn validate_protected_pair(options: &Options, exe: &Path, kind: ExeKind) -> Result<()> {
+    if kind != ExeKind::Protected {
+        if options.icd.is_some() && kind == ExeKind::Unknown {
+            return Err("cannot validate ICD with an unsupported EXE".into());
+        }
+        return Ok(());
+    }
+    // Restoring an already backed-up executable does not require the ICD.
+    if options.command == "restore" { return Ok(()); }
+    let icd = options.icd.clone().or_else(|| {
+        exe.parent().and_then(|parent| find_ci_child(parent, "CRIMSON.ICD"))
+    });
+    match icd {
+        Some(path) => check_original_icd(&path),
+        None if options.command == "status" => {
+            println!("ICD: companion CRIMSON.ICD not found; protected pair not yet verified");
+            Ok(())
+        },
+        None => Err("SafeDisc 1.0.2.0 requires its matching CRIMSON.ICD; provide --icd PATH or place it next to CRIMSON.EXE; no files changed".into()),
+    }
+}
+
 fn report_exe(data: &[u8]) {
     let state=classify_exe(data);
     println!("EXE: {state:?}; bytes: {}; SHA-256: {}",data.len(),sha256(data));
@@ -328,6 +366,7 @@ fn run(options: Options) -> Result<()> {
     let before=inspect_file(exe)?;
     report_exe(&before);
     let kind=classify_exe(&before);
+    validate_protected_pair(&options, exe, kind)?;
     let exe_backup=backup_path(exe,false);
     let backup=optional_file(&exe_backup)?;
     if let Some(ref b)=backup {
@@ -419,5 +458,9 @@ mod tests {
     #[test] fn fov_4x3() {assert!((horizontal_fov(80.0,1024,768)-80.0).abs()<1e-10);}
     #[test] fn fov_16x9() {assert!((horizontal_fov(80.0,1920,1080)-96.418).abs()<0.03);}
     #[test] fn dimensions() {assert!(geometry(1920,1080).is_ok());assert!(geometry(1,0).is_err());}
-    #[test] fn protected_hashes() {assert_eq!(PROTECTED_SHAS.len(),2);}
+    #[test] fn supported_protected_hash_is_102() {
+        assert_eq!(PROTECTED_102_SHA, "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736");
+        assert_eq!(ICD_102_LEN, 2_580_578);
+        assert_eq!(ICD_102_SHA.len(), 64);
+    }
 }
