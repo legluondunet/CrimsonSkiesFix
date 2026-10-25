@@ -87,6 +87,24 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Next test: inspect actual first-chance exception instruction bytes
+
+The first matched Wine SEH entry occurs immediately after the native `dplayerx.dll` load, at `EIP=0x0094BCCD` (DLL load base `0x00930000`; `RVA=0x1BCCD`; `.txt2` raw offset `0x19ECD`). The exception is `0xC0000005`, an attempted **read** (`ExceptionInformation[0]=0`) from **`0xFFFFFFFF`** (`ExceptionInformation[1]`). Wine then dispatches a handler; it is not yet known if this is an intentionally handled protection fault or a loader failure.
+
+The **on-disk** bytes at `0x19ECD` are `CD 01` (`INT 1`, a two-byte software interrupt), which must **not be conflated** with `INT1` (single-byte `F1`). Neither opcode by itself explains a normal invalid-data-read access violation. Static disassembly could be misleading if the on-disk bytes are modified in memory before execution or if an exception is synthesized. This is a hypothesis to test, not proof.
+
+The x86 helper now offers `--trace-exceptions`: it registers a read-only Windows vectored handler **before** `LoadLibraryW`, records up to the first 12 access-violation addresses and the **live 8 bytes at each faulting instruction pointer** using `ReadProcessMemory` when available, then returns `EXCEPTION_CONTINUE_SEARCH` without modifying the fault context or handler chain. After load returns (including error 998), it prints those observations **without publishing game code or requiring an executable dump**. `--trace-exceptions` cannot be combined with `--map-only`.
+
+Run only in the isolated research prefix using the **hash-verified** DLL and new Windows-x86 GitHub Actions helper:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+    --trace-exceptions --output ./dplayerx-txt-trace.bin
+```
+
+An intentionally handled exception might appear without meaning the loader is corrupt; further analysis should compare the first live code bytes with the on-disk `CD 01` sequence. The DLL is still being executed during this test and can crash; no changes to original game files are attempted.
+
 ## Wine +seh failure trace: module-local fault addresses
 
 The user recorded the Wine 11.17 `WINEDEBUG=-all,+seh,+loaddll` trace after `LoadLibraryW` returned 998. The native `dplayerx.dll` was loaded at **base `0x00930000`** (the trace shows `EBX=0x00930000`). The following locations are therefore *relative to this session's DLL load base*:
