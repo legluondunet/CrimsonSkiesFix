@@ -87,6 +87,28 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Verified Wine Secdrv I/O failures: 1,902 sequential attempts (2026-10-26)
+
+The user supplied the original **26,436-line** `WINEDEBUG=-all,+file,+loaddll` log (about 2.97 MB) of the standalone DLL research probe under Wine Staging 11.17. We reviewed the **full file**, not just grep snippets.
+
+**Strong new direct evidence:**
+- The x86 research process (`0124`) loaded the original `dplayerx.dll` at **`0x00940000`** (Wine log line 8053; ASLR differs from prior runs, as expected).
+- Between lines **8271 and 26295** the same process made **exactly 1,902 `CreateFileW("\\\\.\\Secdrv")` attempts**, all requesting `GENERIC_READ | GENERIC_WRITE`, `FILE_SHARE_READ | FILE_SHARE_WRITE`, `OPEN_EXISTING`.
+- Every attempt was resolved by Wine to NT object name **`\\??\\Secdrv`**, and every one failed. `NtCreateFile` logged name resolution `c00000cb`, followed by `CreateFileW` reporting **`STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034)`** and returning **`INVALID_HANDLE_VALUE (0xFFFFFFFF)`**. First cycle lines 8271–8278; last cycle lines 26295–26302.
+- Immediately after the final unsuccessful attempt, at **line 26303**, Wine unloaded the native `dplayerx.dll`. The observer then printed its **nine access violations**. The log confirms the DLL **was not able to establish a usable Secdrv device handle before failing**.
+- `NtDeviceIoControlFile` entries seen **after** the DLL unload are on other handles (for console output) and must **not** be misidentified as SafeDisc driver IOCTLs. The log has **no successful `Secdrv` opens and no evidenced IOCTL sent to an opened Secdrv handle**.
+
+**Conclusion with careful causality:** missing `Secdrv` in the isolated Wine prefix is now **confirmed** and a compelling explanation for the loader error 998, but we cannot prove from this one run that driver availability is its *only* missing precondition. The existing second-stage `.txt` modifications do not prove a usable decrypted SafeDisc decoder.
+
+**New minimal next experiment:** the optional Windows x86 helper has `--test-secdrv-alias`, which verifies the exact DLL hash **without executing it**, refuses to overwrite any existing `Secdrv` mapping, temporarily creates a DOS-device symbolic link from `Secdrv` to `\\Device\\Null` via `DefineDosDeviceW`, tests a matching `CreateFileW` call, then uses a Rust destructor to request removal of the alias. Run **only in the dedicated expendable Wine research prefix**, not in a normal Windows session:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll --test-secdrv-alias
+```
+
+The test **does not load the DLL, run its code, install a driver, respond to any SafeDisc IOCTL, decrypt the ICD, modify game files, or publish proprietary code**. It *does* temporarily create an operating-system DOS device name; abrupt process termination may prevent cleanup, so keep the test prefix isolated. Windows/Wine may reject alias creation or opening; any success means *only* that the name can be resolved to a null device, **not** that SafeDisc is emulated. This test has not yet been run under the user's Wine environment.
+
 ## Next step: identify whether Secdrv device I/O precedes the DLL fault
 
 The relocation-aware offline stage analyzer now passes under **Wine Staging 11.17** using the exact protected DLL and both user-owned snapshots:
