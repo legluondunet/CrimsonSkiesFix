@@ -1,0 +1,16 @@
+# Third-party executables and local patch outputs: never commit game files.
+*.exe
+*.EXE
+*.bak
+*.dll
+*.DLL
+*.iso
+*.bin
+
+# Python and local tooling.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
