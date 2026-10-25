@@ -28,6 +28,10 @@ The comparison uses the common 2,580,480-byte file span (ignoring the ICD's 98-b
 
 The extensive changes in executable code and initialized data **cannot** be repaired by merely changing the PE extension, setting the widescreen constants or replacing the entry point. In particular, an algorithm or verified key is needed to decrypt the contents, and the IAT must be restored.
 
+## Verified loader metadata lead
+
+The exact 1.0.2.0 SafeDisc loader contains the ASCII signature `DECRPE\0\0` at **file offset `0x28E68`**. The bytes that follow are not yet identified as a working game decryption key. The historical technical write-up [*An overview of Safedisc versions*](https://gbppr.net/cracking/krobar/other/com26.html) specifically mentions `DECRPE\0\0` in its discussion of loader-stored raw key material and TEA key derivation. This observation narrows future investigation, but extracting an arbitrary contiguous group of bytes after this marker and treating it as the cipher key **has not been validated**.
+
 ## Reverse-engineering leads and required evidence
 
 SafeDisc v1 used the separate `EXE` loader and `ICD` encrypted executable format. Research discussing SafeDisc 1.06–1.11 reports **TEA (Tiny Encryption Algorithm)**, key recovery and post-decryption import table reconstruction:
