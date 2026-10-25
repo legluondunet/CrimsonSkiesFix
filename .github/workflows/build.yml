@@ -22,6 +22,8 @@ jobs:
         run: rustup target add i686-pc-windows-msvc
       - name: Build experimental x86 DLL memory probe
         run: cargo build --release --target i686-pc-windows-msvc --features research --bin safedisc-memory-probe
+      - name: Test Windows x86 research helper
+        run: cargo test --target i686-pc-windows-msvc --features research --bin safedisc-memory-probe
       - name: Upload x86 research helper
         uses: actions/upload-artifact@v4
         with:
