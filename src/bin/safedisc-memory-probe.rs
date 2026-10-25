@@ -326,6 +326,49 @@ fn write_private_stage_files(prefix:&PathBuf, snapshots:&[u8], disk:&[u8]) -> Re
 }
 
 
+
+// Checks a minimal loader call-chain and the on-disk Secdrv device path
+// without executing any instruction. Offsets are tied to the exact
+// SHA-256-verified dplayerx.dll; not a general PE disassembler.
+fn raw_text_rva(dll:&[u8],rva:usize,length:usize)->Result<&[u8],String> {
+    if !(0x9000..0x17506).contains(&rva) || length>0x17506-rva {
+        return Err(format!("RVA 0x{rva:X} is outside verified DLL .text"));
+    }
+    let raw=0x7C00+(rva-0x9000);
+    dll.get(raw..raw+length).ok_or("Truncated .text code".into())
+}
+fn static_direct_call_target(dll:&[u8],rva:usize)->Result<usize,String>{
+    let bytes=raw_text_rva(dll,rva,5)?;
+    if bytes[0]!=0xE8 {return Err(format!("No CALL rel32 at DLL RVA 0x{rva:X}"));}
+    let displacement=i32::from_le_bytes(bytes[1..5].try_into().unwrap()) as i64;
+    let target=rva as i64+5+displacement;
+    usize::try_from(target).map_err(|_|"Negative call target".into())
+}
+fn report_dll_startup_dependencies(dll:&[u8])->Result<(),String>{
+    if static_direct_call_target(dll,0xFD81)?!=0x9770 ||
+       static_direct_call_target(dll,0x989F)?!=0x7212 {
+        return Err("Unexpected SafeDisc DLL protected startup call chain".into());
+    }
+    if dll.get(0x1D524..0x1D52B)!=Some(&b"Secdrv\0"[..]) ||
+       dll.get(0x1D52C..0x1D533)!=Some(&b"\\\\.\\%s\0"[..]){
+        return Err("SafeDisc device-name strings do not match verified DLL".into());
+    }
+    // The C compiler-obfuscated routine at RVA 0xECC9 begins by pushing
+    // the Secdrv string VA and the \\.\%s template VA. The call at
+    // RVA 0xED09 goes through an IAT thunk resolved to CreateFileA.
+    if raw_text_rva(dll,0xECC9,10)?
+        !=&[0x68,0x24,0x09,0x90,0x00,0x68,0x2C,0x09,0x90,0x00] ||
+       raw_text_rva(dll,0xED09,6)?!=&[0xFF,0x15,0x5C,0xE0,0x8F,0x00] {
+        return Err("Unexpected static Secdrv open sequence".into());
+    }
+    println!("Static DLL entry: RVA 0xFD20; direct CALL RVA 0xFD81 -> RVA 0x9770 (_DllMain@12 export)");
+    println!("Static _DllMain branch: direct CALL RVA 0x989F -> protected .txt RVA 0x7212");
+    println!("Static device-code evidence: Secdrv, \\\\.\\%s, and CreateFileA IAT call at RVA 0xED09");
+    println!("The DLL has a Secdrv dependency; this does NOT prove which call caused Wine error 998.");
+    println!("A standalone LoadLibraryW probe lacks the full SafeDisc loader, driver, and disc context.");
+    Ok(())
+}
+
 fn read_word(bytes:&[u8],at:usize)->Result<u32,String>{
     let raw=bytes.get(at..at.checked_add(4).ok_or("offset overflow")?).ok_or("truncated dword")?;
     Ok(u32::from_le_bytes(raw.try_into().map_err(|_|"invalid dword")?))
@@ -413,6 +456,7 @@ fn compare_saved_stages(dll:&[u8],one:&PathBuf,two:&PathBuf)->Result<(),String>{
     if s2.starts_with(&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57]) {
         println!("Stage 2 starts with a plausible x86 function prologue, but most code is not yet demonstrated to be valid.");
     }
+    report_dll_startup_dependencies(dll)?;
     println!("No unpacking attempted, no output written, no game code distributed.");
     Ok(())
 }
@@ -566,6 +610,14 @@ mod tests {
         assert_eq!(read_word(&[0x78,0x56,0x34,0x12],0).unwrap(),0x12345678);
         assert!(read_word(&[0,1,2],0).is_err());
         assert!(read_word(&[0,1,2,3],usize::MAX).is_err());
+    }
+    #[test]
+    fn relative_call_target_is_validated() {
+        let mut fake=vec![0u8;0x18000];
+        fake[0x7C00+(0x989F-0x9000)..0x7C00+(0x989F-0x9000)+5]
+            .copy_from_slice(&[0xE8,0x6E,0xD9,0xFF,0xFF]);
+        assert_eq!(static_direct_call_target(&fake,0x989F).unwrap(),0x7212);
+        assert!(static_direct_call_target(&fake,0x9000).is_err());
     }
     #[test]
     fn entropy_constant_and_binary_distribution() {
