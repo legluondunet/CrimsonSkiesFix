@@ -109,6 +109,20 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### Compare two captured SafeDisc stages offline (no DLL execution)
+
+After capturing stage 1 and stage 2 from the same original **SafeDisc 1.50.20** DLL, the Windows x86 research helper can compare both snapshots against the user's original `dplayerx.dll` without loading or executing it:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+    --analyze-stages ./safedisc-txt-stage1.bin ./safedisc-txt-stage2.bin
+```
+
+This verifies the two inputs' sizes and computes their hashes, entropy, relocation-aware comparisons and candidate window differences. With the supplied exact 1.50.20 captures, **stage 1 was exactly original `.txt` + 214 PE relocations, while 29,164 bytes changed outside relocated words at stage 2**. The second stage begins with an x86-like prologue but is **not proven to contain fully decrypted executable code**, and the game's ICD still cannot be unpacked by this tool.
+
+**The two snapshots contain proprietary code; do not commit or redistribute them.**
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
