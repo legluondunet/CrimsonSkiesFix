@@ -71,6 +71,17 @@ WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
 
 Please share the **textual command output** first; any snapshot may contain copyrighted code and should **not** be committed to the repository. Successful section loading/decryption alone is not a working SafeDisc unpacker. See [research notes](docs/safedisc-102-research.md).
 
+### Troubleshooting Wine error 998: test mapping without executing the DLL
+
+If the optional x86 memory helper reports `LoadLibraryW failed: Windows error 998`, **no memory snapshot was produced**. The new **`--map-only`** mode distinguishes failure to map the PE image from later DLL import processing / initialization, using `LoadLibraryExW` with `DONT_RESOLVE_DLL_REFERENCES`.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
+    --dll ./dplayerx.dll --map-only
+```
+
+This mode **does not execute DLL initialization**, does not require `--output`, and writes no file. It cannot recover the SafeDisc decryptor; mapped-vs-disk changes may be relocations and do not establish decryption. Please share only the text result. See [SafeDisc research](docs/safedisc-102-research.md).
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
