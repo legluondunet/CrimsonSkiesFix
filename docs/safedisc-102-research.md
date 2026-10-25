@@ -87,6 +87,39 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Verified full .txt stage captures: relocation-aware comparison (2026-10-26)
+
+The user supplied **both 30,321-byte private snapshots** and their SHA-256 matched the helper's console output:
+
+| Image | SHA-256 |
+| --- | --- |
+| First `.txt2` AV (stage 1) | `9891f87ff250a46c32c44c91525d213e38e9fb36290ce750758572e6fc7c1fbb` |
+| First `.txt` AV (stage 2) | `e09b39802625972d5664ffae7d4e3b3e26280c7a070129d2c69b08e89c283c15` |
+
+**Independent local validation against the original, hash-verified `dplayerx.dll`:**
+
+- The DLL PE relocation directory contains **214** `IMAGE_REL_BASED_HIGHLOW` entries in `.txt`; the runtime base is `0x00930000`, preferred base `0x008E0000`, delta **`0x00050000`**.
+- Applying all 214 PE relocations to the original DLL's `.txt` raw section reproduces **stage 1 exactly**: **0 residual changed bytes**.
+- Exactly **29,164 of 30,321 bytes (96.18%)** differ between stage 1 and stage 2; **1,157 bytes** are unchanged.
+- All **856 bytes** belonging to the 214 relocated four-byte windows are still unchanged between stage 1 and stage 2. All **29,164 changes are outside these windows** (29,164 of 29,465 non-relocated bytes differ). This is very strong evidence the protection is **relocation-aware when transforming its own code**.
+- `.txt` entropy falls only from **7.9797** to **7.9205 bits/byte**.
+- At `RVA 0x1000`, stage 2 begins with a plausible ordinary x86 prologue: `55 8B EC 51 53 56 57` (`push ebp; mov ebp,esp; push ecx; push ebx; push esi; push edi`).
+- Nevertheless disassembly quickly becomes implausible, including instructions that would be privileged or use unrealistic absolute targets, and the sampled candidate modifier addresses `0x65BE` and `0x6621` are **not currently a demonstrated usable, coherent x86 routine**. **Stage 2 is not established as a fully unpacked DLL**, much less as a decrypted game ICD.
+
+These exact statistics can now be reproduced **locally** using the optional Windows x86 research helper, with the original DLL available, but **without executing the DLL or writing any file**:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --analyze-stages ./safedisc-txt-stage1.bin ./safedisc-txt-stage2.bin
+```
+
+The helper checks the exact DLL hash, infers the relocation delta from the stage 1 image, checks all 214 relocation targets, refuses to interpret a nonmatching stage 1, and reports stage-to-stage changes both inside and outside relocated windows. The two proprietary stage snapshots are **not stored in GitHub**.
+
+**The remaining decryption challenge:** SafeDisc 1.50.20's documented second ICD encryption layer uses two build-specific EAX modifier routines; the historical article provides a block-level algorithm, but **not the decoded routines from this specific game DLL**. Before implementing an autonomous ICD decoder, we must reconstruct and independently test those transformations, remove the second ICD layer, then derive/validate the TEA layer and repair the imports. No attempt to extract a usable EXE is yet validated.
+
+Historical algorithm reference: https://gbppr.net/cracking/krobar/other/com26.html
+
 ## Candidate modifier stages and private .txt captures (2026-10-26)
 
 A follow-up run using the exact matching user-owned `dplayerx.dll` under Wine Staging 11.17 captured 9 first-chance access violations and sampled both candidate SafeDisc modifier RVAs at the **first `.txt2`** exception and the **first `.txt`** exception. The two 16-byte samples are:
