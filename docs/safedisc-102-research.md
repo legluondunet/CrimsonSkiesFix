@@ -19,7 +19,17 @@ The game version (**1.0.2.0**) and the **SafeDisc protection version** are diffe
 
 This matters significantly: [ArthaXerXès' SafeDisc technical write-up](https://gbppr.net/cracking/krobar/other/com26.html) documents an **additional ICD encryption layer beginning with SafeDisc 1.50.20**, using an EAX modification routine from the protection's **`dplayerx.dll`**. Therefore a direct application of TEA decryption on the stored ICD bytes cannot be assumed to succeed. The exact *same-installation* `dplayerx.dll` will be needed for a reliable reconstruction of that routine; no copy was included with the supplied EXE/ICD pair.
 
-The Rust `probe` command checks the markers and version triplets of both files and can accept `--dplayerx PATH` to inspect its PE metadata and SHA-256 without executing the DLL. **No decoding or SafeDisc bypass has been implemented at this stage.**
+**Matching DPLAYERX.DLL supplied and verified (2026-10-25):**
+
+- SHA-256: `dc43dbae45a8bfc39299ab0d1d5dbc72302f3bc37faf7c3b41e8ffdf4c6838ff`.
+- Size: **138,752 bytes**; PE32 i386; image base `0x008E0000`.
+- Own SafeDisc marker: `BoG_ *90.0&!!  Yy>` at **file offset `0x1CC58`**, reporting **1.50.20**.
+- DLL code sections on disk: `.txt` (raw `0x400`, 30,720 bytes, entropy **7.953**), `.text` (raw `0x7C00`, 58,880 bytes, entropy **6.575**), `.txt2` (raw `0x16200`, 22,016 bytes, entropy **6.246**).
+- The two modifier routine **candidate RVAs referenced by the old technical write-up** are `0x65BE` (PE file offset **`0x59BE`**) and `0x6621` (offset **`0x5A21`**), inside the high-entropy `.txt` section. The bytes in that section **are still encrypted on disk**; disassembly at those RVAs from the on-disk DLL is not a decoded routine.
+
+The Rust `probe` command now verifies the **exact matching DLL hash and protection version**, reports its section entropies and maps the two candidate modifier RVAs. It is strictly read-only; **no decoding or SafeDisc bypass has been implemented at this stage**.
+
+**What remains:** recover the DLL's decrypted runtime modifier logic, reproduce the two EAX transforms without executing the protected DLL in the distributed patcher, verify the ICD second-layer decode against the local unpacked reference, and then complete TEA key derivation and PE import reconstruction. The original `DECRPE` bytes alone are insufficient.
 
 ## Byte-level comparison of supplied local files
 
