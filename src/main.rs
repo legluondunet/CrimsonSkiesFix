@@ -21,6 +21,10 @@ const EXE_NORMALIZED_SHA: &str = "5578a15ce072d09655be43419829a7530ed6c71fa5a877
 const PROTECTED_102_SHA: &str = "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736";
 const ICD_102_SHA: &str = "0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b";
 const ICD_102_LEN: usize = 2_580_578;
+const DPLAYERX_15020_SHA: &str = "dc43dbae45a8bfc39299ab0d1d5dbc72302f3bc37faf7c3b41e8ffdf4c6838ff";
+const DPLAYERX_15020_LEN: usize = 138_752;
+const SD_DPLAYERX_MAGIC: usize = 0x1CC58;
+const DPLAYERX_MODIFIER_RVAS: [u32; 2] = [0x65BE, 0x6621];
 // The exact checked 1.0.2.0 originals identify the DRM itself as SafeDisc 1.50.20.
 const SD_15020_MAGIC: &[u8] = b"BoG_ *90.0&!!  Yy>";
 const SD_LOADER_MAGIC: usize = 0x29250;
@@ -396,6 +400,35 @@ fn byte_entropy(data: &[u8]) -> f64 {
         -p*p.log2()
     }).sum()
 }
+fn probe_dplayerx(dll: &[u8]) -> Result<()> {
+    valid_pe(dll)?;
+    let hash = sha256(dll);
+    if dll.len()!=DPLAYERX_15020_LEN || hash!=DPLAYERX_15020_SHA {
+        return Err(format!(
+            "unknown dplayerx.dll (length {}; SHA-256 {}). Expected exact SafeDisc 1.50.20 DLL {}; no decryption attempted",
+            dll.len(),hash,DPLAYERX_15020_SHA
+        ));
+    }
+    checked_safedisc_version(dll,SD_DPLAYERX_MAGIC,SD_DPLAYERX_MAGIC+0x14)?;
+    println!("DPLAYERX: matching SafeDisc 1.50.20 DLL, {} bytes; SHA-256 {}",dll.len(),hash);
+    let sections=section_ranges(dll)?;
+    for (name,off,len) in &sections {
+        if name==".txt" || name==".text" || name==".txt2" {
+            println!("DPLAYERX {:8} raw=0x{:06X} size={} entropy={:.3} bits/byte",
+                     name,off,len,byte_entropy(&dll[*off..off+len]));
+        }
+    }
+    for rva in DPLAYERX_MODIFIER_RVAS {
+        let offset=pe_rva_to_offset(dll,rva)?;
+        let section=sections.iter().find(|(_,off,len)|offset>=*off && offset<off+len)
+            .ok_or("modifier RVA did not map to an inspected DLL section")?;
+        println!("Research modifier RVA 0x{:X} -> file offset 0x{:X} in section {} (encrypted on disk)",
+                 rva,offset,section.0);
+    }
+    println!("DPLAYERX: modifier addresses refer to ciphertext on disk. Runtime unpacking / actual decoder not yet established.");
+    Ok(())
+}
+
 fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>, dplayerx: Option<&[u8]>) -> Result<()> {
     if classify_exe(exe)!=ExeKind::Protected || icd.len()!=ICD_102_LEN || sha256(icd)!=ICD_102_SHA {
         return Err("probe requires the verified original SafeDisc 1.0.2.0 EXE and ICD".into());
@@ -405,8 +438,7 @@ fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>, dplayerx: Op
     println!("Crimson Skies 1.0.2.0 — SafeDisc 1.50.20 research probe (read only)");
     println!("NOTE: SafeDisc 1.50.20 uses an additional ICD cipher layer involving dplayerx.dll.");
     if let Some(dll)=dplayerx {
-        valid_pe(dll)?;
-        println!("Provided local dplayerx.dll: {} bytes; SHA-256: {}",dll.len(),sha256(dll));
+        probe_dplayerx(dll)?;
         println!("The DLL is inspected only; no code is executed or copied into an output.");
     } else {
         println!("dplayerx.dll not provided: its SafeDisc-specific decoder still needs to be analyzed.");
@@ -569,6 +601,11 @@ mod tests {
     #[test] fn fov_4x3() {assert!((horizontal_fov(80.0,1024,768)-80.0).abs()<1e-10);}
     #[test] fn fov_16x9() {assert!((horizontal_fov(80.0,1920,1080)-96.418).abs()<0.03);}
     #[test] fn dimensions() {assert!(geometry(1920,1080).is_ok());assert!(geometry(1,0).is_err());}
+    #[test] fn matching_dplayerx_metadata() {
+        assert_eq!(DPLAYERX_15020_LEN, 138_752);
+        assert_eq!(DPLAYERX_15020_SHA.len(), 64);
+        assert_eq!(DPLAYERX_MODIFIER_RVAS[1]-DPLAYERX_MODIFIER_RVAS[0],0x63);
+    }
     #[test] fn safedisc_metadata_signature() {
         assert_eq!(SD_15020_MAGIC, b"BoG_ *90.0&!!  Yy>");
         let mut buf=vec![0u8;64];
