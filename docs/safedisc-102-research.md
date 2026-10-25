@@ -13,6 +13,14 @@ The other supplied protected EXE (`7d602947…f011f25a1`) reports a different ga
 
 The unpacked widescreen reference has a size of **2,580,480 bytes**, the same image base (`0x400000`), entry-point RVA (`0x1F7056`), section names, section virtual addresses and raw offsets as the ICD. This structural match **does not demonstrate** that the encrypted ICD can already be converted.
 
+## Precise DRM version: SafeDisc 1.50.20
+
+The game version (**1.0.2.0**) and the **SafeDisc protection version** are different values. The supplied loader has the `BoG_ *90.0&!!  Yy>` marker at file offset `0x29250` and the consecutive 32-bit version values `1, 50, 20` at `0x29264`. The paired ICD has the same marker at `0x0FD4` and the same values at `0x0FF4`. These have been read directly from both local files, not inferred from the game date.
+
+This matters significantly: [ArthaXerXès' SafeDisc technical write-up](https://gbppr.net/cracking/krobar/other/com26.html) documents an **additional ICD encryption layer beginning with SafeDisc 1.50.20**, using an EAX modification routine from the protection's **`dplayerx.dll`**. Therefore a direct application of TEA decryption on the stored ICD bytes cannot be assumed to succeed. The exact *same-installation* `dplayerx.dll` will be needed for a reliable reconstruction of that routine; no copy was included with the supplied EXE/ICD pair.
+
+The Rust `probe` command checks the markers and version triplets of both files and can accept `--dplayerx PATH` to inspect its PE metadata and SHA-256 without executing the DLL. **No decoding or SafeDisc bypass has been implemented at this stage.**
+
 ## Byte-level comparison of supplied local files
 
 The comparison uses the common 2,580,480-byte file span (ignoring the ICD's 98-byte trailing metadata) and the PE section raw ranges:
@@ -39,7 +47,7 @@ SafeDisc v1 used the separate `EXE` loader and `ICD` encrypted executable format
 - [SafeDisc 1.06–1.11 reverse-engineering discussion](https://gbatemp.net/threads/safedisc-1-06-1-11-reverse-engineering-technical-paper.611118/)
 - [SafeDisc v1 background](https://en.wikipedia.org/wiki/SafeDisc)
 
-**These are leads, not a validated decoder for Crimson Skies.** The key, encryption granularity, cipher parameters, section-specific handling, IAT repair and correct output verification have **not yet been established for this exact pair**. No copyrighted decoded game code or large binary diff may be embedded in or published with this project.
+**These are leads, not a validated decoder for Crimson Skies.** The DRM has now been identified as **SafeDisc 1.50.20**, requiring a game-specific investigation of its `dplayerx.dll` second decryption layer **before** TEA and IAT reconstruction. No key, full cipher implementation or working output has been validated for this exact pair. No copyrighted decoded game code or large binary diff may be embedded in or published with this project.
 
 Before claiming autonomous unpacking, an implementation should:
 
@@ -49,6 +57,19 @@ Before claiming autonomous unpacking, an implementation should:
 4. Reconstruct a working PE32 x86 image **without** embedding copyrighted reference bytes.
 5. Compare the output against the locally held reference as a research oracle, including section hashes and import behavior, then test the game in Wine/Windows.
 6. Only then expose an automated restore-safe `unpack` path.
+
+## Reproducible, read-only probe
+
+The Rust CLI provides a diagnostic mode that never writes to the input files:
+
+```powershell
+.\\crimson-patcher.exe probe --exe CRIMSON.EXE --icd CRIMSON.ICD
+.\\crimson-patcher.exe probe --exe CRIMSON.EXE --icd CRIMSON.ICD --dplayerx DPLAYERX.DLL
+```
+
+An optional `--reference C:\\path\\to\\unpacked.exe` reports section-level changed byte counts against an already verified local widescreen executable (without bundling or redistributing it). The probe prints the `DECRPE` loader offset, the 16 following bytes **as unverified key material**, and each ICD section's raw range and byte entropy.
+
+A simple TEA decryption experiment using those 16 bytes as the complete key did **not** recover the first 8 bytes of the previously supplied unpacked code (`ICD offset 0x1000`). This negative result is consistent with the documented 1.50.20 additional layer, but does **not** by itself determine the correct key derivation.
 
 ## Current implementation
 
