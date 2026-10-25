@@ -558,6 +558,22 @@ fn run() -> Result<(),String> {
     println!("Section-only research data. This is NOT a decrypted game executable.");
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn word_reader_is_little_endian_and_bounds_checked() {
+        assert_eq!(read_word(&[0x78,0x56,0x34,0x12],0).unwrap(),0x12345678);
+        assert!(read_word(&[0,1,2],0).is_err());
+        assert!(read_word(&[0,1,2,3],usize::MAX).is_err());
+    }
+    #[test]
+    fn entropy_constant_and_binary_distribution() {
+        assert_eq!(entropy(&[0u8;64]),0.0);
+        assert!((entropy(&[0u8,1u8])-1.0).abs()<1e-12);
+    }
+}
+
 fn main(){
     if let Err(e)=run() {eprintln!("ERROR: {e}");std::process::exit(1);}
 }
