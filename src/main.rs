@@ -21,6 +21,20 @@ const EXE_NORMALIZED_SHA: &str = "5578a15ce072d09655be43419829a7530ed6c71fa5a877
 const PROTECTED_102_SHA: &str = "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736";
 const ICD_102_SHA: &str = "0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b";
 const ICD_102_LEN: usize = 2_580_578;
+// The exact checked 1.0.2.0 originals identify the DRM itself as SafeDisc 1.50.20.
+const SD_15020_MAGIC: &[u8] = b"BoG_ *90.0&!!  Yy>";
+const SD_LOADER_MAGIC: usize = 0x29250;
+const SD_ICD_MAGIC: usize = 0x0FD4;
+fn checked_safedisc_version(data: &[u8], magic: usize, version_at: usize) -> Result<()> {
+    if data.get(magic..magic+SD_15020_MAGIC.len()) != Some(SD_15020_MAGIC) {
+        return Err("SafeDisc version marker mismatch".into());
+    }
+    let numbers=[read_u32(data,version_at)?,read_u32(data,version_at+4)?,read_u32(data,version_at+8)?];
+    if numbers!=[1,50,20] {
+        return Err(format!("unsupported SafeDisc protection version {}.{}.{}",numbers[0],numbers[1],numbers[2]));
+    }
+    Ok(())
+}
 const ROF_ORIGINAL_SHA: &str = "1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a";
 const ROF_RVA: u32 = 0x231E;
 const ROF_ORIGINAL: [u8; 8] = [0x80, 0x3E, 0x20, 0x7D, 0x01, 0x46, 0x89, 0x37];
@@ -254,14 +268,14 @@ fn discover_rof(exe: &Path) -> Option<PathBuf> {
 }
 #[derive(Default)]
 struct Options {
-    command:String,exe:Option<PathBuf>,icd:Option<PathBuf>,reference:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
+    command:String,exe:Option<PathBuf>,icd:Option<PathBuf>,reference:Option<PathBuf>,dplayerx:Option<PathBuf>,width:Option<u32>,height:Option<u32>,fov:Option<f64>,
     unpacked:Option<PathBuf>,allow_replacement:bool,wine:Option<bool>,dll:Option<PathBuf>,
 }
 fn help() {
     println!("Crimson Skies patcher (Rust, no crates)\n\
 Usage:\n\
   crimson-patcher status --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--dll roffile.dll] [--wine]\n\
-  crimson-patcher probe --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--reference LOCAL_UNPACKED_EXE]\n\
+  crimson-patcher probe --exe CRIMSON.EXE [--icd CRIMSON.ICD] [--reference LOCAL_UNPACKED_EXE] [--dplayerx DPLAYERX.DLL]\n\
   crimson-patcher apply --exe CRIMSON.EXE [--icd CRIMSON.ICD] --width 1920 --height 1080 [--fov 105]\n\
       [--unpacked LOCAL_WIDESCREEN_EXE --accept-local-replacement] [--wine|--no-wine] [--dll PATH]\n\
   crimson-patcher restore --exe CRIMSON.EXE [--wine|--no-wine] [--dll PATH]\n\
@@ -280,6 +294,7 @@ fn parse_args() -> Result<Options> {
             "--exe"=>args.exe=Some(PathBuf::from(argv.next().ok_or("missing --exe value")?)),
             "--icd"=>args.icd=Some(PathBuf::from(argv.next().ok_or("missing --icd value")?)),
             "--reference"=>args.reference=Some(PathBuf::from(argv.next().ok_or("missing --reference value")?)),
+            "--dplayerx"=>args.dplayerx=Some(PathBuf::from(argv.next().ok_or("missing --dplayerx value")?)),
             "--width"=>args.width=Some(argv.next().ok_or("missing width")?.parse().map_err(|_|"invalid width")?),
             "--height"=>args.height=Some(argv.next().ok_or("missing height")?.parse().map_err(|_|"invalid height")?),
             "--fov"=>args.fov=Some(argv.next().ok_or("missing fov")?.parse().map_err(|_|"invalid FOV")?),
@@ -293,7 +308,7 @@ fn parse_args() -> Result<Options> {
         }
     }
     if args.exe.is_none() {return Err("--exe is mandatory".into());}
-    if args.reference.is_some() && args.command!="probe" {return Err("--reference is only valid for probe".into());}
+    if (args.reference.is_some() || args.dplayerx.is_some()) && args.command!="probe" {return Err("--reference/--dplayerx are only valid for probe".into());}
     if args.command=="probe" && (args.dll.is_some() || args.width.is_some() || args.height.is_some() || args.fov.is_some() || args.unpacked.is_some() || args.allow_replacement || args.wine.is_some()) {
         return Err("probe accepts only --exe, --icd and optional --reference".into());
     }
@@ -323,7 +338,8 @@ fn check_original_icd(path: &Path) -> Result<()> {
             ICD_102_SHA
         ));
     }
-    println!("ICD: original SafeDisc 1.0.2.0 verified (SHA-256 {}) at {}", ICD_102_SHA, path.display());
+    checked_safedisc_version(&data, SD_ICD_MAGIC, SD_ICD_MAGIC+0x20)?;
+    println!("ICD: game 1.0.2.0; SafeDisc 1.50.20 verified (SHA-256 {}) at {}", ICD_102_SHA, path.display());
     Ok(())
 }
 
@@ -380,11 +396,21 @@ fn byte_entropy(data: &[u8]) -> f64 {
         -p*p.log2()
     }).sum()
 }
-fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>) -> Result<()> {
+fn research_probe(exe: &[u8], icd: &[u8], reference: Option<&[u8]>, dplayerx: Option<&[u8]>) -> Result<()> {
     if classify_exe(exe)!=ExeKind::Protected || icd.len()!=ICD_102_LEN || sha256(icd)!=ICD_102_SHA {
         return Err("probe requires the verified original SafeDisc 1.0.2.0 EXE and ICD".into());
     }
-    println!("SafeDisc 1.0.2.0 research probe (read only)");
+    checked_safedisc_version(exe, SD_LOADER_MAGIC, SD_LOADER_MAGIC+0x14)?;
+    checked_safedisc_version(icd, SD_ICD_MAGIC, SD_ICD_MAGIC+0x20)?;
+    println!("Crimson Skies 1.0.2.0 — SafeDisc 1.50.20 research probe (read only)");
+    println!("NOTE: SafeDisc 1.50.20 uses an additional ICD cipher layer involving dplayerx.dll.");
+    if let Some(dll)=dplayerx {
+        valid_pe(dll)?;
+        println!("Provided local dplayerx.dll: {} bytes; SHA-256: {}",dll.len(),sha256(dll));
+        println!("The DLL is inspected only; no code is executed or copied into an output.");
+    } else {
+        println!("dplayerx.dll not provided: its SafeDisc-specific decoder still needs to be analyzed.");
+    }
     println!("Protected loader SHA-256: {}",sha256(exe));
     println!("ICD SHA-256: {}",sha256(icd));
     println!("ICD byte length: {} ({} bytes beyond unpacked widescreen reference size)",icd.len(),icd.len().saturating_sub(EXE_LEN));
@@ -449,7 +475,8 @@ fn run(options: Options) -> Result<()> {
         let icd_path=options.icd.clone().or_else(||exe.parent().and_then(|parent|find_ci_child(parent,"CRIMSON.ICD"))).ok_or("probe requires CRIMSON.ICD")?;
         let icd_data=inspect_file(&icd_path)?;
         let reference=match &options.reference {Some(path)=>Some(inspect_file(path)?),None=>None};
-        return research_probe(&before,&icd_data,reference.as_deref());
+        let dplayerx=match &options.dplayerx {Some(path)=>Some(inspect_file(path)?),None=>None};
+        return research_probe(&before,&icd_data,reference.as_deref(),dplayerx.as_deref());
     }
     let exe_backup=backup_path(exe,false);
     let backup=optional_file(&exe_backup)?;
@@ -542,6 +569,17 @@ mod tests {
     #[test] fn fov_4x3() {assert!((horizontal_fov(80.0,1024,768)-80.0).abs()<1e-10);}
     #[test] fn fov_16x9() {assert!((horizontal_fov(80.0,1920,1080)-96.418).abs()<0.03);}
     #[test] fn dimensions() {assert!(geometry(1920,1080).is_ok());assert!(geometry(1,0).is_err());}
+    #[test] fn safedisc_metadata_signature() {
+        assert_eq!(SD_15020_MAGIC, b"BoG_ *90.0&!!  Yy>");
+        let mut buf=vec![0u8;64];
+        buf[0..18].copy_from_slice(SD_15020_MAGIC);
+        buf[32..36].copy_from_slice(&1u32.to_le_bytes());
+        buf[36..40].copy_from_slice(&50u32.to_le_bytes());
+        buf[40..44].copy_from_slice(&20u32.to_le_bytes());
+        assert!(checked_safedisc_version(&buf,0,32).is_ok());
+        buf[40..44].copy_from_slice(&21u32.to_le_bytes());
+        assert!(checked_safedisc_version(&buf,0,32).is_err());
+    }
     #[test] fn probe_entropy_and_sections() {
         assert_eq!(byte_entropy(&[0u8;64]),0.0);
         assert!((byte_entropy(&[0u8,1u8])-1.0).abs()<1e-10);
