@@ -87,6 +87,25 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-26: Successful ephemeral Secdrv name test and next comparison
+
+The user ran `--test-secdrv-alias` in an isolated Wine Staging 11.17 prefix and confirmed `DefineDosDeviceW` successfully creates a temporary mapping from `Secdrv` to `\Device\Null`; a subsequent `CreateFileW(\\.\Secdrv)` opens it successfully. The alias-only test did NOT execute the protected DLL, respond to a SafeDisc IOCTL, modify any original game files, or implement an ICD decoder.
+
+**New opt-in test:** `--load-with-secdrv-alias` creates the same temporary name **before** attempting `LoadLibraryW` and removes it once loading returns. The tool verifies the exact DLL SHA-256, refuses any existing `Secdrv` namespace entry, requires `--trace-exceptions`, and continues reporting first-chance access violations. It does not emulate `secdrv.sys`: once the missing name is resolved, any driver IOCTL will still lack real protocol support.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all,+file,+loaddll \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --load-with-secdrv-alias \
+  --output ./dplayerx-alias-memory.bin > safedisc-alias.log 2>&1
+
+grep -Ei 'Secdrv|NtDeviceIoControlFile|Vectored observer|AV #|ERROR:|alias' safedisc-alias.log | tail -n 90
+```
+
+**Interpret carefully:** a successful `CreateFileW` from the DLL followed by a failed `NtDeviceIoControlFile` would confirm reaching an unimplemented kernel-driver protocol. A persistent 998 failure without IOCTLs means the alias is insufficient to fix initialization. Even successful `LoadLibraryW` would not establish a working ICD decryptor.
+
+**Use only in an expendable Wine prefix.** This test executes the DLL and may hang, crash or terminate the process; an abrupt exit can prevent alias cleanup. No original `secdrv.sys` kernel driver should be installed; no private binary or memory capture should be committed to GitHub.
+
 ## Verified Wine Secdrv I/O failures: 1,902 sequential attempts (2026-10-26)
 
 The user supplied the original **26,436-line** `WINEDEBUG=-all,+file,+loaddll` log (about 2.97 MB) of the standalone DLL research probe under Wine Staging 11.17. We reviewed the **full file**, not just grep snippets.
