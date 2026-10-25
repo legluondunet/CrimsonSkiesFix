@@ -21,6 +21,7 @@ const TXT_RAW_SIZE: usize = 0x7800;
 #[link(name="kernel32")]
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetLastError() -> u32;
 }
@@ -84,17 +85,22 @@ fn run() -> Result<(),String> {
     }
     let mut args=env::args_os().skip(1);
     let (mut dll,mut output)=(None::<PathBuf>,None::<PathBuf>);
+    let mut map_only=false;
     while let Some(arg)=args.next() {
         if arg=="--dll" {dll=Some(args.next().ok_or("Missing --dll path")?.into());}
         else if arg=="--output" {output=Some(args.next().ok_or("Missing --output path")?.into());}
-        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll --output dplayerx-txt-memory.bin",arg));}
+        else if arg=="--map-only" {map_only=true;}
+        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin]",arg));}
     }
     let dll=dll.ok_or("--dll is required")?;
-    let output=output.ok_or("--output is required")?;
+    if map_only && output.is_some() {return Err("--map-only does not create an output; do not pass --output".into());}
+    if !map_only && output.is_none() {return Err("--output is required unless --map-only is set".into());}
     let canonical_dll=fs::canonicalize(&dll).map_err(|e|e.to_string())?;
     let meta=fs::symlink_metadata(&canonical_dll).map_err(|e|e.to_string())?;
     if !meta.is_file() || meta.file_type().is_symlink(){return Err("DLL must be a regular file".into());}
-    if fs::symlink_metadata(&output).is_ok() {return Err("Output exists; refusing to overwrite it".into());}
+    if let Some(ref output)=output {
+        if fs::symlink_metadata(output).is_ok() {return Err("Output exists; refusing to overwrite it".into());}
+    }
     let disk=fs::read(&canonical_dll).map_err(|e|e.to_string())?;
     if disk.len()!=DLL_SIZE || sha256(&disk)!=DLL_SHA256 {
         return Err("Unrecognized DPLAYERX.DLL: exact SHA-256 and length do not match verified SafeDisc 1.50.20 build".into());
@@ -104,12 +110,39 @@ fn run() -> Result<(),String> {
     let old=&disk[TXT_RAW_OFF..TXT_RAW_OFF+TXT_VSIZE];
     let mut wide:Vec<u16>=canonical_dll.as_os_str().encode_wide().collect();
     wide.push(0);
+    if map_only {
+        // DONT_RESOLVE_DLL_REFERENCES: map the PE image *without* resolving imports,
+        // executing TLS callbacks or running DllMain. Do NOT call any DLL export.
+        const DONT_RESOLVE_DLL_REFERENCES: u32=0x00000001;
+        println!("Mapping DLL image WITHOUT executing its initialization code.");
+        let image=unsafe {
+            let module=LoadLibraryExW(wide.as_ptr(),std::ptr::null_mut(),DONT_RESOLVE_DLL_REFERENCES);
+            if module.is_null() {
+                return Err(format!("LoadLibraryExW (map-only) failed: Windows error {}. Failure occurs even with DLL initialization disabled.",GetLastError()));
+            }
+            let bytes=std::slice::from_raw_parts((module as *const u8).add(TXT_RVA),TXT_VSIZE).to_vec();
+            let _=FreeLibrary(module);
+            bytes
+        };
+        let changes=old.iter().zip(image.iter()).filter(|(a,b)|a!=b).count();
+        println!("Verified DLL SHA-256: {}",DLL_SHA256);
+        println!("Map-only .txt RVA: 0x{:X}; bytes: {}",TXT_RVA,TXT_VSIZE);
+        println!("Disk entropy: {:.4} bits/byte",entropy(old));
+        println!("Mapped entropy: {:.4} bits/byte",entropy(&image));
+        println!("Mapped bytes different from raw disk: {} / {}",changes,TXT_VSIZE);
+        println!("Map-only SUCCESS: PE mapped without running the DLL. Earlier LoadLibraryW failure was in import resolution or initialization, not basic PE mapping.");
+        println!("Map-only may apply relocations; changed bytes are NOT evidence of decrypted code.");
+        println!("No snapshot written.");
+        return Ok(());
+    }
     eprintln!("WARNING: loading this game DRM DLL executes its initialization code.");
     eprintln!("Run ONLY the verified DLL in an isolated Wine prefix/test environment.");
     let image=unsafe {
         let module=LoadLibraryW(wide.as_ptr());
         if module.is_null() {
-            return Err(format!("LoadLibraryW failed: Windows error {}. DLL may require its original game loader.",GetLastError()));
+            let code=GetLastError();
+            let hint=if code==998 {" (ERROR_NOACCESS: invalid memory access during load; may involve DLL initialization)"} else {""};
+            return Err(format!("LoadLibraryW failed: Windows error {}{}. The module was not loaded; no snapshot written.",code,hint));
         }
         let bytes=std::slice::from_raw_parts((module as *const u8).add(TXT_RVA),TXT_VSIZE).to_vec();
         let _=FreeLibrary(module);
@@ -125,6 +158,7 @@ fn run() -> Result<(),String> {
         println!("Unchanged after LoadLibraryW. DLL may require the full game loader. No dump written.");
         return Ok(());
     }
+    let output=output.ok_or("--output required for full DLL loading")?;
     let mut f=OpenOptions::new().create_new(true).write(true).open(&output).map_err(|e|e.to_string())?;
     if let Err(e)=f.write_all(&image).and_then(|()|f.sync_all()) {
         drop(f);
