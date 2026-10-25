@@ -75,6 +75,10 @@ static STAGE_DONE:[AtomicUsize;2]=[const {AtomicUsize::new(0)};2];
 static STAGE_BASE:[AtomicUsize;2]=[const {AtomicUsize::new(0)};2];
 static CANDIDATE_SAMPLES:[AtomicUsize;16]=[const {AtomicUsize::new(0)};16];
 static CANDIDATE_OK:[AtomicUsize;4]=[const {AtomicUsize::new(0)};4];
+// Optional private research snapshots. Storage is allocated *before* registering
+// the exception observer, avoiding heap allocation in the SEH callback.
+static STAGE_DUMP_ADDR:AtomicUsize=AtomicUsize::new(0);
+static STAGE_DUMP_OK:[AtomicUsize;2]=[const {AtomicUsize::new(0)};2];
 
 unsafe fn sample_candidate_rvas(fault:*const c_void) {
     let mut mbi=std::mem::MaybeUninit::<MemoryBasicInformation>::uninit();
@@ -99,6 +103,15 @@ unsafe fn sample_candidate_rvas(fault:*const c_void) {
             CANDIDATE_SAMPLES[p].store(u32::from_le_bytes(snippet[q*4..q*4+4].try_into().unwrap()) as usize,Ordering::SeqCst);
         }
         CANDIDATE_OK[stage*2+k].store(1,Ordering::SeqCst);
+    }
+    let storage=STAGE_DUMP_ADDR.load(Ordering::SeqCst);
+    if storage!=0 {
+        let destination=(storage+stage*TXT_VSIZE) as *mut c_void;
+        let address=(base+TXT_RVA) as *const c_void;
+        let mut read=0usize;
+        if ReadProcessMemory(GetCurrentProcess(),address,destination,TXT_VSIZE,&mut read)!=0 && read==TXT_VSIZE {
+            STAGE_DUMP_OK[stage].store(1,Ordering::SeqCst);
+        }
     }
 }
 
@@ -270,6 +283,48 @@ fn relocation_analysis(disk: &[u8], mapped: &[u8], actual_base: u32) -> Result<(
     Ok((count,unexpected))
 }
 
+fn write_private_stage_files(prefix:&PathBuf, snapshots:&[u8], disk:&[u8]) -> Result<(),String> {
+    let first_ok=STAGE_DUMP_OK[0].load(Ordering::SeqCst)!=0;
+    let second_ok=STAGE_DUMP_OK[1].load(Ordering::SeqCst)!=0;
+    println!("Complete .txt stage captures: first .txt2 AV={}, first .txt AV={}",first_ok,second_ok);
+    let mut output_paths=Vec::new();
+    for stage in 0..2 {
+        if STAGE_DUMP_OK[stage].load(Ordering::SeqCst)==0 {continue;}
+        let mut name=prefix.as_os_str().to_os_string();
+        name.push(if stage==0{"-stage1.bin"}else{"-stage2.bin"});
+        let path=PathBuf::from(name);
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err(format!("Refusing to overwrite an existing stage capture: {}",path.display()));
+        }
+        output_paths.push((stage,path));
+    }
+    if first_ok && second_ok {
+        let a=&snapshots[..TXT_VSIZE];
+        let b=&snapshots[TXT_VSIZE..TXT_VSIZE*2];
+        let changes=a.iter().zip(b).filter(|(x,y)|x!=y).count();
+        println!("Stage 1 -> stage 2 .txt changed bytes: {} / {}",changes,TXT_VSIZE);
+    }
+    for (stage,path) in output_paths {
+        let snapshot=&snapshots[stage*TXT_VSIZE..(stage+1)*TXT_VSIZE];
+        let count=disk.iter().zip(snapshot).filter(|(a,b)|a!=b).count();
+        println!("Stage {} .txt entropy: {:.4}, changes vs disk (includes PE relocations): {} / {}",
+            stage+1,entropy(snapshot),count,TXT_VSIZE);
+        let mut file=OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
+        if let Err(e)=file.write_all(snapshot).and_then(|()|file.sync_all()) {
+            drop(file);
+            let _=fs::remove_file(&path);
+            return Err(format!("Stage {} file write failed: {e}",stage+1));
+        }
+        println!("Private research snapshot: {} ({} bytes; SHA-256 {})",
+            path.display(),snapshot.len(),sha256(snapshot));
+    }
+    if !first_ok && !second_ok {
+        println!("No stage snapshot available; no files written.");
+    }
+    println!("Stage snapshots may contain copyrighted executable code. DO NOT commit or distribute them.");
+    Ok(())
+}
+
 fn run() -> Result<(),String> {
     if cfg!(not(target_pointer_width="32")) {
         return Err("This helper must be built as a Windows x86 (32-bit) program".into());
@@ -278,15 +333,18 @@ fn run() -> Result<(),String> {
     let (mut dll,mut output)=(None::<PathBuf>,None::<PathBuf>);
     let mut map_only=false;
     let mut trace_exceptions=false;
+    let mut capture_stages=None::<PathBuf>;
     while let Some(arg)=args.next() {
         if arg=="--dll" {dll=Some(args.next().ok_or("Missing --dll path")?.into());}
         else if arg=="--output" {output=Some(args.next().ok_or("Missing --output path")?.into());}
         else if arg=="--map-only" {map_only=true;}
         else if arg=="--trace-exceptions" {trace_exceptions=true;}
-        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin [--trace-exceptions]]",arg));}
+        else if arg=="--capture-stages" {capture_stages=Some(args.next().ok_or("Missing --capture-stages prefix")?.into());}
+        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin [--trace-exceptions [--capture-stages PREFIX]]]",arg));}
     }
     let dll=dll.ok_or("--dll is required")?;
     if map_only && trace_exceptions {return Err("--trace-exceptions requires normal DLL initialization, not --map-only".into());}
+    if capture_stages.is_some() && !trace_exceptions {return Err("--capture-stages requires --trace-exceptions".into());}
     if map_only && output.is_some() {return Err("--map-only does not create an output; do not pass --output".into());}
     if !map_only && output.is_none() {return Err("--output is required unless --map-only is set".into());}
     let canonical_dll=fs::canonicalize(&dll).map_err(|e|e.to_string())?;
@@ -341,6 +399,12 @@ fn run() -> Result<(),String> {
     }
     eprintln!("WARNING: loading this game DRM DLL executes its initialization code.");
     eprintln!("Run ONLY the verified DLL in an isolated Wine prefix/test environment.");
+    // Keep stage snapshot buffers at stable addresses while the first-chance
+    // callback is active; only read their contents after handler removal.
+    let mut snapshots=if capture_stages.is_some(){vec![0u8;2*TXT_VSIZE]}else{Vec::new()};
+    if !snapshots.is_empty() {
+        STAGE_DUMP_ADDR.store(snapshots.as_mut_ptr() as usize,Ordering::SeqCst);
+    }
     let (image,load_error)=unsafe {
         let observer=if trace_exceptions {
             let handle=AddVectoredExceptionHandler(1,Some(observe_exception));
@@ -358,7 +422,11 @@ fn run() -> Result<(),String> {
         if !observer.is_null(){let _=RemoveVectoredExceptionHandler(observer);}
         (bytes,error)
     };
+    STAGE_DUMP_ADDR.store(0,Ordering::SeqCst);
     if trace_exceptions {print_exception_trace();}
+    if let Some(ref prefix)=capture_stages {
+        write_private_stage_files(prefix,&snapshots,old)?;
+    }
     if let Some(code)=load_error {
         let hint=if code==998 {" (ERROR_NOACCESS: invalid memory access during load; may involve DLL initialization)"} else {""};
         return Err(format!("LoadLibraryW failed: Windows error {}{}. No memory snapshot written.",code,hint));
