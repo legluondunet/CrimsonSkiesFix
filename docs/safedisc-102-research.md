@@ -87,6 +87,21 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-26: Why standalone DPLAYERX.DLL loading is likely insufficient
+
+**New direct evidence from the exact original user-owned PE, not inferred from the Wine error alone:**
+
+- The DLL's PE entry point is **RVA `0xFD20`**. At **RVA `0xFD81`** it contains a direct `CALL rel32` to **RVA `0x9770`** (the `_DllMain@12` export).
+- During DLL attach, code at **RVA `0x989F`** contains a direct `CALL rel32` to **RVA `0x7212`**, within the ciphered `.txt` section. This is **the same RVA as the ninth observed access violation**. This creates a concrete static connection from the startup path to our in-memory protected-code fault.
+- The DLL contains literal **`Secdrv`** at raw offset **`0x1D524`**, and **`\\\\.\\%s`** at raw offset **`0x1D52C`**. At **RVA `0xECC9`**, instructions push the preferred-base virtual addresses of these strings; the routine calls `wsprintfA`. Another instruction at **RVA `0xED09`** calls the `CreateFileA` import through the IAT. This code attempts to construct and open the SafeDisc driver device path `\\\\.\\Secdrv`; the exact runtime return value was **not** observed in our current DLL memory logs.
+- Independently, the SafeDiscShim maintainers found that **SafeDisc v1's `dplayerx.dll` can crash during DLL initialization without an emulated `secdrv` driver already ready**; for that compatibility shim, initialization had to happen before the DLL attach stage. See https://github.com/RibShark/SafeDiscShim/issues/17 (May 2024).
+
+**Interpretation:** The isolated `LoadLibraryW` test did not reproduce the original protected EXE/ICD/driver/CD environment. The ninth access violation and the partly transformed `.txt` section may be downstream of absent DRM prerequisites or intentionally opaque exception-driven code. A plausible x86 prologue in stage 2 does not suffice to assert that the two EAX modifier routines are decrypted and callable. Repeating isolated `LoadLibraryW` calls will not recover their correct logic unless the missing context is reconstructed.
+
+The offline research helper now verifies this direct-call chain, driver strings, and `CreateFileA` thunk against the exact hash-verified DLL without executing any DRM code. It **does not** install a kernel driver, patch the SafeDisc DLL, or redistribute original game code.
+
+**Technical direction:** rather than treating the incomplete stage-2 memory image as an unpacked DLL, investigate the required initialization conditions and derive the exact modifier transforms against independently checked ICD data. The two binary stage snapshots remain private and are not committed or released. This research change does not implement or claim a working automatic SafeDisc bypass.
+
 ## Verified full .txt stage captures: relocation-aware comparison (2026-10-26)
 
 The user supplied **both 30,321-byte private snapshots** and their SHA-256 matched the helper's console output:
