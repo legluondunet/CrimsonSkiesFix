@@ -1,0 +1,28 @@
+name: Build and test Rust patcher
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test
+      - name: Build release
+        run: cargo build --release
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: crimson-patcher-${{ matrix.os }}
+          path: |
+            target/release/crimson-patcher
+            target/release/crimson-patcher.exe
+          if-no-files-found: error
