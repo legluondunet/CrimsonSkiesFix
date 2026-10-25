@@ -87,6 +87,30 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Wine +seh failure trace: module-local fault addresses
+
+The user recorded the Wine 11.17 `WINEDEBUG=-all,+seh,+loaddll` trace after `LoadLibraryW` returned 998. The native `dplayerx.dll` was loaded at **base `0x00930000`** (the trace shows `EBX=0x00930000`). The following locations are therefore *relative to this session's DLL load base*:
+
+| Fault EIP | RVA | PE section | File raw offset |
+| --- | --- | --- | --- |
+| `0x0094BCCD` | `0x1BCCD` | `.txt2` | `0x19ECD` |
+| `0x00937212` | `0x7212` | `.txt` | `0x6612` |
+
+Each failure was logged as **`0xC0000005` (`EXCEPTION_ACCESS_VIOLATION`)**. The second reported fault included a pointer of `0xF1563022`; this is not evidence of a valid file offset or decryption key.
+
+The trace also passes through native SEH handlers (notably `0x00940748`, RVA `0x10748` inside `.text`). It is plausible that some of these exceptions are part of deliberate copy-protection obfuscation, or that control flow has reached an incompatible/misdecoded path. **No single excerpt proves which**. These are not necessarily the *first* exceptions emitted during `LoadLibraryW`: the user supplied the *last 100 matching log lines*, so next analysis should inspect the **earliest** matching exception plus preceding load events.
+
+On-disk disassembly at `RVA 0x1BCCD` enters a byte sequence beginning `CD 01` (often disassembled as `INT 1`), close to opaque conditional branches; at `RVA 0x7212` the `.txt` region still has nearly maximal entropy. On-disk instructions **cannot be assumed to equal runtime instructions** if SafeDisc modifies code before a fault.
+
+To inspect the initial failure chain, retaining context and avoiding misleading final-repeat log lines:
+
+```bash
+grep -En -m 20 'dispatch_exception code=c0000005|loaddll:.*[dD][pP][lL][aA][yY][eE][rR][xX]|ERROR:' safedisc-load.log
+grep -B 12 -A 20 -m 1 'dispatch_exception code=c0000005' safedisc-load.log
+```
+
+**Relocation cross-check:** for the DLL image base `0x00930000` vs preferred `0x008E0000` (delta `0x00050000`), independently applying the exact **214** `IMAGE_REL_BASED_HIGHLOW` relocations inside `.txt` to its verified on-disk bytes gives **214 changed bytes**, exactly as reported in `--map-only`. These observations strongly support plain PE relocation and **no mapped-only decryption**. The extended helper computes the precise residual when run again.
+
 ## Follow-up: map-only succeeds; differences match relocation count
 
 The user ran `safedisc-memory-probe.exe --dll dplayerx.dll --map-only` under Wine Staging 11.17. Image mapping succeeded, and the helper reported **214 changed bytes over the 30,321-byte `.txt` virtual section**, with entropy dropping only **7.9808 → 7.9797**. No code was executed and no snapshot was created.
