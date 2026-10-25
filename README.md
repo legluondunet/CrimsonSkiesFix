@@ -94,6 +94,21 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 This adds a passive vectored-exception observer before the existing normal `LoadLibraryW` attempt. The latest version also samples 16 **in-memory** bytes at both documented decoder candidate RVAs (`0x65BE` and `0x6621`) during the first `.txt2` exception and the first `.txt` exception. Comparing these samples helps identify when the protection modifies its routines. The previous trace already proved that `RVA 0x7212` changes in memory in a way **not explained by relocations**. It logs the first 12 access-violation addresses and live instruction bytes without changing exception handling, execution registers, or original files. **Loading the DLL still executes its initialization and can fail/crash**, so use only the exact verified DLL in a throwaway Wine prefix. The output filename is required for the existing tool interface; with load error 998 **no memory snapshot is written**. Share the **console text**, not any potential proprietary binary snapshot.
 
+### Optional private SafeDisc two-stage code capture
+
+A verified Wine trace showed that the two candidate SafeDisc modifier RVAs, `0x65BE` and `0x6621`, change all 16 sampled bytes between the first exception in `.txt2` and the first exception in `.txt`, **without any PE relocations at those addresses**. This is an observed runtime transformation, **not proof that the original game has been decrypted**.
+
+For further **private** investigation, the standalone Windows x86 `safedisc-memory-probe.exe` can optionally capture the full 30,321-byte protected `.txt` section at those two moments:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --capture-stages ./safedisc-txt \
+  --output ./dplayerx-txt-trace.bin
+```
+
+The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
