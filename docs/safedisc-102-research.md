@@ -86,3 +86,26 @@ A simple TEA decryption experiment using those 16 bytes as the complete key did 
 The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CRIMSON.ICD` beside the protected loader, or accepts `--icd PATH`), and refuses a missing, corrupt or unknown ICD before modifying anything. With this pair, resolution/FOV modifications require the separately supplied recognized unpacked widescreen executable and explicit `--accept-local-replacement` consent. This is **local replacement, not SafeDisc removal from the provided pair**.
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
+
+## Experimental 32-bit in-memory DLL observer
+
+The Windows-only CI additionally builds a standalone **`safedisc-memory-probe.exe`** for **Windows x86**, because `dplayerx.dll` is 32-bit. It is opt-in and completely separate from the main 64-bit resolution patcher.
+
+After verifying the exact DLL SHA-256 **before** execution, this helper uses Windows `LoadLibraryW` to load the DLL in its own process, samples the mapped `.txt` code section at RVA `0x1000` after initialization, and prints:
+
+- On-disk vs loaded section entropy (bits per byte).
+- Number of changed bytes between file-backed `.txt` and loaded `.txt`.
+- If bytes differ, the SHA-256 of an optional private, create-only snapshot file.
+
+This does **not** dump or publish game code automatically, modify EXE/ICD/DLL originals, or decode the ICD. **Important safety caveat:** calling `LoadLibraryW` executes untrusted game DRM DLL initialization code and can crash, fail, exit, or have side effects unrelated to the input files. Only the exact user-owned DLL is accepted; run from an *isolated Wine prefix and expendable directory*. An unchanged `.txt` or failed load indicates DLL initialization was insufficient without the SafeDisc loader, not that the files are invalid. The snapshot contains proprietary code; **do not commit it to GitHub**.
+
+Example under a separate Wine prefix (after copying the user-owned `dplayerx.dll` and downloaded helper to an expendable directory):
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" wineboot -u
+WINEPREFIX="$HOME/.wine-crimson-research" wine ./safedisc-memory-probe.exe \
+    --dll ./dplayerx.dll --output ./dplayerx-txt-memory.bin
+```
+
+Treat this as an experiment: it has not yet been validated on Wine with the original DLL. A successful section snapshot is **not** a validated SafeDisc decryption routine.
+
