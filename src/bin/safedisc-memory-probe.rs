@@ -26,11 +26,25 @@ extern "system" {
     fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetLastError() -> u32;
     fn GetCurrentProcess() -> *mut c_void;
+    fn VirtualQuery(addr: *const c_void, info: *mut MemoryBasicInformation, length: usize) -> usize;
     fn ReadProcessMemory(process: *mut c_void, addr: *const c_void,
         destination: *mut c_void, size: usize, read: *mut usize) -> i32;
     fn AddVectoredExceptionHandler(first: u32,
         callback: Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>) -> *mut c_void;
     fn RemoveVectoredExceptionHandler(handle: *mut c_void) -> u32;
+}
+
+// x86 Windows MEMORY_BASIC_INFORMATION, used only to find the loaded image base.
+// VirtualQuery does not execute code in the protected DLL.
+#[repr(C)]
+struct MemoryBasicInformation {
+    base_address:*mut c_void,
+    allocation_base:*mut c_void,
+    allocation_protect:u32,
+    region_size:usize,
+    state:u32,
+    protect:u32,
+    kind:u32,
 }
 
 // Read-only exception instrumentation: records the first few observed access
@@ -53,6 +67,41 @@ static READ_TARGETS:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MA
 static SNAP_LO:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
 static SNAP_HI:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
 static SNAP_LEN:[AtomicUsize;MAX_EXCEPTIONS]=[const {AtomicUsize::new(0)};MAX_EXCEPTIONS];
+// Sample both documented candidate decoder RVAs once at the first .txt2 AV
+// and once at the first .txt AV. If a protection stage transformed the code,
+// a changed candidate sample is direct observable evidence.
+const CANDIDATES:[usize;2]=[0x65BE,0x6621];
+static STAGE_DONE:[AtomicUsize;2]=[const {AtomicUsize::new(0)};2];
+static STAGE_BASE:[AtomicUsize;2]=[const {AtomicUsize::new(0)};2];
+static CANDIDATE_SAMPLES:[AtomicUsize;16]=[const {AtomicUsize::new(0)};16];
+static CANDIDATE_OK:[AtomicUsize;4]=[const {AtomicUsize::new(0)};4];
+
+unsafe fn sample_candidate_rvas(fault:*const c_void) {
+    let mut mbi=std::mem::MaybeUninit::<MemoryBasicInformation>::uninit();
+    if VirtualQuery(fault,mbi.as_mut_ptr(),std::mem::size_of::<MemoryBasicInformation>())==0{return;}
+    let info=mbi.assume_init();
+    let base=info.allocation_base as usize;
+    if base==0 || (fault as usize)<base {return;}
+    let rva=(fault as usize)-base;
+    // No samples are taken in memory unrelated to this game's DLL.
+    let stage=if (0x18000..0x1D497).contains(&rva){0}
+       else if (0x1000..0x8671).contains(&rva){1}
+       else{return;};
+    if STAGE_DONE[stage].swap(1,Ordering::SeqCst)!=0{return;}
+    STAGE_BASE[stage].store(base,Ordering::SeqCst);
+    for (k,rva) in CANDIDATES.iter().enumerate() {
+        let mut snippet=[0u8;16];
+        let mut read=0usize;
+        let addr=(base+*rva) as *const c_void;
+        if ReadProcessMemory(GetCurrentProcess(),addr,snippet.as_mut_ptr().cast::<c_void>(),16,&mut read)==0 || read!=16 {continue;}
+        for q in 0..4 {
+            let p=(stage*2+k)*4+q;
+            CANDIDATE_SAMPLES[p].store(u32::from_le_bytes(snippet[q*4..q*4+4].try_into().unwrap()) as usize,Ordering::SeqCst);
+        }
+        CANDIDATE_OK[stage*2+k].store(1,Ordering::SeqCst);
+    }
+}
+
 
 unsafe extern "system" fn observe_exception(info:*mut ExceptionPointers)->i32 {
     // EXCEPTION_CONTINUE_SEARCH: observe only. Leave the SEH flow unchanged.
@@ -74,6 +123,7 @@ unsafe extern "system" fn observe_exception(info:*mut ExceptionPointers)->i32 {
         SNAP_HI[index].store(u32::from_le_bytes(snippet[4..8].try_into().unwrap()) as usize,Ordering::SeqCst);
         SNAP_LEN[index].store(read,Ordering::SeqCst);
     }
+    sample_candidate_rvas(record.address);
     0
 }
 fn print_exception_trace() {
@@ -94,7 +144,28 @@ fn print_exception_trace() {
                 i+1,ip,target);
         }
     }
-    println!("The observed live bytes are diagnostic data, NOT proof of a working decoder.");
+    println!("Candidate modifier instructions sampled at first .txt2 vs first .txt access violation:");
+    for stage in 0..2 {
+        let label=if stage==0{"first .txt2 AV"}else{"first .txt AV"};
+        if STAGE_DONE[stage].load(Ordering::SeqCst)==0 {
+            println!("  {}: not observed",label);
+            continue;
+        }
+        println!("  {}: DLL base 0x{:08X}",label,STAGE_BASE[stage].load(Ordering::SeqCst));
+        for (k,rva) in CANDIDATES.iter().enumerate() {
+            if CANDIDATE_OK[stage*2+k].load(Ordering::SeqCst)==0 {
+                println!("    RVA 0x{:04X}: unavailable",rva);
+                continue;
+            }
+            let mut hex=String::new();
+            for q in 0..4 {
+                let word=CANDIDATE_SAMPLES[(stage*2+k)*4+q].load(Ordering::SeqCst) as u32;
+                for b in word.to_le_bytes(){hex.push_str(&format!("{:02X}",b));}
+            }
+            println!("    RVA 0x{:04X}: {}",rva,hex);
+        }
+    }
+    println!("These candidate bytes describe two runtime stages; changes alone do NOT prove valid decryption.");
 }
 
 fn sha256(input: &[u8]) -> String {
