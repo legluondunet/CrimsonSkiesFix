@@ -87,6 +87,32 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Next step: identify whether Secdrv device I/O precedes the DLL fault
+
+The relocation-aware offline stage analyzer now passes under **Wine Staging 11.17** using the exact protected DLL and both user-owned snapshots:
+
+- Stage 1 unexpected bytes after relocations: **0**.
+- Stage 1 → 2 differences: **29,164 / 30,321** (96.18%), all **outside** relocated words.
+- Both documented EAX modifier candidate RVAs change **16/16** bytes.
+- Static protected DLL startup calls and embedded `Secdrv` device path check out.
+
+This validates *a code transformation*, but not successful decryption. The sampled candidate 256-byte windows still have high, cipher-like entropy (about **7.2 bits/byte**) and implausible disassembly. Even the first plausible x86 prologue in stage 2 quickly enters implausible/privileged instructions.
+
+The high-value next question is **whether `dplayerx.dll` actually attempts to open `\\\\.\\Secdrv` before the observed failure**, as distinct from merely containing a code path that opens that device. A passive Wine **`+file,+loaddll`** trace is the safest next test:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all,+file,+loaddll \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+    --trace-exceptions --output ./dplayerx-filecheck.bin \
+  > safedisc-file.log 2>&1
+
+grep -Ein -C 2 'secdrv|createfile|ntcreatefile|error 998' safedisc-file.log | tail -n 100
+```
+
+An occurrence of `Secdrv` from the **file open trace**, together with its return code, supports diagnosing missing driver emulation. The **absence** of a logged `Secdrv` access does not strictly rule it out (Wine trace coverage can vary, and other names/paths may be used). We must not infer from static strings alone that a missing driver caused exception 998.
+
+**Avoid installing original `secdrv.sys` kernel drivers or copying proprietary DLL code into the repo.** The GPL-licensed SafeDiscShim is a useful technical reference for a userspace emulation layer on Windows, but its Windows process-injection integration is **not** a drop-in Wine fix, and it does not recover or implement the game-specific ICD decryption automatically. For compatibility background see https://github.com/RibShark/SafeDiscShim/issues/17 and https://github.com/RibShark/SafeDiscShim/blob/main/src/hooks.cpp .
+
 ## 2026-10-26: Why standalone DPLAYERX.DLL loading is likely insufficient
 
 **New direct evidence from the exact original user-owned PE, not inferred from the Wine error alone:**
