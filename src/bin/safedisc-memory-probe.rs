@@ -79,6 +79,55 @@ fn entropy(bytes: &[u8]) -> f64 {
     }).sum()
 }
 
+// The exact DLL has a .reloc directory at RVA 0x27000, raw file offset
+// 0x20A00 (size 0xE64); the .txt section contains 214 IMAGE_REL_BASED_HIGHLOW
+// entries. Apply them to the raw section to distinguish relocations from
+// actual modifications to the protected code.
+fn relocation_analysis(disk: &[u8], mapped: &[u8], actual_base: u32) -> Result<(usize,usize),String> {
+    const RELOC_RAW:usize=0x20A00;
+    const RELOC_LEN:usize=0x0E64;
+    const PREFERRED_BASE:u32=0x008E0000;
+    if mapped.len()!=TXT_VSIZE {return Err("Unexpected mapped section length".into());}
+    let end=RELOC_RAW+RELOC_LEN;
+    if disk.get(RELOC_RAW..end).is_none() {return Err("Missing verified relocation table".into());}
+    let read_u16=|p:usize| -> Result<u16,String> {
+        Ok(u16::from_le_bytes(disk.get(p..p+2).ok_or("Truncated relocation entry")?
+            .try_into().map_err(|_|"Bad relocation entry")?))
+    };
+    let read_u32=|p:usize| -> Result<u32,String> {
+        Ok(u32::from_le_bytes(disk.get(p..p+4).ok_or("Truncated relocation header")?
+            .try_into().map_err(|_|"Bad relocation header")?))
+    };
+    let delta=actual_base.wrapping_sub(PREFERRED_BASE);
+    let mut expected=disk[TXT_RAW_OFF..TXT_RAW_OFF+TXT_VSIZE].to_vec();
+    let mut cursor=RELOC_RAW;
+    let mut count=0usize;
+    while cursor<end {
+        let page=read_u32(cursor)? as usize;
+        let size=read_u32(cursor+4)? as usize;
+        if size<8 || size%2!=0 || size>end-cursor {
+            return Err("Malformed verified PE relocation block".into());
+        }
+        for entry in (cursor+8..cursor+size).step_by(2) {
+            let encoded=read_u16(entry)? as usize;
+            let kind=encoded>>12;
+            if kind==0 {continue;}
+            if kind!=3 {return Err("Unsupported relocation type in verified DLL".into());}
+            let rva=page+(encoded&0xFFF);
+            if rva>=TXT_RVA && rva<TXT_RVA+TXT_VSIZE {
+                let p=rva-TXT_RVA;
+                if p+4>expected.len() {return Err("Relocation overruns .txt".into());}
+                let old=u32::from_le_bytes(expected[p..p+4].try_into().unwrap());
+                expected[p..p+4].copy_from_slice(&old.wrapping_add(delta).to_le_bytes());
+                count+=1;
+            }
+        }
+        cursor+=size;
+    }
+    let unexpected=mapped.iter().zip(expected.iter()).filter(|(a,b)|a!=b).count();
+    Ok((count,unexpected))
+}
+
 fn run() -> Result<(),String> {
     if cfg!(not(target_pointer_width="32")) {
         return Err("This helper must be built as a Windows x86 (32-bit) program".into());
@@ -115,14 +164,15 @@ fn run() -> Result<(),String> {
         // executing TLS callbacks or running DllMain. Do NOT call any DLL export.
         const DONT_RESOLVE_DLL_REFERENCES: u32=0x00000001;
         println!("Mapping DLL image WITHOUT executing its initialization code.");
-        let image=unsafe {
+        let (image,mapped_base)=unsafe {
             let module=LoadLibraryExW(wide.as_ptr(),std::ptr::null_mut(),DONT_RESOLVE_DLL_REFERENCES);
             if module.is_null() {
                 return Err(format!("LoadLibraryExW (map-only) failed: Windows error {}. Failure occurs even with DLL initialization disabled.",GetLastError()));
             }
             let bytes=std::slice::from_raw_parts((module as *const u8).add(TXT_RVA),TXT_VSIZE).to_vec();
+            let base=module as usize as u32;
             let _=FreeLibrary(module);
-            bytes
+            (bytes,base)
         };
         let changes=old.iter().zip(image.iter()).filter(|(a,b)|a!=b).count();
         println!("Verified DLL SHA-256: {}",DLL_SHA256);
@@ -130,8 +180,17 @@ fn run() -> Result<(),String> {
         println!("Disk entropy: {:.4} bits/byte",entropy(old));
         println!("Mapped entropy: {:.4} bits/byte",entropy(&image));
         println!("Mapped bytes different from raw disk: {} / {}",changes,TXT_VSIZE);
-        println!("Map-only SUCCESS: PE mapped without running the DLL. Earlier LoadLibraryW failure was in import resolution or initialization, not basic PE mapping.");
-        println!("Map-only may apply relocations; changed bytes are NOT evidence of decrypted code.");
+        let (relocations,unexplained)=relocation_analysis(&disk,&image,mapped_base)?;
+        println!("DLL loaded at base address: 0x{:08X}",mapped_base);
+        println!(".txt HIGHLOW relocation entries: {}",relocations);
+        println!("Bytes remaining different after applying exact PE relocations: {}",unexplained);
+        println!("Map-only SUCCESS: PE mapped without running the DLL.");
+        if unexplained==0 {
+            println!("All mapped differences are fully explained by PE relocations. No .txt decryption observed.");
+        } else {
+            println!("Some mapped bytes differ beyond PE relocations; more analysis is needed.");
+        }
+        println!("Normal LoadLibraryW error 998 arose during a later stage (imports or initialization); the specific fault has not been localized.");
         println!("No snapshot written.");
         return Ok(());
     }
