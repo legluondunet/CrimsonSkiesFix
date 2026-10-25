@@ -6,3 +6,11 @@ license = "GPL-3.0-or-later"
 description = "Conservative, reversible Crimson Skies EXE and Wine ROF compatibility patcher"
 
 [dependencies]
+
+[features]
+research = []
+
+[[bin]]
+name = "safedisc-memory-probe"
+path = "src/bin/safedisc-memory-probe.rs"
+required-features = ["research"]
