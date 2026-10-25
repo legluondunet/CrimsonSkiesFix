@@ -92,7 +92,7 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
   --trace-exceptions --output ./dplayerx-txt-trace.bin
 ```
 
-This adds a passive vectored-exception observer before the existing normal `LoadLibraryW` attempt. It logs the first 12 access-violation addresses and live instruction bytes without changing exception handling, execution registers, or original files. **Loading the DLL still executes its initialization and can fail/crash**, so use only the exact verified DLL in a throwaway Wine prefix. The output filename is required for the existing tool interface; with load error 998 **no memory snapshot is written**. Share the **console text**, not any potential proprietary binary snapshot.
+This adds a passive vectored-exception observer before the existing normal `LoadLibraryW` attempt. The latest version also samples 16 **in-memory** bytes at both documented decoder candidate RVAs (`0x65BE` and `0x6621`) during the first `.txt2` exception and the first `.txt` exception. Comparing these samples helps identify when the protection modifies its routines. The previous trace already proved that `RVA 0x7212` changes in memory in a way **not explained by relocations**. It logs the first 12 access-violation addresses and live instruction bytes without changing exception handling, execution registers, or original files. **Loading the DLL still executes its initialization and can fail/crash**, so use only the exact verified DLL in a throwaway Wine prefix. The output filename is required for the existing tool interface; with load error 998 **no memory snapshot is written**. Share the **console text**, not any potential proprietary binary snapshot.
 
 ### Check your file's SHA-256
 
