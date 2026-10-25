@@ -34,6 +34,29 @@ The widescreen family is recognized **after normalizing only the four modifiable
 
 **When patching the protected 1.02 release, the EXE/ICD pair is required.** Place an unmodified `CRIMSON.ICD` beside the recognized SafeDisc `CRIMSON.EXE`, or pass `--icd PATH`. The SHA-256 of **both** files is checked before any replacement. **The program cannot decrypt the ICD by itself yet.** A recognized unpacked EXE and protected EXE are not necessarily equivalent retail builds. See [SafeDisc 1.02 research notes](docs/safedisc-102-research.md). Keep backups and test the game.
 
+### Read-only SafeDisc research probe
+
+The **experimental `probe` command** verifies the protected **1.0.2.0 EXE + ICD** pair, locates the loader's `DECRPE` marker, and lists ICD PE section sizes and entropy **without modifying either file**. You can also provide a locally owned, verified unpacked widescreen EXE as a reference to report the percentage of different bytes in each section. The reference is used only for **comparison**, never copied or published.
+
+Windows PowerShell:
+
+```powershell
+.\crimson-patcher.exe probe `
+  --exe "C:\Games\Crimson Skies\CRIMSON.EXE" `
+  --icd "C:\Games\Crimson Skies\CRIMSON.ICD"
+```
+
+Optional reference comparison:
+
+```powershell
+.\crimson-patcher.exe probe `
+  --exe "C:\Games\Crimson Skies\CRIMSON.EXE" `
+  --icd "C:\Games\Crimson Skies\CRIMSON.ICD" `
+  --reference "C:\Backups\Crimson Skies\Unpacked\CRIMSON.EXE"
+```
+
+This is an **analysis command, not a decryption command**. The `DECRPE` bytes have not yielded a validated TEA key. The automatic unpacker remains unimplemented and no proprietary game bytes are included in the codebase. See [research notes](docs/safedisc-102-research.md).
+
 ### Check your file's SHA-256
 
 Windows PowerShell:
