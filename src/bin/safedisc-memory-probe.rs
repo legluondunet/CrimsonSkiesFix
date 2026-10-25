@@ -325,6 +325,98 @@ fn write_private_stage_files(prefix:&PathBuf, snapshots:&[u8], disk:&[u8]) -> Re
     Ok(())
 }
 
+
+fn read_word(bytes:&[u8],at:usize)->Result<u32,String>{
+    let raw=bytes.get(at..at.checked_add(4).ok_or("offset overflow")?).ok_or("truncated dword")?;
+    Ok(u32::from_le_bytes(raw.try_into().map_err(|_|"invalid dword")?))
+}
+/// Verified dplayerx.dll only: .reloc at RVA 0x27000 (raw 0x20A00).
+/// Return each .txt-relative HIGHLOW relocation index.
+fn txt_relocation_indices(dll:&[u8])->Result<Vec<usize>,String>{
+    const OFF:usize=0x20A00;
+    const SIZE:usize=0x0E64;
+    let end=OFF+SIZE;
+    if dll.get(OFF..end).is_none(){return Err("Verified DLL .reloc is missing".into());}
+    let mut cursor=OFF;
+    let mut indices=Vec::new();
+    while cursor<end {
+        let page=read_word(dll,cursor)? as usize;
+        let size=read_word(dll,cursor+4)? as usize;
+        if size<8||size%2!=0||size>end-cursor {
+            return Err("Invalid protected DLL relocation block".into());
+        }
+        for pos in (cursor+8..cursor+size).step_by(2){
+            let code=u16::from_le_bytes(
+                dll.get(pos..pos+2).ok_or("Truncated relocation pair")?
+                    .try_into().map_err(|_|"Invalid relocation pair")?);
+            let kind=code>>12;
+            if kind==0{continue;}
+            if kind!=3{return Err("Unexpected PE relocation type".into());}
+            let rva=page+(code as usize&0x0FFF);
+            if (TXT_RVA..TXT_RVA+TXT_VSIZE).contains(&rva) {
+                let index=rva-TXT_RVA;
+                if index+4>TXT_VSIZE{return Err("Relocation beyond .txt virtual size".into());}
+                indices.push(index);
+            }
+        }
+        cursor+=size;
+    }
+    indices.sort_unstable();
+    if indices.len()!=214 {
+        return Err(format!("Unexpected number of .txt relocations: {}",indices.len()));
+    }
+    Ok(indices)
+}
+fn compare_saved_stages(dll:&[u8],one:&PathBuf,two:&PathBuf)->Result<(),String>{
+    let s1=fs::read(one).map_err(|e|format!("Cannot read stage 1: {e}"))?;
+    let s2=fs::read(two).map_err(|e|format!("Cannot read stage 2: {e}"))?;
+    if s1.len()!=TXT_VSIZE || s2.len()!=TXT_VSIZE {
+        return Err(format!("Stage files must each have exactly {} bytes",TXT_VSIZE));
+    }
+    let original=&dll[TXT_RAW_OFF..TXT_RAW_OFF+TXT_VSIZE];
+    let relocations=txt_relocation_indices(dll)?;
+    let first=relocations[0];
+    // The PE base delta is inferred from an actual relocation instead of
+    // assuming a particular Wine ASLR allocation base.
+    let delta=read_word(&s1,first)?.wrapping_sub(read_word(original,first)?);
+    let mut expected=original.to_vec();
+    let mut mask=vec![false;TXT_VSIZE];
+    for index in relocations.iter().copied(){
+        let relocated=read_word(&expected,index)?.wrapping_add(delta);
+        expected[index..index+4].copy_from_slice(&relocated.to_le_bytes());
+        for flag in &mut mask[index..index+4]{*flag=true;}
+    }
+    let unexplained=s1.iter().zip(&expected).filter(|(x,y)|x!=y).count();
+    println!("SafeDisc 1.50.20 offline .txt stage analysis; no DLL code executed.");
+    println!("Stage 1: {} bytes, SHA-256 {}",s1.len(),sha256(&s1));
+    println!("Stage 2: {} bytes, SHA-256 {}",s2.len(),sha256(&s2));
+    println!("Stage 1 entropy: {:.4} bits/byte",entropy(&s1));
+    println!("Stage 2 entropy: {:.4} bits/byte",entropy(&s2));
+    println!("PE relocation entries in .txt: {}",relocations.len());
+    println!("Inferred DLL relocation delta: 0x{:08X}",delta);
+    println!("Stage 1 bytes not explained by original DLL + PE relocations: {}",unexplained);
+    if unexplained!=0 {
+        return Err("Stage 1 is not an exact mapped copy of the verified original DLL; refusing further interpretation".into());
+    }
+    let different=s1.iter().zip(&s2).filter(|(a,b)|a!=b).count();
+    let outside=(0..TXT_VSIZE).filter(|&i|!mask[i]&&s1[i]!=s2[i]).count();
+    let inside=(0..TXT_VSIZE).filter(|&i|mask[i]&&s1[i]!=s2[i]).count();
+    println!("Stage 1 -> 2 changed bytes: {} / {} ({:.2}%)",different,TXT_VSIZE,100.0*different as f64/TXT_VSIZE as f64);
+    println!("Changes outside relocations: {}; within relocations: {}",outside,inside);
+    for rva in CANDIDATES {
+        let offset=rva-TXT_RVA;
+        let a=&s1[offset..offset+16];
+        let b=&s2[offset..offset+16];
+        let changed=a.iter().zip(b).filter(|(x,y)|x!=y).count();
+        println!("Candidate RVA 0x{:04X}: {} / 16 bytes changed",rva,changed);
+    }
+    if s2.starts_with(&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57]) {
+        println!("Stage 2 starts with a plausible x86 function prologue, but most code is not yet demonstrated to be valid.");
+    }
+    println!("No unpacking attempted, no output written, no game code distributed.");
+    Ok(())
+}
+
 fn run() -> Result<(),String> {
     if cfg!(not(target_pointer_width="32")) {
         return Err("This helper must be built as a Windows x86 (32-bit) program".into());
@@ -334,19 +426,28 @@ fn run() -> Result<(),String> {
     let mut map_only=false;
     let mut trace_exceptions=false;
     let mut capture_stages=None::<PathBuf>;
+    let mut analyze_stages=None::<(PathBuf,PathBuf)>;
     while let Some(arg)=args.next() {
         if arg=="--dll" {dll=Some(args.next().ok_or("Missing --dll path")?.into());}
         else if arg=="--output" {output=Some(args.next().ok_or("Missing --output path")?.into());}
         else if arg=="--map-only" {map_only=true;}
         else if arg=="--trace-exceptions" {trace_exceptions=true;}
         else if arg=="--capture-stages" {capture_stages=Some(args.next().ok_or("Missing --capture-stages prefix")?.into());}
-        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --output dplayerx-txt-memory.bin [--trace-exceptions [--capture-stages PREFIX]]]",arg));}
+        else if arg=="--analyze-stages" {
+            let one=args.next().ok_or("Missing stage 1 file")?;
+            let two=args.next().ok_or("Missing stage 2 file")?;
+            analyze_stages=Some((one.into(),two.into()));
+        }
+        else {return Err(format!("Unknown option: {:?}. Usage: safedisc-memory-probe --dll dplayerx.dll [--map-only | --analyze-stages STAGE1 STAGE2 | --output dplayerx-txt-memory.bin [--trace-exceptions [--capture-stages PREFIX]]]",arg));}
     }
     let dll=dll.ok_or("--dll is required")?;
+    if analyze_stages.is_some() && (map_only || trace_exceptions || capture_stages.is_some() || output.is_some()){
+        return Err("--analyze-stages is an offline-only mode and cannot be combined with other modes".into());
+    }
     if map_only && trace_exceptions {return Err("--trace-exceptions requires normal DLL initialization, not --map-only".into());}
     if capture_stages.is_some() && !trace_exceptions {return Err("--capture-stages requires --trace-exceptions".into());}
     if map_only && output.is_some() {return Err("--map-only does not create an output; do not pass --output".into());}
-    if !map_only && output.is_none() {return Err("--output is required unless --map-only is set".into());}
+    if !map_only && analyze_stages.is_none() && output.is_none() {return Err("--output is required unless --map-only or --analyze-stages is set".into());}
     let canonical_dll=fs::canonicalize(&dll).map_err(|e|e.to_string())?;
     let meta=fs::symlink_metadata(&canonical_dll).map_err(|e|e.to_string())?;
     if !meta.is_file() || meta.file_type().is_symlink(){return Err("DLL must be a regular file".into());}
@@ -359,6 +460,9 @@ fn run() -> Result<(),String> {
     }
     if disk.get(TXT_RAW_OFF..TXT_RAW_OFF+TXT_RAW_SIZE).is_none() ||
        disk.get(..2)!=Some(&b"MZ"[..]) {return Err("Unexpected DLL PE image".into());}
+    if let Some((ref one,ref two))=analyze_stages {
+        return compare_saved_stages(&disk,one,two);
+    }
     let old=&disk[TXT_RAW_OFF..TXT_RAW_OFF+TXT_VSIZE];
     let mut wide:Vec<u16>=canonical_dll.as_os_str().encode_wide().collect();
     wide.push(0);
