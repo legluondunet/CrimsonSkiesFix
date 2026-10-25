@@ -415,12 +415,12 @@ fn probe_dplayerx(dll: &[u8]) -> Result<()> {
     for (name,off,len) in &sections {
         if name==".txt" || name==".text" || name==".txt2" {
             println!("DPLAYERX {:8} raw=0x{:06X} size={} entropy={:.3} bits/byte",
-                     name,off,len,byte_entropy(&dll[*off..off+len]));
+                     name,off,len,byte_entropy(&dll[*off..*off+*len]));
         }
     }
     for rva in DPLAYERX_MODIFIER_RVAS {
         let offset=pe_rva_to_offset(dll,rva)?;
-        let section=sections.iter().find(|(_,off,len)|offset>=*off && offset<off+len)
+        let section=sections.iter().find(|(_,off,len)|offset>=*off && offset<*off+*len)
             .ok_or("modifier RVA did not map to an inspected DLL section")?;
         println!("Research modifier RVA 0x{:X} -> file offset 0x{:X} in section {} (encrypted on disk)",
                  rva,offset,section.0);
