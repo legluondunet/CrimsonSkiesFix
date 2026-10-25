@@ -87,6 +87,34 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Candidate modifier stages and private .txt captures (2026-10-26)
+
+A follow-up run using the exact matching user-owned `dplayerx.dll` under Wine Staging 11.17 captured 9 first-chance access violations and sampled both candidate SafeDisc modifier RVAs at the **first `.txt2`** exception and the **first `.txt`** exception. The two 16-byte samples are:
+
+| DLL RVA | First `.txt2` exception | First `.txt` exception |
+| --- | --- | --- |
+| `0x65BE` | `E5FFCA9302813EFE83265C43B5A25AA9` | `0FDF7CD205FCB8451707DBC079F60436` |
+| `0x6621` | `DEE62461170C88C75BC9F4635EBABD24` | `847C0FF35FF8F729038455576734F82E` |
+
+**Direct comparison against the supplied original DLL** confirmed the **first-stage 16 bytes are identical to the original file for each candidate**, and the **second-stage 16 bytes differ at all 16 positions for both**. Inspection of the verified PE relocation directory confirmed **no relocation entries overlap either of these 16-byte windows**, ruling out relocation as the cause of these specific changes. The transformation occurs **between the first `.txt2` and first `.txt` access-violation observations**. A transform has been observed, but there is no proof these small windows are valid executable code, that both are the correct modifier routines, or that the whole section is decrypted.
+
+### Next research step: private stage-local memory snapshots
+
+The Windows x86 helper now optionally supports `--capture-stages PREFIX` *with* `--trace-exceptions`. During the first `.txt2` and first `.txt` exceptions it copies the entire `.txt` virtual section (**30,321 bytes**) into preallocated buffers. It writes the two private files **only after the vectored exception handler has been removed and `LoadLibraryW` returns**, including after the expected error 998. The source DLL, game EXE, and ICD are never modified. Normal `--trace-exceptions` calls still write **no** stage snapshot unless expressly opted in.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --capture-stages ./safedisc-txt \
+  --output ./dplayerx-txt-trace.bin
+```
+
+Potential local files:
+- `safedisc-txt-stage1.bin` — `.txt` at first `.txt2` access violation.
+- `safedisc-txt-stage2.bin` — `.txt` at first `.txt` access violation.
+
+The helper reports SHA-256, entropy, byte counts vs the raw on-disk section, and changed-byte count between stages; files are create-only and cannot overwrite previous captures. **These files contain executable bytes from proprietary user-owned DRM code and are strictly for private research. Do not commit, attach to the public PR, or include them in a release.** A successful snapshot will support further analysis of code transformation and the candidate routines, but **does not itself yield an ICD decryptor**.
+
 ## 2026-10-25: protected DLL changes its code during initialization
 
 The user ran `--trace-exceptions` against the exact verified `dplayerx.dll` with the isolated Wine prefix and `WINEDEBUG=-all`. The helper reported **9 first-chance access violations**. The first **eight** were at **EIP `0x0094BCCD`** (DLL RVA `0x1BCCD`) with fault target `0xFFFFFFFF`; all observed the same **live** 8 bytes as on disk:
