@@ -113,6 +113,7 @@ The older hypothesis of reading the four DWORDs directly after
 | Isolated unSafeDisc 1.5.5 checksum byte-mixing inner loop | Implemented, synthetic vectors only |
 | PE32 relocation directory and 4-KiB page parsing | Implemented; strict exact-file checks |
 | Per-page relocation-skipping checksum helper | Implemented, synthetic only; rejects cross-page DWORDs |
+| Joined-page relocation-skipping checksum primitive | Implemented, synthetic only; handles straddling DWORDs, not the full SafeDisc traversal |
 | Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
 | Full checksum traversal (PE flags, cross-page relocations, DLL modifiers) | Not implemented |
 | Game-specific EAX modifiers in `dplayerx.dll` | Not implemented |
@@ -171,11 +172,21 @@ entries):
 
 A HIGHLOW DWORD at a page offset of `0xFFD`, `0xFFE`, or `0xFFF`
 overlaps the following page. **These 36 entries are valid**: the relocation
-parser accepts them. However, the *isolated single-page* checksum helper
-cannot process a relocation spanning two pages and deliberately refuses
-such input. Full relocation-aware checksum traversal, including page
-boundaries, still requires reconstruction of the original tool's
-control flow; reporting a complete key now would be misleading.
+parser accepts them. The *isolated single-page* checksum helper still
+refuses a relocation spanning two pages. The additional
+`checksum_pages_without_highlow` helper takes **contiguous 4-KiB pages**
+and skips every byte of straddling DWORDs. It preserves the accumulated
+checksum between pages, but resets the mixer's weight for each relocation-
+delimited span and at each page boundary. Tests cover offsets `0xFFD`,
+`0xFFE`, `0xFFF`, a second-page relocation, a truncated last page,
+and a directory with overlapping relocations across adjacent pages.
+
+**This is not a validated original SafeDisc checksum**. The helper uses
+a page-oriented calling convention that must still be checked against the
+unSafeDisc 1.5.5 control flow. It has not been run on the user's retail
+executable, is not invoked by the production `inspect` command, and
+does not implement PE section selection or the `dplayerx.dll` modifiers.
+Reporting a complete TEA key now would be misleading.
 
 Static disassembly of `unSafedisc.exe` at `0x401F62..0x401FA7` also
 confirms the exact per-DWORD pre-TEA sequence:
