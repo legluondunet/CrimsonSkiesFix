@@ -87,6 +87,26 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-26: next non-invasive step — filtered Wine relay for IOCTL results
+
+The complete baseline/alias logs prove that the protected DLL successfully opens the temporary `Secdrv -> \\Device\\Null` name, executes **1,902** main SafeDisc `0xEF002407` driver requests, then fails its initialization with error **998** and the same 9 AVs. The `+file` Wine channel logs **entry arguments** but not the Win32 `DeviceIoControl` return value or the command field at `request + 0x0C`.
+
+**New research script:** `scripts/safedisc-relay-probe.sh`. It enables Wine's **`+relay`** channel and uses Wine's documented per-function **`HKCU\\Software\\Wine\\Debug\\RelayInclude`** registry filter to record only `DeviceIoControl`, `NtDeviceIoControlFile`, and `GetLastError` relay events. Unlike dynamic hooking or DLL patching, relay mode observes the existing API boundary with Wine's own built-in diagnostic machinery.
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" \
+  bash scripts/safedisc-relay-probe.sh ./safedisc-memory-probe.exe ./dplayerx.dll
+```
+
+- Use **only** a disposable, isolated Wine prefix with no other applications running.
+- The script **refuses to replace** an existing `RelayInclude` registry value, checks the DLL and probe paths, refuses to overwrite an existing log, and requests registry cleanup via an EXIT/INT/TERM trap (normal process completion). It does **not** modify game binaries or install a driver.
+- The underlying helper still runs the hash-verified original `dplayerx.dll` initialization with the short-lived null-device alias; it can fail, hang or crash. A forced kill of the shell can prevent registry cleanup; check the prefix before reusing it.
+- Wine's relay capture **may not include all internal builtin-to-builtin calls**, and some versions may export `DeviceIoControl` differently; no matching events should be reported as **inconclusive**, not as successful IOCTLs.
+- Relay may reveal **BOOL/NTSTATUS return values** and some caller `GetLastError` calls. It **does not** read the first request's actual `Command` field at input offset `0x0C`, which will still require breakpoint-based observation in the future. Do not assume the offline Rust model's `0x3C`–`0x3E` examples are used by this DLL.
+- Wine's relay filters are read at process start, so setting `WINEDEBUG` alone without `RelayInclude` would make a much larger trace. **Do not upload private output logs to the public PR.**
+
+Wine implementation reference: https://github.com/wine-mirror/wine/blob/master/dlls/ntdll/relay.c (parses the `RelayInclude` key and `; `-separated function list at runtime). The test syntax is verified in Windows GitHub Actions with `bash -n`; **the experiment has not yet been run on the user's Wine host**.
+
 ## Complete alias Wine log audited (2026-10-26)
 
 The user subsequently supplied the entire original `safedisc-alias.log` (**43,885 lines, 4,900,009 bytes**). The log confirms the following exact counts **for research process 0124** (excluding other Wine processes):
