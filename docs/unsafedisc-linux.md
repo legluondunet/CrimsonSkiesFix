@@ -110,7 +110,8 @@ The older hypothesis of reading the four DWORDs directly after
 | Version-specific unSafeDisc 1.5.5 raw-key offset | Implemented |
 | Optional known-plaintext import-address XOR check | Implemented |
 | Standard 32-round TEA primitive | Tested with synthetic data only |
-| Exact SafeDisc relocation-aware checksum | Not implemented |
+| Isolated unSafeDisc 1.5.5 checksum byte-mixing inner loop | Implemented, synthetic vectors only |
+| Full checksum traversal (PE section flags, relocations, DLL modifiers) | Not implemented |
 | Game-specific EAX modifiers in `dplayerx.dll` | Not implemented |
 | Recovery of the complete, *verified* 128-bit TEA key | Not implemented |
 | ICD decryption, call repair and import reconstruction | Not implemented |
@@ -121,6 +122,32 @@ relocations, confirmed by the supplied unSafeDisc 1.5.5 changelog. Its
 `history.txt` says version 1.5.2 was once released with source, but
 **that source code is not present in the user's 1.5.5 ZIP**. We are not
 repackaging the Windows executable.
+
+## Checksum groundwork (not yet a decryption key)
+
+Static disassembly of the user's original unSafeDisc 1.5.5 `unSafedisc.exe`
+at **`0x401F0D..0x401F36`** identifies the inner byte mixer used for
+checksum accumulation:
+
+```text
+weight = 0xFD379AB1
+result = previous_checksum
+for each byte b at position i in an n-byte chunk:
+    result = (result + b * weight) modulo 2^32
+    weight = (weight * 0xA7753394 + (n - i - 1) + 0x3BC62BB2) modulo 2^32
+```
+
+The weight resets **for each chunk**. The accumulated result is carried
+forward across chunks. This exact inner arithmetic is now ported into Rust as
+`checksum_chunk`, with independent fixed synthetic test vectors (including
+wraparound and a multi-chunk boundary).
+
+**This is not yet the original key-derivation checksum:** calls into this
+mixer are conditional on PE section flags and interspersed with relocation
+normalization. The original disassembly at `0x401F43` also calls the
+SafeDisc 1.50.20 DLL-specific modifier for a DLL of size `0x21E00`.
+Until those operations are faithfully reproduced in the correct order,
+the full checksum and the four-word TEA key remain unknown.
 
 ## Safety and development policy
 
