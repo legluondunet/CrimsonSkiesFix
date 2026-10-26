@@ -97,13 +97,35 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: source-backed static reverse engineering of user-supplied unSafeDisc 1.5.5
+
+The user provided a 3-entry ZIP containing `readme.txt`, `history.txt`, and the original `unSafedisc.exe` (20,480-byte PE32 x86 GUI binary; SHA-256 `e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f`). Analyzed **without running** the executable and without uploading any game or utility binary to GitHub. The archive itself **does not include the source code**, although its `history.txt` says that v1.5.2 was released with sources; those older sources would be useful if recovered and vetted.
+
+**Provenance specific to Crimson Skies:** In supplied `history.txt`, the v1.5.4 entry explicitly says that the author tested with `crimson.icd` and fixed mistakenly decrypting `.rdata`; v1.5.5 then fixed `crc_with_reloc` and was tested against **Crimson Skies and Unreal Tournament**. `readme.txt` maps the user's 138,752-byte DLL to the extra-layer r4 revision.
+
+**Algorithms observed in the real 1.5.5 32-bit code** (addresses here are absolute addresses at its preferred PE image base `0x400000`, **not** offsets in `dplayerx.dll`):
+
+| Code address | Reverse-engineered behavior |
+| --- | --- |
+| `0x4026B4–0x4026E2` | Find `CRPE\0\0` in the **original loader**, add `0x148` iff original DLL file size is `0x21E00`, then skip six marker bytes and copy **16 raw-key bytes**; correct location in this game `0x28FB8` |
+| `0x401C93–0x401CDD` | Recover a four-DWORD TEA schedule from first word, entrypoint plus `0x2D8`, four raw-key DWORDs, and the computed checksum; matches historical arithmetic |
+| `0x401A55–0x401AB5` | TEA-like 64-bit block decryption using **32 rounds**, initial sum `0xC6EF3720`, and delta `0x9E3779B9`; four key words read from `0x403C30` |
+| `0x401F01–0x401F3D` | Checksum mix over code section bytes; seed `0xFD379AB1`, multiplier `0xA7753394`, additive `0x3BC62BB2`, with per-chunk state; **reproducing the exact checksum also requires correct relocation treatment and pre-TEA modifications**, not just applying these constants blindly |
+| `0x401F62–0x401FA7` | Extra SafeDisc 1.50.20 per-DWORD transform before TEA: XOR each word with an index-byte replicated four times, call DLL function at **RVA `0x65BE`**, XOR again, then call function at **RVA `0x6621`** (the second is reached by adding `0x63` to first function pointer) |
+| `0x401D82–0x401EDE` | Relocation-aware checksum traversal/normalization, explaining the `crc_with_reloc` regression documented in history |
+| `0x40194F–0x401A55` | Section-level PE decryption dispatch, including handling of excluded/short/special ranges |
+
+**Runtime state:** The user confirms `TESTME.EXE` launches and plays. The user's 32-bit `7496538F` value has eight exact bytewise DWORD XOR matches with original `.idata` versus TESTME and appears to be an import-address XOR key; its use as the first TEA word is strongly plausible but the full 128-bit schedule has **not yet been computed or tested**. An offline updated local diagnostic script corrects the earlier **wrong raw-key offset**, and its special-version selector was tested against both actual original files and synthetic signatures. **No executable was run, no decrypted game code embedded, no functional standalone decryptor claimed.**
+
+**Next technical bottleneck:** reproduce the exact relocation-aware checksum and operational behavior of the two DLL EAX modifiers. The 1.5.5 binary is now an unambiguous reference for call ordering and key placement, even though the extra-layer DLL routines themselves still need recovering or independently reimplementing.
+
 ## 2026-10-26: original-vs-working TESTME known-plaintext and key-derivation experiment
 
 **New runtime fact supplied by the user:** `TESTME.EXE` (unwrapped with unSafeDisc 1.5.5) successfully launches and plays. The user's separate, simplified resolution patcher also works with it. That is **runtime validation**, distinct from the earlier static PE comparison. Incomplete/misprocessed image data previously discussed is excluded entirely from the research conclusions.
 
 The privately supplied exact pair was re-opened and analyzed locally **read-only**, with original game files never committed:
 
-- Original SafeDisc loader `CRIMSON(1).EXE` (SHA-256 `675a3c76…fa736`): `DECRPE\0\0` at file offset `0x28E68`. **Immediately following** its 8-byte marker, four **candidate** little-endian raw-key DWORDs: `F2554AFE`, `63F84329`, `3506DDB1`, `696BD396` (full placement not validated; the older write-up warns later SafeDisc versions may add an offset).
+- Original SafeDisc loader `CRIMSON(1).EXE` (SHA-256 `675a3c76…fa736`): `DECRPE\0\0` at `0x28E68`; embedded `CRPE\0\0` starts at `0x28E6A`. **Static disassembly of the user-supplied real unSafeDisc 1.5.5 executable verifies that for a 138,752-byte (`0x21E00`) `dplayerx.dll`, its key reader skips `0x148` bytes beyond this 6-byte `CRPE\0\0` marker** (address `0x4026C3–0x4026E2`). Thus four actually selected raw-key DWORDs are read at **loader file offset `0x28FB8`**, giving **`E51DC3D7`, `63CA5EAC`, `4493379C`, `08B42B8C`**. The previously reported `F2554AFE 63F84329 3506DDB1 696BD396` at `DECRPE+8` are **wrong for this DLL version** and must not be used in key reconstruction.
 - Original encrypted `CRIMSON.ICD` and verified working `TESTME.EXE` share **entrypoint RVA `0x1F7056`**. Historical key-reconstruction calculation gives `inc_entry_point = (0x1F7056 + 0x2D8) mod 2^32 = 0x1F732E`.
 - **Strong independent evidence for the reported key's role:** static DWORD-by-DWORD comparison of the original and `TESTME.EXE` **`.idata`** found **eight exact 32-bit XOR matches** with `0x7496538F` at offsets `0x2433D0`, `0x243A48`, `0x243A50`, `0x243AB8`, `0x243D78`, `0x2443F0`, `0x2443F8`, `0x244460`. For example, at offset `0x2433D0`: original encrypted `0x74F44117` XOR `0x7496538F` equals the corresponding unwrapped import RVA `0x00621298` **exactly**. The eight occurrences represent four distinct decoded RVAs repeated in two copies. This strongly supports the historical *lower-32-bit TEA-related import-RVA XOR key* interpretation of `7496538F`, but does **not alone establish the remaining three TEA key words**. In the much larger `.text` and `.data` regions, there were **zero** exact direct DWORD XOR matches with `7496538F`; direct XOR of the whole ciphertext is **not** a valid decoder.\n- User reports unSafeDisc 1.5.5 displayed `7496538F` as a decryption key. **Whether this is the historical `TEA_key1` is not established.** If it is, ArthaXerXès' historical SafeDisc 1.45.11 reconstruction formula says:
   ```text
@@ -114,7 +136,7 @@ The privately supplied exact pair was re-opened and analyzed locally **read-only
                ((x XOR raw_key[2]) + entry_rva + 0x2D8) mod 2^32,
                ((x XOR raw_key[3]) + entry_rva + 0x2D8) mod 2^32 ]
   ```
-  **The actual `checksum` algorithm/value and the raw-key placement are not verified.** Example *only*, with **invented checksum = 0**, the formula yields `7496538F E5FB5CE4 B344EA5C EF67EC37`; it is **not a recovered decryption key** and has **not** produced an executable.
+  **The `checksum` value remains unverified and the role of the displayed key in the full TEA schedule still needs validation.** The raw-key *placement* is now verified against real unSafeDisc 1.5.5 machine code, and the four corrected raw words are listed above. Any previously reported hypothetical 128-bit key calculated using `DECRPE+8` is invalid.
 - Independently confirmed major encrypted-region differences vs TESTME by section (same-offset byte differences):
   `.text`: **1,813,201** of 2,105,344 bytes (cipher/plain entropy 7.912/6.737); `.data`: **167,371** of 172,032 (7.991/5.133); `.rdata` and `.rsrc`: **0** differences; `.idata`: **3,362** differences (imports restoration); `.reloc`: **2**. Original ICD has 98 bytes beyond the 2,580,480-byte unwrapped PE extent, beginning with `NB10` debug metadata. These are exact measurements against **TESTME**, not the separately patched reference with 314 bytes changed.
 - Historical SafeDisc **1.50.20** reference explicitly documents a **pre-TEA** extra decoding pass over DWORDs requiring **two dynamic EAX modifiers from `dplayerx.dll`**, at offsets `0x65BE` and `0x6621`, with index-derived XOR:
