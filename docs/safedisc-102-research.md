@@ -97,6 +97,38 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: user-provided `TESTME.EXE` validates unSafeDisc unwrapping
+
+The user recovered and uploaded `testme.exe` from their unSafeDisc 1.5.5 workflow, following the private disk-image recovery. **Static inspection only; no execution or redistribution.**
+
+| Property | Verified result |
+| --- | --- |
+| Size | **2,580,480 bytes** (`0x276000`) |
+| SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
+| PE | PE32 i386, 6 sections, image base `0x400000`, entry RVA `0x1F7056` |
+| Section order | `.text`, `.rdata`, `.data`, `.idata`, `.rsrc`, `.reloc` |
+| Disk extent | Last section ends exactly at EOF `0x276000`; no overlay |
+| Unwrapper marker | ASCII `unwrapped with    unSafedisc   - csir.cjb.net -` at file offset `0x301` |
+| Prior local reference | **Byte-identical** to the pre-existing `crimson.exe.bak` reference (same SHA-256); **not independent validation** |
+| Protected original ICD | `0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b`, 2,580,578 bytes |
+| Difference to protected ICD | **1,983,990 of 2,580,480** same-offset bytes differ (76.88%); ICD has extra 98 bytes |
+| Difference to existing other local `CRIMSON.EXE` reference | **314 bytes**, in 38 differing ranges, no size difference; the other reference contains known code variants/patches |
+
+PE section entropy (Shannon bits/byte, raw section ranges):
+
+| Section | Original encrypted `CRIMSON.ICD` | unSafeDisc `TESTME.EXE` |
+| --- | ---: | ---: |
+| `.text` | 7.912 | 6.737 |
+| `.data` | 7.991 | 5.133 |
+| `.rdata` | 5.084 | 5.084 |
+| `.rsrc` | 3.515 | 3.515 |
+
+The unwrapped entry RVA `0x1F7056` maps to file offset `0x1F7056`, and begins with coherent x86 instructions (`push ebp; mov ebp, esp; push -1`), unlike encrypted ICD bytes at the same location. The normal Windows import directory parses successfully; 21 imported DLL names and 597 imports were counted, including DirectDraw/DirectInput/DirectPlay and audio-related dependencies. This confirms a **well-formed, plausibly usable decoded PE**, but static evidence alone does **not prove launch success**.
+
+**Critical reassessment of earlier block-container comparison:** Parsing private `files-755CD3A8.icd` as 5,042 records of 512-byte payloads plus 4-byte tags, **5,041** records match some exact 512-byte sector of **this newly supplied `TESTME.EXE`**; just **one record** (index 1571) carries FAT-like directory metadata. The earlier 5,030 match count was compared against the other 314-byte-different reference, **not against the correct output file**. The 11 apparent code variants are now explained by the exact `TESTME.EXE` match, not by presumed damage. The block records omit all-zero sectors and include duplicate payload records; a reconstruction by blindly concatenating them is **not** a PE.
+
+**What this does not establish:** the algorithmic provenance of the reported 32-bit `7496538F` value, the TEA key schedule, reversibility of the original encrypted ICD **without unSafeDisc**, or successful SafeDisc driver emulation. Because the old reference and `TESTME.EXE` are byte-identical, their agreement is **not an independent decryption validation**. The private original and output are never added to the repository.
+
 ## 2026-10-26: unSafeDisc-related non-PE `.icd` block container supplied
 
 The user identified an output from **unSafeDisc 1.5.5** (with reported 32-bit key **`7496538F`**) and supplied `files-755CD3A8.icd`. Private content was examined offline only, **not executed or committed**:
