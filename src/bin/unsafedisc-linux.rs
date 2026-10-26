@@ -162,6 +162,8 @@ fn parse_relocation_blocks(data: &[u8]) -> Result<(Vec<RelocBlock>, usize)> {
     let mut blocks = Vec::new();
     let mut padding = 0usize;
     let mut previous_page: Option<u32> = None;
+    // Check overlap across adjacent PE pages as well as within a block.
+    let mut previous_highlow_end: Option<u64> = None;
     while cursor < data.len() {
         let page = read_u32(data, cursor)?;
         let block_len = read_u32(data, cursor + 4)? as usize;
@@ -187,9 +189,11 @@ fn parse_relocation_blocks(data: &[u8]) -> Result<(Vec<RelocBlock>, usize)> {
                     // page offsets 0xFFD..0xFFF and continue into the next
                     // page. The real Crimson Skies .text has 36 such cases.
                     // They are valid in the base relocation directory.
-                    if highlow_offsets.last().is_some_and(|prev| off < *prev + 4) {
-                        return Err("overlapping or unsorted HIGHLOW relocation".into());
+                    let absolute = page as u64 + off as u64;
+                    if previous_highlow_end.is_some_and(|end| absolute < end) {
+                        return Err("overlapping or unsorted HIGHLOW relocation, including page boundary".into());
                     }
+                    previous_highlow_end = Some(absolute + 4);
                     highlow_offsets.push(off);
                 }
                 _ => return Err(format!("unsupported x86 relocation type {kind}")),
@@ -248,6 +252,72 @@ fn checksum_page_without_highlow(page: &[u8], offsets: &[u16], previous: u32) ->
         start = off + 4;
     }
     Ok(checksum_chunk(&page[start..], sum))
+}
+
+// Page-oriented checksum primitive for contiguous, complete 4-KiB PE pages.
+// Each page is split at HIGHLOW relocation DWORDs, including DWORDs that
+// straddle the boundary into the next page. The byte mixer's weight resets
+// per nonempty span; its accumulated sum carries between spans and pages.
+//
+// This is a SYNTHETICALLY TESTED building block, not the complete SafeDisc
+// checksum: section selection, original page/chunk call order and the DLL
+// modifier are still unverified. No game file is modified or decrypted.
+#[allow(dead_code)]
+fn checksum_pages_without_highlow(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], previous: u32,
+) -> Result<u32> {
+    const PAGE: usize = 4096;
+    if first_page_rva % PAGE as u32 != 0 || bytes.is_empty() || bytes.len() % PAGE != 0 {
+        return Err("expected complete, 4-KiB-aligned PE pages".into());
+    }
+    let span = u32::try_from(bytes.len()).map_err(|_| "page span does not fit PE RVA")?;
+    let end_rva = first_page_rva.checked_add(span).ok_or("PE page RVA overflow")?;
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut previous_end = 0usize;
+    let mut previous_block_page: Option<u32> = None;
+    for block in blocks {
+        if block.page_rva < first_page_rva || block.page_rva >= end_rva {
+            return Err("relocation block is outside the selected page span".into());
+        }
+        if previous_block_page.is_some_and(|page| block.page_rva <= page) {
+            return Err("relocation blocks are not in increasing page order".into());
+        }
+        previous_block_page = Some(block.page_rva);
+        let page_offset = (block.page_rva - first_page_rva) as usize;
+        for &offset in &block.highlow_offsets {
+            let start = page_offset + offset as usize;
+            let end = start + 4;
+            if end > bytes.len() || (!ranges.is_empty() && start < previous_end) {
+                return Err("overlapping or out-of-range relocation in page span".into());
+            }
+            ranges.push((start, end));
+            previous_end = end;
+        }
+    }
+
+    let mut checksum = previous;
+    let mut relocation_index = 0usize;
+    for page_index in 0..bytes.len() / PAGE {
+        let start_page = page_index * PAGE;
+        let end_page = start_page + PAGE;
+        while relocation_index < ranges.len() && ranges[relocation_index].1 <= start_page {
+            relocation_index += 1;
+        }
+        let mut cursor = start_page;
+        let mut index = relocation_index;
+        while index < ranges.len() && ranges[index].0 < end_page {
+            let skip_start = ranges[index].0.max(start_page);
+            if skip_start > cursor {
+                checksum = checksum_chunk(&bytes[cursor..skip_start], checksum);
+            }
+            cursor = ranges[index].1.min(end_page);
+            index += 1;
+        }
+        if cursor < end_page {
+            checksum = checksum_chunk(&bytes[cursor..end_page], checksum);
+        }
+    }
+    Ok(checksum)
 }
 
 fn read_original(path: &Path, expected_len: usize, expected_sha: &str) -> Result<Vec<u8>> {
@@ -688,6 +758,63 @@ mod tests {
         raw.extend_from_slice(&0x1000u32.to_le_bytes());
         raw.extend_from_slice(&8u32.to_le_bytes());
         assert!(parse_relocation_blocks(&raw).is_err());
+    }
+
+    #[test]
+    fn joined_pages_skip_highlow_dwords_crossing_each_page_edge() {
+        let data: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
+        let initial = 0x1234_5678;
+        for offset in [0xFFDu16, 0xFFE, 0xFFF] {
+            let blocks = [RelocBlock {
+                page_rva: 0x1000, highlow_offsets: vec![offset],
+            }];
+            // Independent two-span reference: all four relocated bytes are
+            // omitted, even when one to three land in the second page.
+            let expected = checksum_chunk(&data[offset as usize + 4..],
+                checksum_chunk(&data[..offset as usize], initial));
+            assert_eq!(checksum_pages_without_highlow(&data, 0x1000, &blocks, initial).unwrap(), expected);
+            assert!(checksum_pages_without_highlow(&data[..4096], 0x1000, &blocks, initial).is_err());
+        }
+
+        let blocks = [
+            RelocBlock { page_rva: 0x1000, highlow_offsets: vec![0xFFE] },
+            RelocBlock { page_rva: 0x2000, highlow_offsets: vec![0x020] },
+        ];
+        let mut expected = checksum_chunk(&data[..4094], initial);
+        expected = checksum_chunk(&data[4098..4128], expected);
+        expected = checksum_chunk(&data[4132..], expected);
+        assert_eq!(checksum_pages_without_highlow(&data, 0x1000, &blocks, initial).unwrap(), expected);
+        // All page chunks have independent initial weights but a carried sum.
+        let plain = [RelocBlock { page_rva: 0x1000, highlow_offsets: vec![2, 9] }];
+        assert_eq!(
+            checksum_pages_without_highlow(&data[..4096], 0x1000, &plain, initial).unwrap(),
+            checksum_page_without_highlow(&data[..4096], &[2, 9], initial).unwrap(),
+        );
+        assert!(checksum_pages_without_highlow(&data[..4096], 0x1001, &[], initial).is_err());
+        assert!(checksum_pages_without_highlow(&data[..4096], 0x1000,
+            &[RelocBlock { page_rva: 0x2000, highlow_offsets: vec![] }], initial).is_err());
+    }
+
+    #[test]
+    fn reject_inter_page_relocation_overlap_but_allow_adjacency() {
+        let directory = |next_offset: u16| {
+            let mut data = Vec::new();
+            for (page, offset) in [(0x1000u32, 0xFFFu16), (0x2000, next_offset)] {
+                data.extend_from_slice(&page.to_le_bytes());
+                data.extend_from_slice(&10u32.to_le_bytes());
+                data.extend_from_slice(&(0x3000u16 | offset).to_le_bytes());
+            }
+            data
+        };
+        for overlapping in [0, 1, 2] {
+            assert!(parse_relocation_blocks(&directory(overlapping)).is_err());
+        }
+        let (blocks, padding) = parse_relocation_blocks(&directory(3)).unwrap();
+        assert_eq!(padding, 0);
+        assert_eq!(blocks.len(), 2);
+        let sample = vec![0xAAu8; 8192];
+        assert!(checksum_pages_without_highlow(&sample[..4096], 0x1000, &blocks[..1], 0).is_err());
+        assert!(checksum_pages_without_highlow(&sample, 0x1000, &blocks, 0).is_ok());
     }
 
     #[test]
