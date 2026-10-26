@@ -276,7 +276,19 @@ fn inspect(options: Options) -> Result<()> {
     for (i, w) in raw.iter().enumerate() { println!("  raw[{i}] = 0x{w:08X}"); }
     println!("No full 128-bit TEA key is asserted; checksum and DLL modifier stage remain unverified.");
     if let Some(path) = options.reference {
-        let reference = read_original(&path, TESTME_LEN, TESTME_SHA)?;
+        // A user may have patched the resolution of TESTME.EXE with our
+        // separate Python tool. The original backup remains the valid
+        // plaintext oracle; do not silently accept modified game code.
+        let reference = read_original(&path, TESTME_LEN, TESTME_SHA)
+            .map_err(|error| {
+                let mut backup_name = path.as_os_str().to_os_string();
+                backup_name.push(".crimson-original.bak");
+                let backup = PathBuf::from(backup_name);
+                format!(
+                    "{error}\n                     TESTME.EXE must be the exact unmodified unSafeDisc output.\n                     If you applied the resolution patch, try its original backup:\n                     --reference '{}'\n                     Expected unmodified SHA-256: {TESTME_SHA}\n                     No input files were changed.",
+                    backup.display(),
+                )
+            })?;
         let decoded_pe = parse_pe32(&reference)?;
         if decoded_pe.entry_rva != protected_pe.entry_rva {
             return Err("original ICD and unwrapped reference entrypoints differ".into());
