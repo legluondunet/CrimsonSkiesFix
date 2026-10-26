@@ -111,7 +111,10 @@ The older hypothesis of reading the four DWORDs directly after
 | Optional known-plaintext import-address XOR check | Implemented |
 | Standard 32-round TEA primitive | Tested with synthetic data only |
 | Isolated unSafeDisc 1.5.5 checksum byte-mixing inner loop | Implemented, synthetic vectors only |
-| Full checksum traversal (PE section flags, relocations, DLL modifiers) | Not implemented |
+| PE32 relocation directory and 4-KiB page parsing | Implemented; strict exact-file checks |
+| Per-page relocation-skipping checksum helper | Implemented, synthetic only; rejects cross-page DWORDs |
+| Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
+| Full checksum traversal (PE flags, cross-page relocations, DLL modifiers) | Not implemented |
 | Game-specific EAX modifiers in `dplayerx.dll` | Not implemented |
 | Recovery of the complete, *verified* 128-bit TEA key | Not implemented |
 | ICD decryption, call repair and import reconstruction | Not implemented |
@@ -148,6 +151,54 @@ normalization. The original disassembly at `0x401F43` also calls the
 SafeDisc 1.50.20 DLL-specific modifier for a DLL of size `0x21E00`.
 Until those operations are faithfully reproduced in the correct order,
 the full checksum and the four-word TEA key remain unknown.
+
+## PE relocations and SafeDisc's extra pre-TEA stage
+
+The exact original Crimson Skies `CRIMSON.ICD` contains an intact PE32
+**base relocation directory**. The native inspector now verifies its
+directory and reports these measurements from the exact hash-verified
+original (the unmodified `TESTME.EXE` must have equivalent relocation
+entries):
+
+| Quantity | Verified |
+| --- | ---: |
+| Base relocation blocks | **558** |
+| `IMAGE_REL_BASED_HIGHLOW` (3) entries | **71,114** |
+| `IMAGE_REL_BASED_ABSOLUTE` (0) padding entries | **280** |
+| Relocation blocks in executable `.text` | **514** |
+| `.text` HIGHLOW entries | **61,743** |
+| HIGHLOW entries **crossing** a 4-KiB boundary in `.text` | **36** |
+
+A HIGHLOW DWORD at a page offset of `0xFFD`, `0xFFE`, or `0xFFF`
+overlaps the following page. **These 36 entries are valid**: the relocation
+parser accepts them. However, the *isolated single-page* checksum helper
+cannot process a relocation spanning two pages and deliberately refuses
+such input. Full relocation-aware checksum traversal, including page
+boundaries, still requires reconstruction of the original tool's
+control flow; reporting a complete key now would be misleading.
+
+Static disassembly of `unSafedisc.exe` at `0x401F62..0x401FA7` also
+confirms the exact per-DWORD pre-TEA sequence:
+
+```text
+for index i in 0..floor(section_fragment_len / 4):
+    mask = ((i << 24) | (i << 16) | (i << 8) | i) modulo 2^32
+    word = load_le_u32(fragment[4*i..4*i+4])
+    word = first_dplayerx_modifier(word XOR mask)    # RVA 0x65BE
+    word = second_dplayerx_modifier(word XOR mask)   # RVA 0x6621
+    store_le_u32(fragment[4*i..4*i+4], word)
+```
+
+**Important subtlety:** the index is the **full 32-bit word number**, not
+`i & 0xFF`. The mask at index `0x100` is `0x01010100`, not
+`0x00000000`. This matters for blocks containing more than 256 DWORDs.
+
+The exact *outer adapter* has been ported as
+`pre_tea_dwords_with_modifiers`, with synthetic function callbacks for
+testing its XOR placement and call order. **The real EAX modifier routines
+from the original protected `dplayerx.dll` have not yet been recovered,
+so this is not a functioning decryption step.** The Rust program continues
+to expose **`inspect` only**, and it never alters game files.
 
 ## Safety and development policy
 
