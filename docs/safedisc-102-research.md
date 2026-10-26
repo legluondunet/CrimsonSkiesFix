@@ -97,6 +97,20 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: unSafeDisc-related non-PE `.icd` block container supplied
+
+The user identified an output from **unSafeDisc 1.5.5** (with reported 32-bit key **`7496538F`**) and supplied `files-755CD3A8.icd`. Private content was examined offline only, **not executed or committed**:
+
+- File size **2,603,225 bytes**; SHA-256 **`09dc9a51624ceaa06a0aa2e8d94f9bd120a5b03ef957dce06e7dfe9147379be8`**.
+- Starts with ASCII **`FFDD`**, not PE `MZ`. Contains FAT-like directory data referencing `UNSAFE~1EXE` / `unSafedisc.exe`. The specific container's formal format/origin remains **unverified**.
+- The first embedded `MZ` occurs at file offset `0x615`, the next at `0x7D01`; both have the familiar PE32/x86 game header and entry RVA `0x1F7056`. The embedded image data carries the text **`unwrapped with    unSafedisc   - csir.cjb.net -`**.
+- The data region from `0x615` fits **5,042 records** of **512-byte payloads**, with a **4-byte identification/tag after each payload except the last**: `0x615 + (5042 × 512) + (5041 × 4) = 2,603,225`. The records are **not in straight PE file order**, contain duplicate initial PE-header blocks and at least one FAT-like directory sector. A naive `.icd -> .exe` rename or raw concatenation is not valid.
+- Against the *already-unpacked 2,580,480-byte* local game EXE reference (5,040 × 512-byte sectors), **5,030 of the 5,042 payload blocks match some 512-byte reference sector byte-for-byte**. Exactly **12 payload blocks do not**: 11 align by adjacent reference records/unique matching fragments to 11 game-code sectors, differing by a total of **314 bytes** from that particular reference; the twelfth is FAT-like `FILES` directory data, not code. Most reference sectors not present as exact matches consist **entirely of zero bytes** (PE/file padding); the 11 differing sectors are code variations, not evidence of still-encrypted code. This is strong **plaintext evidence** from a separate unSafeDisc route, not proof that this peculiar `FFDD` container itself is executable.
+- The four bytes of the user-reported key `0x7496538F` were **not found verbatim** in either little- or big-endian order in this container. That says nothing definitive about whether it was a valid intermediate or cryptographic key.
+- The **314 code-byte differences** against our existing reference should not automatically be labeled corruption. They include alternative conditional branches, resolution-setting instructions, and references to existing constants. The comparison reference may have its own code patches. A separately validated rebuilt image or runtime test is needed before asserting executable equivalence.
+
+**Interpretation:** The supplied container supplies unusually strong **independently recovered game plaintext**, valuable as an additional known-plaintext check for the exact original SafeDisc 1.50.20 `CRIMSON.ICD`. It does **not** yet yield a reproducible decryption key schedule, prove any SafeDisc driver emulation, or establish the meaning of all `FFDD` metadata. Do not publish user-owned decrypted game bytes or the proprietary archive; keep commits to high-level analysis and original-source tooling only.
+
 ## 2026-10-26: first real SafeDisc IOCTL subcommand measured — 0x3C
 
 **User-supplied live WineDbg observation**, in the paused Windows x86 research helper, with the original hash-verified protected `dplayerx.dll` and temporary `Secdrv` null-device alias:
