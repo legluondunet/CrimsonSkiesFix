@@ -97,6 +97,39 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: original-vs-working TESTME known-plaintext and key-derivation experiment
+
+**New runtime fact supplied by the user:** `TESTME.EXE` (unwrapped with unSafeDisc 1.5.5) successfully launches and plays. The user's separate, simplified resolution patcher also works with it. That is **runtime validation**, distinct from the earlier static PE comparison. **Exclude** the user's incomplete/misprocessed `files-755CD3A8.icd` from all conclusions; it is not evidence for the actual unpacking process.
+
+The privately supplied exact pair was re-opened and analyzed locally **read-only**, with original game files never committed:
+
+- Original SafeDisc loader `CRIMSON(1).EXE` (SHA-256 `675a3c76…fa736`): `DECRPE\0\0` at file offset `0x28E68`. **Immediately following** its 8-byte marker, four **candidate** little-endian raw-key DWORDs: `F2554AFE`, `63F84329`, `3506DDB1`, `696BD396` (full placement not validated; the older write-up warns later SafeDisc versions may add an offset).
+- Original encrypted `CRIMSON.ICD` and verified working `TESTME.EXE` share **entrypoint RVA `0x1F7056`**. Historical key-reconstruction calculation gives `inc_entry_point = (0x1F7056 + 0x2D8) mod 2^32 = 0x1F732E`.
+- User reports unSafeDisc 1.5.5 displayed `7496538F` as a decryption key. **Whether this is the historical `TEA_key1` is not established.** If it is, ArthaXerXès' historical SafeDisc 1.45.11 reconstruction formula says:
+  ```text
+  u = (TEA_key1 - (entry_rva + 0x2D8)) mod 2^32
+  x = u XOR checksum XOR raw_key[0]
+  full_key = [ TEA_key1,
+               ((x XOR raw_key[1]) + entry_rva + 0x2D8) mod 2^32,
+               ((x XOR raw_key[2]) + entry_rva + 0x2D8) mod 2^32,
+               ((x XOR raw_key[3]) + entry_rva + 0x2D8) mod 2^32 ]
+  ```
+  **The actual `checksum` algorithm/value and the raw-key placement are not verified.** Example *only*, with **invented checksum = 0**, the formula yields `7496538F E5FB5CE4 B344EA5C EF67EC37`; it is **not a recovered decryption key** and has **not** produced an executable.
+- Independently confirmed major encrypted-region differences vs TESTME by section (same-offset byte differences):
+  `.text`: **1,813,201** of 2,105,344 bytes (cipher/plain entropy 7.912/6.737); `.data`: **167,371** of 172,032 (7.991/5.133); `.rdata` and `.rsrc`: **0** differences; `.idata`: **3,362** differences (imports restoration); `.reloc`: **2**. Original ICD has 98 bytes beyond the 2,580,480-byte unwrapped PE extent, beginning with `NB10` debug metadata. These are exact measurements against **TESTME**, not the separately patched reference with 314 bytes changed.
+- Historical SafeDisc **1.50.20** reference explicitly documents a **pre-TEA** extra decoding pass over DWORDs requiring **two dynamic EAX modifiers from `dplayerx.dll`**, at offsets `0x65BE` and `0x6621`, with index-derived XOR:
+  ```text
+  mask(i) = (i << 24) | (i << 16) | (i << 8) | i
+  tmp = modifier_65be(ciphertext_word[i] XOR mask(i)) XOR mask(i)
+  intermediate_word[i] = modifier_6621(tmp)
+  ```
+  The history also mentions SafeDisc-specific import table and modified-call repair after TEA. Offsets are from the old author's experiment and **not yet verified as live callable functions** in this specific DLL.
+- Previous user-owned `dplayerx.dll` section snapshots suggest only *partial* unpacking: the high-entropy `.txt` portion around candidate RVA `0x65BE` is **not coherent executable x86 yet**, even though the first bytes of a later memory snapshot decode to a normal function prologue. Do not assert that the modifiers are ready for direct calls.
+
+**Research implication:** the encrypted/plain pair supplies an excellent exact-output oracle, but the four reported inputs **do not uniquely determine** a functioning 1.50.20 decoder. Most direct route is to recover or observe the **two modifier functions / intermediate pre-TEA buffer**, determine the proper four DWORDs and checksum (or instrument unSafeDisc 1.5.5 itself with the user's permission), and then compare each algorithmic stage with TESTME. Do not substitute a hardcoded binary delta, embed original code, or infer a valid decryptor simply from access to one ciphertext/plaintext pair.
+
+Historical source: https://gbppr.net/cracking/krobar/other/com26.html (sections 1.45.11 and 1.50.20).
+
 ## 2026-10-26: user-provided `TESTME.EXE` validates unSafeDisc unwrapping
 
 The user recovered and uploaded `testme.exe` from their unSafeDisc 1.5.5 workflow, following the private disk-image recovery. **Static inspection only; no execution or redistribution.**
