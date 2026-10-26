@@ -97,6 +97,32 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: WineDbg symbol lookup blocked; PE export address workaround
+
+In the user-provided WineDbg session, both `break KERNEL32!DeviceIoControl` and `break DeviceIoControl` were **delayed** even though `info share` already lists `kernel32.dll` at image base **`0x7BAB0000`** and `kernelbase.dll` at **`0x7B500000`** (both `PE-Wine COFF`). A COFF debug information label does **not** guarantee WineDbg can resolve a function's name. Do **not** keep issuing unresolved symbolic breakpoints or simply `cont` 1,902 times.
+
+The Wine source `dlls/kernel32/kernel32.spec` exports `DeviceIoControl` backed by `KERNEL32_DeviceIoControl`, allowing its **actual PE export RVA** to be found without WineDbg symbols:
+https://github.com/wine-mirror/wine/blob/master/dlls/kernel32/kernel32.spec .
+
+An offline, standard-library Python helper `scripts/winedbg-export-breakpoint.py` parses the **x86 PE32** export table from the same Wine prefix's on-disk `kernel32.dll`, including ordinal index validation and forwarder detection. On a WOW64 prefix, `drive_c/windows/syswow64/kernel32.dll` is the **32-bit** DLL; for a 32-bit prefix, `system32` is used. It rejects x64 PE binaries and forwarded exports. Given the module's currently observed runtime image base, it prints a **proposed** absolute breakpoint address (`base + exported function RVA`):
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" \
+  python3 scripts/winedbg-export-breakpoint.py --base 0x7BAB0000
+```
+
+Run the Python command in a **second Linux terminal**, while the paused WineDbg session remains open, then paste the three **calculated commands** into WineDbg:
+
+```text
+disas 0xCALCULATED
+break *0xCALCULATED
+info break
+```
+
+**Verify disassembly and that the new address breakpoint is active before `cont`.** If exports are forwarded or the file differs from the in-memory DLL, do not continue; supply the helper's error instead. On the first `DeviceIoControl` hit, check `*(DWORD*)(ESP+8)` is `0xEF002407`, then read only `*(DWORD*)(*(DWORD*)(ESP+12)+0x0C)` (subcommand). The original user-owned binary/packet need not be copied or uploaded.
+
+The helper was verified locally against the original private `dplayerx.dll` **without running it**: its exported `_DllMain@12` resolves to exactly the previously established RVA **`0x9770`**. It has additional synthetic PE fixture unit tests under Windows GitHub Actions. **The actual Wine 11.17 kernel32 export address remains to be measured by the user.** All original game files and the working prefix remain unmodified by this offline Python helper.
+
 ## Proposed next read-only experiment: inspect one IOCTL subcommand with WineDbg
 
 The `+relay` log proves every call's return status, but **not** the value at the 32-bit request's command field (`input_buffer + 0x0C`). The normal WineDbg interpreter supports module-qualified symbol breakpoints and expressions that read debuggee memory (WineDbg manual: https://manpages.debian.org/trixie/wine/winedbg.1.en.html). In an **isolated, disposable Wine prefix**, one can try:
