@@ -16,6 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
         run: cargo test
+      - name: Test SafeDisc research protocol (pure Rust)
+        run: cargo test --features research --lib
       - name: Build Windows release
         run: cargo build --release
       - name: Install Windows x86 target (research helper)
