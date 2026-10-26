@@ -183,9 +183,10 @@ fn parse_relocation_blocks(data: &[u8]) -> Result<(Vec<RelocBlock>, usize)> {
             match kind {
                 0 => padding += 1,
                 3 => {
-                    if off > 0xFFC {
-                        return Err("32-bit relocation straddles page boundary".into());
-                    }
+                    // An x86 HIGHLOW relocation is permitted to start at
+                    // page offsets 0xFFD..0xFFF and continue into the next
+                    // page. The real Crimson Skies .text has 36 such cases.
+                    // They are valid in the base relocation directory.
                     if highlow_offsets.last().is_some_and(|prev| off < *prev + 4) {
                         return Err("overlapping or unsorted HIGHLOW relocation".into());
                     }
@@ -383,10 +384,16 @@ fn inspect(options: Options) -> Result<()> {
         .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
         .map(|block| block.highlow_offsets.len()).sum();
     let total_highlow: usize = relocs.iter().map(|block| block.highlow_offsets.len()).sum();
+    let crossed_highlow: usize = relocs.iter()
+        .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
+        .map(|block| block.highlow_offsets.iter().filter(|&&off| off > 0xFFC).count())
+        .sum();
+
     // Expected for the exact hash-verified user-owned Crimson Skies ICD,
     // not a general rule for unrelated games.
     if relocs.len() != 558 || total_highlow != 71_114 || reloc_padding != 280
-        || text_page_count != 514 || text_blocks != 514 || text_highlow != 61_743 {
+        || text_page_count != 514 || text_blocks != 514 || text_highlow != 61_743
+        || crossed_highlow != 36 {
         return Err("relocation layout differs from the expected Crimson Skies original".into());
     }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
@@ -398,6 +405,8 @@ fn inspect(options: Options) -> Result<()> {
         relocs.len(), total_highlow, reloc_padding);
     println!(".text relocations: {} pages, {} HIGHLOW DWORDs.",
         text_blocks, text_highlow);
+    println!(".text HIGHLOW relocations crossing a 4-KiB page: {} (valid, requires joined-page treatment).",
+        crossed_highlow);
     println!("Raw key offset:  0x{raw_offset:X} (CRPE + 6 + 0x148)");
     println!("Selected raw DWORDs:");
     for (i, w) in raw.iter().enumerate() { println!("  raw[{i}] = 0x{w:08X}"); }
@@ -619,7 +628,12 @@ mod tests {
         raw.extend_from_slice(&0x1000u32.to_le_bytes());
         raw.extend_from_slice(&10u32.to_le_bytes());
         raw.extend_from_slice(&0x3FFFu16.to_le_bytes());
-        assert!(parse_relocation_blocks(&raw).is_err());
+        // A HIGHLOW at 0xFFF can cross a 4-KiB boundary, and is valid
+        // in the relocation table even if a single-page checksum helper
+        // cannot process it in isolation.
+        let (blocks, _) = parse_relocation_blocks(&raw).unwrap();
+        assert_eq!(blocks[0].highlow_offsets, vec![0xFFF]);
+        assert!(checksum_page_without_highlow(&[0u8; 4096], &[0xFFF], 0).is_err());
         raw[8..10].copy_from_slice(&0x7008u16.to_le_bytes());
         assert!(parse_relocation_blocks(&raw).is_err());
         raw[8..10].copy_from_slice(&0x3008u16.to_le_bytes());
