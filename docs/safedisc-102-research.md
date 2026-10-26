@@ -115,7 +115,6 @@ At WineDbg's prompt, **before continuing**:
 ```text
 break DeviceIoControl
 info break
-# Run 'cont' only after the breakpoint resolves
 ```
 
 If the unqualified breakpoint does not resolve either, **do not continue yet**: run `info share` and `info break`, inspect the loaded modules and active breakpoints, and decide a more appropriate entrypoint.
