@@ -109,6 +109,18 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### Observed SafeDisc driver request failure in Wine
+
+The user supplied the complete **11,732-line** `+relay` log. It proves that all **1,902** `KERNEL32.DeviceIoControl(0x6C, 0xEF002407, ...)` calls return **`FALSE`**. Each paired `ntdll.NtDeviceIoControlFile` returns `0xC0000123` (**`STATUS_FILE_DELETED`**), which is reported **twice per request** through Wine's WOW64 tracing. This status is the observable result of sending SafeDisc requests to the **temporary null-device alias**, not an authentic response from a SafeDisc driver. The DLL still fails to initialize with Windows error 998, and the ninth AV in this run is at RVA `0x7221` (previous tests observed `0x7212`).
+
+For repeatable private local analysis:
+
+```bash
+python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
+```
+
+This offline-only parser and its synthetic tests are now part of the PR. **No live SafeDisc driver emulation, actual game decryption, or changes to protected binaries are implemented.** The next missing fact is the real protocol subcommand DWORD at the input buffer's `+0x0C` offset. Its numeric value is not available in `+relay` text output.
+
 ### Next experiment: observe real SafeDisc IOCTL return values
 
 The existing `+file` logs show **1,902 SafeDisc `0xEF002407` requests**, but not their return values or subcommand IDs. To avoid invasive DLL patching, the optional `scripts/safedisc-relay-probe.sh` uses a temporary Wine `RelayInclude` filter for `DeviceIoControl`, `NtDeviceIoControlFile`, and `GetLastError`:
