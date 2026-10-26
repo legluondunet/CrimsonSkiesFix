@@ -108,12 +108,17 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
   --output ./dplayerx-debug-probe.bin
 ```
 
+**Observed limitation:** On the user's WineDbg build, `break KERNEL32!DeviceIoControl` failed with `No symbols found for KERNEL32!DeviceIoControl` and installed only a deferred breakpoint. WineDbg can resolve an unqualified exported function name, so **try `break DeviceIoControl`** first; this remedy has not yet been tested in the user's Wine environment.
+
 At WineDbg's prompt, **before continuing**:
 
 ```text
-break KERNEL32!DeviceIoControl
-cont
+break DeviceIoControl
+info break
+# Run 'cont' only after the breakpoint resolves
 ```
+
+If the unqualified breakpoint does not resolve either, **do not continue yet**: run `info share` and `info break`, inspect the loaded modules and active breakpoints, and decide a more appropriate entrypoint.
 
 If the breakpoint resolves and hits in **the Windows x86 process**, the `stdcall` arguments at function entry are `[ESP+4]` = handle, `[ESP+8]` = IOCTL, `[ESP+12]` = request pointer. Check the **current call**:
 
