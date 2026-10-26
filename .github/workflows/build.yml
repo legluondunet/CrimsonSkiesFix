@@ -14,6 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test offline SafeDisc Wine relay log parser (synthetic data)
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Check optional Wine relay research script syntax
         shell: bash
         run: bash -n scripts/safedisc-relay-probe.sh
