@@ -97,6 +97,42 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## 2026-10-26: first real SafeDisc IOCTL subcommand measured — 0x3C
+
+**User-supplied live WineDbg observation**, in the paused Windows x86 research helper, with the original hash-verified protected \`dplayerx.dll\` and temporary \`Secdrv\` null-device alias:
+
+\`\`\`text
+Wine-dbg>disas 0x7BACCBE0
+0x0000007baccbe0 kernel32+0x1cbe0: pushl %ebp
+0x0000007baccbe1 kernel32+0x1cbe1: movl %esp, %ebp
+...
+Wine-dbg>break *0x7BACCBE0
+Breakpoint 1 at 0x0000007baccbe0 kernel32+0x1cbe0
+Wine-dbg>cont
+Stopped on breakpoint 1 at 0x0000007baccbe0 kernel32+0x1cbe0
+Wine-dbg>info regs
+EIP:7baccbe0 ESP:0022d668 EBP:0022d69c
+EAX:ef002407 EBX:00940000 ECX:00000074 EDX:00c883d0
+Wine-dbg>print /x *(unsigned int*)($esp+8)
+0xef002407
+Wine-dbg>print /x *(unsigned int*)(*(unsigned int*)($esp+12)+12)
+0x3c
+\`\`\`
+
+**Confirmed:** the **first intercepted** \`DeviceIoControl\` call is SafeDisc main IOCTL **\`0xEF002407\`** and its 32-bit **\`Command\` field at input offset \`0x0C\` is \`0x3C\`**. In [RibShark/SafeDiscShim's source](https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.cpp), \`0x3C\` is **\`GetDebugRegisterInfo\`**; its emulated result is \`ExtraDataSize = 4\`, \`ExtraData[0] = 0x400\`. Our **already-existing pure-Rust** \`src/secdrv_protocol.rs\` implementation matches this known behavior; no production code needs changing for this single command.
+
+**Not established:** the original kernel driver response, whether the protected DLL accepts a response, the version values in this particular request, or whether **later** IOCTLs use other commands (\`0x3D\`, \`0x3E\`, etc.). The user's previous Wine relay trace showed all 1,902 requests failing with \`STATUS_FILE_DELETED\` when targeting the **temporary \`Secdrv -> \\\\Device\\\\Null\` alias**. That does not establish authentic SafeDisc replies or any working decryption of the ICD.
+
+**Next safe read-only measurements while WineDbg is paused at the same entrypoint:** retrieve only three 32-bit request version DWORDs, using the live \`stdcall\` input pointer at \`[ESP+12]\`:
+
+\`\`\`text
+print /x *(unsigned int*)(*(unsigned int*)($esp+12))
+print /x *(unsigned int*)(*(unsigned int*)($esp+12)+4)
+print /x *(unsigned int*)(*(unsigned int*)($esp+12)+8)
+\`\`\`
+
+The three values are in-buffer \`VersionMajor\`, \`VersionMinor\`, \`VersionPatch\`; they should **not** be confused with the hardcoded **response** version \`4,3,86\` in SafeDiscShim. Continue only after the capture, one breakpoint at a time. The debugger's code address \`0x7BACCBE0\` and \`ESP\` are specific to this session. Do not commit user-owned game binaries or request-buffer dumps.
+
 ## 2026-10-26: WineDbg symbol lookup blocked; PE export address workaround
 
 In the user-provided WineDbg session, both `break KERNEL32!DeviceIoControl` and `break DeviceIoControl` were **delayed** even though `info share` already lists `kernel32.dll` at image base **`0x7BAB0000`** and `kernelbase.dll` at **`0x7B500000`** (both `PE-Wine COFF`). A COFF debug information label does **not** guarantee WineDbg can resolve a function's name. Do **not** keep issuing unresolved symbolic breakpoints or simply `cont` 1,902 times.
