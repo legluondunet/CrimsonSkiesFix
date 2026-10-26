@@ -87,6 +87,29 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Complete alias Wine log audited (2026-10-26)
+
+The user subsequently supplied the entire original `safedisc-alias.log` (**43,885 lines, 4,900,009 bytes**). The log confirms the following exact counts **for research process 0124** (excluding other Wine processes):
+
+| Observation | Count | Supporting sample |
+| --- | ---: | --- |
+| `CreateFileW(\\\\.\\Secdrv)` starts | **3,805** | first self-test at line 8055; DLL starts at 8294 |
+| Successful Secdrv handle returns | **3,805** | first self-test returned `0x4C`; all 3,804 DLL opens returned `0x6C` |
+| `KERNEL32_DeviceIoControl` calls for `0xEF002407` | **1,902** | lines 8308, 8325, etc. |
+| Matching `NtDeviceIoControlFile` entries for `0xEF002407` on `0x6C` | **1,902** | first at line 8310, last at line 43747 |
+| Failed opens for `\\\\.\\SICE` | **195** | `INVALID_HANDLE_VALUE`, e.g. lines 8515 onward |
+| Failed opens for `\\\\.\\NTICE` | **195** | `INVALID_HANDLE_VALUE`, e.g. lines 8523 onward |
+
+The most frequent pattern inside DLL attach is **two successful Secdrv opens followed by one `0xEF002407` request**. The input buffer is always passed at **`0x00C82670`**, output buffer at **`0x00C82B84`**, with bytes **`0x514`** and **`0x610`** respectively. The first request is on lines 8308–8310; the last request is line 43747, **immediately before native DLL unload at line 43748**. This is a **bounded, unsuccessful retry loop of 1,902 attempted protocol exchanges**, rather than proof that a single successful driver reply occurred.
+
+Crucially, some Wine lines report `get_nt_and_unix_names ... -> ret c00000cb` for `Secdrv`, but they are *not* final Win32 open results in this alias test: the adjacent `CreateFileW returning 0000006C` lines unequivocally demonstrate valid handles. Treating the intermediate Wine helper code as a failed device open would be erroneous.
+
+**Remaining observability gap:** Wine's `+file,+loaddll` trace logs each `NtDeviceIoControlFile` **entry**, but not an unambiguous per-call return `NTSTATUS` or the contents of the in/out packet. The command ID field inside a 0x514-byte request is at **offset `0x0C`**, corresponding to live address **`0x00C8267C`** in this particular run. This address is **specific to the observed session**, not a fixed offset for all runs; it should never be hardcoded into the patcher. We cannot claim which protocol subcommands were attempted.
+
+The standard Wine messages do show that `LoadLibraryW` **still returns error 998** after all retries (last error near line 43830), and the same nine first-chance exceptions remain. The `0x00504000` IOCTLs on console handles `0x0C`/`0x10` are **not** part of the Secdrv protocol. Debugger-device checks of `SICE` and `NTICE` are separate from this protocol as well.
+
+**Next technical gate:** obtain the actual request command word and actual `DeviceIoControl` return/last-error value from a **single real call**, using controlled debugger or call-boundary instrumentation. Only after that should any userspace adapter feed responses from `src/secdrv_protocol.rs`; the current pure Rust response model remains unconnected and unvalidated against actual inputs. No proprietary packet contents are committed.
+
 ## Null alias clean run: IOCTL reached but DLL initialization still fails
 
 The user repeated the `--load-with-secdrv-alias --trace-exceptions` test with **`WINEDEBUG=-all`** (no trace interleaving) against the original hash-verified `dplayerx.dll`. It clearly confirmed:
@@ -117,7 +140,7 @@ References: https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.
 
 The user ran the optional `--load-with-secdrv-alias` experiment under Wine Staging 11.17 and provided the **last 90 filtered lines**, *not yet the full raw `safedisc-alias.log`*. The alias was removed on ordinary return.
 
-**Five native calls of particular interest appear in the excerpt:**
+**The earlier 90-line filtered excerpt displayed five native calls; the full uploaded log later confirmed 1,902 identical IOCTL invocations:**
 
 ```text
 0124:trace:file:NtDeviceIoControlFile (0x6c,(nil),(nil),(nil),
