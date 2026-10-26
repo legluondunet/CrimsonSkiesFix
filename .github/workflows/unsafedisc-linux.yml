@@ -1,0 +1,42 @@
+name: Experimental native unSafeDisc Linux CLI
+
+on:
+  push:
+    branches:
+      - feature/unsafedisc-linux-crimson
+  pull_request:
+    paths:
+      - 'src/bin/unsafedisc-linux.rs'
+      - 'docs/unsafedisc-linux.md'
+      - '.github/workflows/unsafedisc-linux.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64 - research CLI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit tests (synthetic fixtures only)
+        run: cargo test --bin unsafedisc-linux
+      - name: Build native Linux executable
+        run: cargo build --release --bin unsafedisc-linux
+      - name: Smoke test CLI
+        run: |
+          ./target/release/unsafedisc-linux --help
+          if ./target/release/unsafedisc-linux unpack; then
+            echo "ERROR: unsupported unpack command unexpectedly succeeded"
+            exit 1
+          fi
+      - name: Upload experimental Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsafedisc-linux-x86_64-inspect-only
+          path: target/release/unsafedisc-linux
+          if-no-files-found: error
