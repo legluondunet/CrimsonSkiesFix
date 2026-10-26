@@ -99,9 +99,9 @@ The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`,
 
 ## 2026-10-26: first real SafeDisc IOCTL subcommand measured — 0x3C
 
-**User-supplied live WineDbg observation**, in the paused Windows x86 research helper, with the original hash-verified protected \`dplayerx.dll\` and temporary \`Secdrv\` null-device alias:
+**User-supplied live WineDbg observation**, in the paused Windows x86 research helper, with the original hash-verified protected `dplayerx.dll` and temporary `Secdrv` null-device alias:
 
-\`\`\`text
+```text
 Wine-dbg>disas 0x7BACCBE0
 0x0000007baccbe0 kernel32+0x1cbe0: pushl %ebp
 0x0000007baccbe1 kernel32+0x1cbe1: movl %esp, %ebp
@@ -117,21 +117,21 @@ Wine-dbg>print /x *(unsigned int*)($esp+8)
 0xef002407
 Wine-dbg>print /x *(unsigned int*)(*(unsigned int*)($esp+12)+12)
 0x3c
-\`\`\`
+```
 
-**Confirmed:** the **first intercepted** \`DeviceIoControl\` call is SafeDisc main IOCTL **\`0xEF002407\`** and its 32-bit **\`Command\` field at input offset \`0x0C\` is \`0x3C\`**. In [RibShark/SafeDiscShim's source](https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.cpp), \`0x3C\` is **\`GetDebugRegisterInfo\`**; its emulated result is \`ExtraDataSize = 4\`, \`ExtraData[0] = 0x400\`. Our **already-existing pure-Rust** \`src/secdrv_protocol.rs\` implementation matches this known behavior; no production code needs changing for this single command.
+**Confirmed:** the **first intercepted** `DeviceIoControl` call is SafeDisc main IOCTL **`0xEF002407`** and its 32-bit **`Command` field at input offset `0x0C` is `0x3C`**. In [RibShark/SafeDiscShim's source](https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.cpp), `0x3C` is **`GetDebugRegisterInfo`**; its emulated result is `ExtraDataSize = 4`, `ExtraData[0] = 0x400`. Our **already-existing pure-Rust** `src/secdrv_protocol.rs` implementation matches this known behavior; no production code needs changing for this single command.
 
-**Not established:** the original kernel driver response, whether the protected DLL accepts a response, the version values in this particular request, or whether **later** IOCTLs use other commands (\`0x3D\`, \`0x3E\`, etc.). The user's previous Wine relay trace showed all 1,902 requests failing with \`STATUS_FILE_DELETED\` when targeting the **temporary \`Secdrv -> \\\\Device\\\\Null\` alias**. That does not establish authentic SafeDisc replies or any working decryption of the ICD.
+**Not established:** the original kernel driver response, whether the protected DLL accepts a response, the version values in this particular request, or whether **later** IOCTLs use other commands (`0x3D`, `0x3E`, etc.). The user's previous Wine relay trace showed all 1,902 requests failing with `STATUS_FILE_DELETED` when targeting the **temporary `Secdrv -> \\\\Device\\\\Null` alias**. That does not establish authentic SafeDisc replies or any working decryption of the ICD.
 
-**Next safe read-only measurements while WineDbg is paused at the same entrypoint:** retrieve only three 32-bit request version DWORDs, using the live \`stdcall\` input pointer at \`[ESP+12]\`:
+**Next safe read-only measurements while WineDbg is paused at the same entrypoint:** retrieve only three 32-bit request version DWORDs, using the live `stdcall` input pointer at `[ESP+12]`:
 
-\`\`\`text
+```text
 print /x *(unsigned int*)(*(unsigned int*)($esp+12))
 print /x *(unsigned int*)(*(unsigned int*)($esp+12)+4)
 print /x *(unsigned int*)(*(unsigned int*)($esp+12)+8)
-\`\`\`
+```
 
-The three values are in-buffer \`VersionMajor\`, \`VersionMinor\`, \`VersionPatch\`; they should **not** be confused with the hardcoded **response** version \`4,3,86\` in SafeDiscShim. Continue only after the capture, one breakpoint at a time. The debugger's code address \`0x7BACCBE0\` and \`ESP\` are specific to this session. Do not commit user-owned game binaries or request-buffer dumps.
+The three values are in-buffer `VersionMajor`, `VersionMinor`, `VersionPatch`; they should **not** be confused with the hardcoded **response** version `4,3,86` in SafeDiscShim. Continue only after the capture, one breakpoint at a time. The debugger's code address `0x7BACCBE0` and `ESP` are specific to this session. Do not commit user-owned game binaries or request-buffer dumps.
 
 ## 2026-10-26: WineDbg symbol lookup blocked; PE export address workaround
 
