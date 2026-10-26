@@ -90,6 +90,7 @@ fn sha256(data: &[u8]) -> String {
 #[derive(Debug, Clone)]
 struct PeSection {
     name: [u8; 8],
+    virtual_address: u32,
     raw_offset: usize,
     raw_len: usize,
 }
@@ -137,13 +138,115 @@ fn parse_pe32(data: &[u8]) -> Result<Pe32> {
         let at = section_at.checked_add(i * 40).ok_or("PE section table overflow")?;
         let sec = data.get(at..at + 40).ok_or("truncated PE section")?;
         let name: [u8; 8] = sec[..8].try_into().unwrap();
+        let virtual_address = read_u32(data, at + 12)?;
         let raw_len = read_u32(data, at + 16)? as usize;
         let raw_offset = read_u32(data, at + 20)? as usize;
         let end = raw_offset.checked_add(raw_len).ok_or("PE section length overflow")?;
         if end > data.len() { return Err("PE section extends past EOF".into()); }
-        result.push(PeSection { name, raw_offset, raw_len });
+        result.push(PeSection { name, virtual_address, raw_offset, raw_len });
     }
     Ok(Pe32 { entry_rva: entry, sections: result })
+}
+
+// Executable base relocation directory (IMAGE_DIRECTORY_ENTRY_BASERELOC = 5).
+// Only IMAGE_REL_BASED_ABSOLUTE (0, padding) and HIGHLOW (3, x86 32-bit)
+// occur in our exact verified Crimson Skies binary. Reject other types.
+#[derive(Debug, PartialEq, Eq)]
+struct RelocBlock {
+    page_rva: u32,
+    highlow_offsets: Vec<u16>,
+}
+
+fn parse_relocation_blocks(data: &[u8]) -> Result<(Vec<RelocBlock>, usize)> {
+    let mut cursor = 0usize;
+    let mut blocks = Vec::new();
+    let mut padding = 0usize;
+    let mut previous_page: Option<u32> = None;
+    while cursor < data.len() {
+        let page = read_u32(data, cursor)?;
+        let block_len = read_u32(data, cursor + 4)? as usize;
+        if page % 0x1000 != 0 || block_len < 8 || block_len % 2 != 0 {
+            return Err(format!("invalid relocation block at +0x{cursor:X}"));
+        }
+        let next = cursor.checked_add(block_len).ok_or("relocation size overflow")?;
+        if next > data.len() {
+            return Err("relocation block extends past directory".into());
+        }
+        if previous_page.is_some_and(|prev| page <= prev) {
+            return Err("relocation pages are not strictly increasing".into());
+        }
+        let mut highlow_offsets = Vec::new();
+        for at in (cursor + 8..next).step_by(2) {
+            let value = read_u16(data, at)?;
+            let kind = value >> 12;
+            let off = value & 0xFFF;
+            match kind {
+                0 => padding += 1,
+                3 => {
+                    if off > 0xFFC {
+                        return Err("32-bit relocation straddles page boundary".into());
+                    }
+                    if highlow_offsets.last().is_some_and(|prev| off < *prev + 4) {
+                        return Err("overlapping or unsorted HIGHLOW relocation".into());
+                    }
+                    highlow_offsets.push(off);
+                }
+                _ => return Err(format!("unsupported x86 relocation type {kind}")),
+            }
+        }
+        blocks.push(RelocBlock { page_rva: page, highlow_offsets });
+        previous_page = Some(page);
+        cursor = next;
+    }
+    Ok((blocks, padding))
+}
+
+fn pe_relocation_blocks(image: &[u8], pe: &Pe32) -> Result<(Vec<RelocBlock>, usize)> {
+    let nt = read_u32(image, 0x3C)? as usize;
+    let optional = nt.checked_add(24).ok_or("PE optional header overflow")?;
+    let optional_len = read_u16(image, nt + 20)? as usize;
+    // PE32 optional header data directory index 5, after 96-byte fixed portion.
+    let directory_offset = 96 + 5 * 8;
+    if optional_len < directory_offset + 8 {
+        return Err("PE optional header too short for relocation directory".into());
+    }
+    let directory_rva = read_u32(image, optional + directory_offset)?;
+    let directory_len = read_u32(image, optional + directory_offset + 4)? as usize;
+    if directory_rva == 0 || directory_len == 0 || directory_len > 1_048_576 {
+        return Err("relocation directory missing or too large".into());
+    }
+    let section = pe.section(b".reloc")?;
+    let relative = directory_rva.checked_sub(section.virtual_address)
+        .ok_or("relocation RVA precedes .reloc section")? as usize;
+    if relative.checked_add(directory_len).is_none_or(|end| end > section.raw_len) {
+        return Err("relocation directory extends past .reloc raw section".into());
+    }
+    let start = section.raw_offset.checked_add(relative)
+        .ok_or("relocation file offset overflow")?;
+    let bytes = image.get(start..start + directory_len)
+        .ok_or("relocation directory extends past PE file")?;
+    parse_relocation_blocks(bytes)
+}
+
+// Split one 4-KiB page into adjacent byte spans, omitting each 32-bit
+// relocation. The original checksum mixer resets its weight per span, while
+// its accumulation persists. Do NOT mistake this isolated primitive for
+// the full SafeDisc checksum (which also depends on section selection and
+// opaque dplayerx.dll transformations).
+#[allow(dead_code)]
+fn checksum_page_without_highlow(page: &[u8], offsets: &[u16], previous: u32) -> Result<u32> {
+    if page.len() != 4096 { return Err("expected exactly one PE 4-KiB page".into()); }
+    let mut sum = previous;
+    let mut start = 0usize;
+    for &off in offsets {
+        let off = off as usize;
+        if off < start || off + 4 > page.len() {
+            return Err("invalid relocation offset for checksum page".into());
+        }
+        sum = checksum_chunk(&page[start..off], sum);
+        start = off + 4;
+    }
+    Ok(checksum_chunk(&page[start..], sum))
 }
 
 fn read_original(path: &Path, expected_len: usize, expected_sha: &str) -> Result<Vec<u8>> {
@@ -266,11 +369,35 @@ fn inspect(options: Options) -> Result<()> {
     let dll = read_original(options.dplayerx.as_ref().unwrap(), DLL_LEN, DLL_SHA)?;
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
+    let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
+    let text = protected_pe.section(b".text")?;
+    let text_page_start = text.virtual_address;
+    let text_page_count = text.raw_len / 4096;
+    if text.raw_len % 4096 != 0 { return Err("unexpected unaligned .text raw size".into()); }
+    let text_page_end = text_page_start.checked_add(text.raw_len as u32)
+        .ok_or(".text RVA range overflow")?;
+    let text_blocks = relocs.iter()
+        .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
+        .count();
+    let text_highlow: usize = relocs.iter()
+        .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
+        .map(|block| block.highlow_offsets.len()).sum();
+    let total_highlow: usize = relocs.iter().map(|block| block.highlow_offsets.len()).sum();
+    // Expected for the exact hash-verified user-owned Crimson Skies ICD,
+    // not a general rule for unrelated games.
+    if relocs.len() != 558 || total_highlow != 71_114 || reloc_padding != 280
+        || text_page_count != 514 || text_blocks != 514 || text_highlow != 61_743 {
+        return Err("relocation layout differs from the expected Crimson Skies original".into());
+    }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
     println!("Verified original Crimson Skies 1.0.2.0 files (SHA-256 + size).");
     println!("SafeDisc: 1.50.20; native read-only inspection; no Wine.");
     println!("Loader entry RVA: 0x{:08X}", source_pe.entry_rva);
     println!("ICD entry RVA:    0x{:08X}", protected_pe.entry_rva);
+    println!("PE relocations: {} blocks, {} HIGHLOW DWORDs, {} padding entries.",
+        relocs.len(), total_highlow, reloc_padding);
+    println!(".text relocations: {} pages, {} HIGHLOW DWORDs.",
+        text_blocks, text_highlow);
     println!("Raw key offset:  0x{raw_offset:X} (CRPE + 6 + 0x148)");
     println!("Selected raw DWORDs:");
     for (i, w) in raw.iter().enumerate() { println!("  raw[{i}] = 0x{w:08X}"); }
@@ -290,6 +417,14 @@ fn inspect(options: Options) -> Result<()> {
                 )
             })?;
         let decoded_pe = parse_pe32(&reference)?;
+        // Relocation metadata belongs to unchanged PE structure and should
+        // be exactly equivalent in the original ICD and the unwrapped file.
+        let decoded_relocs = pe_relocation_blocks(&reference, &decoded_pe)?;
+        if decoded_relocs != (relocs, reloc_padding) {
+            return Err("unwrapped reference relocation entries differ from original ICD".into());
+        }
+        println!("Original ICD and TESTME.EXE relocation tables match.");
+
         if decoded_pe.entry_rva != protected_pe.entry_rva {
             return Err("original ICD and unwrapped reference entrypoints differ".into());
         }
@@ -452,6 +587,46 @@ mod tests {
         let matches = import_xor_matches(&encrypted, &ep, &decoded, &dp, REPORTED_FIRST_WORD).unwrap();
         assert_eq!(matches, vec![(0x220, plain ^ REPORTED_FIRST_WORD, plain)]);
         assert!(parse_pe32(b"junk").is_err());
+    }
+
+    #[test]
+    fn parse_and_use_synthetic_highlow_relocations() {
+        // Two relocations at 2 and 9, while no relocations overlap.
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0x1000u32.to_le_bytes());
+        raw.extend_from_slice(&14u32.to_le_bytes());
+        for entry in [0x3002u16, 0x3009, 0x0000] {
+            raw.extend_from_slice(&entry.to_le_bytes());
+        }
+        let (blocks, padding) = parse_relocation_blocks(&raw).unwrap();
+        assert_eq!(padding, 1);
+        assert_eq!(blocks, vec![RelocBlock { page_rva: 0x1000, highlow_offsets: vec![2, 9] }]);
+        let mut page = [0u8; 4096];
+        for (i, byte) in page[..16].iter_mut().enumerate() { *byte = i as u8; }
+        let mut expected = 0;
+        expected = checksum_chunk(&page[0..2], expected);
+        expected = checksum_chunk(&page[6..9], expected);
+        expected = checksum_chunk(&page[13..], expected);
+        assert_eq!(checksum_page_without_highlow(&page, &[2, 9], 0).unwrap(), expected);
+        assert!(checksum_page_without_highlow(&page, &[9, 2], 0).is_err());
+        assert!(checksum_page_without_highlow(&page[..16], &[2], 0).is_err());
+    }
+
+    #[test]
+    fn reject_invalid_relocation_blocks() {
+        assert!(parse_relocation_blocks(&[0u8; 7]).is_err());
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0x1000u32.to_le_bytes());
+        raw.extend_from_slice(&10u32.to_le_bytes());
+        raw.extend_from_slice(&0x3FFFu16.to_le_bytes());
+        assert!(parse_relocation_blocks(&raw).is_err());
+        raw[8..10].copy_from_slice(&0x7008u16.to_le_bytes());
+        assert!(parse_relocation_blocks(&raw).is_err());
+        raw[8..10].copy_from_slice(&0x3008u16.to_le_bytes());
+        assert!(parse_relocation_blocks(&raw).is_ok());
+        raw.extend_from_slice(&0x1000u32.to_le_bytes());
+        raw.extend_from_slice(&8u32.to_le_bytes());
+        assert!(parse_relocation_blocks(&raw).is_err());
     }
 
     #[test]
