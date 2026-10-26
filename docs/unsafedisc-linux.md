@@ -46,6 +46,38 @@ Optionally compare against your **locally obtained** and verified working
   --reported-key 0x7496538F
 ```
 
+### If `--reference TESTME.EXE` reports a SHA-256 mismatch
+
+The separately supplied Python widescreen resolution patcher modifies the
+**game executable** in place. This changes its SHA-256, although the original
+`TESTME.EXE` from unSafeDisc was valid. The native inspector **intentionally
+requires unmodified plaintext** for the import-address XOR comparison and
+will not silently accept an already patched executable.
+
+If you already tested the widescreen patch, the Python patcher created
+`testme.exe.crimson-original.bak` next to `testme.exe` before modifying it.
+Check both without changing them:
+
+```bash
+sha256sum testme.exe testme.exe.crimson-original.bak
+```
+
+The original backup must have this full SHA-256:
+
+```text
+43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75
+```
+
+If the backup matches, add this to the `inspect` command:
+
+```bash
+--reference testme.exe.crimson-original.bak
+```
+
+**Do not restore or overwrite the tested, patched `testme.exe` just to
+perform read-only research.** If no verified backup is present, use a separate
+unmodified `TESTME.EXE` generated from your original files.
+
 All three original input files are checked against the **exact SHA-256 and
 size** of the known compatible originals. The optional working reference is
 also checked by SHA-256 and size; arbitrary game builds are refused.
