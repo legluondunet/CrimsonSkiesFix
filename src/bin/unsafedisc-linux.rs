@@ -311,6 +311,25 @@ fn inspect(options: Options) -> Result<()> {
     Ok(())
 }
 
+// Faithful byte-mixing inner loop from unSafeDisc 1.5.5 at 0x401F0D..0x401F36.
+// EBP resets to FD379AB1 for *each* chunk; accumulated sum persists between
+// calls. The caller still needs PE section filtering, relocation handling,
+// and the SafeDisc 1.50.20 DLL-side modifier transformation; this is NOT the
+// complete checksum used to reconstruct the TEA key.
+#[allow(dead_code)]
+fn checksum_chunk(data: &[u8], previous: u32) -> u32 {
+    let mut weight = 0xFD37_9AB1u32;
+    let mut result = previous;
+    for (index, byte) in data.iter().enumerate() {
+        result = result.wrapping_add((*byte as u32).wrapping_mul(weight));
+        weight = weight
+            .wrapping_mul(0xA775_3394)
+            .wrapping_add((data.len() - index - 1) as u32)
+            .wrapping_add(0x3BC6_2BB2);
+    }
+    result
+}
+
 // Standard TEA reference routine, tested with synthetic vectors.
 // NOT a full SafeDisc 1.50.20 decoder: its input needs the DLL's extra layer undone.
 #[cfg(test)]
@@ -357,6 +376,24 @@ mod tests {
     fn reference_tea_decryption_vector_zero_key() {
         // Published textbook 32-round TEA zero-key test case.
         assert_eq!(tea_decrypt(0x41EA_3A0A, 0x94BA_A940, [0; 4]), (0, 0));
+    }
+
+    #[test]
+    fn unsafedisc_checksum_inner_loop_synthetic_vectors() {
+        // Constants and order come from static x86 disassembly, and these
+        // fixed expected values were calculated independently in Python.
+        assert_eq!(checksum_chunk(b"", 0), 0);
+        assert_eq!(checksum_chunk(&[0x01], 0), 0xFD37_9AB1);
+        assert_eq!(checksum_chunk(&[1, 2, 3, 4], 0), 0x518B_EBC7);
+        assert_eq!(checksum_chunk(b"abc", 0), 0xB91C_7E3A);
+        assert_eq!(checksum_chunk(&[0xFF; 8], 0), 0xD544_3EF5);
+        // Reset the weight at each separate call while retaining checksum.
+        let part = checksum_chunk(&[1, 2], 0);
+        assert_eq!(part, 0xB87B_54BF);
+        assert_eq!(checksum_chunk(&[3, 4], part), 0x26A9_98EE);
+        assert_ne!(checksum_chunk(&[3, 4], part), checksum_chunk(&[1, 2, 3, 4], 0));
+        let page: Vec<u8> = (0..4096).map(|i| (i * 7 % 256) as u8).collect();
+        assert_eq!(checksum_chunk(&page, 0), 0xA8B4_2184);
     }
 
     #[test]
