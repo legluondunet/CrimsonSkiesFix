@@ -109,6 +109,20 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### SafeDisc main IOCTL protocol research (no DLL hooks yet)
+
+The alias-assisted `dplayerx.dll` initialization still fails with **Windows error 998** after **9 first-chance access violations**. Its last observed protected-code instruction at RVA `0x7212` is a write to an invalid absolute pointer, so the execution path **has not been established as decrypted or valid**.
+
+The protected DLL does reach `NtDeviceIoControlFile` code **`0xEF002407`** with the exact `0x514`-byte request and `0x610`-byte reply layout described by [SafeDiscShim](https://github.com/RibShark/SafeDiscShim). This project's GPL-3.0-or-later `src/secdrv_protocol.rs` is a **pure, feature-gated Rust research model** of the documented SafeDisc v1 protocol subset. It builds deterministic test responses for commands `0x3C`, `0x3D`, `0x3E`, handles version/checksum fields and validates lengths; it explicitly **rejects unimplemented commands**.
+
+The module can be tested without running any game or DRM code:
+
+```powershell
+cargo test --features research --lib
+```
+
+GitHub Actions runs these tests on Windows. **This module is not installed as a Windows driver, is not hooked into the game process, does not supply replies to `dplayerx.dll`, and cannot decrypt the original ICD.** The next step is to identify actual input command values and IOCTL return statuses before considering a guarded user-space adapter.
+
 ### Compare DLL initialization with a temporary Secdrv alias (research only)
 
 In Wine Staging 11.17, the user's `--test-secdrv-alias` **successfully** opened a temporary DOS-device alias `Secdrv -> \Device\Null`. This resolves the name, but it is **not SafeDisc driver emulation**: the null device cannot handle the vendor IOCTL commands or decrypt an ICD.
