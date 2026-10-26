@@ -87,6 +87,32 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Null alias clean run: IOCTL reached but DLL initialization still fails
+
+The user repeated the `--load-with-secdrv-alias --trace-exceptions` test with **`WINEDEBUG=-all`** (no trace interleaving) against the original hash-verified `dplayerx.dll`. It clearly confirmed:
+
+- The temporary `Secdrv -> \\Device\\Null` name mapping was created and opened.
+- The helper requested cleanup of the alias after the DLL loader returned.
+- There were still **9 first-chance access violations**: 8 in `.txt2` at RVA `0x1BCCD` with live bytes `CD0175088BD29090`, followed by a ninth at RVA `0x7212`.
+- During the ninth fault, with the DLL loaded at `0x00940000`, the live 8 bytes were `A34EECE3726BF637`; `A3 4E EC E3 72` is x86 `MOV [0x72E3EC4E],EAX`, a **write** to the faulting target `0x72E3EC4E`. A random-looking absolute store at this entrypoint is not evidence the code has reached a valid decoder.
+- The two 16-byte `.txt` candidate regions sampled at the ninth fault became `83C4C7B266C1CE56BB08D30FE494913F` (RVA `0x65BE`) and `807D0870D1EA2F1823C6D689DB0EC040` (RVA `0x6621`). These differ from the candidate samples in earlier **no-alias** runs, but the observed DLL load bases also differ and other runtime factors may affect the transformation. There is no controlled proof that the alias uniquely caused the different bytes.
+- **`LoadLibraryW` still returned error 998.** Name resolution by itself is therefore insufficient.
+
+The user-provided earlier filtered Wine `+file,+loaddll` trace did show multiple `0xEF002407` requests with input `0x514` and output `0x610`, matching the documented SafeDisc main driver packet layouts. However, **there are no confirmed successful protocol replies** from a real or emulated driver. The next major requirement is to inspect the actual command fields and implement only responses validated against real requests, not infer decryption from a null-device alias.
+
+### GPL-licensed pure Rust protocol research scaffold
+
+A new **feature-gated, side-effect-free** Rust module `src/secdrv_protocol.rs` implements a deterministic subset of the documented `0xEF002407` command format, adapted from the GPL-3.0 SafeDiscShim implementation with attribution:
+
+- Validates the main IOCTL and exact 0x514 input / 0x610 or 0xC18 output buffer lengths.
+- Implements synthetic responses for only documented commands `0x3C`, `0x3D`, and `0x3E`, including the verification-data arithmetic and the shim's version and extra-data fields.
+- Rejects every unknown or unsupported command; no custom API hooks, kernel device, Windows injection, original EXE/ICD modification or proprietary code included.
+- Built only when Rust feature `research` is requested; Windows CI runs `cargo test --features research --lib`.
+
+**This is a tested protocol-model component, not a working user-space driver, DLL loader hook, or ICD decryptor.** The next integration milestone is to observe the real first `0xEF002407` request's command word and return status, then adapt the verified response path under an explicitly isolated test harness.
+
+References: https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.cpp and https://list.winehq.org/hyperkitty/list/wine-devel%40list.winehq.org/thread/A2SGOS3ZAABYF3LBHRLGNSFL3GQRBDIO/ .
+
 ## 2026-10-26: Actual SafeDisc driver IOCTL reached with null-device alias
 
 The user ran the optional `--load-with-secdrv-alias` experiment under Wine Staging 11.17 and provided the **last 90 filtered lines**, *not yet the full raw `safedisc-alias.log`*. The alias was removed on ordinary return.
