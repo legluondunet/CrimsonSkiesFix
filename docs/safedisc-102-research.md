@@ -87,6 +87,38 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-26: Actual SafeDisc driver IOCTL reached with null-device alias
+
+The user ran the optional `--load-with-secdrv-alias` experiment under Wine Staging 11.17 and provided the **last 90 filtered lines**, *not yet the full raw `safedisc-alias.log`*. The alias was removed on ordinary return.
+
+**Five native calls of particular interest appear in the excerpt:**
+
+```text
+0124:trace:file:NtDeviceIoControlFile (0x6c,(nil),(nil),(nil),
+  0x10020f500,0xef002407,0xc82670,0x00000514,0xc82b84,0x00000610)
+```
+
+- `0xEF002407` is **exactly** the main SafeDisc driver IOCTL `secdrvIoctl::ioctlCodeMain` defined in the independently developed GPL-3.0 project [SafeDiscShim](https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.h). It is not a random or Wine-console IOCTL.
+- Input size `0x514` (**1,300 bytes**) and output size `0x610` (**1,552 bytes**) exactly match the layouts in [SafeDiscShim's `MainIoctlInBuffer` and `MainIoctlOutBuffer`](https://github.com/RibShark/SafeDiscShim/blob/main/src/secdrv_ioctl.cpp). The in-buffer is three version DWORDs, command DWORD, 0x100 verification DWORDs, size DWORD, 0x40 extra DWORDs. The out-buffer is three version DWORDs, 0x100 verification DWORDs, size DWORD, 0x80 extra DWORDs.
+- All five calls use handle `0x6c`, consistent with a newly opened null-device alias, but attribution to a specific `CreateFileW` return requires the **unfiltered log**.
+- This is a significant observed change relative to the earlier missing-driver baseline: the protected DLL **reaches the correct SafeDisc main IOCTL interface after the DOS-device alias is installed**.
+- The log also includes later `0x00504000` IOCTLs on **other handles** (`0x0c`, `0x10`) associated with console output; these must not be mistaken for SafeDisc IOCTLs.
+- The same **nine first-chance access violations** are still reported (eight at the relocated first-fault RVA `0x1BCCD`, one at RVA `0x7212`), and alias removal is logged. The ninth memory value now differs from prior runs; protected-code state or execution conditions may vary.
+- **Crucial limitation:** the filtered excerpt shows only IOCTL **entry calls**, **not their NTSTATUS return values or populated output structures**. A successful `NtDeviceIoControlFile` call cannot be inferred; a null device provides no SafeDisc command emulation. The full terminal `ERROR:` message was interleaved with Wine file trace, so we cannot conclude from this excerpt whether `LoadLibraryW` still returned 998.
+
+**Next discriminating evidence:** inspect/upload the **unfiltered** `safedisc-alias.log` and run one clean summary with Wine tracing disabled:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  wine ./safedisc-memory-probe.exe --dll ./dplayerx.dll \
+  --trace-exceptions --load-with-secdrv-alias \
+  --output ./dplayerx-alias-memory.bin
+```
+
+The helper can then report the actual `LoadLibraryW` outcome, and comparison with the original no-alias results will distinguish "device name missing" from "driver IOCTL protocol missing". The clean run **still executes untrusted DLL initialization** in the isolated Wine research prefix, and may fail/hang. Any output file is proprietary and must not be published to the repository.
+
+Further work should validate the protocol behavior rather than attempt to invoke the still-obfuscated two `dplayerx.dll` cipher routines directly. **No functioning autonomous ICD unpacker exists yet.**
+
 ## 2026-10-26: Successful ephemeral Secdrv name test and next comparison
 
 The user ran `--test-secdrv-alias` in an isolated Wine Staging 11.17 prefix and confirmed `DefineDosDeviceW` successfully creates a temporary mapping from `Secdrv` to `\Device\Null`; a subsequent `CreateFileW(\\.\Secdrv)` opens it successfully. The alias-only test did NOT execute the protected DLL, respond to a SafeDisc IOCTL, modify any original game files, or implement an ICD decoder.
