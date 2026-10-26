@@ -474,6 +474,27 @@ fn checksum_chunk(data: &[u8], previous: u32) -> u32 {
     result
 }
 
+// Exact EAX call ordering observed in unSafeDisc 1.5.5 at 0x401F62:
+// for each DWORD, XOR by index-derived mask, call 0x65BE, XOR same mask,
+// call 0x6621, write transformed DWORD. Neither real protected DLL routine
+// is currently available as a native callback. Keep the adapter private
+// and test exclusively with synthetic closures, never a fabricated decoder.
+#[allow(dead_code)]
+fn pre_tea_dwords_with_modifiers<F, G>(
+    data: &mut [u8], mut first_modifier: F, mut second_modifier: G,
+) where F: FnMut(u32) -> u32, G: FnMut(u32) -> u32 {
+    for (index, bytes) in data.chunks_exact_mut(4).enumerate() {
+        let index = index as u32;
+        // The real x86 code ORs FOUR shifts of the entire DWORD index.
+        // Do not truncate to (index & 0xFF) or assume simple byte repetition:
+        // e.g. index 0x100 produces mask 0x01010100.
+        let mask = (index << 24) | (index << 16) | (index << 8) | index;
+        let input = u32::from_le_bytes(bytes.try_into().unwrap());
+        let output = second_modifier(first_modifier(input ^ mask) ^ mask);
+        bytes.copy_from_slice(&output.to_le_bytes());
+    }
+}
+
 // Standard TEA reference routine, tested with synthetic vectors.
 // NOT a full SafeDisc 1.50.20 decoder: its input needs the DLL's extra layer undone.
 #[cfg(test)]
@@ -538,6 +559,32 @@ mod tests {
         assert_ne!(checksum_chunk(&[3, 4], part), checksum_chunk(&[1, 2, 3, 4], 0));
         let page: Vec<u8> = (0..4096).map(|i| (i * 7 % 256) as u8).collect();
         assert_eq!(checksum_chunk(&page, 0), 0xA8B4_2184);
+    }
+
+    #[test]
+    fn pretea_dword_modifier_order_and_full_width_index_mask() {
+        let mut synthetic = vec![0u8; 258 * 4 + 2];
+        synthetic[258 * 4..].copy_from_slice(&[0xAA, 0xBB]);
+        // Identity modifiers cancel the XOR mask, regardless of index.
+        let mut unchanged = synthetic.clone();
+        pre_tea_dwords_with_modifiers(&mut unchanged, |x| x, |x| x);
+        assert_eq!(unchanged, synthetic);
+        // Deliberately noncommuting synthetic modifiers expose stage order,
+        // XOR placement and the high-index (0x100) mask semantics.
+        pre_tea_dwords_with_modifiers(
+            &mut synthetic,
+            |x| x.wrapping_add(1),
+            |x| x ^ 0x1122_3344,
+        );
+        let read = |index: usize| {
+            u32::from_le_bytes(synthetic[index * 4..index * 4 + 4].try_into().unwrap())
+        };
+        assert_eq!(read(0), 0x1122_3345);
+        assert_eq!(read(1), 0x1122_3347);
+        assert_eq!(read(255), 0xEEDD_CCBB);
+        assert_eq!(read(256), 0x1122_3345);
+        assert_eq!(read(257), 0x1122_3347);
+        assert_eq!(&synthetic[258 * 4..], &[0xAA, 0xBB]);
     }
 
     #[test]
