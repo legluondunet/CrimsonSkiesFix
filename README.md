@@ -109,6 +109,17 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### Next experiment: observe real SafeDisc IOCTL return values
+
+The existing `+file` logs show **1,902 SafeDisc `0xEF002407` requests**, but not their return values or subcommand IDs. To avoid invasive DLL patching, the optional `scripts/safedisc-relay-probe.sh` uses a temporary Wine `RelayInclude` filter for `DeviceIoControl`, `NtDeviceIoControlFile`, and `GetLastError`:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" \
+  bash scripts/safedisc-relay-probe.sh ./safedisc-memory-probe.exe ./dplayerx.dll
+```
+
+The script checks that `RelayInclude` does not already exist in the selected prefix, refuses to overwrite a log, and cleans up the added registry value on normal termination. The original proprietary DLL **is still executed**, so run only in a disposable Wine prefix; a forced process termination may prevent cleanup. This can identify API returns but **not** the internal request command field; the result is not a working driver, DRM decryptor or game patch. See [research notes](docs/safedisc-102-research.md).
+
 ### Full Wine Secdrv trace: confirmed retry loop
 
 The complete `safedisc-alias.log` (43,885 lines) shows **3,804 successful opens of the temporary `Secdrv` alias by the DLL** and **1,902 actual `0xEF002407` IOCTL attempts** on handle `0x6C`. An additional successful open of the same alias was performed by the probe itself before DLL loading. Each IOCTL uses a `0x514`-byte request and `0x610`-byte output, with request pointer `0x00C82670` for **that one run only**. The DLL also probes `SICE` and `NTICE` (195 unsuccessful opens each) before terminating with load error **998**.
