@@ -97,6 +97,36 @@ python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
 
 The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
 
+## Proposed next read-only experiment: inspect one IOCTL subcommand with WineDbg
+
+The `+relay` log proves every call's return status, but **not** the value at the 32-bit request's command field (`input_buffer + 0x0C`). The normal WineDbg interpreter supports module-qualified symbol breakpoints and expressions that read debuggee memory (WineDbg manual: https://manpages.debian.org/trixie/wine/winedbg.1.en.html). In an **isolated, disposable Wine prefix**, one can try:
+
+```bash
+WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
+  winedbg ./safedisc-memory-probe.exe \
+  --dll ./dplayerx.dll --trace-exceptions --load-with-secdrv-alias \
+  --output ./dplayerx-debug-probe.bin
+```
+
+At WineDbg's prompt, **before continuing**:
+
+```text
+break KERNEL32!DeviceIoControl
+cont
+```
+
+If the breakpoint resolves and hits in **the Windows x86 process**, the `stdcall` arguments at function entry are `[ESP+4]` = handle, `[ESP+8]` = IOCTL, `[ESP+12]` = request pointer. Check the **current call**:
+
+```text
+info regs
+print /x *(unsigned int*)($esp+8)
+print /x *(unsigned int*)(*(unsigned int*)($esp+12)+12)
+```
+
+The first printed number must be **`0xEF002407`** for this to be the relevant call; otherwise `cont` to the next `DeviceIoControl` call and do not interpret the second number yet. The second printed number is then the **subcommand** to compare against the pure Rust `secdrv_protocol.rs` model (candidate commands `0x3C`, `0x3D`, `0x3E` or something else). Only send the **subcommand DWORD** here; do **not** post the proprietary request buffer or copied game code.
+
+**Limitations:** this WineDbg recipe is **not validated in the user's exact Wine 11.17 installation**. The `KERNEL32!DeviceIoControl` symbol may differ by Wine build or not resolve; the target may stop earlier on anti-debug/exception checks, and a debugger itself can alter protected-code behavior. No runtime response injection or SafeDisc bypass is performed. Allow ordinary process cleanup where feasible, since terminating it abruptly can leave an alias mapping behind in the disposable prefix.
+
 ## 2026-10-26: IOCTL return status definitively observed (Wine +relay)
 
 The user provided the complete `safedisc-ioctl-relay.log` captured with our filtered Wine relay diagnostic: **11,732 lines / 1,218,180 bytes**. A local full-file count (not a truncated grep sample) establishes:
