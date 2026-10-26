@@ -109,6 +109,12 @@ WINEPREFIX="$HOME/.wine-crimson-research" WINEDEBUG=-all \
 
 The optional capture outputs are `safedisc-txt-stage1.bin` and `safedisc-txt-stage2.bin`. They are written only after the callback is removed, even if the underlying `LoadLibraryW` reports error 998. If the same filenames already exist, the helper **refuses to overwrite them**. The files contain code from the user's proprietary DLL; **do not commit, redistribute or add them to GitHub releases**. The command still executes the DLL initializer, so use only the verified DLL inside an isolated Wine prefix. More details: [technical notes](docs/safedisc-102-research.md).
 
+### Full Wine Secdrv trace: confirmed retry loop
+
+The complete `safedisc-alias.log` (43,885 lines) shows **3,804 successful opens of the temporary `Secdrv` alias by the DLL** and **1,902 actual `0xEF002407` IOCTL attempts** on handle `0x6C`. An additional successful open of the same alias was performed by the probe itself before DLL loading. Each IOCTL uses a `0x514`-byte request and `0x610`-byte output, with request pointer `0x00C82670` for **that one run only**. The DLL also probes `SICE` and `NTICE` (195 unsuccessful opens each) before terminating with load error **998**.
+
+**Wine `+file` logging does not expose the request's command DWORD at input offset `0x0C`, the IOCTL return status, or response bytes.** The next diagnostic therefore needs one controlled observation at the Win32 `DeviceIoControl` boundary; the pure-Rust SafeDisc protocol model must not be connected to the DLL until the real command and result are observed. See [the research note](docs/safedisc-102-research.md). Nothing has been decrypted or installed as a driver.
+
 ### SafeDisc main IOCTL protocol research (no DLL hooks yet)
 
 The alias-assisted `dplayerx.dll` initialization still fails with **Windows error 998** after **9 first-chance access violations**. Its last observed protected-code instruction at RVA `0x7212` is a write to an invalid absolute pointer, so the execution path **has not been established as decrypted or valid**.
