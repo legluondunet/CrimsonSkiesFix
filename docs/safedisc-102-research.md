@@ -87,6 +87,43 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## 2026-10-26: IOCTL return status definitively observed (Wine +relay)
+
+The user provided the complete `safedisc-ioctl-relay.log` captured with our filtered Wine relay diagnostic: **11,732 lines / 1,218,180 bytes**. A local full-file count (not a truncated grep sample) establishes:
+
+| Directly observed item | Count / value |
+| --- | --- |
+| `KERNEL32.DeviceIoControl(0x6c, 0xef002407, ...)` entries | **1,902** |
+| Corresponding `KERNEL32.DeviceIoControl()` returns | **1,902**, **all `0x00000000` (FALSE)** |
+| `ntdll.NtDeviceIoControlFile()` return entries with `0xC0000123` | **3,804** (two relay layers, **not** two separate requests) |
+| Main SafeDisc request / response buffer lengths | **0x514 / 0x610** |
+| Main request pointer in this run | **0x00D825F0**; command field at input +0x0C is therefore **0x00D825FC** |
+| Main output pointer in this run | **0x00D82B04** |
+| `dplayerx.dll` image base in this run | **0x00A40000** |
+| DLL attach completion | **FAILED**: `exception c0000005 in PE entry point`; DLL attach retval=0 |
+| `KERNEL32.GetLastError()` after failed `LoadLibraryW` | **0x000003E6 (998 / ERROR_NOACCESS)** |
+| Vectored first-chance access violations | **9**, of which first 8 at RVA `0x1BCCD` |
+| Ninth access violation | **RVA `0x7221`** (`EIP=0x00A47221`, operand `0xFFFFFFFF`, raw bytes `A6002AC40E193CEC`) |
+
+Representative contiguous relay sequence (first request, lines 133–138):
+
+```text
+Call KERNEL32.DeviceIoControl(0000006c,ef002407,00d825f0,00000514,00d82b04,00000610,0022d6d4,00000000)
+Ret  ntdll.NtDeviceIoControlFile() retval=c0000123
+Ret  ntdll.NtDeviceIoControlFile() retval=c0000123
+Ret  KERNEL32.DeviceIoControl() retval=00000000
+```
+
+**The NTSTATUS is `STATUS_FILE_DELETED (0xC0000123)`**, per Microsoft MS-ERREF; this is the **status produced by Wine with the temporary `Secdrv -> \\Device\\Null` mapping**. It is *not* proof that the original SafeDisc kernel driver would return this, nor an authoritative semantic explanation for Wine's internal handling of its null-device alias. See https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55 .
+
+Other `NtDeviceIoControlFile` entries with `0xC0000022` refer to console file handles (IOCTL `0x00504000`), **not** to the SafeDisc driver.
+
+**Meaning:** The prior lack of driver-device-name resolution is now fixed only syntactically by the alias. **Every single main SafeDisc request demonstrably fails.** Thus `src/secdrv_protocol.rs` remains an offline scaffold and must not yet be attached to a live call without verifying the actual incoming subcommand and the intended protocol response.
+
+**Variation to avoid over-interpreting:** previous runs showed the ninth AV at RVA `0x7212`; this relay-instrumented run showed it at **`0x7221`**, 15 bytes later. That may result from layout, code transformations, anti-debug responses or instrumentation effects. **There is no controlled evidence assigning a cause to this change.**
+
+**Next observation:** use a debugger or strictly read-only, targeted instrumentation at the `KERNEL32.DeviceIoControl` entry to read **only the 32-bit subcommand at input buffer +0x0C** on the **first** `0xEF002407` request. Reading the returned bytes is unnecessary until the subcommand is known. Do not hardcode the input pointer from this trace in a future run (ASLR and stack addresses vary), or commit original user-owned protocol buffers.
+
 ## 2026-10-26: next non-invasive step — filtered Wine relay for IOCTL results
 
 The complete baseline/alias logs prove that the protected DLL successfully opens the temporary `Secdrv -> \\Device\\Null` name, executes **1,902** main SafeDisc `0xEF002407` driver requests, then fails its initialization with error **998** and the same 9 AVs. The `+file` Wine channel logs **entry arguments** but not the Win32 `DeviceIoControl` return value or the command field at `request + 0x0C`.
