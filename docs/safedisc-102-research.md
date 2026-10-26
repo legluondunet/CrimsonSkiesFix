@@ -99,13 +99,13 @@ The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`,
 
 ## 2026-10-26: original-vs-working TESTME known-plaintext and key-derivation experiment
 
-**New runtime fact supplied by the user:** `TESTME.EXE` (unwrapped with unSafeDisc 1.5.5) successfully launches and plays. The user's separate, simplified resolution patcher also works with it. That is **runtime validation**, distinct from the earlier static PE comparison. **Exclude** the user's incomplete/misprocessed `files-755CD3A8.icd` from all conclusions; it is not evidence for the actual unpacking process.
+**New runtime fact supplied by the user:** `TESTME.EXE` (unwrapped with unSafeDisc 1.5.5) successfully launches and plays. The user's separate, simplified resolution patcher also works with it. That is **runtime validation**, distinct from the earlier static PE comparison. Incomplete/misprocessed image data previously discussed is excluded entirely from the research conclusions.
 
 The privately supplied exact pair was re-opened and analyzed locally **read-only**, with original game files never committed:
 
 - Original SafeDisc loader `CRIMSON(1).EXE` (SHA-256 `675a3c76…fa736`): `DECRPE\0\0` at file offset `0x28E68`. **Immediately following** its 8-byte marker, four **candidate** little-endian raw-key DWORDs: `F2554AFE`, `63F84329`, `3506DDB1`, `696BD396` (full placement not validated; the older write-up warns later SafeDisc versions may add an offset).
 - Original encrypted `CRIMSON.ICD` and verified working `TESTME.EXE` share **entrypoint RVA `0x1F7056`**. Historical key-reconstruction calculation gives `inc_entry_point = (0x1F7056 + 0x2D8) mod 2^32 = 0x1F732E`.
-- User reports unSafeDisc 1.5.5 displayed `7496538F` as a decryption key. **Whether this is the historical `TEA_key1` is not established.** If it is, ArthaXerXès' historical SafeDisc 1.45.11 reconstruction formula says:
+- **Strong independent evidence for the reported key's role:** static DWORD-by-DWORD comparison of the original and `TESTME.EXE` **`.idata`** found **eight exact 32-bit XOR matches** with `0x7496538F` at offsets `0x2433D0`, `0x243A48`, `0x243A50`, `0x243AB8`, `0x243D78`, `0x2443F0`, `0x2443F8`, `0x244460`. For example, at offset `0x2433D0`: original encrypted `0x74F44117` XOR `0x7496538F` equals the corresponding unwrapped import RVA `0x00621298` **exactly**. The eight occurrences represent four distinct decoded RVAs repeated in two copies. This strongly supports the historical *lower-32-bit TEA-related import-RVA XOR key* interpretation of `7496538F`, but does **not alone establish the remaining three TEA key words**. In the much larger `.text` and `.data` regions, there were **zero** exact direct DWORD XOR matches with `7496538F`; direct XOR of the whole ciphertext is **not** a valid decoder.\n- User reports unSafeDisc 1.5.5 displayed `7496538F` as a decryption key. **Whether this is the historical `TEA_key1` is not established.** If it is, ArthaXerXès' historical SafeDisc 1.45.11 reconstruction formula says:
   ```text
   u = (TEA_key1 - (entry_rva + 0x2D8)) mod 2^32
   x = u XOR checksum XOR raw_key[0]
