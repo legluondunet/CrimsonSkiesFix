@@ -87,6 +87,16 @@ The Rust CLI **verifies both protected files** using SHA-256 (auto-discovers `CR
 
 The widescreen patch and the optional narrowly verified `roffile.dll` Wine workaround retain existing safety checks, one-time backups and restoration. Unknown binaries fail closed.
 
+## Reproducible offline summary of the private +relay log
+
+The research-only `scripts/analyze-safedisc-relay.py` reads a **user-owned local Wine text log** without executing anything from the game. It groups `0xEF002407` request entries by observed Wine process/thread prefix; counts Win32 `DeviceIoControl` `TRUE/FALSE` returns and the NTSTATUS values (noting that WOW64 relay can record an NT call twice); reports the run-specific buffer pointers and `input+0x0C` **address**, not the value; and computes fault RVAs if a DLL image base is available. **It does not try to read live memory, decode proprietary buffers, or change Wine settings.**
+
+```bash
+python3 scripts/analyze-safedisc-relay.py ./safedisc-ioctl-relay.log
+```
+
+The parser has synthetic unit tests at `scripts/test_analyze_safedisc_relay.py`, run with `python -m unittest discover -s scripts -p 'test_*.py'` in Windows CI. Logs and game code are not committed.
+
 ## 2026-10-26: IOCTL return status definitively observed (Wine +relay)
 
 The user provided the complete `safedisc-ioctl-relay.log` captured with our filtered Wine relay diagnostic: **11,732 lines / 1,218,180 bytes**. A local full-file count (not a truncated grep sample) establishes:
