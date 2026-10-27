@@ -2130,7 +2130,7 @@ fn inspect(options: Options) -> Result<()> {
         // Relocation metadata belongs to unchanged PE structure and should
         // be exactly equivalent in the original ICD and the unwrapped file.
         let decoded_relocs = pe_relocation_blocks(&reference, &decoded_pe)?;
-        if decoded_relocs != (relocs, reloc_padding) {
+        if decoded_relocs.0.as_slice() != relocs.as_slice() || decoded_relocs.1 != reloc_padding {
             return Err("unwrapped reference relocation entries differ from original ICD".into());
         }
         println!("Original ICD and TESTME.EXE relocation tables match.");
