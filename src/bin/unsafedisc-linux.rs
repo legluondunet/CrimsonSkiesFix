@@ -2093,6 +2093,20 @@ fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  0x18BB0 decodes original data RVA 0x20088 to the 5-byte section name '.txt2'.");
     println!("  0x922E passes that local tag as the third argument to 0x92B0.");
     println!("  0x18B00 reads a candidate 0x28-byte section header and compares its name with '.txt2'.");
+    for (site,bytes) in [
+        (0x9361u32,&[0x66,0xC7,0x45,0xFC,0x01,0x00][..]),
+        (0x938E,&[0x8B,0x55,0xF4,0x83,0xC2,0x28,0x89,0x55,0xF4][..]),
+        (0x93BC,&[0x77,0x02][..]),
+        (0x93C0,&[0xE9,0x5D,0xFF,0xFF,0xFF][..]),
+        (0x93C5,&[0x8B,0x45,0xFC,0x25,0xFF,0xFF,0x00,0x00,0x85,0xC0,0x75,0x32][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    if dll_known_near_branch_target(dll,pe,0x93C0,false)?!=0x9322 {
+        return Err("section-header scan back-edge mismatch".into());
+    }
+    println!("  Comparison success sets [EBP-4]=1; another path increments the header cursor by 0x28.");
+    println!("  A real branch at 0x93C0 returns to selector setup at 0x9322.");
+    println!("  At 0x93C5 the nonzero match flag branches to 0x9403 (block transformation).");
+    println!("  Therefore the first CODE|EXEC match alone does NOT identify the section processed by the loop.");
     println!("  This proves named-section comparison; it does NOT prove whether .txt2 is decoded, skipped or acts as a boundary.");
     Ok(())
 }
@@ -2180,7 +2194,7 @@ fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  Selector-1 section output: disk pointer 0x400, VirtualAddress 0x1000, bounded extent 0x7671.");
     println!("  0x9458 and 0x95B1 both pass [EBP-0x24] (the section RVA + current chunk offset).");
     println!("  Both 0x9710 (copy-in) and 0x9640 (copy-out) derive module_base + that RVA offset.");
-    println!("  This statically links DLL .txt as the candidate destination, conditional on mode/selection success.");
+    println!("  This establishes the address formula for whichever CODE|EXEC section survives the later named-section comparison.");
     println!("  This is conditional on the passed descriptor referring to the original DLL; no plaintext or execution asserted.");
     Ok(())
 }
