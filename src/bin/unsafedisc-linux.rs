@@ -388,6 +388,7 @@ fn checksum_independent_relocation_walk(
     let mut included_bytes = 0usize;
     let mut fragments = 0usize;
     let mut next_relocation = 0usize;
+    let mut crossing_end = 0usize;
 
     // This branch's accumulator spans pages, while the weight is
     // initialized independently at the beginning of EACH call.
@@ -398,15 +399,10 @@ fn checksum_independent_relocation_walk(
             next_relocation += 1;
         }
 
-        let mut cursor = page_start;
-        // A HIGHLOW DWORD beginning at offset 0xFFD..0xFFF can carry
-        // exclusions into the following page.
-        if let Some(&(begin, end)) = relocation_ranges.get(next_relocation) {
-            if begin < page_start && end > page_start {
-                cursor = end.min(page_limit);
-                next_relocation += 1;
-            }
-        }
+        // A HIGHLOW starting at offset 0xFFD..0xFFF was already
+        // consumed in the previous page. Preserve its end offset
+        // explicitly instead of trying to find it again in the list.
+        let mut cursor = page_start.max(crossing_end.min(page_limit));
 
         while next_relocation < relocation_ranges.len()
             && relocation_ranges[next_relocation].0 < page_limit {
@@ -417,6 +413,9 @@ fn checksum_independent_relocation_walk(
                 fragments += 1;
             }
             cursor = cursor.max(end.min(page_limit));
+            if end > page_limit {
+                crossing_end = end;
+            }
             next_relocation += 1;
         }
         if cursor < page_limit {
