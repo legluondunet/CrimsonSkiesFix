@@ -305,6 +305,109 @@ fn dll_relative_call_target(dll: &[u8], pe: &Pe32, call_rva: u32) -> Result<u32>
     Ok(target)
 }
 
+// PE base relocations offer a more grounded way to identify on-disk
+// absolute pointers to .txt than scanning for arbitrary byte patterns.
+// Relocation-backed DWORDs are still just pointers (possibly data),
+// NOT proof the containing bytes decode to reachable x86 instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DllCodeReference {
+    source_rva: u32,
+    source_section: String,
+    target_rva: u32,
+}
+fn dll_code_reloc_refs_to_section(
+    dll: &[u8], pe: &Pe32, blocks: &[RelocBlock],
+    preferred_base: u32, target: &PeSection,
+) -> Result<(usize, Vec<DllCodeReference>)> {
+    const MAX_REFERENCES: usize = 100_000;
+    let mut source_relocations = 0usize;
+    let mut references = Vec::new();
+    let target_end = target.virtual_address as u64 +
+        u64::from(target.virtual_size.max(target.raw_len as u32));
+    for block in blocks {
+        for &offset in &block.highlow_offsets {
+            let source_rva = block.page_rva.checked_add(u32::from(offset))
+                .ok_or("DLL relocation source RVA overflow")?;
+            let Some(source) = pe.sections.iter().find(|section| {
+                section.characteristics & 0x2000_0000 != 0
+                && section.name.as_slice() != target.name.as_slice()
+                && source_rva.checked_sub(section.virtual_address).is_some_and(|rel| {
+                    (rel as usize).checked_add(4).is_some_and(|end| {
+                        end <= section.raw_len.min(if section.virtual_size == 0 {
+                            section.raw_len
+                        } else { section.virtual_size as usize })
+                    })
+                })
+            }) else { continue; };
+            source_relocations += 1;
+            let at = dll_backed_rva_offset(pe, source_rva, 4)?;
+            let pointer_va = read_u32(dll, at)?;
+            let Some(pointer_rva) = pointer_va.checked_sub(preferred_base) else { continue; };
+            if u64::from(pointer_rva) < u64::from(target.virtual_address) ||
+               u64::from(pointer_rva) >= target_end {
+                continue;
+            }
+            let name = String::from_utf8_lossy(
+                source.name.split(|&b| b==0).next().unwrap_or(&[])).to_string();
+            references.push(DllCodeReference {
+                source_rva, source_section:name, target_rva:pointer_rva,
+            });
+            if references.len() > MAX_REFERENCES {
+                return Err("unexpectedly many protected-section xrefs".into());
+            }
+        }
+    }
+    Ok((source_relocations, references))
+}
+
+fn print_dll_protected_xrefs(dll: &[u8]) -> Result<()> {
+    let pe = parse_pe32(dll)?;
+    let nt = read_u32(dll,0x3C)? as usize;
+    let image_base = read_u32(dll,nt+24+28)?;
+    let protected = pe.section(b".txt")?;
+    if protected.characteristics & 0x2000_0000 == 0 {
+        return Err("protected .txt section is not executable".into());
+    }
+    let (blocks, padding) = pe_relocation_blocks(dll,&pe)?;
+    let total_highlow:usize = blocks.iter().map(|block| block.highlow_offsets.len()).sum();
+    let (executable_source_count, references) =
+        dll_code_reloc_refs_to_section(dll,&pe,&blocks,image_base,protected)?;
+    println!("SafeDisc 1.50.20 DLL relocation-backed protected .txt reference research:");
+    println!("  PE preferred image base 0x{image_base:08X}; all input bytes from exact verified original dplayerx.dll.");
+    println!("  Protected target: .txt RVA 0x{:08X}, raw bytes {}, virtual bytes {}.",
+        protected.virtual_address,protected.raw_len,protected.virtual_size);
+    println!("  DLL base relocations: {} pages, {} HIGHLOW, {} ABSOLUTE padding.",
+        blocks.len(),total_highlow,padding);
+    println!("  Backed HIGHLOW words in other executable sections: {executable_source_count}");
+    println!("  Relocation-backed references into .txt: {}",references.len());
+    for name in [".text",".txt2"] {
+        let sub:Vec<_>=references.iter().filter(|r|r.source_section==name).collect();
+        println!("  Origin section {name}: {} matching pointers.",sub.len());
+        for r in sub.iter().take(24) {
+            let distance_a = r.target_rva.abs_diff(0x65BEu32);
+            let distance_b = r.target_rva.abs_diff(0x6621u32);
+            println!("    DWORD source RVA 0x{:08X} -> .txt RVA 0x{:08X}{}",
+                r.source_rva,r.target_rva,
+                if distance_a <= 0x100 || distance_b <= 0x100 { " (near known modifier RVA)" } else { "" });
+        }
+        if sub.len() > 24 {
+            println!("    ... {} additional relocation-backed references omitted.",sub.len()-24);
+        }
+    }
+    for (name,rva) in [("first EAX modifier",0x65BEu32),
+                       ("second EAX modifier",0x6621u32)] {
+        let callers:Vec<_> = references.iter().filter(|r|r.target_rva == rva).collect();
+        println!("  Exact relocation-backed reference to {name} RVA 0x{rva:08X}: {}.",callers.len());
+        for r in callers.iter().take(16) {
+            println!("    From {} source RVA 0x{:08X}",r.source_section,r.source_rva);
+        }
+    }
+    println!("  Only PE relocation-backed DWORD references count: not a full cross-reference graph.");
+    println!("  They can be data pointers; indirect control flow and code that constructs addresses at runtime are not covered.");
+    println!("  No protected section is decrypted; no file is written or DLL loaded.");
+    Ok(())
+}
+
 // Parse the original DLL's normal IMAGE_IMPORT_DESCRIPTOR metadata.
 // This lets us NAME the imported APIs referenced by indirect CALLs
 // in the readable .text startup code, without assuming that every
@@ -1460,13 +1563,14 @@ struct Options {
     modifier_research: bool,
     startup_research: bool,
     attach_research: bool,
+    xref_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1529,6 +1633,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.attach_research = true;
             continue;
         }
+        if key == "--xref-research" {
+            if options.xref_research { return Err("repeated --xref-research argument".into()); }
+            options.xref_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -1560,6 +1669,9 @@ fn inspect(options: Options) -> Result<()> {
     }
     if options.attach_research {
         print_dll_attach_research(&dll)?;
+    }
+    if options.xref_research {
+        print_dll_protected_xrefs(&dll)?;
     }
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
@@ -2557,6 +2669,48 @@ mod tests {
         assert!(dll_relative_call_target(&dll,&pe,0x1004).is_err());
         dll[0x209] = 0x90;
         assert!(dll_indirect_import_call(&dll,&pe,0x1009,0x8E0000).is_err());
+    }
+
+    #[test]
+    fn protected_txt_cross_references_require_highlow_and_executable_source() {
+        let mut dll = synthetic_pe();
+        dll.resize(0xA00,0);
+        dll[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let sec0 = 0x178usize;
+        dll[sec0..sec0+8].copy_from_slice(b".text\0\0\0");
+        dll[sec0+8..sec0+12].copy_from_slice(&0x180u32.to_le_bytes());
+        dll[sec0+12..sec0+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        dll[sec0+16..sec0+20].copy_from_slice(&0x200u32.to_le_bytes());
+        dll[sec0+36..sec0+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let sec1=sec0+40;
+        dll[sec1..sec1+8].copy_from_slice(b".txt\0\0\0\0");
+        dll[sec1+8..sec1+12].copy_from_slice(&0x180u32.to_le_bytes());
+        dll[sec1+12..sec1+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec1+16..sec1+20].copy_from_slice(&0x200u32.to_le_bytes());
+        dll[sec1+20..sec1+24].copy_from_slice(&0x600u32.to_le_bytes());
+        dll[sec1+36..sec1+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let base=0x008E_0000u32;
+        // Only this value is associated with a synthetic HIGHLOW relocation.
+        dll[0x220..0x224].copy_from_slice(&(base+0x2050).to_le_bytes());
+        // This unrelocated matching byte pattern must NOT be reported.
+        dll[0x228..0x22C].copy_from_slice(&(base+0x2060).to_le_bytes());
+        // Relocated pointer points outside target section.
+        dll[0x230..0x234].copy_from_slice(&(base+0x1600).to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        let blocks=[RelocBlock {page_rva:0x1000,highlow_offsets:vec![0x20,0x30]}];
+        let (count, found) = dll_code_reloc_refs_to_section(
+            &dll,&pe,&blocks,base,pe.section(b".txt").unwrap()).unwrap();
+        assert_eq!(count,2);
+        assert_eq!(found,vec![DllCodeReference {
+            source_rva:0x1020, source_section:".text".to_string(),target_rva:0x2050
+        }]);
+        // No code-section relocation => no pointer reported.
+        dll[sec0+36..sec0+40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        let nonexec=parse_pe32(&dll).unwrap();
+        let (count,empty)=dll_code_reloc_refs_to_section(
+            &dll,&nonexec,&blocks,base,nonexec.section(b".txt").unwrap()).unwrap();
+        assert_eq!(count,0);
+        assert!(empty.is_empty());
     }
 
     #[test]
