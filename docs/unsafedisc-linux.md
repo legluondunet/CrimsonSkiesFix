@@ -524,6 +524,43 @@ both `.text` and `.txt2` still make all of these instruction
 decodes **static candidates**, not proof of runtime reachability.
 Nothing has established a byte-transforming loop for `.txt`
 or actual decrypted EAX modifier code at `0x65BE`/`0x6621`.
+#### Relocation-backed references to protected DLL `.txt`
+
+The user's latest `--attach-research` confirms that the
+`.text` `0xA560` routine calls `KERNEL32!SetFilePointer`
+at `0xA578` and `KERNEL32!ReadFile` at `0xA597`.
+Those exact import names strongly establish a file-position/read
+helper rather than a demonstrated `.txt` decryptor. The short
+`0xA550` helper only stores a DWORD in `[ecx+8]`.
+
+The native inspector now offers a more specific way to look
+for the actual protected code initialization path:
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --xref-research
+```
+
+This read-only diagnostic parses the original, hash-verified
+`dplayerx.dll` relocation directory (PE base-relocation type
+`HIGHLOW=3`) and examines only relocated **four-byte words
+in other file-backed executable sections**. It converts each
+absolute VA into a target RVA with the DLL's actual ImageBase
+`0x008E0000` and reports references into protected `.txt`.
+It highlights exact matches or nearby targets relative to the
+known original modifier RVAs `0x65BE` and `0x6621`.
+
+Unlike scanning for arbitrary 4-byte patterns, requiring a
+real PE HIGHLOW relocation substantially reduces accidental
+matches in obfuscated x86, while preserving RVA evidence from
+`.text` and `.txt2`. It prints only up to 24 examples per
+source section and counts any additional matches.
+
+**Limitations:** A relocation-backed pointer can be data rather
+than a reachable instruction. No match does **not** imply that
+the DLL never references `.txt`: runtime-computed address
+arithmetic, relative CALL/JMP and non-relocated pointers are
+not covered. This diagnostic does not resolve protected
+code, run SafeDisc, or change original input files.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
