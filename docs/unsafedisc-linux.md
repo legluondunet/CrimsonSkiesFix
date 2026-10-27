@@ -100,6 +100,31 @@ Optionally compare against your **locally obtained** and verified working
   --reported-key 0x7496538F
 ```
 
+### Inspect section characteristics before choosing the checksum traversal
+
+The original SafeDisc tool's exact PE **section selection** has not been
+recovered yet. A checksum of only \`.text\` may omit sections that the real
+tool processed. Use the optional native, strictly read-only \`--sections\`
+flag to print all PE32 section headers and relocation-start coverage:
+
+\`\`\`powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --sections
+\`\`\`
+
+The report uses the official PE section-header fields: \`VirtualSize\`
+(header offset +8), \`VirtualAddress\` (+12), \`SizeOfRawData\` (+16),
+\`PointerToRawData\` (+20) and \`Characteristics\` (+36). It shows
+type flags **C/I/B** (code/initialized/uninitialized data), memory flags
+**X/R/W** (executable/readable/writable), each section's RVA,
+virtual size, raw file span, and the count of \`HIGHLOW\` DWORDs whose
+**start RVA** lies inside that raw section span.
+
+The result is **metadata only**, not a recovered SafeDisc filter:
+relocations can span raw section boundaries and uninitialized memory may
+have no file data. File section flags do not, by themselves, establish
+whether unSafeDisc selected or excluded a section. No new checksum or
+TEA key is asserted by \`--sections\`.
+
 ### Observed Windows baseline (2026-10-27)
 
 The user ran the exact-hash-verified Crimson Skies 1.0.2.0 inputs on the
@@ -203,6 +228,7 @@ The older hypothesis of reading the four DWORDs directly after
 | Joined-page relocation-skipping checksum primitive | Implemented, synthetic only; handles straddling DWORDs, not the full SafeDisc traversal |
 | Optional `inspect --layout` geometry report | Implemented; reads verified original `.text` relocation metadata only, **no full checksum** |
 | Optional `inspect --checksum-research` report | Implemented; **two provisional `.text` mixer models**, strictly read-only and not a verified SafeDisc checksum |
+| Optional `inspect --sections` section header report | Implemented; raw PE32 flags and relocation starts, **no inference of original section selection** |
 | Page-oriented pre-TEA modifier adapter | Implemented with synthetic modifiers; resets word index every 4-KiB page |
 | Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
 | Full checksum traversal (PE flags, cross-page relocations, DLL modifiers) | Not implemented |
