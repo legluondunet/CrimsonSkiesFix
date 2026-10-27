@@ -3087,3 +3087,29 @@ heavily obfuscated. The marker 0x16 is only a predicted *first byte*
 from the original verified initial XOR; it is not evidence of working
 plain-text reconstruction. An actual read-only Rust implementation
 should preserve such distinctions explicitly.
+
+
+### Statistical clue from the actual first .txt2 chunk: candidate resembles scrambling
+
+Using the original hash-verified file, a **read-only local experiment**
+applied the provisional per-chunk byte recurrence to the first
+4096 original file-backed bytes of DLL .txt2. The original has
+entropy approximately **6.137 bits per byte**, while the candidate
+transformed bytes have approximately **7.952 bits per byte**.
+The source also begins with a known normal x86 prologue
+(0x55 0x8B 0xEC), which the candidate would disturb.
+
+The substantial increase in candidate entropy **supports the
+hypothesis that this path obscures previously readable .txt2 helper
+code after initialization**, instead of recovering executable plaintext.
+It is not proof: the full original x86 loop's opaque control flow,
+true buffer state and runtime API success have not all been
+independently established. The inspector now reports the
+two first-block entropy values without printing or storing the
+candidate ciphertext, and synthetic tests validate its entropy
+function against constant, binary and uniform inputs.
+
+For native unSafeDisc work the practical implication is to prioritize
+the genuinely protected DLL .txt modifier code and game ICD transform,
+rather than treating the .txt2 self-modification route as if it had
+already produced a decrypted executable page.
