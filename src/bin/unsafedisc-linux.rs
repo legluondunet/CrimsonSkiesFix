@@ -996,6 +996,82 @@ fn dll_attach_first_call_path(dll:&[u8],pe:&Pe32)->Result<Vec<u32>>{
     Err("attach path exceeded 32 bounded instructions".into())
 }
 
+// Process-attach's first proved callee (0xD62C) begins with
+// push ebp; mov ebp,esp; sub esp,8; push ebx; push esi; push edi.
+// On a valid stack with enough room, SUB ESP,8 has ZF=CF=0.
+// PF, SF and OF are enumerated, not assumed; each of the eight
+// paths below must converge to the same first rel32 CALL.
+//
+// This is a conditional STATIC proof, not an executable emulator,
+// real stack observation, or evidence of a .txt decoder.
+fn dll_d62c_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
+    let start=executable_rva_to_file_offset(pe,0xD62C,9)?;
+    if dll.get(start..start+9)!=Some(&[
+        0x55,0x8B,0xEC,0x83,0xEC,0x08,0x53,0x56,0x57
+    ][..]){
+        return Err("original D62C stack prologue unexpectedly changed".into());
+    }
+    let mut all=Vec::new();
+    for pf in [false,true]{
+        for sf in [false,true]{
+            for of in [false,true]{
+                let (zf,cf)=(false,false);
+                let mut pc=0xD635u32;
+                let mut seen=std::collections::HashSet::new();
+                let mut path=Vec::new();
+                for _ in 0..32{
+                    if !seen.insert(pc){return Err("D62C opaque predicate loop".into())}
+                    path.push(pc);
+                    let offset=executable_rva_to_file_offset(pe,pc,1)?;
+                    let opcode=dll[offset];
+                    if opcode==0xE8 {
+                        if pc!=0xD664 || dll_relative_call_target(dll,pe,pc)?!=0xD7BE{
+                            return Err("first reached D62C call differs from original".into());
+                        }
+                        break;
+                    }
+                    if opcode==0x90 || (opcode==0x50 && pc==0xD663){
+                        pc+=1;
+                    } else if opcode==0x87 {
+                        let at=executable_rva_to_file_offset(pe,pc,2)?;
+                        if dll[at+1]!=0xC0{return Err("unsupported reached D62C XCHG".into())}
+                        pc+=2;
+                    } else if opcode==0x0F{
+                        let at=executable_rva_to_file_offset(pe,pc,6)?;
+                        if dll[at+1]!=0x8C{return Err("unsupported D62C near Jcc".into())}
+                        let rel=i32::from_le_bytes(dll[at+2..at+6].try_into().unwrap());
+                        pc=if sf!=of {
+                            u32::try_from(i64::from(pc)+6+i64::from(rel))
+                                .map_err(|_|"D62C near Jcc overflow")?
+                        }else{pc+6};
+                    } else if matches!(opcode,0xEB|0x70|0x71|0x74|0x76|0x77|0x7A|0x7B|0x7D){
+                        let at=executable_rva_to_file_offset(pe,pc,2)?;
+                        let taken=match opcode{
+                            0xEB=>true,0x70=>of,0x71=>!of,
+                            0x74=>zf,0x76=>cf||zf,0x77=>!cf&&!zf,
+                            0x7A=>pf,0x7B=>!pf,0x7D=>sf==of,_=>unreachable!()
+                        };
+                        pc=if taken{
+                            u32::try_from(i64::from(pc)+2+i64::from(dll[at+1] as i8))
+                                .map_err(|_|"D62C short Jcc overflow")?
+                        }else{pc+2};
+                    } else {
+                        return Err(format!("unrecognized D62C opcode 0x{opcode:02X} at RVA 0x{pc:08X}"))
+                    }
+                    if !(0xD635..=0xD664).contains(&pc){
+                        return Err(format!("D62C branch escaped bounded code at RVA 0x{pc:08X}"));
+                    }
+                }
+                if path.last().copied()!=Some(0xD664){
+                    return Err("D62C pre-call 32-instruction limit reached".into());
+                }
+                all.push(path);
+            }
+        }
+    }
+    Ok(all)
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -1013,6 +1089,11 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     println!("    reached RVAs: {}",path.iter().map(|rva|format!("0x{rva:X}")).collect::<Vec<_>>().join(" -> "));
     println!("    First reached E8 CALL at RVA 0x97BE -> RVA 0xD62C (semantic flag proof, NOT runtime trace).");
     println!("    Function 0xD62C is NOT yet demonstrated to decrypt .txt.");
+    let d62c=dll_d62c_first_call_paths(dll,&pe)?;
+    println!("  First 0xD62C callee on valid-stack path: 0xD664 -> 0xD7BE.");
+    println!("    PF/SF/OF cases enumerated: {}; all agree on first direct CALL.",d62c.len());
+    println!("    This is conditional on normal SUB ESP,8 stack flags (CF=ZF=0), not a runtime trace.");
+    println!("    No conclusion yet about either callee decrypting the protected .txt bytes.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -3673,6 +3754,46 @@ mod tests {
         ]);
         dll[0x200+(0x97B3-0x9000) as usize]=0xCC;
         assert!(dll_attach_first_call_path(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn first_attach_callee_opaque_predicates_converge_for_eight_flag_states(){
+        let mut dll=synthetic_pe();
+        dll.resize(0x2200,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0xD000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        for (rva,bytes) in [
+            (0xD62Cu32,&[0x55u8,0x8B,0xEC,0x83,0xEC,0x08,0x53,0x56,0x57][..]),
+            (0xD635,&[0x76,0x0A]),(0xD637,&[0x90,0x90]),
+            (0xD639,&[0x74,0x04]),(0xD63B,&[0x87,0xC0]),
+            (0xD63D,&[0x77,0x00]),(0xD63F,&[0xEB,0x08]),
+            (0xD649,&[0x7B,0x11]),(0xD64B,&[0x7A,0x0F]),
+            (0xD64C,&[0x0F,0x8C,0x0F,0,0,0]),
+            (0xD652,&[0x90,0x90]),(0xD654,&[0x77,0x0B]),
+            (0xD65C,&[0x70,0xEE]),(0xD65E,&[0x71,0xEC]),
+            (0xD661,&[0x76,0x0B]),(0xD663,&[0x50]),
+        ]{
+            let at=0x200+(rva-0xD000) as usize;
+            dll[at..at+bytes.len()].copy_from_slice(bytes);
+        }
+        let at=0x200+(0xD664-0xD000) as usize;
+        let disp=(i64::from(0xD7BEu32)-i64::from(0xD669u32)) as i32;
+        dll[at]=0xE8;
+        dll[at+1..at+5].copy_from_slice(&disp.to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        let paths=dll_d62c_first_call_paths(&dll,&pe).unwrap();
+        assert_eq!(paths.len(),8);
+        assert!(paths.iter().all(|p|p.last()==Some(&0xD664)));
+        // Variations in parity/overflow/sign change control flow,
+        // but all eight choices agree about the first callee.
+        let unique=paths.iter().map(|p|p.clone()).collect::<std::collections::HashSet<_>>();
+        assert!(unique.len()>1);
+        dll[0x200+(0xD654-0xD000) as usize]=0xCC;
+        assert!(dll_d62c_first_call_paths(&dll,&pe).is_err());
     }
 
     #[test]
