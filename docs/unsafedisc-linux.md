@@ -423,6 +423,50 @@ and rejects an unexpected geometry. A synthetic Rust unit
 test uses only artificial PE headers/pointers. **No private
 game DLL or historical executable is added to GitHub,
 and no DLL entrypoint is ever invoked by this tool.**
+## DLL attach path: CRT startup isolated from obfuscated 0x9770 handler (2026-10-27)
+
+Further **offline static disassembly of the exact hash-verified
+original Crimson `dplayerx.dll`** distinguishes an ordinary
+MSVC-like DLL startup/CRT phase from its separate obfuscated
+process-attach handler. This does not execute any SafeDisc
+code or claim that the DLL `.txt` region has been decoded.
+
+| Original DLL CALL RVA | Confirmed target RVA | Grounded classification |
+| --- | --- | --- |
+| `0xFC18` | `0x116E0` | Initializes process heap |
+| `0xFC53` | `0x10820` | Initializes thread-local storage |
+| `0xFC71` | `0x12FF0` | Initializes environment strings |
+| `0xFD81` | `0x9770` | Calls **separate obfuscated attach handler** |
+
+Exact x86 import operands inside the first three branches
+were cross-checked against the ORIGINAL PE import descriptors:
+
+- `0x116E9`: `FF15` → `KERNEL32!HeapCreate`;
+  `0x116F9` also calls the allocator at `0x11990`.
+- `0x10826`: `FF15` → `KERNEL32!TlsAlloc`.
+- `0x12FF7`: `8B 2D` absolute import load →
+  `KERNEL32!GetEnvironmentStrings`.
+- `0x13003`: `8B 3D` absolute import load →
+  `KERNEL32!GetEnvironmentStringsW`.
+- `0x119C1`: `8B 3D` absolute import load →
+  `KERNEL32!VirtualAlloc`. In this helper, the
+  caller reserves 4 MiB and commits 64 KiB for a
+  conventional heap-like allocator, **not proven**
+  to allocate or decrypt DLL `.txt`.
+
+This narrows the outstanding work: look for an actual
+decoder in or called by the **distinct process-attach
+handler at RVA `0x9770`** (or some proven predecessor),
+not in the ordinary heap/TLS/environment setup solely
+because it invokes a memory allocation API.
+
+The native `--startup-research` command now checks every
+relevant exact original relative call, `FF15` opcode,
+and import-loaded `8B 2D` / `8B 3D` site, asserting
+actual original KERNEL32 function identities. The
+new synthetic regression test rejects a mismatched
+absolute MOV opcode and validates its PE-base conversion.
+No Windows code is executed and no original files are written.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
