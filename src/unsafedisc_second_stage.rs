@@ -21,6 +21,9 @@ pub struct SecondStageAudit {
     pub differential_observations: usize,
     pub differential_rank: usize,
     pub differential_contradictions: usize,
+    pub distinct_mask_difference_classes: usize,
+    pub repeated_mask_difference_classes: usize,
+    pub conflicting_mask_difference_classes: usize,
     pub distinct_mask_output_collisions: usize,
     pub distinct_masks_observed: usize,
 }
@@ -57,6 +60,13 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
     // (output XOR output0). A 32-vector basis checks consistency
     // of all such equations without recovering/publishing F2.
     let mut pivots:[Option<(u32,u32)>;32]=[None;32];
+    // An especially readable F2-only counterexample is when two
+    // observations use the same mask difference but DIFFERENT output
+    // differences. Such an equality conflict alone refutes an affine
+    // second modifier without reconstructing any basis coefficient.
+    let mut seen_delta=HashMap::<u32,u32>::new();
+    let mut repeated_delta=std::collections::HashSet::<u32>::new();
+    let mut contradictory_delta=std::collections::HashSet::<u32>::new();
     let mut cursor=0usize;
     while cursor<canonical.len() {
         let begin=cursor;
@@ -79,8 +89,18 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
         }
         for &(_,mask,output) in &canonical[begin+1..cursor] {
             report.differential_observations+=1;
-            let mut dx=mask ^ base_mask;
-            let mut dy=output ^ base_output;
+            let delta_mask=mask ^ base_mask;
+            let delta_out=output ^ base_output;
+            if let Some(&prior_out)=seen_delta.get(&delta_mask) {
+                repeated_delta.insert(delta_mask);
+                if prior_out!=delta_out {
+                    contradictory_delta.insert(delta_mask);
+                }
+            } else {
+                seen_delta.insert(delta_mask,delta_out);
+            }
+            let mut dx=delta_mask;
+            let mut dy=delta_out;
             let mut independent=false;
             for bit in (0..32).rev() {
                 if dx & (1u32 << bit)==0 {continue;}
@@ -97,6 +117,9 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
             if !independent && dy!=0 {report.differential_contradictions+=1;}
         }
     }
+    report.distinct_mask_difference_classes=seen_delta.len();
+    report.repeated_mask_difference_classes=repeated_delta.len();
+    report.conflicting_mask_difference_classes=contradictory_delta.len();
     report
 }
 
@@ -168,6 +191,38 @@ mod tests {
         assert_eq!(r.multi_mask_inputs,1);
         assert_eq!(r.differential_rank,2);
         assert!(r.differential_contradictions>=1);
+    }
+
+    #[test]
+    fn direct_matching_mask_deltas_with_incompatible_output_deltas() {
+        let pairs=HashMap::from([
+            // Two distinct inputs (11 and 22) are both seen under the
+            // same pair of masks. Their output-difference signatures
+            // disagree, directly falsifying the F2-affine hypothesis.
+            ((0,11),100), ((1,11),101),
+            ((0,22),200), ((1,22),202),
+        ]);
+        let r=diagnose(&pairs);
+        assert_eq!(r.multi_mask_inputs,2);
+        assert_eq!(r.differential_observations,2);
+        assert_eq!(r.distinct_mask_difference_classes,1);
+        assert_eq!(r.repeated_mask_difference_classes,1);
+        assert_eq!(r.conflicting_mask_difference_classes,1);
+        assert_eq!(r.differential_rank,1);
+        assert_eq!(r.differential_contradictions,1);
+    }
+
+    #[test]
+    fn matching_mask_deltas_with_matching_outputs_are_compatible() {
+        let pairs=HashMap::from([
+            ((0,11),100), ((1,11),101),
+            ((0,22),200), ((1,22),201),
+        ]);
+        let r=diagnose(&pairs);
+        assert_eq!(r.distinct_mask_difference_classes,1);
+        assert_eq!(r.repeated_mask_difference_classes,1);
+        assert_eq!(r.conflicting_mask_difference_classes,0);
+        assert_eq!(r.differential_contradictions,0);
     }
 
     #[test]
