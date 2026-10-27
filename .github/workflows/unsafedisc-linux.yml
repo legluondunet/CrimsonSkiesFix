@@ -1,4 +1,4 @@
-name: Experimental native unSafeDisc Linux CLI
+name: Experimental native unSafeDisc CLI (Linux and Windows)
 
 on:
   push:
@@ -58,10 +58,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Windows CLI --help failed"
           }
+          # GitHub Actions' PowerShell wrapper normally treats a native
+          # command's nonzero exit status as a job failure. Here that
+          # failure is exactly what we are testing.
+          $PSNativeCommandUseErrorActionPreference = $false
           & .\target\release\unsafedisc-linux.exe unpack
           if ($LASTEXITCODE -eq 0) {
             throw "ERROR: unsupported unpack command unexpectedly succeeded"
           }
+          Write-Host "Unsupported unpack command was correctly rejected."
+          exit 0
       - name: Upload experimental Windows executable
         uses: actions/upload-artifact@v4
         with:
