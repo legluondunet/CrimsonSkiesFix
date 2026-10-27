@@ -1915,3 +1915,25 @@ RVA overflow rejection.
 absolute-address operand; it does not itself prove x86 instruction
 alignment, static control-flow reachability or execution, and it does
 not recover the encrypted `.txt` code. All analysis remains read-only.
+
+### Relocation-first metadata pointer survey
+
+The same read-only `--strings` run now also **inverts** the search:
+it walks genuine, validated PE32 HIGHLOW relocation DWORDs in the
+original file-backed, nonencrypted DLL `.text` and `.txt2` sections.
+For each DWORD whose *current, unrelocated preferred-base value*
+equals one of the 27 decoded labels, it prints the operand RVA,
+label RVA and preceding byte. This can discover absolute pointers
+stored under encodings other than `PUSH imm32`.
+
+Unlike the 23 raw `0x68 imm32` matches, this survey begins from
+actual relocation table entries and does **not** impose a hard-coded
+expected count on previously unmeasured matches. The synthetic
+regression verifies a relocation DWORD that straddles a 4-KiB page
+boundary, an unrelocated lookalike, an out-of-section slot and
+overflow rejection. The results remain a **static pointer survey**:
+the preceding byte is not treated as an instruction decoder, and
+control-flow reachability cannot be inferred.
+
+The actual `.txt` ciphertext is explicitly **excluded** from
+this metadata pointer survey.
