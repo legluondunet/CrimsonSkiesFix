@@ -1885,6 +1885,19 @@ fn synthetic_chunk_byte_inverse(output:&[u8],first:u8,second:u8)->Vec<u8> {
     input
 }
 
+// Pure in-memory statistical diagnostic; it never emits private bytes.
+// Zero entropy denotes a constant/empty byte stream; maximum is 8 bits.
+fn synthetic_byte_entropy(data:&[u8])->f64 {
+    if data.is_empty(){return 0.0;}
+    let mut counts=[0usize;256];
+    for &b in data {counts[b as usize]+=1;}
+    let n=data.len() as f64;
+    counts.iter().filter(|&&c|c!=0).map(|&c|{
+        let p=c as f64/n;
+        -p*p.log2()
+    }).sum()
+}
+
 // These isolated comparators model exact unsigned x86 arithmetic. They are
 // only used with synthetic vectors, not to modify any protected binary.
 fn synthetic_probe_before_start(start:u32,probe:u32)->bool { probe < start }
@@ -2177,6 +2190,17 @@ fn original_selector_exhaustion_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     }
     println!("  Original .txt2 starts with valid PUSH EBP (0x55); candidate XOR 0x43 would change it to 0x16.");
     println!("  This suggests potential post-initialization self-scrambling, NOT verified decryption or observed runtime execution.");
+    let backed=dll.get(section.raw_offset..section.raw_offset+4096)
+        .ok_or("original .txt2 first backed 4KiB not available")?;
+    let candidate=synthetic_chunk_byte_model(backed,0x43,0x15);
+    let before=synthetic_byte_entropy(backed);
+    let after=synthetic_byte_entropy(&candidate);
+    if !(before<after && after>7.5){
+        return Err("unexpected original first .txt2 chunk entropy trend".into());
+    }
+    println!("  First DLL .txt2 chunk entropy: original {before:.3} bits/byte, candidate transformed {after:.3} bits/byte.");
+    println!("  Higher candidate entropy is consistent with a scrambling hypothesis, not evidence of runtime transformation.");
+
 
     println!("  Valid section match reaches the 0x9403 chunk path; actual transformed plaintext remains unvalidated.");
     Ok(())
@@ -5548,6 +5572,15 @@ mod tests {
         assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
         // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
         assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
+    }
+
+    #[test]
+    fn synthetic_entropy_is_bounded_and_handles_constant_data(){
+        assert_eq!(synthetic_byte_entropy(&[]),0.0);
+        assert_eq!(synthetic_byte_entropy(&[4,4,4,4]),0.0);
+        assert!((synthetic_byte_entropy(&[0,1])-1.0).abs()<1e-12);
+        let all:Vec<u8>=(0u16..256).map(|x|x as u8).collect();
+        assert!((synthetic_byte_entropy(&all)-8.0).abs()<1e-12);
     }
 
     #[test]
