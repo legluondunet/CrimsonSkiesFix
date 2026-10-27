@@ -10,6 +10,82 @@ extracts SafeDisc-specific key material and optionally validates a reported
 It **does not** modify or reconstruct a game executable, run a Windows DLL,
 interact with `secdrv`, load Wine, or decrypt the protected ICD.
 
+## Independent offline comparison of the exact original binaries (2026-10-27)
+
+The user provided a private 7z archive containing all four required retail/research binaries.
+All four were extracted locally and independently matched their trusted hard-coded
+SHA-256 and length values, including the unprotected TESTME.EXE reference.
+**No binaries were committed, uploaded to GitHub, or executed.**
+
+### Shared PE image geometry; exact bytewise section differences
+
+CRIMSON.ICD (2,580,578 bytes) and TESTME.EXE (2,580,480 bytes) have
+the same PE32 ImageBase 0x00400000, entry-point RVA 0x001F7056,
+six section names, RVA layouts, raw offsets and section raw lengths.
+They are directly comparable at equal file offsets:
+
+| Section | Bytes different | Bytes total |
+| --- | ---: | ---: |
+| PE headers | 54 | 4096 |
+| .text | 1,813,201 | 2,105,344 |
+| .rdata | **0** | 90,112 |
+| .data | 167,371 | 172,032 |
+| .idata | 3,362 | 16,384 |
+| .rsrc | **0** | 24,576 |
+| .reloc | 2 | 167,936 |
+
+The protected ICD additionally contains 98 trailing bytes beyond
+TESTME.EXE, including the NB10 debug-information signature.
+Thus read-only resource data is already preserved, but protected
+code, writable data and selected imports differ extensively.
+
+### High-confidence relocation-preservation finding
+
+Parse the real ICD base-relocation directory (not a guessed offset),
+map every 4-byte HIGHLOW reference whose start lies in .text,
+then compare the original protected and unwrapped files:
+
+| ICD .text byte class | Identical bytes | Total bytes | Rate |
+| --- | ---: | ---: | ---: |
+| HIGHLOW-covered | **246,598** | **246,972** | **99.849%** |
+| Other .text bytes | **45,545** | **1,858,372** | **2.451%** |
+| Entire .text | **292,143** | **2,105,344** | **13.876%** |
+
+Of the **61,743 original .text HIGHLOW DWORDs**, exactly
+**61,498** are fully identical; the remaining **245** differ.
+Every one of the 245 mismatched DWORD values in **both** files
+is a four-byte-aligned preferred VA pointing into .idata, in
+the approximate range 0x00A1FC7C–0x00A20490.
+That is evidence for special import-reference handling as
+well as relocation-preserving code transformation.
+
+The 245 site-specific mismatches cannot safely be repaired
+by a global old-VA → new-VA dictionary: the protected side
+has 111 distinct values versus 89 distinct reference values;
+**65 protected-side values have multiple different reference
+targets** depending on the site. Any repair needs stronger
+instruction/call-site or deprotection evidence.
+
+### Exact first DWORD XOR key independently corroborated
+
+The 8 DWORDs at ICD raw offsets
+0x2433D0, 0x243A48, 0x243A50, 0x243AB8,
+0x243D78, 0x2443F0, 0x2443F8, 0x244460
+each satisfy (protected DWORD XOR reference DWORD)
+= **0x7496538F**, directly matching the reported import-XOR
+key word. This says nothing yet about the correctness of the
+other three TEA words, the on-disk DLL title-specific EAX
+modifiers at RVAs 0x65BE / 0x6621, or a valid decryptor.
+
+### Practical next decryption validation gate
+
+Before any unwrapping/export code is enabled, validate one
+entire 4096-byte ICD .text page against TESTME.EXE. Compare
+non-relocation bytes separately from the 4-byte HIGHLOW words,
+and verify the latter's 245 site-dependent import variants.
+Do not count incidental equal bytes as evidence of decryption,
+do not publish the user-supplied binaries, and do not execute
+the original DLL in the native CLI.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
