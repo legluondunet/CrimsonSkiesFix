@@ -488,6 +488,61 @@ cryptographic and relocation transformations** preferable
 to running the year-2000 unSafeDisc binary, executing
 its protected DLL or relying on a historically fragile
 Windows 9x/NT startup path.
+## Static flag-resolution breaks first opaque DllMain attach branch (2026-10-27)
+
+The owner's reason for porting the original unSafeDisc 1.5.5
+workflow natively is its dependency on a legacy Windows 98
+environment. A usable Linux/modern Windows replacement should
+**not** require executing an old `LoadLibraryExA`/manual DllMain
+workaround, a SafeDisc driver or protected retail Windows code.
+
+### First attach CALL now demonstrated as conditionally reachable
+
+Offline symbolic evaluation was applied to the actual, exact
+SHA-256 verified Crimson `dplayerx.dll` at `.text` RVA
+`0x9787..0x97BE`. The comparison `cmp [ebp-4],1`
+sets **ZF=1, PF=1, CF=0, SF=0, OF=0** when invoked
+with `DLL_PROCESS_ATTACH=1`. The subsequent reached
+instructions are only Jcc, JMP and NOP, so they do not
+change these flags before the first CALL.
+
+Following **actual instruction boundaries**, including
+intentional overlaps, yields this specific bounded path:
+
+```text
+0x9787 (CMP reason,1)
+ -> 0x978B (JE taken) -> 0x9792 (JBE taken)
+ -> 0x9798 (JE taken) -> 0x97A1 (JBE taken)
+ -> 0x9794, 0x9795 (NOP), 0x9796 (JMP)
+ -> 0x97A6 (JNP not taken) -> 0x97A8 (JP taken)
+ -> 0x97B9 (JO not taken) -> 0x97BB (JNO taken)
+ -> 0x97A9 (near JL not taken)
+ -> 0x97AF, 0x97B0 (NOP)
+ -> 0x97B1 (JA not taken) -> 0x97B3 (JGE taken)
+ -> 0x97BE: CALL rel32 -> 0xD62C
+```
+
+This is stronger than finding the bytes `E8` at `0x97BE`:
+there is a **proved static conditional path** to this
+instruction, using actual x86 flags and overlapping
+branch targets. An independent short Python instruction
+walker reproduced the path on the private original DLL.
+
+**Conditional limitations:** the historical DLL must actually
+invoke handler `0x9770` with process-attach reason 1
+after its CRT predecessor succeeded. The result does not
+prove the historical Windows DLL was run or that the
+`0xD62C` function decrypts protected `.txt` code.
+More control-flow analysis is required *inside* `0xD62C`.
+
+The native read-only `--attach-research` now computes
+and prints the exact reached RVA sequence using a
+bounded 32-instruction x86 branch interpreter, which
+recognizes only the original CMP and flag-preserving
+NOP/Jcc/JMP instructions on that path. A synthetic Rust
+unit fixture checks the full 18-instruction sequence and
+rejects altered opaque-predicate bytes. The proprietary
+binaries remain private and unexecuted.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
