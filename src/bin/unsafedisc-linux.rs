@@ -870,13 +870,14 @@ struct Options {
     layout: bool,
     checksum_research: bool,
     sections: bool,
+    key_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -919,6 +920,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.checksum_research = true;
             continue;
         }
+        if key == "--key-research" {
+            if options.key_research { return Err("repeated --key-research argument".into()); }
+            options.key_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -931,6 +937,9 @@ fn parse_args() -> Result<Option<Options>> {
     }
     if options.loader.is_none() || options.icd.is_none() || options.dplayerx.is_none() {
         return Err("--loader, --icd, and --dplayerx are all required".into());
+    }
+    if options.key_research && options.reported_key.is_none() {
+        return Err("--key-research requires an explicit --reported-key first DWORD".into());
     }
     Ok(Some(options))
 }
@@ -983,6 +992,32 @@ fn inspect(options: Options) -> Result<()> {
         print_checksum_research(&icd, &protected_pe, text, &text_relocs)?;
     }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
+    // The conditional research key is computed ONLY when requested;
+    // all inputs have already passed their exact SHA-256 size checks.
+    let tea_candidate = if options.key_research {
+        let evidence = infer_historical_reloc_branch(&icd, &protected_pe)?
+            .ok_or("historical relocation selector path not established; refuse key candidate")?;
+        if evidence.section_name != ".reloc" {
+            return Err("historical relocation selector section differs from expected .reloc".into());
+        }
+        let selected_len = if text.virtual_size == 0 { text.raw_len }
+            else { text.raw_len.min(text.virtual_size as usize) };
+        let raw_end = text.raw_offset.checked_add(text.raw_len).ok_or(".text raw overflow")?;
+        let text_bytes = icd.get(text.raw_offset..raw_end)
+            .ok_or("ICD .text bytes out of range")?;
+        let selected_relocs: Vec<_> = relocs.iter()
+            .filter(|b| b.page_rva >= text_page_start && b.page_rva < text_page_end)
+            .cloned().collect();
+        let checksum = checksum_pages_bounded_without_highlow(
+            text_bytes, text.virtual_address, &selected_relocs, selected_len, 0)?;
+        let corroboration = checksum_independent_relocation_walk(
+            text_bytes, text.virtual_address, &selected_relocs, selected_len)?;
+        if corroboration.checksum != checksum {
+            return Err("checksum candidate walkers disagree; refuse key candidate".into());
+        }
+        Some((checksum, construct_tea_candidate(
+            options.reported_key.unwrap(), checksum, protected_pe.entry_rva, raw)))
+    } else { None };
     println!("Verified original Crimson Skies 1.0.2.0 files (SHA-256 + size).");
     println!("SafeDisc: 1.50.20; native read-only inspection; no Wine.");
     println!("Loader entry RVA: 0x{:08X}", source_pe.entry_rva);
@@ -997,6 +1032,7 @@ fn inspect(options: Options) -> Result<()> {
     println!("Selected raw DWORDs:");
     for (i, w) in raw.iter().enumerate() { println!("  raw[{i}] = 0x{w:08X}"); }
     println!("No full 128-bit TEA key is asserted; checksum and DLL modifier stage remain unverified.");
+    let mut first_word_reference_matches: Option<usize> = None;
     if let Some(path) = options.reference {
         // A user may have patched the resolution of TESTME.EXE with our
         // separate Python tool. The original backup remains the valid
@@ -1027,6 +1063,7 @@ fn inspect(options: Options) -> Result<()> {
         if let Some(key) = options.reported_key {
             let matches = import_xor_matches(&icd, &protected_pe, &reference, &decoded_pe, key)?;
             println!("Import DWORD XOR matches for 0x{key:08X}: {}", matches.len());
+            first_word_reference_matches = Some(matches.len());
             for (at, cipher, plain) in matches.iter().take(16) {
                 println!("  ICD offset 0x{at:X}: 0x{cipher:08X} XOR 0x{key:08X} = 0x{plain:08X}");
             }
@@ -1036,6 +1073,25 @@ fn inspect(options: Options) -> Result<()> {
         }
     } else if options.reported_key.is_some() {
         println!("To verify a reported key, also provide the local --reference TESTME.EXE.");
+    }
+    if let Some((checksum, key)) = tea_candidate {
+        println!("Experimental SafeDisc TEA key reconstruction (NOT independently validated):");
+        println!("  first word: 0x{:08X} (explicit --reported-key input)", key[0]);
+        println!("  reconstructed using original ICD entry RVA 0x{:08X}, raw key, and checksum candidate 0x{checksum:08X}",
+            protected_pe.entry_rva);
+        if let Some(count) = first_word_reference_matches {
+            println!("  reference import-XOR matches for first word: {count}");
+            if count == 0 {
+                return Err("first TEA word lacks even import-XOR corroboration".into());
+            }
+        } else {
+            println!("  WARNING: first word has NO independent plaintext reference check; use --reference TESTME.EXE if available.");
+        }
+        for (i, word) in key.iter().enumerate() {
+            println!("  provisional TEA word[{i}] = 0x{word:08X}");
+        }
+        println!("  This formula is supported by original x86 code, but reconstructed words have NOT been tested by game decryption.");
+        println!("  SafeDisc 1.50.20 additionally requires two game-specific dplayerx.dll modifiers; no decrypted file is produced.");
     }
     println!("Unpacking is NOT implemented. Original input files have not been modified.");
     Ok(())
@@ -1081,6 +1137,24 @@ fn derive_three_checksum_dependent_words(
     let adjusted_base = loader_base.wrapping_add(0x2D8);
     let common = source_anchor.wrapping_sub(adjusted_base) ^ scalar_word ^ checksum;
     source_words.map(|word| (word ^ common).wrapping_add(adjusted_base))
+}
+
+// ArthaXerXes (June 2001) and unSafeDisc 1.5.5 at 0x401CA2..0x401CDD
+// both support this four-word SafeDisc 1.45+ construction. The first
+// word is provided, NOT found by this function. The checksum and
+// original PE entry RVA are independently selected by the caller.
+// Correct mathematical mapping of x86 globals:
+//   [0x403C30] = TEA word zero (user-provided candidate)
+//   [0x403C40..0x403C4C] = raw key DWORDs
+//   [0x403C50] = original ICD AddressOfEntryPoint RVA
+// Never label the output a VALIDATED encryption key until plaintext
+// decrypts successfully through both original title-specific layers.
+fn construct_tea_candidate(
+    first_word: u32, checksum: u32, entry_rva: u32, raw: [u32;4]
+) -> [u32;4] {
+    let remaining = derive_three_checksum_dependent_words(
+        [raw[1],raw[2],raw[3]], first_word, entry_rva, raw[0], checksum);
+    [first_word, remaining[0], remaining[1], remaining[2]]
 }
 
 // Exact EAX call ordering observed in unSafeDisc 1.5.5 at 0x401F62:
@@ -1664,6 +1738,16 @@ mod tests {
             .copy_from_slice(&0x30FFu32.to_le_bytes());
         let pe = parse_pe32(&image).unwrap();
         assert!(infer_historical_reloc_branch(&image, &pe).unwrap().is_none());
+    }
+
+    #[test]
+    fn tea_key_formula_matches_independently_calculated_synthetic_vector() {
+        let raw = [0x1020_3040,0xA0B0_C0D0,0xFEDC_BA98,0x7654_3210];
+        let result = construct_tea_candidate(0x1234_5678,0x89AB_CDEF,0x0010_4000,raw);
+        assert_eq!(result,[0x1234_5678,0x2B2F_71B7,0x7583_976F,0xFE0C_1EF7]);
+        let changed = construct_tea_candidate(0x1234_5678,0x89AB_CDEE,0x0010_4000,raw);
+        assert_eq!(result[0],changed[0]);
+        assert!(result[1..].iter().zip(changed[1..].iter()).all(|(a,b)| a != b));
     }
 
     #[test]
