@@ -189,6 +189,20 @@ mod tests {
         }
         assert_eq!(families.len(),572);
         assert_eq!(families.values().filter(|&&count|count>=2).count(),312);
+        // For 0 <= index < 1024, write index = a + 256*b, with
+        // a in 0..255 and b in 0..3. Each mask consists of three
+        // high bytes (a|b) and one low byte a, hence only 576
+        // different masks in the entire 1024-index domain.
+        let full: std::collections::HashSet<u32> =
+            (0..1024u32).map(index_mask).collect();
+        assert_eq!(full.len(),576);
+        for index in 0..1024u32 {
+            let a=index & 0xFF;
+            let b=index >> 8;
+            let high=a | b;
+            assert_eq!(index_mask(index),
+                (high << 24) | (high << 16) | (high << 8) | a);
+        }
     }
 
     #[test]
