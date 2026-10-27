@@ -2786,9 +2786,29 @@ fn inspect(options: Options) -> Result<()> {
             .ok_or("original DLL data extent outside file")?;
         let entries = unsafedisc_strings::audit_original(bytes, section.virtual_address)?;
         println!("Original DLL encoded metadata: {} verified printable labels", entries.len());
-        for item in entries {
+        for item in &entries {
             println!("  RVA 0x{:08X}: {}", item.rva, item.value);
         }
+        let code = pe.section(b".text")?;
+        let code_end=code.raw_offset.checked_add(code.raw_len)
+            .ok_or("DLL code raw extent overflow")?;
+        let code_bytes=dll.get(code.raw_offset..code_end)
+            .ok_or("DLL code raw extent outside file")?;
+        let nt=read_u32(&dll,0x3C)? as usize;
+        let base=read_u32(&dll,nt+24+28)?;
+        let references=unsafedisc_strings::scan_push_references(
+            code_bytes,code.virtual_address,base,&entries)?;
+        if references.len()!=23 {
+            return Err(format!("unexpected original DLL encoded-metadata PUSH reference count {}",references.len()));
+        }
+        println!("  Static .text PUSH-imm32 metadata references: {}",references.len());
+        for reference in &references {
+            let label=entries.iter().find(|e|e.rva==reference.label_rva)
+                .ok_or("decoded PUSH references unknown metadata")?;
+            println!("    x86 PUSH RVA 0x{:08X} -> data RVA 0x{:08X}: {}",
+                reference.instruction_rva,reference.label_rva,label.value);
+        }
+        println!("  These are file-backed original opcode references, not proof of runtime reachability.");
         println!("No DLL code was executed or decrypted.");
     }
     if options.modifier_research {
