@@ -1930,6 +1930,57 @@ fn original_category_dispatch_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+// Mirror the first-match CODE|EXECUTE selection on synthetic section flags.
+fn synthetic_first_code_exec(flags:&[u32])->Option<usize> {
+    flags.iter().position(|f| (*f&0x2000_0020)==0x2000_0020)
+}
+
+fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    // A conditionally reached startup site initializes descriptor mode
+    // to 0x67. The actual runtime reachability through opaque branches
+    // remains separate from this byte-exact finding.
+    dll_expect_raw_x86(dll,pe,0x97E7,&[
+        0x6A,0x67,0x68,0xE0,0x59,0x90,0x00,0xE8,0x5D,0x0D,0x00,0x00])?;
+    dll_expect_raw_x86(dll,pe,0xA550,&[
+        0x8B,0x4C,0x24,0x04,0x8B,0x44,0x24,0x08,0x89,0x41,0x08,0xC3])?;
+    for (site,target) in [
+        (0x97EEu32,0xA550u32),
+        (0xA84E,0xA620),
+        (0xA858,0xA560),
+    ] {if dll_relative_call_target(dll,pe,site)?!=target {
+        return Err("DLL descriptor mode helper call target changed".into());
+    }}
+    for (site,bytes) in [
+        (0xA810u32,&[0x56,0x8B,0x74,0x24,0x08,0x83,0x7E,0x08,0x64][..]),
+        (0xA836,&[0x8B,0x46,0x08,0x8B,0x4C,0x24,0x10][..]),
+        (0xA841,&[0x83,0xF8,0x65][..]),
+        (0xA620,&[0x56,0x8B,0x74,0x24,0x08,0x57,0x8B,0x46,0x08,0x83,0xF8,0x67][..]),
+        (0xA687,&[0x8B,0x76,0x04,0x8B,0x4C,0x24,0x14,0x8B,0x7C,0x24,0x18][..]),
+        (0xA692,&[0x03,0xF2,0x8B,0xD1][..]),
+        (0xA69A,&[0xC1,0xE9,0x02,0xF3,0xA5][..]),
+        (0xA69F,&[0x8B,0xCA,0x83,0xE1,0x03,0xF3,0xA4][..]),
+        (0x18A26,&[0x74,0x12][..]),
+        (0x18A2C,&[0x83,0xC6,0x28][..]),
+        (0x18A3A,&[0x8B,0xC6][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    let matching:Vec<&PeSection>=pe.sections.iter().filter(|section|
+        (section.characteristics&0x2000_0020)==0x2000_0020
+    ).collect();
+    if matching.len()!=3 ||
+       matching[0].name.split(|&b|b==0).next()!=Some(b".txt".as_slice()) ||
+       matching[1].name.split(|&b|b==0).next()!=Some(b".text".as_slice()) ||
+       matching[2].name.split(|&b|b==0).next()!=Some(b".txt2".as_slice()) ||
+       matching[0].virtual_address!=0x1000 || matching[0].virtual_size!=0x7671 {
+        return Err("unexpected original DLL executable-section order".into());
+    }
+    println!("  A startup opcode sequence sets descriptor mode 0x67 through 0xA550; reachability remains to establish.");
+    println!("  Read helper 0xA810 dispatches mode 0x67 to 0xA620, which can copy bytes from module_base+offset.");
+    println!("  Original DLL CODE|EXEC sections, in header order: .txt (RVA 0x1000), .text, .txt2.");
+    println!("  Selector 1 uses a first-match loop; with DLL headers it selects .txt (RVA 0x1000, VirtualSize 0x7671).");
+    println!("  This is conditional on the passed descriptor referring to the original DLL; no plaintext or execution asserted.");
+    Ok(())
+}
+
 fn original_range_sort_and_adjacency_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // 0xC3D0's CMP/SBB/NEG returns 1 iff the unsigned probe is BELOW
     // the current node start; equality returns 0. It is NOT an equality test.
@@ -2151,6 +2202,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  0xB640 requests a 0xCC-byte record aligned to 0x10, initializes two linked objects via 0xB7C0.");
     original_range_sort_and_adjacency_proof(dll,pe)?;
     original_category_dispatch_proof(dll,pe)?;
+    original_dll_self_section_proof(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
     // third is a caller-supplied classification/tag value.
@@ -5007,6 +5059,13 @@ mod tests {
         assert_eq!(record,(100,15,3)); // end-exclusive 115, not 114
         assert!(!synthetic_extend_matching_range(&mut record,115,1,3));
         assert!(!synthetic_extend_matching_range(&mut record,99,1,3));
+    }
+
+    #[test]
+    fn synthetic_first_code_exec_section_respects_header_order(){
+        assert_eq!(synthetic_first_code_exec(&[0x4000_0040,0x6000_0020,0x6000_0020]),Some(1));
+        assert_eq!(synthetic_first_code_exec(&[0x6000_0020,0x6000_0020,0x6000_0020]),Some(0));
+        assert_eq!(synthetic_first_code_exec(&[0x4000_0040,0xC000_0040]),None);
     }
 
     #[test]
