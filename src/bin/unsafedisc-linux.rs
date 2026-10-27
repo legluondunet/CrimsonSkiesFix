@@ -2009,6 +2009,18 @@ fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     if (disk_offset,virtual_rva,extent)!=(0x400,0x1000,0x7671) {
         return Err("unexpected DLL .txt selector outputs".into());
     }
+    let nt=read_u32(dll,0x3C)? as usize;
+    let preferred_base=read_u32(dll,nt+24+28)?;
+    let (relocations,_)=pe_relocation_blocks(dll,pe)?;
+    let audit=audit_protected_dll_relocations(dll,pe,&relocations,preferred_base)?;
+    if audit.slots!=214 || audit.targets_data!=195 ||
+       audit.targets_rdata!=18 || audit.targets_txt!=1 ||
+       audit.targets_other!=0 || audit.out_of_image!=0 {
+        return Err("unexpected original .txt relocation target distribution".into());
+    }
+    println!("  Original protected .txt contains 214 backed HIGHLOW DWORDs: 195 -> .data, 18 -> .rdata, 1 -> .txt.");
+    println!("  All 214 raw pointer values target this DLL image; the section is NOT uniformly opaque ciphertext.");
+    println!("  Relocation operands cannot be naively transformed as undifferentiated code bytes.");
     println!("  Selector-1 section output: disk pointer 0x400, VirtualAddress 0x1000, bounded extent 0x7671.");
     println!("  0x9458 and 0x95B1 both pass [EBP-0x24] (the section RVA + current chunk offset).");
     println!("  Both 0x9710 (copy-in) and 0x9640 (copy-out) derive module_base + that RVA offset.");
