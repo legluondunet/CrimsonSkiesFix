@@ -250,6 +250,64 @@ Important: This is the *import reference correction* stage;
 the pre-TEA modifier functions and `.text`/`.data`
 plaintext decoding remain unresolved. It does not mean
 the complete game can yet be unpacked or executed.
+## Independent native checksum reproduction from original v1.5.5 assembly (2026-10-27)
+
+With the exact, privately supplied original unSafedisc.exe and
+the SHA-256 verified CRIMSON.ICD, the relevant x86 instructions
+were transcribed **independently into a temporary Python
+analysis**, without relying on Rust's checksum implementation.
+
+- `0x401CDE`: zero the checksum accumulator.
+- `0x401D1A..0x401D34`: cap `.text` processing to its
+  VirtualSize (2,102,461 bytes) rather than full raw
+  SizeOfRawData (2,105,344 bytes).
+- `0x401D82..0x401EDD`: walk relocations and split
+  contiguous data at HIGHLOW relocation windows and
+  4-KiB boundaries; every skipped HIGHLOW DWORD
+  consumes exactly four bytes, even when it straddles a page.
+- `0x401F01..0x401F3D`: mix non-relocation bytes only
+  when the CODE section characteristic is present.
+  Each nonempty fragment starts weight `0xFD379AB1`,
+  with multiplier `0xA7753394` and offset `0x3BC62BB2`.
+
+Actual offline original-file measurements:
+
+| Measured quantity | Result |
+| --- | ---: |
+| `.text` selected VirtualSize | 2,102,461 bytes |
+| `.text` original HIGHLOW DWORDs | 61,743 |
+| HIGHLOW byte coverage | 246,972 bytes |
+| HIGHLOW words crossing 4-KiB pages | 36 |
+| Non-relocated bytes mixed | 1,855,489 |
+| Page-bounded nonempty mixer calls | 59,622 |
+| **Independent historical checksum** | **`0x1B09633B`** |
+| Deliberately incorrect section-contiguous alternative | `0xA181CB30` |
+
+**The historical page-bounded checksum matches the independently
+implemented Rust research result byte-for-byte.** The
+section-contiguous alternative demonstrably differs,
+confirming that it is invalid for this original relocation
+traversal. No process or DLL was executed.
+
+Using the separately corroborated first word
+`0x7496538F`, the original game's four raw DWORDs
+`E51DC3D7 63CA5EAC 4493379C 08B42B8C`,
+and entry RVA `0x1F7056`, the original unSafeDisc
+`0x401CA2..0x401CDD` key-staging arithmetic gives the
+same conditional four-word **TEA candidate** as before:
+
+```text
+0x7496538F 0xE9C7914F 0xCF10EA3F 0x82F5DE2F
+```
+
+The checksum is strongly independently supported by the
+historical original and the actual game's relocation layout.
+However, the resulting TEA candidate has **not yet
+been authenticated by a successful plaintext-page
+decrypt**, because the two title-specific SafeDisc DLL
+modifiers at RVA `0x65BE` and `0x6621` are still encrypted
+in the original on-disk DLL. Do not claim completed
+unpacking or a standalone working reconstructed EXE.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
