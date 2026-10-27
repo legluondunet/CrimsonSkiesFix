@@ -493,6 +493,49 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
             println!("  Candidate FF15 at RVA 0x{site:08X}: IAT VA 0x{va:08X}, no bound original PE import entry");
         }
     }
+    // The .txt2 candidate has cross-section static callsites shared
+    // with the original .text process-attach region. For the exact
+    // hash-verified original PE, assert the literal opcode boundaries
+    // and decode the rel32 targets rather than hard-coding outcomes.
+    // A byte sequence on an overlapping x86 path is a candidate
+    // instruction, not proof the instruction is ever reached.
+    println!("  Cross-section .txt2 candidate call chain (STATIC; no reachability claim):");
+    for (site, expected_target, description) in [
+        (0x1A247u32, 0xE25Cu32, ".txt2 -> shared .text routine"),
+        (0x1A25Fu32, 0xA550u32, ".txt2 -> shared .text struct helper"),
+    ] {
+        let target = dll_relative_call_target(dll, &pe, site)?;
+        if target != expected_target {
+            return Err(format!("unexpected title-specific .txt2 CALL target at 0x{site:08X}"));
+        }
+        println!("    E8 at RVA 0x{site:08X} -> 0x{target:08X} ({description})");
+    }
+    for (site, role) in [
+        (0x1A23Au32, ".txt2 process-handle API candidate"),
+        (0x1A250u32, ".txt2 module-handle API candidate"),
+        (0xA578u32, ".text file-position API"),
+        (0xA597u32, ".text file-read API"),
+    ] {
+        let (va, rva) = dll_indirect_import_call(dll, &pe, site, base)?;
+        match bindings.iter().find(|i| i.iat_rva == rva) {
+            Some(b) => println!("    FF15 at RVA 0x{site:08X} -> IAT VA 0x{va:08X}: {}!{} ({role})",
+                b.library, b.symbol),
+            None => println!("    FF15 at RVA 0x{site:08X} -> IAT VA 0x{va:08X}: unresolved original PE IAT ({role})"),
+        }
+    }
+    // This small deterministic helper is important when deciding
+    // whether the helper CALL at 0x1A25F transforms any ciphertext.
+    // On disk it simply copies argument 2 into [argument 1 + 8].
+    let small_at = executable_rva_to_file_offset(&pe, 0xA550, 12)?;
+    let expected: [u8;12] = [
+        0x8B,0x4C,0x24,0x04, 0x8B,0x44,0x24,0x08,
+        0x89,0x41,0x08, 0xC3,
+    ];
+    if dll.get(small_at..small_at+expected.len()) != Some(&expected[..]) {
+        return Err("unexpected bytes in cross-section .text helper 0xA550".into());
+    }
+    println!("    RVA 0xA550 is a 12-byte helper: mov ecx,[esp+4]; mov eax,[esp+8]; mov [ecx+8],eax; ret");
+    println!("    No TEA or .txt section decryption is established by this shared helper.");
     println!("  Direct or indirect CALL encodings alone do not establish reachability.");
     println!("  In particular, 0x1A20D is inside .txt2, not proof of .txt decoding.");
     println!("  No DLL was loaded or executed; no file was decrypted or modified.");
@@ -2491,6 +2534,29 @@ mod tests {
         assert!(dll_indirect_import_call(&image,&pe,0x1008,0x900000).is_err());
         image[0x208] = 0x2B;
         assert!(dll_indirect_import_call(&image,&pe,0x1008,0x8E0000).is_err());
+    }
+
+    #[test]
+    fn cross_section_static_calls_are_decoded_not_assumed() {
+        let mut dll = synthetic_pe();
+        let sec = 0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        // A forward rel32 direct CALL at RVA 0x1004 => 0x1070.
+        dll[0x204] = 0xE8;
+        dll[0x205..0x209].copy_from_slice(&0x67u32.to_le_bytes());
+        // A nearby *indirect* IAT CALL: FF 15 absolute_VA32.
+        dll[0x209..0x20F].copy_from_slice(&[0xFF,0x15,0x20,0xE0,0x8F,0x00]);
+        let pe = parse_pe32(&dll).unwrap();
+        assert_eq!(dll_relative_call_target(&dll,&pe,0x1004).unwrap(),0x1070);
+        assert_eq!(dll_indirect_import_call(&dll,&pe,0x1009,0x8E0000).unwrap(),
+            (0x8FE020,0x1E020));
+        dll[0x204] = 0x90;
+        assert!(dll_relative_call_target(&dll,&pe,0x1004).is_err());
+        dll[0x209] = 0x90;
+        assert!(dll_indirect_import_call(&dll,&pe,0x1009,0x8E0000).is_err());
     }
 
     #[test]
