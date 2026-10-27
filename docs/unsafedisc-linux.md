@@ -2930,3 +2930,30 @@ after the two earlier CODE|EXECUTE candidates. This does **not**
 by itself establish the ultimate section whose bytes are changed:
 the obfuscated loop's full branch paths and the moment output
 fields are retained or replaced must still be reconstructed.
+
+
+### The two `.txt2`-name comparison outcomes converge before the cursor advances
+
+A bounded **flag-semantic** analysis establishes both sides of
+`0x935D TEST EAX,EAX`, using the observed boolean (0/1) return of
+`0x18B00`. No protected binary is executed:
+
+- **Mismatch (EAX=0):** ZF=1, so `0x935F JE` branches directly
+  to `0x938E`, where the section-header cursor advances by 0x28.
+- **Match (EAX=1):** ZF=CF=SF=OF=PF=0. The `0x9361`
+  `MOV WORD [EBP-4],1` preserves flags. The reached Jcc chain is
+  `0x9367(JS not taken) -> 0x9369(JNS taken) -> 0x937A(JG taken)
+  -> 0x936A(JO not taken) -> 0x9370(JA taken)
+  -> 0x937F(JNP taken) -> 0x938C`.
+  At `0x938C`, a SUB modifies BL and EFLAGS; subsequent MOV
+  operations reach the cursor increment at `0x938F..0x9394`.
+
+This proves that **matching the `.txt2` name does not immediately
+jump into the byte transform at that point**. It sets a persistent
+match indicator, and both comparison outcomes continue at the
+header-cursor advance. The later opaque `0x9397..0x93C0` control
+flow and exit conditions remain unverified, as does which selector
+outputs survive until the guarded copy. The inspector checks each
+reached instruction's original opcode window and reports the
+conditional conclusion explicitly. No final decrypted section is
+asserted.
