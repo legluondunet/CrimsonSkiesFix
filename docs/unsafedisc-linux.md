@@ -2329,3 +2329,25 @@ validating PE headers through `0xA810`. The actual pointer and offset
 passed to `0xA810` must be traced through the caller to determine whether
 it addresses disk-backed ICD bytes or a loaded image. No decrypted output
 is claimed.
+
+
+### Runtime initializer for writer descriptor +4 recovered (2026-10-27)
+
+The original unencrypted DLL `.text` contains a concrete initializer at
+RVA `0x986A`: `FF 15 98 E0 8F 00` calls the ordinary PE IAT slot RVA
+`0x1E098`. Independent PE import-table parsing identifies this as
+`KERNEL32.dll!GetModuleHandleA`, not a speculative dynamically resolved
+function. `0x9869` pushes the module-name pointer returned by the preceding
+helper; `0x9870` executes `A3 E4 59 90 00`, storing the function result
+(`EAX`) into virtual-only `.data` global RVA `0x259E4`. At `0x988E` that
+global is read again and written into descriptor field `+4` at `0x9893`.
+The earlier caller `0x923E..0x9244` copies the same global into the writer
+path's descriptor.
+
+**Refined conclusion:** the writer base is derived from a loaded module
+handle, not a statically embedded `0x00401000` address. The precise name
+passed to `GetModuleHandleA`, its actual return value, the module's load
+base and the section-relative offset remain to be validated. This is a
+static argument/data-flow proof and not a runtime observation or decoded
+`.text` page. `inspect --modifier-research` now checks the actual FF15,
+store/load opcodes and binds the FF15 IAT slot to the named PE import.
