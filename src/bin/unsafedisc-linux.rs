@@ -4178,6 +4178,8 @@ struct PreTeaFragmentGeometry {
     modified_dwords:usize,
     skipped_tail_bytes:usize,
     calls:usize,
+    unaligned_calls:usize,
+    unaligned_dwords:usize,
 }
 fn pretea_fragment_geometry(extent:usize, highlow_offsets:&[usize])->Result<PreTeaFragmentGeometry> {
     let mut marked=vec![false;extent];
@@ -4195,16 +4197,23 @@ fn pretea_fragment_geometry(extent:usize, highlow_offsets:&[usize])->Result<PreT
         highlow_bytes:highlow_offsets.len().checked_mul(4)
             .ok_or("HIGHLOW total overflow")?,
         modified_dwords:0,skipped_tail_bytes:0,calls:0,
+        unaligned_calls:0,unaligned_dwords:0,
     };
-    for (i,page) in marked.chunks(4096).enumerate(){
-        let _=i;
+    for page in marked.chunks(4096){
         let mut pos=0usize;
         while pos<page.len(){
             if page[pos]{pos+=1;continue;}
             let begin=pos;
             while pos<page.len() && !page[pos]{pos+=1;}
             let len=pos-begin;
-            if len>=4{out.calls+=1;out.modified_dwords+=len/4;}
+            if len>=4 {
+                out.calls+=1;
+                out.modified_dwords+=len/4;
+                if begin%4!=0 {
+                    out.unaligned_calls+=1;
+                    out.unaligned_dwords+=len/4;
+                }
+            }
             out.skipped_tail_bytes+=len%4;
         }
     }
@@ -4235,7 +4244,7 @@ fn audit_original_pretea_fragments(pe:&Pe32,relocs:&[RelocBlock])->Result<()>{
     if result!=(PreTeaFragmentGeometry{
         highlow_slots:61_743,highlow_bytes:246_972,
         modified_dwords:440_422,skipped_tail_bytes:93_801,
-        calls:48_149,
+        calls:48_149,unaligned_calls:35_878,unaligned_dwords:315_414,
     }){
         return Err(format!("original relocation-fragment geometry changed: {result:?}"));
     }
@@ -4243,6 +4252,8 @@ fn audit_original_pretea_fragments(pe:&Pe32,relocs:&[RelocBlock])->Result<()>{
     println!("  .text bounded virtual extent: {len} bytes; HIGHLOW operands: {}",result.highlow_slots);
     println!("  modifier calls (>=1 DWORD per fragment): {}",result.calls);
     println!("  complete transformable DWORDs: {}",result.modified_dwords);
+    println!("  unaligned page-local fragments: {} / {}; complete DWORDs in them: {} / {}",
+        result.unaligned_calls,result.calls,result.unaligned_dwords,result.modified_dwords);
     println!("  unchanged HIGHLOW bytes: {}; sub-DWORD gap tails: {}",
         result.highlow_bytes,result.skipped_tail_bytes);
     println!("  Fragment-local word mask restarts at 0; these are structural counts, not decoded content.");
@@ -4343,7 +4354,8 @@ mod tests {
         let result=pretea_fragment_geometry(22,&[5,13]).unwrap();
         assert_eq!(result,PreTeaFragmentGeometry{
             highlow_slots:2,highlow_bytes:8,
-            modified_dwords:3,skipped_tail_bytes:2,calls:3
+            modified_dwords:3,skipped_tail_bytes:2,calls:3,
+            unaligned_calls:2,unaligned_dwords:2
         });
         // This crossing slot starts on the final two bytes of page 0.
         let crossed=pretea_fragment_geometry(4107,&[4094]).unwrap();
@@ -4352,6 +4364,8 @@ mod tests {
         assert_eq!(crossed.calls,2);
         assert_eq!(crossed.skipped_tail_bytes,3);
         assert_eq!(crossed.modified_dwords,1025);
+        assert_eq!(crossed.unaligned_calls,1);
+        assert_eq!(crossed.unaligned_dwords,2);
         assert!(pretea_fragment_geometry(8,&[6]).is_err());
         assert!(pretea_fragment_geometry(16,&[4,6]).is_err());
     }
