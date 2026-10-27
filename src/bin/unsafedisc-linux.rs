@@ -1892,14 +1892,26 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
         (0x96A2,&[0x83,0xE1,0x03][..],"compute trailing byte count"),
         (0x96A5,&[0xF3,0xA4][..],"copy trailing bytes"),
         (0x950Du32,&[0x8A,0x94,0x0D,0xD8,0xEF,0xFF,0xFF][..],"load current stack-buffer byte"),
-        (0x9519,&[0x8A,0x8C,0x05,0xD7,0xEF,0xFF,0xFF][..],"load previous stack-buffer byte"),
-        (0x9520,&[0x33,0xD1][..],"XOR current and previous bytes"),
+        (0x9519,&[0x8A,0x8C,0x05,0xD7,0xEF,0xFF,0xFF][..],"load stack-buffer byte indexed by EAX (adjacency unproved)"),
+        (0x9520,&[0x33,0xD1][..],"XOR EDX, ECX (32-bit register operation)"),
         (0x9525,&[0x88,0x94,0x05,0xD8,0xEF,0xFF,0xFF][..],"store XOR-transformed byte"),
-        (0x955D,&[0x03,0xD0][..],"add state-derived value to transformed byte"),
+        (0x955D,&[0x03,0xD0][..],"ADD EDX, EAX (32-bit register operation)"),
     ] {
         dll_expect_raw_x86(dll,pe,rva,bytes)?;
         println!("  Original x86 RVA 0x{rva:05X}: {description}");
     }
+    // The two indexed reads do NOT alone prove adjacent addresses: one uses
+    // ECX and the other EAX. Adjacency requires a separately proven relation
+    // between the live register values. Check the actual x86 SIB operands.
+    for (at, expected) in [
+        (0x950Du32, [0x8Au8,0x94,0x0D,0xD8,0xEF,0xFF,0xFF]),
+        (0x9519u32, [0x8A,0x8C,0x05,0xD7,0xEF,0xFF,0xFF]),
+    ] {
+        dll_expect_raw_x86(dll,pe,at,&expected)?;
+    }
+    println!("  Operand caveat: at 0x950D the address is [EBP + ECX - 0x1028]; at 0x9519 it is [EBP + EAX - 0x1029].");
+    println!("  These addresses are adjacent ONLY if the live EAX and ECX values satisfy the required relation.");
+    println!("  0x9520 XOR EDX,ECX and 0x955D ADD EDX,EAX are 32-bit operations; byte truncation/state semantics remain unproved.");
     println!("  Static sequence: 4KiB-bounded copy-in -> byte transform -> VirtualProtect -> memory copy -> restore protection.");
     println!("  Unknown: input buffer mapping, per-byte state, actual destination and whether the modified region is protected .txt.");
     println!("  These checks do not emulate SafeDisc, decrypt any code, or call Win32 APIs.");
