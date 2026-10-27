@@ -205,6 +205,26 @@ relocation-aware branch. Its historical disassembly at
 at `0x403CAC`; the corresponding runtime value for Crimson Skies
 has not yet been established. The original DLL transformations
 also remain unrecovered.
+### Checksum-dependent key word staging (historical disassembly)
+
+Static x86 instructions at `0x401CA2..0x401CDD` of unSafeDisc 1.5.5
+derive **three** 32-bit words after running its checksum procedure:
+
+```text
+base = (dword[0x403C50] + 0x2D8) modulo 2^32
+common = ((dword[0x403C30] - base) XOR dword[0x403C40]) modulo 2^32
+for i from 2 down to 0:
+    dword[0x403C34 + 4*i] =
+        ((dword[0x403C44 + 4*i] XOR common XOR checksum) + base) modulo 2^32
+```
+
+The Rust function `derive_three_checksum_dependent_words` ports exactly
+this arithmetic into a **pure, synthetic-only adapter**, with known
+vectors and integer-overflow tests. It is **not called on the game files**.
+The relationship of the runtime globals at `0x403C30/0x403C40/
+0x403C44/0x403C50` to the four DWORDs selected at loader file offset
+`0x28FB8` has not been confirmed. The final full 128-bit TEA key cannot
+yet be asserted, even with the candidate checksum `0x1B09633B`.
 ### Observed Windows baseline (2026-10-27)
 
 The user ran the exact-hash-verified Crimson Skies 1.0.2.0 inputs on the
