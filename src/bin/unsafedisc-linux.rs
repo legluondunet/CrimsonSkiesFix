@@ -152,6 +152,67 @@ fn parse_pe32(data: &[u8]) -> Result<Pe32> {
     Ok(Pe32 { entry_rva: entry, sections: result })
 }
 
+// Map an executable RVA into the backed file bytes of an x86 PE32
+// section. This never loads a DLL, applies relocations or executes code.
+// The virtual-only suffix (VirtualSize > SizeOfRawData) is deliberately
+// rejected; a DLL loader might otherwise synthesize unbacked zero data.
+fn executable_rva_to_file_offset(pe: &Pe32, rva: u32, min_bytes: usize) -> Result<usize> {
+    const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+    if min_bytes == 0 || min_bytes > 256 {
+        return Err("invalid bounded executable-byte request".into());
+    }
+    for section in &pe.sections {
+        if section.characteristics & IMAGE_SCN_MEM_EXECUTE == 0 {
+            continue;
+        }
+        let Some(relative) = rva.checked_sub(section.virtual_address) else { continue; };
+        let relative = relative as usize;
+        let Some(end_relative) = relative.checked_add(min_bytes) else { continue; };
+        // Use both VirtualSize (unless zero) and backed SizeOfRawData.
+        let backed_len = if section.virtual_size == 0 {
+            section.raw_len
+        } else {
+            section.raw_len.min(section.virtual_size as usize)
+        };
+        if end_relative > backed_len { continue; }
+        return section.raw_offset.checked_add(relative)
+            .ok_or("executable RVA file offset overflow".into());
+    }
+    Err(format!("executable RVA 0x{rva:08X} not backed by requested bytes"))
+}
+
+// The two SafeDisc 1.50.20 EAX modifier routine RVAs are documented in
+// ArthaXerXes' June 2001 version analysis and in historical unSafeDisc
+// 1.5.5's call sequence at 0x401F62. These are RVA offsets within the
+// exact hash-verified game-specific dplayerx.dll, NOT portable mixers.
+// 0x6621 = 0x65BE + 0x63. Show only two small code windows suitable for
+// independent static x86 disassembly; do not execute the protected DLL.
+fn print_modifier_research(dll: &[u8]) -> Result<()> {
+    const WINDOW: usize = 128;
+    const ROUTINES: [(&str, u32); 2] = [
+        ("first EAX modifier", 0x65BE),
+        ("second EAX modifier", 0x6621),
+    ];
+    let pe = parse_pe32(dll)?;
+    println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
+    for (name, rva) in ROUTINES {
+        let offset = executable_rva_to_file_offset(&pe, rva, WINDOW)?;
+        let block = dll.get(offset..offset+WINDOW)
+            .ok_or("modifier excerpt exceeds verified original DLL")?;
+        println!("  {name}: DLL RVA 0x{rva:08X}, raw file +0x{offset:06X}, 128-byte static excerpt");
+        for (line, sixteen) in block.chunks(16).enumerate() {
+            let at_rva = rva + (line * 16) as u32;
+            let hex = sixteen.iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>().join(" ");
+            println!("    0x{at_rva:08X}: {hex}");
+        }
+    }
+    println!("  Not a disassembly, executable code validation, or decoded function.");
+    println!("  Only the exact SHA-256 verified local DLL was read; no files or PE sections were changed.");
+    Ok(())
+}
+
 // Executable base relocation directory (IMAGE_DIRECTORY_ENTRY_BASERELOC = 5).
 // Only IMAGE_REL_BASED_ABSOLUTE (0, padding) and HIGHLOW (3, x86 32-bit)
 // occur in our exact verified Crimson Skies binary. Reject other types.
@@ -871,13 +932,14 @@ struct Options {
     checksum_research: bool,
     sections: bool,
     key_research: bool,
+    modifier_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -925,6 +987,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.key_research = true;
             continue;
         }
+        if key == "--modifier-research" {
+            if options.modifier_research { return Err("repeated --modifier-research argument".into()); }
+            options.modifier_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -948,6 +1015,9 @@ fn inspect(options: Options) -> Result<()> {
     let loader = read_original(options.loader.as_ref().unwrap(), LOADER_LEN, LOADER_SHA)?;
     let icd = read_original(options.icd.as_ref().unwrap(), ICD_LEN, ICD_SHA)?;
     let dll = read_original(options.dplayerx.as_ref().unwrap(), DLL_LEN, DLL_SHA)?;
+    if options.modifier_research {
+        print_modifier_research(&dll)?;
+    }
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
@@ -1750,6 +1820,26 @@ mod tests {
         let changed = construct_tea_candidate(0x1234_5678,0x89AB_CDEE,0x0010_4000,raw);
         assert_eq!(result[0],changed[0]);
         assert!(result[1..].iter().zip(changed[1..].iter()).all(|(a,b)| a != b));
+    }
+
+    #[test]
+    fn executable_rva_must_resolve_to_backed_code() {
+        let mut image = synthetic_pe();
+        let sec = 0x178usize;
+        image[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        image[sec+8..sec+12].copy_from_slice(&0xB0u32.to_le_bytes());
+        image[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert_eq!(executable_rva_to_file_offset(&pe, 0x100A, 64).unwrap(), 0x20A);
+        // Can't extract virtual padding or straddle the raw backing.
+        assert!(executable_rva_to_file_offset(&pe, 0x1090, 64).is_err());
+        assert!(executable_rva_to_file_offset(&pe, 0x1000, 0).is_err());
+        assert!(executable_rva_to_file_offset(&pe, 0x1000, 257).is_err());
+        assert!(executable_rva_to_file_offset(&pe, 0x2000, 16).is_err());
+        image[sec+36..sec+40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        let non_executable = parse_pe32(&image).unwrap();
+        assert!(executable_rva_to_file_offset(&non_executable, 0x100A, 16).is_err());
     }
 
     #[test]
