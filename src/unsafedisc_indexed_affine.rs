@@ -75,7 +75,7 @@ mod tests {
         assert_eq!(index_mask(0xFF), 0xFFFF_FFFF);
         assert_eq!(index_mask(0x100), 0x0101_0100);
         assert_eq!(index_mask(0x101), 0x0101_0101);
-        assert_eq!(index_mask(0x3EE), 0x03EF_EFEE);
+        assert_eq!(index_mask(0x3EE), 0xEFEF_EFEE);
     }
 
     #[test]
