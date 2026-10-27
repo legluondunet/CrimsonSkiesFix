@@ -1879,6 +1879,26 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
         (0x95A6u32,&[0x8D,0x8D,0xD8,0xEF,0xFF,0xFF,0x51,0x8B,0x55,0xD8,0x52,0x8B,0x45,0xDC,0x50,0x8D,0x4D,0x08,0x51][..]),
         (0x9649,&[0x8B,0x45,0x08,0x8B,0x48,0x04,0x03,0x4D,0x0C,0x89,0x4D,0xF8][..]),
     ] {dll_expect_raw_x86(dll,pe,rva,code)?;}
+    for (rva,code) in [
+        (0x18823u32,&[0xE8,0xB8,0xF9,0xFF,0xFF][..]),
+        (0x18255,&[0x49,0xC7,0x02,0,0,0,0][..]),
+        (0x18263,&[0x83,0xF9,0x0A][..]),
+        (0x18272,&[0xFF,0x24,0x8D,0x80,0x86,0x8F,0x00][..]),
+        (0x183C9,&[0x68,0x20,0,0,0x20,0x68,0x20,0,0,0x20][..]),
+        (0x183D4,&[0xE8,0x17,0x06,0,0][..]),
+        (0x18A1A,&[0x8B,0x57,0x24,0x8B,0xCB,0x23,0xCA][..]),
+        (0x18A24,&[0x3B,0xCD][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,code)?;}
+    let jump_table_rva=0x18680u32;
+    let table=dll_backed_rva_offset(pe,jump_table_rva,4)?;
+    let case_va=read_u32(dll,table)?;
+    if case_va.checked_sub(base)!=Some(0x183C2){return Err("selector 1 no longer maps to x86 case RVA 0x183C2".into());}
+    for (site,target) in [(0x18823u32,0x181E0u32),(0x183D4,0x189F0)] {
+        if dll_relative_call_target(dll,pe,site)?!=target{return Err("selector helper call target changed".into());}
+    }
+    println!("  Selector 1 at 0x18800 forwards to 0x181E0; (selector-1)==0 uses jump table case 0x183C2.");
+    println!("  Case 0x183C2 calls 0x189F0 with required section flags 0x20000020 (CODE | EXECUTE).");
+    println!("  0x189F0 compares section Characteristics at +0x24 after AND mask; no specific destination RVA is asserted.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
