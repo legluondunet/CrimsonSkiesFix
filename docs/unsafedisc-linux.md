@@ -308,6 +308,55 @@ decrypt**, because the two title-specific SafeDisc DLL
 modifiers at RVA `0x65BE` and `0x6621` are still encrypted
 in the original on-disk DLL. Do not claim completed
 unpacking or a standalone working reconstructed EXE.
+## Cross-section E8 calls into protected encrypted .txt (2026-10-27)
+
+Independent offline inspection of the SHA-256 verified original
+Crimson `dplayerx.dll` establishes an important limit on the
+earlier negative PE relocation xref reports: **relative E8
+CALL instructions contain signed displacements, not absolute
+VA pointers**, so they require no PE base relocation.
+
+A bounded scan over the *other* executable sections
+`.text` and `.txt2` found five distinct on-disk E8 rel32
+encodings whose calculated targets lie in `.txt`:
+
+| Source section | CALL opcode RVA | Encoded destination `.txt` RVA |
+| --- | --- | --- |
+| `.text` | `0x9197` | `0x3B70` |
+| `.text` | `0x989F` | `0x7212` |
+| `.text` | `0x98C5` | `0x7C4F` |
+| `.txt2` | `0x1ACF6` | `0x8620` |
+| `.txt2` | `0x1AD4F` | `0x8480` |
+
+All five actual original `E8 + signed rel32` instructions
+were checked against the exact private file bytes and
+mapped to backed, bounded `.txt` section target RVAs.
+Context around the sites resembles ordinary x86 argument
+setup (push / call / stack cleanup) in several cases.
+
+The target section's original first 30,321 bytes have
+approximately **7.981 bits/byte Shannon entropy**; the
+other original backed executable sections measure roughly
+6.589 (`.text`) and 6.296 (`.txt2`) bits/byte.
+The `.txt` bytes at all five targets appear undecoded
+on disk; no runnable plaintext procedure is established.
+
+The historical modifier functions at RVAs `0x65BE` and
+`0x6621` also reside in this same encrypted `.txt`.
+None of these five candidate call targets matches the
+two modifier RVAs, and CALL encoding alone is not proof
+the branch is ever executed. Therefore this result
+does not decrypt the DLL or establish a dynamic
+self-unpacking sequence.
+
+The already-existing `--attach-research` output now
+includes **these five strictly verified static bridges**
+and asserts both their actual E8 instruction bytes
+and resulting `.txt` target bounds. A standalone
+synthetic unit test shows that a real rel32 cross-section
+CALL into a backed `.txt` function is invisible to a
+HIGHLOW-absolute-pointer-only scan. No original bytes
+are embedded in GitHub or its test fixtures.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
