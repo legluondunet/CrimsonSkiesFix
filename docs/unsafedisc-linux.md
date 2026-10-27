@@ -204,6 +204,56 @@ checksum's result against a historically reported checksum.
 Both DLL modifier routines and full TEA key derivation remain unresolved.
 The Rust inspection never executes the historical tool or its DLL.
 
+### Conditional four-DWORD TEA key reconstruction (experimental)
+
+A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
+([June 2001](https://gbppr.net/cracking/krobar/other/com26.html))
+specifies the original 1.45+ full-key formula. It matches the
+historical unSafeDisc 1.5.5 x86 implementation at `0x401CA2..0x401CDD`:
+
+```text
+adjust = (original_icd_entry_rva + 0x2D8) mod 2^32
+mix = ((first_word - adjust) XOR checksum_candidate) XOR raw[0]
+word[0] = first_word
+word[1] = ((mix XOR raw[1]) + adjust) mod 2^32
+word[2] = ((mix XOR raw[2]) + adjust) mod 2^32
+word[3] = ((mix XOR raw[3]) + adjust) mod 2^32
+```
+
+An explicit opt-in **`--key-research`** flag now prints the resulting
+four **conditional candidate** DWORDs on the exact-hash-verified
+protected files. It requires a user-provided first word
+(`--reported-key 0x7496538F`) and succeeds only when the historical
+relocation-selector PE guards are established and both independent
+relocation-aware checksum calculations agree. The optional
+`--reference TESTME.EXE` must be an exact verified **unmodified**
+reference and allows the reported first word to be corroborated by
+import DWORD XOR matches. Without the reference, the program
+prints an explicit **NOT independently checked** warning.
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --reported-key 0x7496538F --key-research
+```
+
+With the user's observed relocation-aware checksum candidate
+`0x1B09633B`, the reported first word `0x7496538F`, raw key
+`E51DC3D7 63CA5EAC 4493379C 08B42B8C` and
+original ICD entry RVA `0x001F7056`, this predicts these
+**NOT independently decrypted or validated** TEA words:
+
+| Word | Hypothesis |
+| --- | --- |
+| 0 | `0x7496538F` (explicit reported input) |
+| 1 | `0xE9C7914F` |
+| 2 | `0xCF10EA3F` |
+| 3 | `0x82F5DE2F` |
+
+The entry RVA adjustment in this candidate is `0x001F732E`.
+These are *conditional arithmetic results*, not a proven
+working TEA key. Neither the title-specific DLL modifier routines
+at RVAs `0x65BE`/`0x6621` nor a full plaintext image comparison
+has been performed. `unpack` remains unavailable, and no file
+is modified or generated. Never claim decryption based on this report.
 ### Both historical checksum branches implemented as candidate calculations
 
 Historical unSafeDisc 1.5.5 x86 code at `0x401D43..0x401D4E` is:
