@@ -3059,3 +3059,31 @@ decryption of the game ICD.
 The Rust exact-byte inspector checks the reached opcode EB 37 at
 0x938C, along with both match/mismatch branches. The proprietary
 DLL is neither distributed nor modified.
+
+
+### Likely direction of the .txt2 operation: post-use scrambling, not proved unpacking
+
+After correcting the match path, the Linux inspect-only binary built in
+GitHub Actions was **executed locally on the exact SHA-256 validated
+original game files** with the --modifier-research flag. It exited
+successfully. This also confirmed that all earlier *original-byte*
+assertions on this path pass; the synthetic-only CI does not perform
+this private-input validation.
+
+A separate byte-level clue about the intended transform:
+the **original disk-backed .txt2 section already starts with
+55 8B EC**, a normal x86 PUSH EBP / MOV EBP,ESP prologue. The recovered
+first-byte initialization uses XOR 0x43, and a hypothetical successful
+write of the transformed first byte changes its 0x55 to **0x16**.
+This does not resemble restoration of the original readable .txt2
+entry prologue. One plausible purpose is **post-initialization
+self-scrambling** of helper code that has already served its purpose,
+rather than unpacking the protected game's ICD.
+
+This is still a **conditional interpretation**. No original Windows
+DLL has been loaded, no VirtualProtect result observed, no transformed
+DLL page validated against trusted memory, and the complete loop is
+heavily obfuscated. The marker 0x16 is only a predicted *first byte*
+from the original verified initial XOR; it is not evidence of working
+plain-text reconstruction. An actual read-only Rust implementation
+should preserve such distinctions explicitly.
