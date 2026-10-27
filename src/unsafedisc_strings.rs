@@ -63,6 +63,36 @@ pub fn audit_original(data: &[u8], data_rva: u32) -> Result<Vec<Label>, String> 
     Ok(entries)
 }
 
+/// A literal PUSH imm32 byte sequence that references decoded metadata.
+/// The instruction encoding is verified, but runtime reachability is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushReference {
+    pub instruction_rva: u32,
+    pub label_rva: u32,
+}
+
+pub fn scan_push_references(
+    code: &[u8], code_rva: u32, image_base: u32, labels: &[Label],
+) -> Result<Vec<PushReference>, String> {
+    let mut pointers = std::collections::HashMap::new();
+    for label in labels {
+        let va = image_base.checked_add(label.rva)
+            .ok_or_else(|| "decoded label VA overflow".to_string())?;
+        pointers.insert(va, label.rva);
+    }
+    let mut found = Vec::new();
+    for (index, window) in code.windows(5).enumerate() {
+        if window[0] != 0x68 { continue; }
+        let value = u32::from_le_bytes(window[1..5].try_into().unwrap());
+        if let Some(&label_rva) = pointers.get(&value) {
+            let instruction_rva = code_rva.checked_add(index as u32)
+                .ok_or_else(|| "code RVA overflow".to_string())?;
+            found.push(PushReference { instruction_rva, label_rva });
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +120,21 @@ mod tests {
             assert_eq!(decode(&encoded[..encoded.len()-1]), None);
         }
         assert_eq!(decode(&vec![0u8; LIMIT]), None);
+    }
+
+    #[test]
+    fn metadata_push_xrefs_match_literal_encoded_x86_va() {
+        let labels = vec![Label { rva: 0x20508, value: "Example".into() }];
+        let mut code = vec![0x90u8; 64];
+        let absolute = 0x0090_0508u32.to_le_bytes();
+        code[7] = 0x68;
+        code[8..12].copy_from_slice(&absolute);
+        code[24] = 0x6A; // Different PUSH opcode, not an immediate DWORD.
+        code[25..29].copy_from_slice(&absolute);
+        let hits=scan_push_references(&code,0x9000,0x008E_0000,&labels).unwrap();
+        assert_eq!(hits,vec![PushReference {
+            instruction_rva:0x9007,label_rva:0x20508
+        }]);
     }
 
     #[test]
