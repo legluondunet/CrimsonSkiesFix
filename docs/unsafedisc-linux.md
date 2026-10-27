@@ -3575,10 +3575,16 @@ The new `src/unsafedisc_second_stage.rs` experiment:
   one mask, difference relations, mask-difference rank and dependent
   contradictions. No input, output, fitted linear map or private code
   bytes are emitted.
-- Has **seven synthetic tests**, including an arbitrarily nonlinear
+- Has **nine synthetic tests**, including an arbitrarily nonlinear
   F1 with affine F2, a demonstrably nonlinear F2, absent cross-mask
   coverage, identical-mask aliases, conflicting aliases, ordering
-  stability, and exact mask-rank bounds.
+  stability, exact mask-rank bounds and separate F2-injectivity controls.
+- Separately counts cases where a **fixed input** observed under
+  two **different masks** produces the same output. Such a collision
+  contradicts injectivity of F2 without any hypothesis about F1.
+  Importantly, this injectivity probe is independent of bit-affinity:
+  a bit-affine map may still be noninjective. Both remain advisory
+  until independently checked against the exact retail reference.
 
 A fundamental limitation is quantified independently: the original
 mask values in the observed index range `0..=1006` have **GF(2)
