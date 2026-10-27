@@ -2258,3 +2258,25 @@ The native read-only `--modifier-research` checks exact original opcodes
 at both descriptor-passing call sites, writer call target and the complete
 extent selection branches. No Windows code execution, protected-code output,
 or user-file modification is involved.
+
+
+### Exact retail ICD selector geometry and preferred-load address (2026-10-27)
+
+Independent offline PE-header parsing of the user's private original
+`CRIMSON.ICD` confirms `ImageBase=0x00400000`, with a unique
+`IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE` match:
+
+- `.text`: `VirtualAddress=0x00001000`, `VirtualSize=0x002014BD`,
+  `SizeOfRawData=0x00202000`, `Characteristics=0x60000020`.
+- The other five sections (`.rdata`, `.data`, `.idata`, `.rsrc`, `.reloc`)
+  do not match `0x20000020`.
+- Therefore, **if** selector 1 receives the verified ICD section headers,
+  it selects `.text`, whose **preferred** mapped start is `0x00401000`.
+
+This `ImageBase + RVA` computation is a *conditional PE geometry result*;
+it is **not** evidence that the writer descriptor's `+4` slot holds
+`0x00401000` at runtime. ASLR/relocation/load base and the helper's
+output contract still need to be traced. In particular, `0x189F0`
+returns a section-header pointer and `0x183C2` populates separate
+output arguments: those are not interchangeable with the writer's
+final writable memory pointer. No recovered plaintext is asserted.
