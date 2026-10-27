@@ -642,6 +642,53 @@ and enumerates all eight paths. A synthetic Rust fixture
 tests four different paths converging and rejects a
 tampered `RET`. Private executable bytes are not
 committed or published.
+### Third opaque branch layer: `0xC5C0` reaches `0xE25C`
+
+Following the newly proven call at `0xD68C -> 0xC5C0`,
+the **actual** original DLL bytes at `0xC5C0` show
+the conventional stack prologue `55 8B EC 83 EC 08 53 56 57`.
+With a normal valid stack, `SUB ESP,8` establishes
+CF=ZF=0. The process-attach pathway's reached
+instructions before its first CALL are only NOP,
+`XCHG r,r`, and conditional branches, so the relevant
+flags remain stable.
+
+Independently enumerate all combinations of SF and OF:
+
+- `0xC5C9: JG` selects an initial route based on `SF == OF`.
+- A route through `0xC5D4: JA` and `0xC5D6: JG` returns
+  to the common path at `0xC5CB`.
+- The common path at `0xC5CE: JS` (or complementary
+  `0xC5D2: JNS`) reaches `0xC5D9` regardless of SF.
+- At `0xC5D9`, **PUSH `0x00900508`**, a preferred-base
+  virtual address within the original `.data` section.
+- At `0xC5DE`, the original signed E8 operand calls
+  **RVA `0xE25C`**, not encrypted `.txt` directly.
+
+The four SF/OF combinations agree exactly; their
+instruction traces need not match, only their first
+reachable call does. All expected opcode bytes,
+bounds and targets are checked in the native research CLI.
+
+This adds the conditionally supported static chain:
+
+```text
+DllMain -> handler 0x9770 -> D62C
+  -> D7BE (RET decoy) -> C5C0
+  -> E25C (first call reached within C5C0)
+```
+
+**Do not infer decryptor semantics from this call chain.**
+Earlier analysis also found direct `.text`/`.txt2` calls
+to `0xE25C`. It may be part of initialization or
+object construction. The real transformation required
+to read the two `.txt` modifier functions at RVAs
+`0x65BE` and `0x6621` is still not established.
+
+The Rust `--attach-research` output now shows the
+four-case convergence and the verified E8 destination;
+the corresponding synthetic test rejects altered
+candidate opcodes without embedding private DLL bytes.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
