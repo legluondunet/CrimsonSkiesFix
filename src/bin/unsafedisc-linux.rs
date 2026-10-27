@@ -2121,6 +2121,27 @@ fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  Comparison success sets [EBP-4]=1; another path increments the header cursor by 0x28.");
     println!("  A real branch at 0x93C0 returns to selector setup at 0x9322.");
     println!("  At 0x93C5 the nonzero match flag branches to 0x9403 (block transformation).");
+    let nt=read_u32(dll,0x3C)? as usize;
+    let opt_size=read_u16(dll,nt+20)? as usize;
+    let section_headers=nt.checked_add(24).and_then(|v|v.checked_add(opt_size))
+        .ok_or("original DLL section-table offset overflow")?;
+    if section_headers!=0x1A8 {
+        return Err("original DLL first section-header cursor is no longer 0x1A8".into());
+    }
+    for (index,name) in [(0usize,b".txt".as_slice()),(1,b".text".as_slice()),(2,b".txt2".as_slice())] {
+        let off=section_headers.checked_add(index*0x28)
+            .ok_or("original section-header cursor overflow")?;
+        let candidate=dll.get(off..off+8)
+            .ok_or("original header cursor outside DLL file")?
+            .split(|&x|x==0).next().unwrap_or(&[]);
+        if candidate!=name || pe.sections.get(index)
+            .is_none_or(|sec|sec.name.split(|&x|x==0).next()!=Some(name)) {
+            return Err("original executable section order/name mismatch".into());
+        }
+    }
+    println!("  Original PE section-header cursors: .txt 0x1A8; .text 0x1D0; .txt2 0x1F8.");
+    println!("  The 0x28 scan step follows these actual header cursors, not the section VirtualAddress values.");
+
     println!("  Therefore the first CODE|EXEC match alone does NOT identify the section processed by the loop.");
     println!("  This proves named-section comparison; it does NOT prove whether .txt2 is decoded, skipped or acts as a boundary.");
     Ok(())
