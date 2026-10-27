@@ -2596,3 +2596,49 @@ An isolated synthetic helper validates `0..7` as the legal slot indices
 and rejects `8` and larger; **this must not be mistaken for a runtime
 bounds check in the original function**. This is about registry
 organization, not game plaintext recovery.
+
+
+### First CODE+EXECUTE section of the DLL and conditional mode 0x67 (2026-10-27)
+
+A new investigation distinguishes the PE *being inspected* from the
+different protected game ICD. The original DLL PE header has **three**
+CODE|EXECUTE sections in this order:
+
+| DLL section | RVA | VirtualSize | Characteristics |
+| --- | --- | --- | --- |
+| `.txt` | `0x1000` | `0x7671` | `0x60000020` |
+| `.text` | `0x9000` | `0xE506` | `0x60000020` |
+| `.txt2` | `0x18000` | `0x5497` | `0x60000020` |
+
+By contrast, only the game's `CRIMSON.ICD` `.text` section satisfies
+the `0x20000020` mask. The original selector-1 case calls `0x189F0`,
+which traverses the section headers **in order** and immediately returns
+its first matching header. Thus, **when the input descriptor is the
+original DLL**, selector 1 first chooses DLL `.txt` at RVA `0x1000`,
+*not* game ICD `.text` and *not* DLL `.text`. This is a substantial
+clarification to the earlier section-target hypothesis.
+
+A separate instruction-aligned fragment at RVA `0x97E7` encodes
+`PUSH 0x67; PUSH &global_descriptor; CALL 0xA550`. Helper `0xA550`
+stores that value in descriptor field `+8`. The common read
+dispatcher `0xA810` routes descriptor modes other than `0x65` to
+`0xA620`; for mode `0x67`, `0xA620` can read backed bytes using
+`descriptor[+4] + offset`, with `REP MOVSD/MOVSB` at `0xA69D/`0xA6A4`.
+It can also consult separately registered backing storage, so the
+straight memory-copy branch should not be assumed in all states.
+
+Combining these *static* findings makes a plausible DLL self-restoration
+route: descriptor mode `0x67`, module base from
+`GetModuleHandleA("dplayerx.dll")`, selector 1 choosing the **first**
+executable section (`.txt`), and a separate guarded copy into that
+module. **Important limits:** the startup code has opaque predicates;
+complete runtime branch reachability, any mapped-buffer alternatives,
+the byte-state recurrence over actual `.txt` chunks and independent
+plaintext validation remain unresolved. A selected section header is
+not by itself a decrypted section or proof that every copy succeeds.
+
+The read-only Rust inspector now asserts original mode-setting, read
+dispatch, module-base/offset copy opcodes and the three actual DLL
+section-header records. Synthetic tests cover first-match section order.
+No copyrighted code bytes, DLL plaintext, or modified executable are
+committed.
