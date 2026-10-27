@@ -2755,3 +2755,51 @@ linked to PE section classes**, rather than opaque integer labels.
 
 The other categories 0,2,3,7,1 remain to classify. No dynamic
 unpacking path or validated decrypted plaintext is claimed.
+
+
+### The mysterious 0x187B0 selector filter is a PE data-directory exclusion
+
+The exact private DLL x86 explains the additional selection filter
+applied to selector 2 (category 5) and selector 10 (category 6):
+
+1. `0x18770` invokes the validated DOS+NT header reader
+   `0x18940`, then copies **0x20 DWORDs = 128 bytes** of
+   `IMAGE_DATA_DIRECTORY[16]` entries (each entry is two DWORDs).
+   The source is the PE32 optional-header data directory at
+   **NT header offset 0x78**.
+2. `0x187B0` compares the section's `VirtualAddress` against
+   the **first DWORD (directory RVA)** of each entry, advancing its
+   pointer by eight bytes for 16 comparisons. A match returns AL=1.
+3. Selector 2 (`0x18533`) **skips** a matching directory-start
+   section and continues searching. Selector 10 (`0x18668`)
+   likewise skips it. This is not a generic regex, section-name
+   exclusion, or 16-byte hash scan.
+
+The original `dplayerx.dll` directories include
+`IMAGE_DIRECTORY_ENTRY_BASERELOC` index 5 at **RVA 0x27000**
+(the start of `.reloc`) and `IMAGE_DIRECTORY_ENTRY_IAT`
+index 12 at **RVA 0x1E000** (the start of `.rdata`).
+These are precisely the two sections that pass selector-10's initial
+mask `(Characteristics & 0xC0000060) == 0x40000040`.
+**Both are excluded by the second filter**, leaving no category-6
+section selected for this *specific verified DLL* under the
+standard mode-0x67 PE header reads. Category 5's candidate
+`.data` at RVA `0x20000` does **not** match any directory-start
+RVA and survives. Category 4 still selects the first CODE+EXECUTE
+section, `.txt`.
+
+This gives the following *original DLL* section result:
+- Category **4**: `.txt` (first CODE+EXEC)
+- Category **5**: `.data` (writable initialized DATA; not
+  a data-directory start)
+- Category **6**: **none** (both `.rdata` and `.reloc`
+  excluded by their exact data-directory start RVA)
+
+A category-6 list can still be used for other modules with different
+section/directory layouts; this is **not** evidence that category 6 is
+unreachable throughout the software.
+
+The Rust inspector now validates the original directory-copy and
+comparison instruction windows, the call targets, and the actual
+sixteen PE directory RVAs. Synthetic tests model exact first-match
+exclusion. No source or destination code is decrypted or published.
