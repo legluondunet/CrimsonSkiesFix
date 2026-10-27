@@ -3440,3 +3440,45 @@ for this additional probe. Even a complete fit would establish only
 consistency on the observed sample; it would not independently prove an
 algorithm on unseen words, reconstruct the two protected EAX functions
 at RVA 0x65BE/0x6621 or enable SafeDisc unpacking.
+
+
+### Joint-index GF(2) necessary-condition audit (2026-10-28)
+
+The earlier `src/unsafedisc_algebra.rs` probe studies the observed
+index-zero composite alone. The new, separate
+`src/unsafedisc_indexed_affine.rs` experiment tests a stronger
+necessary condition across **all** known index-aware pairs, not just
+index zero. Original historical extra-layer semantics are:
+
+```text
+mask(i) = (i << 24) | (i << 16) | (i << 8) | i
+observed y = F2(F1(masked_input) XOR mask(i))
+```
+
+**If both** unknown 32-bit EAX modifiers `F1` and `F2` are affine
+maps over GF(2), their joint result must satisfy
+`y = A(masked_input) XOR B(mask(i)) XOR c`, for GF(2) matrices
+`A` and `B`. This remains true regardless of their undisclosed
+individual constant offsets.
+
+The read-only native implementation uses a deterministic 64-feature
+Gaussian elimination over each unique pair keyed by
+`(index,masked_input)`, with features
+`masked_input | (u64(mask(index)) << 32)`. It reports the feature
+rank (0..64) and the number of inconsistent dependent observations.
+Inputs are sorted to make the counts independent of hash iteration
+order. Only aggregate counts appear in output; the private reference,
+intermediate values and fitted basis rows are never emitted.
+
+Five synthetic tests validate original full-width masks at index
+`0x100` and `0x3EE`, a consistent two-stage bit-affine family,
+non-affine multiplication with carries, insertion-order independence,
+and empty/single-observation behavior. Existing historical key and
+unaltered-tail reference checks still gate this research path.
+
+**No real-reference result has yet been obtained from this new test.**
+A contradiction would refute *the combined hypothesis that both
+modifiers are bit-affine* under the verified historical expression;
+it would not identify which modifier is nonlinear. Even zero
+contradictions would only establish finite-sample compatibility,
+not recover either original routine nor decrypt unseen game data.
