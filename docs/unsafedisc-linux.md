@@ -357,6 +357,72 @@ synthetic unit test shows that a real rel32 cross-section
 CALL into a backed `.txt` function is invisible to a
 HIGHLOW-absolute-pointer-only scan. No original bytes
 are embedded in GitHub or its test fixtures.
+## Original unSafeDisc DLL loading and encrypted relocation-slot evidence (2026-10-27)
+
+Reanalysis of the user's original, privately supplied 20,480-byte
+`unSafedisc.exe` identifies a key historical distinction:
+
+- At absolute `0x402D50..0x402D5F`, the binary pushes a DLL
+  name, `hFile=NULL`, and **flags=1** before calling the
+  imported `LoadLibraryExA` trampoline `0x402E0C`.
+  The constant 1 is Win32 `DONT_RESOLVE_DLL_REFERENCES`.
+- The returned HMODULE is saved in historical global
+  `[0x70CD5C]`. A few instructions later, the program reads
+  `IMAGE_DOS_HEADER.e_lfanew` and the NT optional header
+  `AddressOfEntryPoint` (PE offset `+0x28` from NT header)
+  and computes an **explicit original DLL entrypoint VA**.
+- The branch at `0x402D76..0x402D99` can then manually
+  invoke the entrypoint with `(hinstDll, DLL_PROCESS_ATTACH=1,
+  lpReserved=NULL)`; it is conditionally bypassed depending
+  on the original process `DS`-selector test.
+
+**This is a static Windows execution plan, not an actual
+runtime observation.** `DONT_RESOLVE_DLL_REFERENCES` normally
+prevents the Windows loader from invoking DllMain automatically;
+the old tool implements a guarded manual startup path.
+The retrieved `dplayerx.dll` has actual preferred ImageBase
+`0x008E0000` and entry RVA `0xFD20`, so the calculated
+preferred address is `0x008EFD20` (subject to actual load
+relocation). The DLL's normal entrypoint calls its own startup
+helper at `0xFC00` before the candidate 0x9770 attach path.
+None of this proves that `.txt` decryption executes, but it
+more precisely constrains where any initializer must operate.
+
+### The encrypted `.txt` retains real IMAGE_REL_BASED_HIGHLOW pointers
+
+An independent offline parse of the **actual** DLL relocation
+directory and `.txt` original backed bytes establishes:
+
+| Original `.txt` relocation property | Count |
+| --- | ---: |
+| HIGHLOW source DWORDs inside protected `.txt` | **214** |
+| DWORD values pointing to `.data` | 195 |
+| DWORD values pointing to `.rdata` | 18 |
+| DWORD values pointing back inside `.txt` | 1 |
+| Out-of-image absolute VAs | **0** |
+| HIGHLOW DWORDs crossing a 4-KiB page boundary | **1** |
+
+The one internal pointer originates at RVA `0x21A7` and
+references VA `0x008E3270` (`.txt` RVA `0x3270`).
+The known protected EAX modifiers at `.txt` RVAs
+`0x65BE` and `0x6621` are still unreadable on disk.
+
+Although the raw `.txt` stream has high entropy, the
+relocation slots contain actual ordinary, in-image
+absolute addresses. **This is strong structural evidence
+that some metadata is preserved while surrounding bytes
+are encoded.** Any future proposed `.txt` decoder must
+preserve and correctly relocate these DWORDs, including
+the page-crossing slot; it must not transform all bytes
+of the section indiscriminately.
+
+The native read-only `--modifier-research` now checks these
+counts directly against the private SHA-256 verified
+original DLL, prints section destination categories,
+and rejects an unexpected geometry. A synthetic Rust unit
+test uses only artificial PE headers/pointers. **No private
+game DLL or historical executable is added to GitHub,
+and no DLL entrypoint is ever invoked by this tool.**
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
