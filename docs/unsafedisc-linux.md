@@ -2880,3 +2880,24 @@ The code path's role could be a restoration, re-encoding or
 initialization operation. We explicitly do **not** claim that the
 existing candidate byte recurrence decrypts DLL `.txt` or
 `CRIMSON.ICD` based solely on these findings.
+
+
+### Synthetic round-trip check for the provisional byte recurrence
+
+To prevent implementation regressions before any real plaintext claim,
+the research CLI test suite now includes a separately implemented
+inverse for the **provisional** chunk transform:
+```text
+input[0] = output[0] XOR first
+state = output[0] XOR second
+for i in 1 .. len-1:
+    input[i] = ((output[i] - state) mod 256) XOR output[i-1]
+    state = (state + output[i]) mod 256
+```
+
+Round trips cover empty and single-byte buffers, ordinary byte patterns,
+lengths 4095/4096/4097, and multiple synthetic key-byte pairs. The tests
+demonstrate that the **mathematical candidate model** is reversible;
+they do not show that the original DLL calls that model with those
+inputs, that its state resets at those boundaries, or that any restored
+bytes match protected code. No actual decoded DLL bytes are emitted.
