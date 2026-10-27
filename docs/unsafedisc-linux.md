@@ -204,6 +204,38 @@ checksum's result against a historically reported checksum.
 Both DLL modifier routines and full TEA key derivation remain unresolved.
 The Rust inspection never executes the historical tool or its DLL.
 
+### Investigate the two game-specific `dplayerx.dll` modifiers without loading the DLL
+
+In SafeDisc 1.50.20 the extra decoding layer calls two
+**title-specific** EAX modifier functions, at relative virtual
+addresses \`0x65BE\` and \`0x6621\` (first + \`0x63\`).
+The historical SafeDisc 1.5.5 decoder and the
+[June 2001 technical analysis](https://gbppr.net/cracking/krobar/other/com26.html)
+agree on these **routine RVAs**, but their bytes are
+**not necessarily the same in other games' dplayerx.dll builds**.
+
+Use the native **read-only** flag on the exact SHA-256 verified
+Crimson Skies \`dplayerx.dll\`:
+
+\`\`\`powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --modifier-research
+\`\`\`
+
+The report first maps each RVA to its actual backed file offset
+using the original DLL's PE32 section headers. It rejects an RVA
+not backed by an **executable** section and prints **128 bytes
+per starting RVA**, grouped by 16 bytes and labelled with their
+RVA (maximum 256 requested bytes, with some overlap).
+This is bounded *static data*, **not execution**, dynamic loading,
+decryption, a complete disassembly or a replacement DLL.
+No file is created or modified.
+
+These machine-code excerpts are the next input for **independent
+x86 disassembly** and instruction-level reconstruction of each
+title-specific modifier function, including any helper calls.
+Until that is confirmed, even the four reconstructed
+conditional TEA words must **not** be used to assert success.
+
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
