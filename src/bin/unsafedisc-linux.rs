@@ -1294,7 +1294,7 @@ mod tests {
         }
         assert_eq!(base, checksum_pages_bounded_without_highlow(
             &altered, 0x3000, &blocks, effective, 0).unwrap());
-        altered[4100] ^= 0x7F;
+        altered[4105] ^= 0x7F;
         assert_ne!(base, checksum_pages_bounded_without_highlow(
             &altered, 0x3000, &blocks, effective, 0).unwrap());
         assert!(checksum_pages_bounded_without_highlow(
