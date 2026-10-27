@@ -151,7 +151,7 @@ fn parse_pe32(data: &[u8]) -> Result<Pe32> {
 // Executable base relocation directory (IMAGE_DIRECTORY_ENTRY_BASERELOC = 5).
 // Only IMAGE_REL_BASED_ABSOLUTE (0, padding) and HIGHLOW (3, x86 32-bit)
 // occur in our exact verified Crimson Skies binary. Reject other types.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RelocBlock {
     page_rva: u32,
     highlow_offsets: Vec<u16>,
@@ -254,23 +254,16 @@ fn checksum_page_without_highlow(page: &[u8], offsets: &[u16], previous: u32) ->
     Ok(checksum_chunk(&page[start..], sum))
 }
 
-// Page-oriented checksum primitive for contiguous, complete 4-KiB PE pages.
-// Each page is split at HIGHLOW relocation DWORDs, including DWORDs that
-// straddle the boundary into the next page. The byte mixer's weight resets
-// per nonempty span; its accumulated sum carries between spans and pages.
-//
-// This is a SYNTHETICALLY TESTED building block, not the complete SafeDisc
-// checksum: section selection, original page/chunk call order and the DLL
-// modifier are still unverified. No game file is modified or decrypted.
-#[allow(dead_code)]
-fn checksum_pages_without_highlow(
-    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], previous: u32,
-) -> Result<u32> {
+// Validate absolute, ordered, non-overlapping HIGHLOW byte ranges without
+// reading code or assuming any particular checksum algorithm.
+fn relocation_windows(
+    first_page_rva: u32, byte_len: usize, blocks: &[RelocBlock],
+) -> Result<Vec<(usize, usize)>> {
     const PAGE: usize = 4096;
-    if first_page_rva % PAGE as u32 != 0 || bytes.is_empty() || bytes.len() % PAGE != 0 {
+    if first_page_rva % PAGE as u32 != 0 || byte_len == 0 || byte_len % PAGE != 0 {
         return Err("expected complete, 4-KiB-aligned PE pages".into());
     }
-    let span = u32::try_from(bytes.len()).map_err(|_| "page span does not fit PE RVA")?;
+    let span = u32::try_from(byte_len).map_err(|_| "page span does not fit PE RVA")?;
     let end_rva = first_page_rva.checked_add(span).ok_or("PE page RVA overflow")?;
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut previous_end = 0usize;
@@ -287,13 +280,31 @@ fn checksum_pages_without_highlow(
         for &offset in &block.highlow_offsets {
             let start = page_offset + offset as usize;
             let end = start + 4;
-            if end > bytes.len() || (!ranges.is_empty() && start < previous_end) {
+            if end > byte_len || (!ranges.is_empty() && start < previous_end) {
                 return Err("overlapping or out-of-range relocation in page span".into());
             }
             ranges.push((start, end));
             previous_end = end;
         }
     }
+
+    Ok(ranges)
+}
+
+// Page-oriented checksum primitive for contiguous, complete 4-KiB PE pages.
+// Each page is split at HIGHLOW relocation DWORDs, including DWORDs that
+// straddle the boundary into the next page. The byte mixer's weight resets
+// per nonempty span; its accumulated sum carries between spans and pages.
+//
+// This is a SYNTHETICALLY TESTED building block, not the complete SafeDisc
+// checksum: section selection, original page/chunk call order and the DLL
+// modifier are still unverified. No game file is modified or decrypted.
+#[allow(dead_code)]
+fn checksum_pages_without_highlow(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], previous: u32,
+) -> Result<u32> {
+    const PAGE: usize = 4096;
+    let ranges = relocation_windows(first_page_rva, bytes.len(), blocks)?;
 
     let mut checksum = previous;
     let mut relocation_index = 0usize;
@@ -318,6 +329,54 @@ fn checksum_pages_without_highlow(
         }
     }
     Ok(checksum)
+}
+
+// Inspect only the geometry of checksum candidates. This does not compute
+// a checksum and makes no claims about the original tool's chunk ordering.
+fn print_text_relocation_layout(
+    section: &PeSection, blocks: &[RelocBlock],
+) -> Result<()> {
+    const PAGE: usize = 4096;
+    let ranges = relocation_windows(section.virtual_address, section.raw_len, blocks)?;
+    let mut spans = 0usize;
+    let mut retained_bytes = 0usize;
+    let mut relocation_index = 0usize;
+    for page_start in (0..section.raw_len).step_by(PAGE) {
+        let page_end = page_start + PAGE;
+        while relocation_index < ranges.len() && ranges[relocation_index].1 <= page_start {
+            relocation_index += 1;
+        }
+        let mut cursor = page_start;
+        let mut index = relocation_index;
+        while index < ranges.len() && ranges[index].0 < page_end {
+            let keep_end = ranges[index].0.max(page_start);
+            if cursor < keep_end {
+                spans += 1;
+                retained_bytes += keep_end - cursor;
+            }
+            cursor = ranges[index].1.min(page_end);
+            index += 1;
+        }
+        if cursor < page_end {
+            spans += 1;
+            retained_bytes += page_end - cursor;
+        }
+    }
+    let excluded_bytes = ranges.len().checked_mul(4).ok_or("excluded bytes overflow")?;
+    if retained_bytes.checked_add(excluded_bytes) != Some(section.raw_len) {
+        return Err("relocation coverage does not partition .text exactly".into());
+    }
+    let crossed_pages = ranges.iter()
+        .filter(|(start, end)| start / PAGE != (end - 1) / PAGE).count();
+    println!("Read-only .text relocation geometry (NOT a SafeDisc checksum):");
+    println!("  section RVA: 0x{:08X}, raw offset: 0x{:X}", section.virtual_address, section.raw_offset);
+    println!("  section bytes: {}, pages: {}", section.raw_len, section.raw_len / PAGE);
+    println!("  excluded relocation bytes: {} ({} DWORDs)", excluded_bytes, ranges.len());
+    println!("  retained bytes: {}, hypothetical nonempty page-local chunks: {}",
+        retained_bytes, spans);
+    println!("  relocations crossing a page boundary: {}", crossed_pages);
+    println!("  No checksum, TEA key or decrypted executable has been generated.");
+    Ok(())
 }
 
 fn read_original(path: &Path, expected_len: usize, expected_sha: &str) -> Result<Vec<u8>> {
@@ -384,13 +443,14 @@ struct Options {
     dplayerx: Option<PathBuf>,
     reference: Option<PathBuf>,
     reported_key: Option<u32>,
+    layout: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -418,6 +478,11 @@ fn parse_args() -> Result<Option<Options>> {
     let mut options = Options::default();
     while let Some(key) = args.next() {
         if key == "--help" || key == "-h" { help(); return Ok(None); }
+        if key == "--layout" {
+            if options.layout { return Err("repeated --layout argument".into()); }
+            options.layout = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -465,6 +530,12 @@ fn inspect(options: Options) -> Result<()> {
         || text_page_count != 514 || text_blocks != 514 || text_highlow != 61_743
         || crossed_highlow != 36 {
         return Err("relocation layout differs from the expected Crimson Skies original".into());
+    }
+    if options.layout {
+        let text_relocs: Vec<_> = relocs.iter()
+            .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
+            .cloned().collect();
+        print_text_relocation_layout(text, &text_relocs)?;
     }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
     println!("Verified original Crimson Skies 1.0.2.0 files (SHA-256 + size).");
@@ -562,6 +633,18 @@ fn pre_tea_dwords_with_modifiers<F, G>(
         let input = u32::from_le_bytes(bytes.try_into().unwrap());
         let output = second_modifier(first_modifier(input ^ mask) ^ mask);
         bytes.copy_from_slice(&output.to_le_bytes());
+    }
+}
+
+// SafeDisc 1.50.20 second-layer page adapter: index mask must restart
+// for EACH 4-KiB page. The last page may be short, and incomplete DWORD
+// bytes are deliberately untouched. No real DLL callbacks exist yet.
+#[allow(dead_code)]
+fn pre_tea_section_pages_with_modifiers<F, G>(
+    data: &mut [u8], mut first: F, mut second: G,
+) where F: FnMut(u32) -> u32, G: FnMut(u32) -> u32 {
+    for page in data.chunks_mut(4096) {
+        pre_tea_dwords_with_modifiers(page, &mut first, &mut second);
     }
 }
 
@@ -815,6 +898,53 @@ mod tests {
         let sample = vec![0xAAu8; 8192];
         assert!(checksum_pages_without_highlow(&sample[..4096], 0x1000, &blocks[..1], 0).is_err());
         assert!(checksum_pages_without_highlow(&sample, 0x1000, &blocks, 0).is_ok());
+    }
+
+    #[test]
+    fn joined_page_relocation_windows_preserve_byte_partition() {
+        let mut data: Vec<u8> = (0..12288).map(|i| (i % 251) as u8).collect();
+        let blocks = [
+            RelocBlock { page_rva: 0x3000, highlow_offsets: vec![3, 0xFFF] },
+            RelocBlock { page_rva: 0x4000, highlow_offsets: vec![10] },
+            RelocBlock { page_rva: 0x5000, highlow_offsets: vec![0xFFC] },
+        ];
+        let windows = relocation_windows(0x3000, data.len(), &blocks).unwrap();
+        assert_eq!(windows, vec![(3, 7), (4095, 4099), (4106, 4110), (12284, 12288)]);
+        let original = checksum_pages_without_highlow(&data, 0x3000, &blocks, 123).unwrap();
+        for &(start, end) in &windows {
+            for byte in &mut data[start..end] { *byte ^= 0xFF; }
+        }
+        assert_eq!(checksum_pages_without_highlow(&data, 0x3000, &blocks, 123).unwrap(), original);
+        // Confirm that the exclusions account for every byte exactly once.
+        let excluded = windows.len() * 4;
+        assert_eq!(data.len() - excluded, 12272);
+        assert!(relocation_windows(0x3000, 4096, &blocks).is_err());
+        assert!(relocation_windows(0x3000, 8192, &blocks).is_err());
+        assert!(relocation_windows(0x3000, data.len() - 1, &blocks).is_err());
+    }
+
+    #[test]
+    fn pretea_modifier_mask_restarts_on_each_page() {
+        let mut bytes = vec![0u8; 4096 * 2 + 7];
+        bytes[4096 * 2 + 4..].copy_from_slice(&[0x10, 0x20, 0x30]);
+        // The identity first modifier returns its input so the second one
+        // observes the XOR mask canceled out. Capture the first input to
+        // distinguish word 0 from word 1024 and word 1025.
+        let mut captured = Vec::new();
+        pre_tea_section_pages_with_modifiers(
+            &mut bytes,
+            |word| { captured.push(word); word },
+            |word| word,
+        );
+        assert_eq!(captured.len(), 2049);
+        assert_eq!(captured[0], 0);
+        assert_eq!(captured[1], 0x0101_0101);
+        assert_eq!(captured[256], 0x0101_0100);
+        assert_eq!(captured[1023], 0xFFFF_FFFF);
+        assert_eq!(captured[1024], 0); // second page, first DWORD
+        assert_eq!(captured[2048], 0); // partial third page
+        assert_eq!(&bytes[4096 * 2 + 4..], &[0x10, 0x20, 0x30]);
+        assert!(bytes.iter().take(4096 * 2 + 4).all(|b| *b == 0));
     }
 
     #[test]
