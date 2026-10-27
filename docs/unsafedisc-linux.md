@@ -2508,3 +2508,55 @@ categories still require upstream caller tracing.
 All addresses and relative calls in this note were verified by static
 inspection of the private original DLL. No DLL execution, plaintext
 reconstruction or proprietary binary upload was performed.
+
+
+### Corrected original x86 range comparators: ordering, adjacency and coalescing (2026-10-27)
+
+Independent instruction-aligned analysis of the owner's hash-verified original
+`dplayerx.dll` establishes that the earlier description of `0xC3D0`
+as a **start-key equality matcher was incorrect**. The exact original bytes
+`8B 4C 24 04 8B 44 24 08 3B 01 1B C0 F7 D8 C3`
+implement an unsigned `CMP probe,[node]` followed by `SBB/NEG`,
+and return 1 **only when `probe < node.start`**. Equality returns zero.
+Consequently `0xBC00` is a sorted-list lower-bound style walk; `0xBC40`
+uses this ordering predicate to terminate searching when a probe is before
+the next entry. The caller at `0xBEA1` uses the same ordering comparison.
+
+The checked `0xC4B0` comparator, called at `0xBC5E`, accepts a record
+`(start,length,tag)` and `(requested_start,requested_length,requested_tag)`.
+It returns 1 when the tags match **and the ranges are immediately adjacent**
+in either direction:
+```text
+record.tag == requested_tag AND
+(
+    record.start + record.length == requested_start OR
+    requested_start + requested_length == record.start
+)
+```
+Arithmetic here is native 32-bit wrapping; this is not general overlap,
+containment, or plain tag equality. The 50-byte function is read-only.
+A distinct `0xC4F0` compares **two existing record pointers** with
+the same tag-and-adjacency predicate; exact bytes and direct callers
+`0xB9E6` / `0xBA35` have been verified.
+
+The caller `0xB9D0` uses `0xC4F0` to find adjacent tagged neighbors,
+then invokes `0xC310` to merge the start/length of neighboring records,
+and `0xBA90` to unlink and release redundant list nodes. Its loop repeats
+while merges occur. This proves **in-place coalescing of tagged, adjacent
+ranges**, rather than storing separate decrypted code buffers.
+
+**Correction to the earlier `0xC350` note:** the extension writes
+`(requested_address + requested_length) - stored_start` at `0xC398..0xC39A`,
+not `last - stored_start`. The code computes `last = requested_end - 1`
+only for its inclusion test, but uses the *exclusive* requested end for the
+new length. No overflow-safe abstraction or zero-length precondition has
+been proved.
+
+The Rust `--modifier-research` inspector now asserts the complete original
+15-byte `0xC3D0`, 50-byte `0xC4B0` and 50-byte `0xC4F0` functions,
+eight direct E8 call targets, and synthetic test cases for strict ordering,
+both adjacency directions, tag mismatch, overlapping/nonadjacent intervals
+and wrapping arithmetic. These are **static memory-management semantics**,
+not evidence of SafeDisc game-code plaintext. The eight category meanings,
+the source of their numeric tags and the link to encrypted ICD pages remain
+unverified.
