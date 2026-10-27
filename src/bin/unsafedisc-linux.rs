@@ -1072,6 +1072,66 @@ fn dll_d62c_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
     Ok(all)
 }
 
+// 0xD7BE is a single-byte RET (0xC3), not an independent
+// SafeDisc decoding routine. The CALL at D664 returns to D669.
+// POP EAX / MOV word [ebp-8],1 / Jcc preserve EFLAGS. The valid
+// stack assumption after SUB ESP,8 gives CF=ZF=0. Independently
+// enumerate all PF/SF/OF states to prove that the next actual
+// CALL is RVA D68C -> C5C0. Only EXACT reached opcode bytes
+// are accepted, never scan overlapping dead x86 bytes as code.
+fn dll_d62c_after_ret_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
+    fn expect(dll:&[u8],pe:&Pe32,pc:u32,code:&[u8])->Result<()>{
+        let file=executable_rva_to_file_offset(pe,pc,code.len())?;
+        if dll.get(file..file+code.len()) != Some(code) {
+            return Err(format!("D62C post-RET bytes differ at RVA 0x{pc:08X}"));
+        }
+        Ok(())
+    }
+    // Before interpreting the indirect next-call path, verify that
+    // the previously reached CALL target really does just RET.
+    expect(dll,pe,0xD7BE,&[0xC3])?;
+    if dll_relative_call_target(dll,pe,0xD664)?!=0xD7BE{
+        return Err("D62C first E8 no longer invokes RET trampoline".into());
+    }
+    let mut outcomes=Vec::new();
+    for pf in [false,true]{
+        for sf in [false,true]{
+            for _of in [false,true]{
+                let mut pc=0xD669u32;
+                let mut trace=Vec::new();
+                for _ in 0..16{
+                    trace.push(pc);
+                    pc=match pc{
+                        0xD669 => {expect(dll,pe,pc,&[0x58])?;0xD66A},
+                        0xD66A => {expect(dll,pe,pc,&[0x77,0x02])?;0xD66E},
+                        0xD66E => {expect(dll,pe,pc,&[0x66,0xC7,0x45,0xF8,0x01,0x00])?;0xD674},
+                        0xD674 => {expect(dll,pe,pc,&[0x76,0x11])?;0xD676},
+                        0xD676 => {expect(dll,pe,pc,&[0x77,0x0F])?;0xD687},
+                        0xD687 => {expect(dll,pe,pc,&[0x78,0xEE])?;
+                            if sf{0xD677}else{0xD689}},
+                        0xD689 => {expect(dll,pe,pc,&[0x79,0xEC])?;0xD677},
+                        0xD677 => {expect(dll,pe,pc,&[0x0F,0x8B,0x0F,0x00,0x00,0x00])?;
+                            if !pf{0xD68C}else{0xD67D}},
+                        0xD67D => {expect(dll,pe,pc,&[0x7A,0x0D])?;0xD68C},
+                        0xD68C => {
+                            if dll_relative_call_target(dll,pe,pc)?!=0xC5C0{
+                                return Err("D62C second meaningful E8 does not reach C5C0".into());
+                            }
+                            break;
+                        }
+                        _ => return Err(format!("D62C post-RET path escaped at RVA 0x{pc:08X}")),
+                    };
+                }
+                if trace.last().copied()!=Some(0xD68C){
+                    return Err("D62C post-RET path failed to converge within 16 instructions".into());
+                }
+                outcomes.push(trace);
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -1094,6 +1154,11 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     println!("    PF/SF/OF cases enumerated: {}; all agree on first direct CALL.",d62c.len());
     println!("    This is conditional on normal SUB ESP,8 stack flags (CF=ZF=0), not a runtime trace.");
     println!("    No conclusion yet about either callee decrypting the protected .txt bytes.");
+    let next=dll_d62c_after_ret_paths(dll,&pe)?;
+    println!("  Correction: D7BE consists solely of opcode C3 (RET), not a decryption routine.");
+    println!("  After its immediate return: D669 POP EAX; D66A JA; D66E MOV word [EBP-8],1; further flag-preserving Jcc.");
+    println!("  Next CALL at D68C -> C5C0, verified for all {} PF/SF/OF cases.",next.len());
+    println!("  C5C0 functionality remains unproven. No encrypted .txt bytes were transformed.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -3794,6 +3859,46 @@ mod tests {
         assert!(unique.len()>1);
         dll[0x200+(0xD654-0xD000) as usize]=0xCC;
         assert!(dll_d62c_first_call_paths(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn ret_decoy_is_verified_and_next_call_is_c5c0_for_every_flag_state() {
+        let mut dll=synthetic_pe();
+        dll.resize(0x2200,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        for (rva,code) in [
+            (0xD7BEu32,&[0xC3u8][..]),
+            (0xD669,&[0x58]),(0xD66A,&[0x77,0x02]),
+            (0xD66E,&[0x66,0xC7,0x45,0xF8,0x01,0x00]),
+            (0xD674,&[0x76,0x11]),(0xD676,&[0x77,0x0F]),
+            (0xD687,&[0x78,0xEE]),(0xD689,&[0x79,0xEC]),
+            (0xD677,&[0x0F,0x8B,0x0F,0,0,0]),
+            (0xD67D,&[0x7A,0x0D]),
+        ]{
+            let offset=0x200+(rva-0x2000) as usize;
+            dll[offset..offset+code.len()].copy_from_slice(code);
+        }
+        for (call,target) in [(0xD664u32,0xD7BEu32),(0xD68C,0xC5C0)] {
+            let off=0x200+(call-0x2000) as usize;
+            let disp=(i64::from(target)-i64::from(call+5)) as i32;
+            dll[off]=0xE8;
+            dll[off+1..off+5].copy_from_slice(&disp.to_le_bytes());
+        }
+        let pe=parse_pe32(&dll).unwrap();
+        let paths=dll_d62c_after_ret_paths(&dll,&pe).unwrap();
+        assert_eq!(paths.len(),8);
+        assert!(paths.iter().all(|p|p.last()==Some(&0xD68C)));
+        // PF and SF lead to different, overlapping byte paths,
+        // but all must converge at the same nontrivial CALL.
+        let distinct=paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+        assert_eq!(distinct.len(),4);
+        dll[0x200+(0xD7BE-0x2000) as usize]=0x90;
+        assert!(dll_d62c_after_ret_paths(&dll,&pe).is_err());
     }
 
     #[test]
