@@ -2801,14 +2801,35 @@ fn inspect(options: Options) -> Result<()> {
         if references.len()!=23 {
             return Err(format!("unexpected original DLL encoded-metadata PUSH reference count {}",references.len()));
         }
-        println!("  Static .text PUSH-imm32 metadata references: {}",references.len());
-        for reference in &references {
+        // The immediate operand in a genuine absolute PUSH is the DWORD
+        // relocated by IMAGE_REL_BASED_HIGHLOW, at (opcode RVA + 1).
+        // Cross-check candidates against the original PE relocation directory.
+        // Literal matches without this evidence remain visible but weaker;
+        // even relocation-backed matches do not establish instruction reachability.
+        let (dll_relocs, _) = pe_relocation_blocks(&dll, &pe)?;
+        let mut relocation_sites = std::collections::HashSet::new();
+        for block in &dll_relocs {
+            for &offset in &block.highlow_offsets {
+                let site = block.page_rva.checked_add(u32::from(offset))
+                    .ok_or("DLL HIGHLOW RVA overflow")?;
+                relocation_sites.insert(site);
+            }
+        }
+        let flags = unsafedisc_strings::push_operand_highlow_flags(
+            &references, &relocation_sites)?;
+        let backed = flags.iter().filter(|&&is_highlow| is_highlow).count();
+        println!("  Static .text PUSH-imm32 candidate byte patterns: {}",references.len());
+        println!("    immediate operands backed by PE HIGHLOW: {backed}; no matching operand HIGHLOW: {}",
+            references.len() - backed);
+        for (reference, &is_highlow) in references.iter().zip(flags.iter()) {
             let label=entries.iter().find(|e|e.rva==reference.label_rva)
                 .ok_or("decoded PUSH references unknown metadata")?;
-            println!("    x86 PUSH RVA 0x{:08X} -> data RVA 0x{:08X}: {}",
-                reference.instruction_rva,reference.label_rva,label.value);
+            let evidence = if is_highlow { "HIGHLOW-backed" } else { "raw-byte candidate only" };
+            println!("    x86 PUSH RVA 0x{:08X} -> data RVA 0x{:08X}: {} [{}]",
+                reference.instruction_rva,reference.label_rva,label.value,evidence);
         }
-        println!("  These are file-backed original opcode references, not proof of runtime reachability.");
+        println!("  A matching operand relocation strengthens an absolute-address interpretation.");
+        println!("  Scanned byte patterns do not prove instruction alignment, reachability or execution.");
         println!("No DLL code was executed or decrypted.");
     }
     if options.modifier_research {
