@@ -356,6 +356,90 @@ fn checksum_pages_bounded_without_highlow(
     Ok(checksum)
 }
 
+// Independently enumerate non-relocated, page-bounded fragment calls in
+// the relocation-aware branch seen at historical unSafeDisc 1.5.5
+// 0x401D82..0x401EFF. This walker scans absolute relocation intervals
+// page-by-page and handles carry-over from the previous page separately,
+// instead of using the earlier helper's range-index iteration.
+//
+// IMPORTANT: the original program's selection between this branch and
+// its simple-page branch at 0x401D48 depends on runtime state not yet
+// independently established for Crimson Skies. Equality with the
+// existing relocation-aware candidate strengthens our internal model;
+// it does NOT prove which original branch ran or yield the real key.
+#[derive(Debug, PartialEq, Eq)]
+struct RelocationWalkReport {
+    checksum: u32,
+    included_bytes: usize,
+    excluded_bytes: usize,
+    fragments: usize,
+    crossings: usize,
+}
+
+fn checksum_independent_relocation_walk(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], effective_len: usize,
+) -> Result<RelocationWalkReport> {
+    const PAGE: usize = 4096;
+    if effective_len == 0 || effective_len > bytes.len() {
+        return Err("invalid effective extent for relocation walker".into());
+    }
+    let relocation_ranges = relocation_windows(first_page_rva, bytes.len(), blocks)?;
+    let mut checksum = 0u32;
+    let mut included_bytes = 0usize;
+    let mut fragments = 0usize;
+    let mut next_relocation = 0usize;
+
+    // This branch's accumulator spans pages, while the weight is
+    // initialized independently at the beginning of EACH call.
+    for page_start in (0..effective_len).step_by(PAGE) {
+        let page_limit = (page_start + PAGE).min(effective_len);
+        while next_relocation < relocation_ranges.len()
+            && relocation_ranges[next_relocation].1 <= page_start {
+            next_relocation += 1;
+        }
+
+        let mut cursor = page_start;
+        // A HIGHLOW DWORD beginning at offset 0xFFD..0xFFF can carry
+        // exclusions into the following page.
+        if let Some(&(begin, end)) = relocation_ranges.get(next_relocation) {
+            if begin < page_start && end > page_start {
+                cursor = end.min(page_limit);
+                next_relocation += 1;
+            }
+        }
+
+        while next_relocation < relocation_ranges.len()
+            && relocation_ranges[next_relocation].0 < page_limit {
+            let (begin, end) = relocation_ranges[next_relocation];
+            if cursor < begin {
+                checksum = checksum_chunk(&bytes[cursor..begin], checksum);
+                included_bytes += begin - cursor;
+                fragments += 1;
+            }
+            cursor = cursor.max(end.min(page_limit));
+            next_relocation += 1;
+        }
+        if cursor < page_limit {
+            checksum = checksum_chunk(&bytes[cursor..page_limit], checksum);
+            included_bytes += page_limit - cursor;
+            fragments += 1;
+        }
+    }
+
+    let excluded_bytes = relocation_ranges.iter()
+        .map(|&(start, end)| effective_len.min(end).saturating_sub(start))
+        .sum::<usize>();
+    if included_bytes.checked_add(excluded_bytes) != Some(effective_len) {
+        return Err("relocation walker does not partition the effective section".into());
+    }
+    let crossings = relocation_ranges.iter()
+        .filter(|&&(start, end)| start < effective_len && start / PAGE != (end-1) / PAGE)
+        .count();
+    Ok(RelocationWalkReport {
+        checksum, included_bytes, excluded_bytes, fragments, crossings,
+    })
+}
+
 // Alternative *research* hypothesis: carry the checksum across the whole
 // section, splitting ONLY around relocation DWORDs (not page boundaries).
 // It is deliberately distinct from the page-local checksum hypothesis.
@@ -459,12 +543,23 @@ fn print_checksum_research(
     };
     let bounded_page_local = checksum_pages_bounded_without_highlow(
         data, section.virtual_address, blocks, effective_len, 0)?;
+    let independent_walk = checksum_independent_relocation_walk(
+        data, section.virtual_address, blocks, effective_len)?;
+    if independent_walk.checksum != bounded_page_local {
+        return Err("two independent relocation-aware walkers disagree".into());
+    }
     println!("Historical unSafeDisc 1.5.5 code-section gate and extent:");
     println!("  checksum section: .text (Characteristics & 0x20; IMAGE_SCN_CNT_CODE)");
     println!("  initial accumulator: 0 (0x401CDE), selected section size: min(raw, nonzero VirtualSize)");
     println!("  raw bytes: {}, selected bytes: {}, ignored raw tail: {}",
         section.raw_len, effective_len, section.raw_len - effective_len);
     println!("  extent-bounded page-local candidate: 0x{bounded_page_local:08X}");
+    println!("  independent relocation-walk comparison: MATCH");
+    println!("  effective non-relocated bytes: {}, skipped relocation bytes: {}",
+        independent_walk.included_bytes, independent_walk.excluded_bytes);
+    println!("  fragment calls: {}, page-crossing HIGHLOW DWORDs: {}",
+        independent_walk.fragments, independent_walk.crossings);
+    println!("  Historic branch switch at 0x401D48 remains unverified for this game.");
     println!("  This is a stronger candidate, not a verified full SafeDisc checksum.");
     let (local_pages, whole_pages) =
         checksum_research_page_contributions(data, section.virtual_address, blocks)?;
@@ -1303,6 +1398,42 @@ mod tests {
             &bytes, 0x3000, &blocks, bytes.len()+1, 0).is_err());
         assert_eq!(full_raw, checksum_pages_bounded_without_highlow(
             &bytes, 0x3000, &blocks, bytes.len(), 0).unwrap());
+    }
+
+    #[test]
+    fn independent_relocation_walker_matches_page_candidate_on_boundaries() {
+        let bytes: Vec<u8> = (0..12288).map(|i| ((i * 23 + 1) % 256) as u8).collect();
+        for crossing in [0xFFDu16, 0xFFE, 0xFFF] {
+            let block_a = RelocBlock { page_rva: 0x2000,
+                highlow_offsets: vec![0x007, crossing] };
+            let block_b = RelocBlock { page_rva: 0x3000,
+                highlow_offsets: vec![0x010, 0xC00] };
+            let blocks = [block_a, block_b];
+            // Include partial last page and an exclusion carrying
+            // across the boundary of pages 0 and 1.
+            for effective in [4093usize, 4096, 4097, 4110, 8192, 10003, bytes.len()] {
+                let old = checksum_pages_bounded_without_highlow(
+                    &bytes, 0x2000, &blocks, effective, 0).unwrap();
+                let result = checksum_independent_relocation_walk(
+                    &bytes, 0x2000, &blocks, effective).unwrap();
+                assert_eq!(result.checksum, old, "crossing={crossing:x}, extent={effective}");
+                assert_eq!(result.included_bytes + result.excluded_bytes, effective);
+                assert_eq!(result.crossings, usize::from(
+                    (crossing as usize) < effective && (crossing as usize + 4) > 4096));
+            }
+        }
+
+        // Missing relocation block: entirely retained first page.
+        let data = vec![0xA5u8; 8192];
+        let block = RelocBlock { page_rva: 0x3000, highlow_offsets: vec![5, 17] };
+        let result = checksum_independent_relocation_walk(
+            &data, 0x2000, &[block.clone()], 5000).unwrap();
+        assert_eq!(result.checksum,
+            checksum_pages_bounded_without_highlow(&data, 0x2000, &[block], 5000, 0).unwrap());
+        assert_eq!(result.included_bytes + result.excluded_bytes, 5000);
+        assert_eq!(result.fragments, 4);
+        assert!(checksum_independent_relocation_walk(&data, 0x2000, &[], 0).is_err());
+        assert!(checksum_independent_relocation_walk(&data, 0x2000, &[], 8193).is_err());
     }
 
     #[test]
