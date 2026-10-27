@@ -150,6 +150,66 @@ pub fn scan_relocated_label_pointers(
     Ok(hits)
 }
 
+// Recognize a complete x86 encoded-API resolver sequence:
+// PUSH decoded-label VA, PUSH module handle, CALL C708,
+// ADD ESP,8, MOV [absolute zero-fill destination],EAX,
+// CMP DWORD [same destination],0.
+// All three absolute operands must be real HIGHLOW slots.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct ResolverSlot {
+    pub label_rva:u32,
+    pub instruction_rva:u32,
+    pub call_rva:u32,
+    pub output_slot_rva:u32,
+}
+
+pub fn scan_resolver_slots(
+    code:&[u8], code_rva:u32, image_base:u32, labels:&[Label],
+    relocations:&std::collections::HashSet<u32>, resolver_rva:u32,
+)->Result<Vec<ResolverSlot>,String>{
+    let mut label_vas=std::collections::HashMap::new();
+    for item in labels{
+        let va=image_base.checked_add(item.rva).ok_or("label VA overflow")?;
+        label_vas.insert(va,item.rva);
+    }
+    let mut hits=Vec::new();
+    for (index,w) in code.windows(31).enumerate(){
+        if w[0]!=0x68{continue}
+        let va=u32::from_le_bytes(w[1..5].try_into().unwrap());
+        let Some(&label_rva)=label_vas.get(&va) else{continue};
+        let site=code_rva.checked_add(index as u32).ok_or("site overflow")?;
+        if !relocations.contains(&site.checked_add(1).ok_or("push overflow")?){continue}
+        let prelude=if matches!(&w[5..9],
+            &[0x8B,0x45,0xFC,0x50] | &[0x8B,0x4D,0xFC,0x51] | &[0x8B,0x55,0xFC,0x52]
+        ){4}else if matches!(&w[5..11],
+            &[0x8B,0x4D,0x08,0x8B,0x11,0x52] | &[0x8B,0x45,0x08,0x8B,0x08,0x51]
+        ){6}else{continue};
+        let call=5+prelude;
+        if w[call]!=0xE8{continue}
+        let disp=i32::from_le_bytes(w[call+1..call+5].try_into().unwrap());
+        let call_rva=site.checked_add(call as u32).ok_or("call overflow")?;
+        if i64::from(call_rva)+5+i64::from(disp)!=i64::from(resolver_rva){continue}
+        let after=call+5;
+        if &w[after..after+3]!=&[0x83,0xC4,0x08]{continue}
+        let store=after+3;
+        if w[store]!=0xA3{continue}
+        let slot_va=u32::from_le_bytes(w[store+1..store+5].try_into().unwrap());
+        let cmp=store+5;
+        if &w[cmp..cmp+2]!=&[0x83,0x3D] || w[cmp+6]!=0 {continue}
+        let other_va=u32::from_le_bytes(w[cmp+2..cmp+6].try_into().unwrap());
+        if slot_va!=other_va{continue}
+        let Some(output_slot_rva)=slot_va.checked_sub(image_base) else{continue};
+        let store_rva=site.checked_add((store+1) as u32).ok_or("store RVA overflow")?;
+        let cmp_rva=site.checked_add((cmp+2) as u32).ok_or("cmp RVA overflow")?;
+        if !relocations.contains(&store_rva)||!relocations.contains(&cmp_rva){continue}
+        hits.push(ResolverSlot{
+            label_rva,instruction_rva:site,call_rva,output_slot_rva
+        });
+    }
+    hits.sort_by_key(|r|(r.output_slot_rva,r.instruction_rva));
+    Ok(hits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +299,47 @@ mod tests {
         assert!(scan_relocated_label_pointers(
             &bytes, 0x9000, u32::MAX, &labels, &slots,
         ).is_err());
+    }
+
+    #[test]
+    fn api_resolver_slots_require_real_three_operand_highlow_relocations() {
+        let base=0x008E_0000u32;
+        let mut code=vec![0x90u8;128];
+        let label=Label{rva:0x20660,value:"Example".into()};
+        let instruction=0x10usize;
+        let mut i=instruction;
+        code[i]=0x68;
+        code[i+1..i+5].copy_from_slice(&(base+label.rva).to_le_bytes());
+        i+=5;
+        code[i..i+4].copy_from_slice(&[0x8B,0x55,0xFC,0x52]);
+        i+=4;
+        code[i]=0xE8;
+        let disp=(i64::from(0xC708u32)-i64::from(0xD000u32+i as u32+5)) as i32;
+        code[i+1..i+5].copy_from_slice(&disp.to_le_bytes());
+        i+=5;
+        code[i..i+3].copy_from_slice(&[0x83,0xC4,0x08]);
+        i+=3;
+        code[i]=0xA3;
+        code[i+1..i+5].copy_from_slice(&(base+0x24F00u32).to_le_bytes());
+        let store=i+1;
+        i+=5;
+        code[i..i+2].copy_from_slice(&[0x83,0x3D]);
+        code[i+2..i+6].copy_from_slice(&(base+0x24F00u32).to_le_bytes());
+        code[i+6]=0;
+        let cmp=i+2;
+        let highlow=std::collections::HashSet::from([
+            0xD011u32,0xD000u32+store as u32,0xD000u32+cmp as u32,
+        ]);
+        let result=scan_resolver_slots(&code,0xD000,base,&[label.clone()],&highlow,0xC708).unwrap();
+        assert_eq!(result,vec![ResolverSlot {
+            label_rva:0x20660,instruction_rva:0xD010,
+            call_rva:0xD019,output_slot_rva:0x24F00
+        }]);
+        let mut missing=highlow.clone();
+        missing.remove(&(0xD000+cmp as u32));
+        assert!(scan_resolver_slots(&code,0xD000,base,&[label.clone()],&missing,0xC708).unwrap().is_empty());
+        code[cmp+1]^=0x10;
+        assert!(scan_resolver_slots(&code,0xD000,base,&[label],&highlow,0xC708).unwrap().is_empty());
     }
 
     #[test]
