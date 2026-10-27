@@ -1132,6 +1132,73 @@ fn dll_d62c_after_ret_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
     Ok(outcomes)
 }
 
+// Third protected attach tier: C5C0 uses the same kind of
+// overlapping opaque predicates. After a conventional valid
+// SUB ESP,8 (ZF=CF=0), enumerate all four SF/OF combinations;
+// parity does not affect reached code. The first actual CALL
+// is 0xC5DE -> 0xE25C. This neither executes nor decrypts.
+fn dll_c5c0_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
+    fn check(dll:&[u8],pe:&Pe32,rva:u32,expected:&[u8])->Result<()>{
+        let file=executable_rva_to_file_offset(pe,rva,expected.len())?;
+        if dll.get(file..file+expected.len())!=Some(expected){
+            return Err(format!("C5C0 unexpected opcode at RVA 0x{rva:08X}"));
+        }
+        Ok(())
+    }
+    check(dll,pe,0xC5C0,&[0x55,0x8B,0xEC,0x83,0xEC,0x08,0x53,0x56,0x57])?;
+    let mut paths=Vec::new();
+    for sf in [false,true]{
+        for of in [false,true]{
+            let mut trace=Vec::new();
+            let mut pc=0xC5C9u32;
+            for _ in 0..16{
+                trace.push(pc);
+                pc=match pc{
+                    0xC5C9=>{
+                        check(dll,pe,pc,&[0x7F,0x09])?;
+                        if sf==of{0xC5D4}else{0xC5CB}
+                    },
+                    0xC5D4=>{
+                        check(dll,pe,pc,&[0x77,0x00])?;
+                        0xC5D6
+                    },
+                    0xC5D6=>{
+                        check(dll,pe,pc,&[0x7F,0xF3])?;
+                        if sf==of{0xC5CB}else{0xC5D8}
+                    },
+                    0xC5CB=>{check(dll,pe,pc,&[0x90])?;0xC5CC},
+                    0xC5CC=>{check(dll,pe,pc,&[0x87,0xED])?;0xC5CE},
+                    0xC5CE=>{
+                        check(dll,pe,pc,&[0x78,0x09])?;
+                        if sf{0xC5D9}else{0xC5D0}
+                    },
+                    0xC5D0=>{check(dll,pe,pc,&[0x87,0xD2])?;0xC5D2},
+                    0xC5D2=>{
+                        check(dll,pe,pc,&[0x79,0x05])?;
+                        if !sf{0xC5D9}else{0xC5D9}
+                    },
+                    0xC5D9=>{
+                        check(dll,pe,pc,&[0x68,0x08,0x05,0x90,0x00])?;
+                        0xC5DE
+                    },
+                    0xC5DE=>{
+                        if dll_relative_call_target(dll,pe,pc)?!=0xE25C{
+                            return Err("C5C0 first CALL no longer targets E25C".into());
+                        }
+                        break;
+                    },
+                    _=>return Err(format!("unexpected C5C0 branch to RVA 0x{pc:08X}")),
+                };
+            }
+            if trace.last().copied()!=Some(0xC5DE){
+                return Err("C5C0 did not reach its first CALL within bounded steps".into());
+            }
+            paths.push(trace);
+        }
+    }
+    Ok(paths)
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -1159,6 +1226,10 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     println!("  After its immediate return: D669 POP EAX; D66A JA; D66E MOV word [EBP-8],1; further flag-preserving Jcc.");
     println!("  Next CALL at D68C -> C5C0, verified for all {} PF/SF/OF cases.",next.len());
     println!("  C5C0 functionality remains unproven. No encrypted .txt bytes were transformed.");
+    let c5c0=dll_c5c0_first_call_paths(dll,&pe)?;
+    println!("  C5C0 first direct E8 call: RVA C5DE -> RVA E25C, for all {} SF/OF states.",c5c0.len());
+    println!("  Original C5D9 PUSH uses constant preferred VA 0x00900508 (original .data state).");
+    println!("  E25C also appears in earlier .text/.txt2 startup call research; its purpose remains under investigation.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -3899,6 +3970,41 @@ mod tests {
         assert_eq!(distinct.len(),4);
         dll[0x200+(0xD7BE-0xC000) as usize]=0x90;
         assert!(dll_d62c_after_ret_paths(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn third_attach_level_four_flag_states_reach_e25c(){
+        let mut dll=synthetic_pe();
+        dll.resize(0x6200,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x6000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x9000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x6000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        for (rva,bytes) in [
+            (0xC5C0u32,&[0x55u8,0x8B,0xEC,0x83,0xEC,0x08,0x53,0x56,0x57][..]),
+            (0xC5C9,&[0x7F,0x09]),(0xC5D4,&[0x77,0x00]),
+            (0xC5D6,&[0x7F,0xF3]),(0xC5CB,&[0x90]),
+            (0xC5CC,&[0x87,0xED]),(0xC5CE,&[0x78,0x09]),
+            (0xC5D0,&[0x87,0xD2]),(0xC5D2,&[0x79,0x05]),
+            (0xC5D9,&[0x68,0x08,0x05,0x90,0x00]),
+        ]{
+            let off=0x200+(rva-0x9000) as usize;
+            dll[off..off+bytes.len()].copy_from_slice(bytes);
+        }
+        let off=0x200+(0xC5DE-0x9000) as usize;
+        let disp=(i64::from(0xE25Cu32)-i64::from(0xC5E3u32)) as i32;
+        dll[off]=0xE8;
+        dll[off+1..off+5].copy_from_slice(&disp.to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        let paths=dll_c5c0_first_call_paths(&dll,&pe).unwrap();
+        assert_eq!(paths.len(),4);
+        assert!(paths.iter().all(|p|p.last()==Some(&0xC5DE)));
+        let distinct=paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+        assert!(distinct.len()>1);
+        dll[0x200+(0xC5D9-0x9000) as usize]=0xCC;
+        assert!(dll_c5c0_first_call_paths(&dll,&pe).is_err());
     }
 
     #[test]
