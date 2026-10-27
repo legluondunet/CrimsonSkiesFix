@@ -307,6 +307,9 @@ fn dll_relative_call_target(dll: &[u8], pe: &Pe32, call_rva: u32) -> Result<u32>
 
 // PE base relocations offer a more grounded way to identify on-disk
 // absolute pointers to .txt than scanning for arbitrary byte patterns.
+// Inspect both executable-only and all file-backed source sections:
+// relocation-backed pointer tables may live in .data/.rdata, even when
+// the code consuming those tables is in another executable section.
 // Relocation-backed DWORDs are still just pointers (possibly data),
 // NOT proof the containing bytes decode to reachable x86 instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,7 +320,7 @@ struct DllCodeReference {
 }
 fn dll_code_reloc_refs_to_section(
     dll: &[u8], pe: &Pe32, blocks: &[RelocBlock],
-    preferred_base: u32, target: &PeSection,
+    preferred_base: u32, target: &PeSection, include_data_sections: bool,
 ) -> Result<(usize, Vec<DllCodeReference>)> {
     const MAX_REFERENCES: usize = 100_000;
     let mut source_relocations = 0usize;
@@ -329,7 +332,7 @@ fn dll_code_reloc_refs_to_section(
             let source_rva = block.page_rva.checked_add(u32::from(offset))
                 .ok_or("DLL relocation source RVA overflow")?;
             let Some(source) = pe.sections.iter().find(|section| {
-                section.characteristics & 0x2000_0000 != 0
+                (include_data_sections || section.characteristics & 0x2000_0000 != 0)
                 && section.name.as_slice() != target.name.as_slice()
                 && source_rva.checked_sub(section.virtual_address).is_some_and(|rel| {
                     (rel as usize).checked_add(4).is_some_and(|end| {
@@ -370,8 +373,10 @@ fn print_dll_protected_xrefs(dll: &[u8]) -> Result<()> {
     }
     let (blocks, padding) = pe_relocation_blocks(dll,&pe)?;
     let total_highlow:usize = blocks.iter().map(|block| block.highlow_offsets.len()).sum();
-    let (executable_source_count, references) =
-        dll_code_reloc_refs_to_section(dll,&pe,&blocks,image_base,protected)?;
+    let (executable_source_count, executable_refs) =
+        dll_code_reloc_refs_to_section(dll,&pe,&blocks,image_base,protected,false)?;
+    let (all_backed_source_count, references) =
+        dll_code_reloc_refs_to_section(dll,&pe,&blocks,image_base,protected,true)?;
     println!("SafeDisc 1.50.20 DLL relocation-backed protected .txt reference research:");
     println!("  PE preferred image base 0x{image_base:08X}; all input bytes from exact verified original dplayerx.dll.");
     println!("  Protected target: .txt RVA 0x{:08X}, raw bytes {}, virtual bytes {}.",
@@ -379,8 +384,10 @@ fn print_dll_protected_xrefs(dll: &[u8]) -> Result<()> {
     println!("  DLL base relocations: {} pages, {} HIGHLOW, {} ABSOLUTE padding.",
         blocks.len(),total_highlow,padding);
     println!("  Backed HIGHLOW words in other executable sections: {executable_source_count}");
-    println!("  Relocation-backed references into .txt: {}",references.len());
-    for name in [".text",".txt2"] {
+    println!("  Backed HIGHLOW words in all other sections (code + data): {all_backed_source_count}");
+    println!("  Relocation-backed references into .txt from executable sections: {}",executable_refs.len());
+    println!("  Relocation-backed references into .txt from ALL backed non-.txt sections: {}",references.len());
+    for name in [".text",".txt2",".rdata",".data",".reloc"] {
         let sub:Vec<_>=references.iter().filter(|r|r.source_section==name).collect();
         println!("  Origin section {name}: {} matching pointers.",sub.len());
         for r in sub.iter().take(24) {
@@ -2699,7 +2706,7 @@ mod tests {
         let pe=parse_pe32(&dll).unwrap();
         let blocks=[RelocBlock {page_rva:0x1000,highlow_offsets:vec![0x20,0x30]}];
         let (count, found) = dll_code_reloc_refs_to_section(
-            &dll,&pe,&blocks,base,pe.section(b".txt").unwrap()).unwrap();
+            &dll,&pe,&blocks,base,pe.section(b".txt").unwrap(),false).unwrap();
         assert_eq!(count,2);
         assert_eq!(found,vec![DllCodeReference {
             source_rva:0x1020, source_section:".text".to_string(),target_rva:0x2050
@@ -2708,7 +2715,16 @@ mod tests {
         dll[sec0+36..sec0+40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
         let nonexec=parse_pe32(&dll).unwrap();
         let (count,empty)=dll_code_reloc_refs_to_section(
-            &dll,&nonexec,&blocks,base,nonexec.section(b".txt").unwrap()).unwrap();
+            &dll,&nonexec,&blocks,base,nonexec.section(b".txt").unwrap(),false).unwrap();
+        assert_eq!(count,0);
+        assert!(empty.is_empty());
+        let (all_count, all_refs)=dll_code_reloc_refs_to_section(
+            &dll,&nonexec,&blocks,base,nonexec.section(b".txt").unwrap(),true).unwrap();
+        assert_eq!(all_count,2);
+        assert_eq!(all_refs.len(),1);
+        assert_eq!(all_refs[0].source_rva,0x1020);
+        assert_eq!(all_refs[0].target_rva,0x2050);
+        assert_eq!(all_refs[0].source_section,".text");
         assert_eq!(count,0);
         assert!(empty.is_empty());
     }
