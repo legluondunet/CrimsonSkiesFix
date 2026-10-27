@@ -221,18 +221,41 @@ Crimson Skies `dplayerx.dll`:
 .\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --modifier-research
 ```
 
-The report first maps each RVA to its actual backed file offset
-using the original DLL's PE32 section headers. It rejects an RVA
-not backed by an **executable** section and prints **128 bytes
-per starting RVA**, grouped by 16 bytes and labelled with their
-RVA (maximum 256 requested bytes, with some overlap).
+The report reads the **original DLL PE section headers** (RVA,
+file offset, raw size, VirtualSize and Characteristics), and prints
+the DLL's PE32 **entry RVA** with its first **96 file-backed bytes**.
+It also maps each of the two historical modifier RVAs to its
+actual backed file offset, requiring an executable section, and
+prints **128 bytes per RVA**, grouped into 16-byte rows.
+
+The original user's verified Crimson Skies DLL showed these
+on-disk bytes at the two modifier offsets:
+
+- `0x65BE`: `E5 FF CA 93 02 81...`
+- `0x6621`: `DE E6 24 61 17 0C...`
+
+Disassembling the first bytes directly as 32-bit x86 starts with
+`in eax, 0xff`, followed by `retf 0x293`: these are highly
+implausible entry instructions for a normal user-mode EAX transformer.
+The excerpt also contains a privileged `hlt` and I/O instructions.
+This suggests the modifier code in the file is **not ready to
+execute**. Possible explanations include DLL-internal encryption
+or a wrong interpretation of on-disk versus loaded RVAs; neither
+hypothesis has been established as fact for this exact title.
+
+Contemporary SafeDisc discussions describe DLL initialization
+that decodes protected code. We must now analyze the **actual
+DLL startup stub** rather than blindly implement these bytes as
+two real modifier functions.
+
 This is bounded *static data*, **not execution**, dynamic loading,
 decryption, a complete disassembly or a replacement DLL.
 No file is created or modified.
 
-These machine-code excerpts are the next input for **independent
-x86 disassembly** and instruction-level reconstruction of each
-title-specific modifier function, including any helper calls.
+The **DLL startup excerpt** is the next input for independent
+x86 disassembly: identify any initialization/decryption stage and
+map runtime code before attempting to interpret either modifier.
+Do not assume the raw modifier windows are already decoded x86.
 Until that is confirmed, even the four reconstructed
 conditional TEA words must **not** be used to assert success.
 
