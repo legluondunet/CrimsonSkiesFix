@@ -549,6 +549,127 @@ fn print_dll_exact_literal_context(
     Ok(())
 }
 
+// This independent reference comparison is a *validation oracle*
+// for future genuine SafeDisc decryption, NOT a decryption step.
+// Only the exact known-hash unwrapped original may be used as the
+// plaintext reference; no file is reconstructed or written.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReferenceTextAudit {
+    relocation_words: usize,
+    identical_relocation_words: usize,
+    relocated_bytes: usize,
+    identical_relocated_bytes: usize,
+    plain_bytes: usize,
+    identical_plain_bytes: usize,
+    import_pointer_mismatches: usize,
+    ambiguous_import_va_sources: usize,
+    first_page_plain_equal: usize,
+    first_page_plain_total: usize,
+}
+fn audit_reference_text_bytes(
+    cipher: &[u8], plain: &[u8],
+    text_rva: u32,
+    reloc_blocks: &[RelocBlock],
+    preferred_base: u32,
+    idata: &PeSection,
+) -> Result<ReferenceTextAudit> {
+    if cipher.len()!=plain.len() {
+        return Err("protected and unwrapped .text lengths differ".into());
+    }
+    let mut out=ReferenceTextAudit::default();
+    let mut flagged=vec![false;cipher.len()];
+    let mut import_sources:std::collections::HashMap<u32,std::collections::HashSet<u32>>=
+        std::collections::HashMap::new();
+    let import_start=preferred_base.checked_add(idata.virtual_address)
+        .ok_or("IAT section address overflow")?;
+    let import_end=import_start.checked_add(idata.virtual_size.max(idata.raw_len as u32))
+        .ok_or("IAT section upper bound overflow")?;
+    for block in reloc_blocks {
+        for &rel_off in &block.highlow_offsets {
+            let source_rva=block.page_rva.checked_add(u32::from(rel_off))
+                .ok_or("reference relocation RVA overflow")?;
+            let Some(local) = source_rva.checked_sub(text_rva) else { continue };
+            let local=local as usize;
+            if local>=cipher.len() { continue; }
+            let Some(end)=local.checked_add(4) else { return Err("reference relocation DWORD overflow".into()) };
+            if end>cipher.len() { return Err("reference .text HIGHLOW DWORD crosses .text boundary".into()) }
+            if flagged[local..end].contains(&true) {
+                return Err("overlapping .text HIGHLOW references in original image".into());
+            }
+            flagged[local..end].fill(true);
+            out.relocation_words+=1;
+            let x=u32::from_le_bytes(cipher[local..end].try_into().unwrap());
+            let y=u32::from_le_bytes(plain[local..end].try_into().unwrap());
+            if x==y {out.identical_relocation_words+=1}
+            else if x%4==0 && y%4==0 &&
+                import_start<=x && x<import_end &&
+                import_start<=y && y<import_end {
+                out.import_pointer_mismatches+=1;
+                import_sources.entry(x).or_default().insert(y);
+            }
+        }
+    }
+    out.ambiguous_import_va_sources=import_sources.values().filter(|targets|targets.len()>1).count();
+    for (i, (&x,&y)) in cipher.iter().zip(plain).enumerate() {
+        if flagged[i] {
+            out.relocated_bytes+=1;
+            if x==y {out.identical_relocated_bytes+=1}
+        } else {
+            out.plain_bytes+=1;
+            if x==y {out.identical_plain_bytes+=1}
+            if i<4096 {
+                out.first_page_plain_total+=1;
+                if x==y {out.first_page_plain_equal+=1}
+            }
+        }
+    }
+    Ok(out)
+}
+fn print_reference_audit(
+    cipher: &[u8], plain: &[u8],
+    cipher_pe: &Pe32, plain_pe: &Pe32,
+    relocs: &[RelocBlock],
+) -> Result<()> {
+    let original_text=cipher_pe.section(b".text")?;
+    let plain_text=plain_pe.section(b".text")?;
+    if original_text.virtual_address != plain_text.virtual_address ||
+       original_text.raw_offset != plain_text.raw_offset ||
+       original_text.raw_len != plain_text.raw_len ||
+       original_text.virtual_size != plain_text.virtual_size {
+        return Err("protected and reference .text PE layout differs".into());
+    }
+    let idata=cipher_pe.section(b".idata")?;
+    let nt=read_u32(cipher,0x3C)? as usize;
+    let base=read_u32(cipher,nt+24+28)?;
+    let orig_end=original_text.raw_offset.checked_add(original_text.raw_len)
+        .ok_or("protected .text slice overflow")?;
+    let ref_end=plain_text.raw_offset.checked_add(plain_text.raw_len)
+        .ok_or("reference .text slice overflow")?;
+    let original_bytes=cipher.get(original_text.raw_offset..orig_end)
+        .ok_or("protected original .text outside file")?;
+    let reference_bytes=plain.get(plain_text.raw_offset..ref_end)
+        .ok_or("unwrapped reference .text outside file")?;
+    let audit=audit_reference_text_bytes(
+        original_bytes,reference_bytes,original_text.virtual_address,
+        relocs,base,idata)?;
+    println!("Exact original ICD/TESTME.EXE relocation-aware plaintext audit (NO decryption):");
+    println!("  Original .text HIGHLOW DWORDs: {}",audit.relocation_words);
+    println!("  Exactly identical HIGHLOW DWORDs: {}",audit.identical_relocation_words);
+    println!("  Relocation-covered byte matches: {} / {}",
+        audit.identical_relocated_bytes,audit.relocated_bytes);
+    println!("  Other .text byte matches: {} / {}",
+        audit.identical_plain_bytes,audit.plain_bytes);
+    println!("  First 4096-byte .text page, non-HIGHLOW matches: {} / {}",
+        audit.first_page_plain_equal,audit.first_page_plain_total);
+    println!("  Differing HIGHLOW words pointing into .idata on both sides: {}",
+        audit.import_pointer_mismatches);
+    println!("  Protected IAT VAs that map to multiple reference IAT VAs: {}",
+        audit.ambiguous_import_va_sources);
+    println!("  Treat IAT replacement as site-specific; NEVER infer a global VA map.");
+    println!("  These results validate the reference relationship, not a recovered cipher or TEA key.");
+    Ok(())
+}
+
 fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
     const MAX_LIST: usize = 16;
     let pe = parse_pe32(dll)?;
@@ -1780,13 +1901,14 @@ struct Options {
     attach_research: bool,
     xref_research: bool,
     literal_research: bool,
+    reference_audit: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1859,6 +1981,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.literal_research = true;
             continue;
         }
+        if key == "--reference-audit" {
+            if options.reference_audit { return Err("repeated --reference-audit argument".into()); }
+            options.reference_audit = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -1874,6 +2001,9 @@ fn parse_args() -> Result<Option<Options>> {
     }
     if options.key_research && options.reported_key.is_none() {
         return Err("--key-research requires an explicit --reported-key first DWORD".into());
+    }
+    if options.reference_audit && options.reference.is_none() {
+        return Err("--reference-audit requires --reference TESTME.EXE".into());
     }
     Ok(Some(options))
 }
@@ -2009,6 +2139,9 @@ fn inspect(options: Options) -> Result<()> {
             return Err("original ICD and unwrapped reference entrypoints differ".into());
         }
         println!("Verified user-supplied TESTME.EXE reference (exact known hash).");
+        if options.reference_audit {
+            print_reference_audit(&icd,&reference,&protected_pe,&decoded_pe,&relocs)?;
+        }
         if let Some(key) = options.reported_key {
             let matches = import_xor_matches(&icd, &protected_pe, &reference, &decoded_pe, key)?;
             println!("Import DWORD XOR matches for 0x{key:08X}: {}", matches.len());
@@ -2998,6 +3131,37 @@ mod tests {
             &image,&pe,0x1040,0x1000,"wrong value").is_err());
         assert!(print_dll_exact_literal_context(
             &image,&pe,0x10FF,0x7800,"out of backed section").is_err());
+    }
+
+    #[test]
+    fn reference_text_audit_preserves_relocation_bytes_and_detects_ambiguous_imports() {
+        let base=0x400000u32;
+        let mut cipher=vec![0x55u8;64];
+        let mut plain=cipher.clone();
+        let reloc=RelocBlock{page_rva:0x1000,highlow_offsets:vec![4,12,20]};
+        let idata=PeSection{
+            name:*b".idata\0\0",virtual_address:0x3000,virtual_size:0x100,
+            raw_offset:0,raw_len:0x100,characteristics:0xC0000040
+        };
+        cipher[4..8].copy_from_slice(&(base+0x3010).to_le_bytes());
+        plain[4..8].copy_from_slice(&(base+0x3020).to_le_bytes());
+        cipher[12..16].copy_from_slice(&(base+0x3010).to_le_bytes());
+        plain[12..16].copy_from_slice(&(base+0x3030).to_le_bytes());
+        cipher[20..24].copy_from_slice(&(base+0x3040).to_le_bytes());
+        plain[20..24].copy_from_slice(&(base+0x3040).to_le_bytes());
+        // One ordinary nonrelocated byte is modified.
+        cipher[40]=0xEF;
+        let a=audit_reference_text_bytes(&cipher,&plain,0x1000,&[reloc],base,&idata).unwrap();
+        assert_eq!(a.relocation_words,3);
+        assert_eq!(a.identical_relocation_words,1);
+        assert_eq!(a.relocated_bytes,12);
+        assert_eq!(a.identical_relocated_bytes,10);
+        assert_eq!(a.plain_bytes,52);
+        assert_eq!(a.identical_plain_bytes,51);
+        assert_eq!(a.import_pointer_mismatches,2);
+        assert_eq!(a.ambiguous_import_va_sources,1);
+        assert_eq!(a.first_page_plain_total,52);
+        assert_eq!(a.first_page_plain_equal,51);
     }
 
     #[test]
