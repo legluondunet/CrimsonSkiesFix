@@ -1874,3 +1874,23 @@ At RVA `0x20508`, the source bytes `F6 02 63 D5 00 63 8A 51 0D` recover `Kernel3
 The recoverable state starts at `0x00DE88BD`; the low byte is XORed with each input byte; the state then updates as `(state * 0xDD437681 - 0x5F9ABCD6) mod 2^32`. A decoded NUL terminates the string, with a bound of 128 bytes. Static x86 instructions at `0xE205` and `0xDF96` support this model.
 
 This is a verified data decoding result, **not** a claim that DLL `.txt` functions at `0x65BE` and `0x6621` have been restored. The original DLL is never executed or published.
+
+
+## Static references to original encoded DLL labels
+
+The exact verified original DLL also contains **23 static `PUSH imm32` instruction encodings** in its backed `.text` section whose DWORD operands are preferred-base addresses of the decoded data labels. The scanner checks opcode byte `0x68` followed by a full 32-bit VA; this is not an assumption of runtime reachability.
+
+Examples of original code-site RVA → original decoded data-label RVA:
+
+| Code RVA | Data RVA | Recovered label |
+| --- | --- | --- |
+| `0xC5D9` | `0x20508` | `Kernel32` |
+| `0xC684` | `0x20528` | `User32` |
+| `0xD28E` | `0x20570` | `LoadLibraryA` |
+| `0xD37A` | `0x20598` | `LoadLibraryExA` |
+| `0xD7E4` | `0x20660` | `VirtualProtect` |
+| `0xDC6C` | `0x20548` | `Wnaspi32.dll` |
+
+The already-proven attach path reaches the decoding helper `0xE25C` with the pointer to the first of those labels. The extra static references reveal how broadly the same metadata scheme is used, but do not establish that the protected executable `.txt` section has been decoded.
+
+The native read-only `--strings` option now reports both all 27 candidate data labels and all 23 code references. Synthetic Rust tests cover exact literal PUSH operands, mismatching opcodes and the byte decoder. All input binaries are SHA-256 validated before inspection.
