@@ -3179,3 +3179,32 @@ contains **different title-specific modifier profiles**. Their
 existence corroborates the need to identify the *Crimson* profile
 and not substitute another game's constants or assume one universal
 second-layer transform.
+
+
+### Most relocation fragments are not DWORD-aligned within their pages
+
+An independent section-relative alignment audit on the original ICD
+revealed an even stronger reason the earlier page-wide model cannot
+be substituted for the relocation-aware Crimson workflow:
+
+- **35,878 / 48,149** transformable page-local fragments (**74.5%**)
+  start at a byte position **not divisible by four** relative to
+  their 4-KiB page start;
+- **315,414 / 440,422** transformable DWORDs (**71.6%**) are
+  inside such unaligned fragments.
+
+The original 1.5.5 `0x401F62` dereferences
+`[ESI + 4*i]`, with `ESI` supplied as the **beginning of
+each fragment** and `i` reset to zero. This permits DWORDs whose
+addresses are not 4-byte aligned in the original page. A
+page-wide `chunks_exact_mut(4)` loop, by contrast, can group
+different bytes and would also overwrite original HIGHLOW operands.
+The fragment adapter intentionally uses the actual byte address of
+each non-relocated span; no page-alignment assumption is imposed
+on the transformed words.
+
+`--key-research` now independently verifies these two additional
+original geometry counts; synthetic tests cover aligned/unaligned
+fragments as well as a HIGHLOW crossing a page boundary.
+This is further confirmation of **necessary input segmentation**,
+not a title-specific EAX modifier implementation.
