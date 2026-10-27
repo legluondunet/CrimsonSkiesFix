@@ -1201,6 +1201,146 @@ fn dll_c5c0_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
     Ok(paths)
 }
 
+// The third attach callee 0xE25C contains overlapping x86 branch
+// instructions, but its first real work can be determined without
+// executing DLL instructions. Its prologue preserves *incoming*
+// x86 flags, which are not known: check every one of 32 possibilities.
+//
+// After an unconditional RET-decoy at 0xE2FE, all paths push
+// immediate 128 and CALL the ordinary CRT allocation wrapper F850.
+// The wrapper passes the request to F870 -> F8C0 (allocator).
+// The result is stored into [ebp-4] and tested for NULL. If
+// allocation succeeded, an E8 at E2DE calls DF96. These are
+// conditional static properties, not cryptographic decoding.
+#[derive(Clone,Copy)]
+struct FiveFlags { zf:bool,cf:bool,pf:bool,sf:bool,of:bool }
+fn dll_next_opaque_branch(dll:&[u8],pe:&Pe32,pc:u32,f:FiveFlags)->Result<Option<u32>>{
+    let at=executable_rva_to_file_offset(pe,pc,1)?;
+    let opcode=dll[at];
+    if opcode==0x0F {
+        let ins=executable_rva_to_file_offset(pe,pc,6)?;
+        if dll[ins+1]!=0x8C{return Err("unexpected near Jcc opcode in bounded E25C path".into())}
+        let disp=i32::from_le_bytes(dll[ins+2..ins+6].try_into().unwrap());
+        let target=if f.sf!=f.of {i64::from(pc)+6+i64::from(disp)} else {i64::from(pc)+6};
+        return Ok(Some(u32::try_from(target).map_err(|_|"E25C near branch overflow")?));
+    }
+    let take=match opcode {
+        0xEB=>true,0x70=>f.of,0x71=>!f.of,
+        0x73=>!f.cf,0x74=>f.zf,
+        0x76=>f.cf||f.zf,0x77=>!f.cf&&!f.zf,
+        0x78=>f.sf,0x79=>!f.sf,
+        0x7A=>f.pf,0x7B=>!f.pf,
+        0x7C=>f.sf!=f.of,0x7D=>f.sf==f.of,
+        _=>return Ok(None),
+    };
+    let ins=executable_rva_to_file_offset(pe,pc,2)?;
+    let rel=i64::from(dll[ins+1] as i8);
+    let target=i64::from(pc)+2+if take{rel}else{0};
+    Ok(Some(u32::try_from(target).map_err(|_|"E25C short branch overflow")?))
+}
+fn dll_e25c_allocator_paths(dll:&[u8],pe:&Pe32)->Result<(usize,usize,usize)>{
+    fn exact(dll:&[u8],pe:&Pe32,pc:u32,bytes:&[u8])->Result<()>{
+        let at=executable_rva_to_file_offset(pe,pc,bytes.len())?;
+        if dll.get(at..at+bytes.len())!=Some(bytes){
+            return Err(format!("E25C original bytes changed at RVA 0x{pc:08X}"));
+        }
+        Ok(())
+    }
+    exact(dll,pe,0xE25C,&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57])?;
+    exact(dll,pe,0xE2FE,&[0xC3])?;
+    exact(dll,pe,0xE298,&[0x68,0x80,0x00,0x00,0x00])?;
+    exact(dll,pe,0xF850,&[0xA1,0x14,0x52,0x90,0x00,0x8B,0x4C,0x24,0x04,0x50,0x51])?;
+    if dll_relative_call_target(dll,pe,0xF85B)?!=0xF870 {
+        return Err("F850 allocator adapter no longer invokes F870".into());
+    }
+    if dll_relative_call_target(dll,pe,0xF88E)?!=0xF8C0 {
+        return Err("F870 allocator no longer invokes F8C0".into());
+    }
+    // After the malloc(128) CALL, the stack is cleaned, its
+    // return value is saved as the local pointer, then opaque
+    // branch sequences reconverge on the NULL test.
+    exact(dll,pe,0xE2A2,&[0x83,0xC4,0x04,0x89,0x45,0xFC])?;
+    exact(dll,pe,0xE2CC,&[0x83,0x7D,0xFC,0x00,0x75,0x04])?;
+    exact(dll,pe,0xE2D6,&[
+        0x8B,0x45,0x08,0x50,0x8B,0x4D,0xFC,0x51,
+    ])?;
+    if dll_relative_call_target(dll,pe,0xE2DE)?!=0xDF96{
+        return Err("E25C after allocation no longer invokes DF96".into());
+    }
+    let mut first_paths=std::collections::HashSet::new();
+    let mut later_paths=std::collections::HashSet::new();
+    let mut fake_call_count=0usize;
+    for flags in 0..32u8 {
+        let f=FiveFlags{
+            zf: flags&1!=0,cf:flags&2!=0,pf:flags&4!=0,
+            sf:flags&8!=0,of:flags&16!=0,
+        };
+        let mut pc=0xE263u32;
+        let mut path=Vec::new();
+        let mut saw_immediate=false;
+        let mut saw_decoy=false;
+        for _ in 0..48{
+            path.push(pc);
+            if pc==0xE29D {
+                if !saw_immediate || dll_relative_call_target(dll,pe,pc)?!=0xF850 {
+                    return Err("E25C first real call is not malloc(128)".into());
+                }
+                break;
+            }
+            if let Some(next)=dll_next_opaque_branch(dll,pe,pc,f)? { pc=next; }
+            else {match pc {
+                0xE26C|0xE26D|0xE285=>{exact(dll,pe,pc,&[0x90])?;pc+=1},
+                0xE270=>{exact(dll,pe,pc,&[0x87,0xF6])?;pc+=2},
+                0xE27F=>{exact(dll,pe,pc,&[0x87,0xFF])?;pc+=2},
+                0xE283=>{exact(dll,pe,pc,&[0x87,0xC9])?;pc+=2},
+                0xE28D=>{exact(dll,pe,pc,&[0x50])?;pc+=1},
+                0xE28E=>{
+                    if dll_relative_call_target(dll,pe,pc)?!=0xE2FE{
+                        return Err("E25C decoy CALL no longer goes to one-byte RET".into());
+                    }
+                    saw_decoy=true;pc+=5
+                },
+                0xE293=>{exact(dll,pe,pc,&[0x58])?;pc+=1},
+                0xE298=>{saw_immediate=true;pc+=5},
+                _=>return Err(format!("unrecognized reachable E25C opcode at 0x{pc:08X}")),
+            }}
+            if !(0xE263..=0xE29D).contains(&pc){
+                return Err("E25C allocation path escapes bounded first segment".into());
+            }
+        }
+        if path.last().copied()!=Some(0xE29D){
+            return Err("E25C did not reach malloc(128) within 48 bounded instructions".into());
+        }
+        if saw_decoy{fake_call_count+=1}
+        first_paths.insert(path);
+        // ADD ESP,4 changes EFLAGS, so the original flags before
+        // F850 cannot be propagated: independently enumerate all 32
+        // possible flags after this adjustment.
+        let mut later=Vec::new();
+        let mut pc=0xE2A8u32;
+        for _ in 0..40{
+            later.push(pc);
+            if pc==0xE2CC {break}
+            if let Some(next)=dll_next_opaque_branch(dll,pe,pc,f)?{pc=next;}
+            else {
+                match pc {
+                    0xE2AA=>{exact(dll,pe,pc,&[0x8B,0xC9])?;pc+=2},
+                    0xE2AE=>{exact(dll,pe,pc,&[0x90])?;pc+=1},
+                    _=>return Err(format!("E25C post-alloc unknown reached byte at 0x{pc:08X}")),
+                }
+            }
+            if !(0xE2A8..=0xE2CC).contains(&pc){
+                return Err("E25C post-allocation path escaped bounded region".into());
+            }
+        }
+        if later.last().copied()!=Some(0xE2CC){
+            return Err("E25C post-allocation did not reach the NULL check".into());
+        }
+        later_paths.insert(later);
+    }
+    Ok((first_paths.len(),later_paths.len(),fake_call_count))
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -1232,6 +1372,13 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     println!("  C5C0 first direct E8 call: RVA C5DE -> RVA E25C, for all {} SF/OF states.",c5c0.len());
     println!("  Original C5D9 PUSH uses constant preferred VA 0x00900508 (original .data state).");
     println!("  E25C also appears in earlier .text/.txt2 startup call research; its purpose remains under investigation.");
+    let (first,after,decoys)=dll_e25c_allocator_paths(dll,&pe)?;
+    println!("  Inside E25C: 32/32 possible entry-flag combinations reach E29D CALL F850 after PUSH 0x80.");
+    println!("    distinct pre-allocation paths: {first}; RET-only fake CALL at E28E observed in {decoys}/32 cases.");
+    println!("    F850 -> F870 -> F8C0 is the original CRT allocation call chain.");
+    println!("    After saving allocation pointer [EBP-4], {} distinct paths reach the NULL check E2CC.",after);
+    println!("    If non-NULL, E2DE CALL DF96 receives pointer and original caller argument.");
+    println!("    Neither the allocator nor DF96 is yet a proven protected-section decryptor.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -4007,6 +4154,63 @@ mod tests {
         assert!(distinct.len()>1);
         dll[0x200+(0xC5D9-0x9000) as usize]=0xCC;
         assert!(dll_c5c0_first_call_paths(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn e25c_all_flag_states_reach_allocator_then_df96_null_check(){
+        let mut dll=synthetic_pe();
+        dll.resize(0x3300,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x3000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0xD000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x3000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let fragments:&[(u32,&[u8])]=&[
+            (0xE25C,&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57]),
+            (0xE263,&[0x7B,0x11]),(0xE265,&[0x7A,0x0F]),
+            (0xE266,&[0x0F,0x8C,0x0F,0,0,0]),
+            (0xE26C,&[0x90,0x90]),(0xE26E,&[0x77,0x0B]),
+            (0xE270,&[0x87,0xF6]),(0xE272,&[0x7D,0x07]),
+            (0xE274,&[0x74,0x00]),(0xE276,&[0x70,0xEE]),
+            (0xE278,&[0x71,0xEC]),(0xE27B,&[0x73,0x0B]),
+            (0xE27D,&[0x74,0x07]),(0xE27F,&[0x87,0xFF]),
+            (0xE281,&[0x77,0x03]),(0xE283,&[0x87,0xC9]),
+            (0xE285,&[0x90]),(0xE286,&[0xEB,0x03]),
+            (0xE288,&[0x73,0xF3]),(0xE28B,&[0x7C,0x0B]),
+            (0xE28D,&[0x50]),(0xE293,&[0x58]),
+            (0xE294,&[0x7D,0x02]),(0xE298,&[0x68,0x80,0,0,0]),
+            (0xE2A2,&[0x83,0xC4,0x04,0x89,0x45,0xFC]),
+            (0xE2A8,&[0xEB,0x07]),(0xE2AA,&[0x8B,0xC9]),
+            (0xE2AC,&[0x78,0x06]),(0xE2AE,&[0x90]),
+            (0xE2AF,&[0x79,0x03]),(0xE2B1,&[0xEB,0xF7]),
+            (0xE2B4,&[0x7B,0x11]),(0xE2B6,&[0x7A,0x0F]),
+            (0xE2B7,&[0x0F,0x8C,0x0F,0,0,0]),
+            (0xE2BD,&[0x7D,0x0D]),(0xE2C7,&[0x70,0xEE]),
+            (0xE2C9,&[0x71,0xEC]),
+            (0xE2CC,&[0x83,0x7D,0xFC,0x00,0x75,0x04]),
+            (0xE2D6,&[0x8B,0x45,0x08,0x50,0x8B,0x4D,0xFC,0x51]),
+            (0xE2FE,&[0xC3]),
+            (0xF850,&[0xA1,0x14,0x52,0x90,0x00,0x8B,0x4C,0x24,0x04,0x50,0x51]),
+        ];
+        for &(rva,bytes) in fragments {
+            let offset=0x200+(rva-0xD000) as usize;
+            dll[offset..offset+bytes.len()].copy_from_slice(bytes);
+        }
+        for (call,target) in [
+            (0xE28Eu32,0xE2FEu32),(0xE29D,0xF850),
+            (0xE2DE,0xDF96),(0xF85B,0xF870),(0xF88E,0xF8C0)
+        ]{
+            let offset=0x200+(call-0xD000) as usize;
+            dll[offset]=0xE8;
+            let rel=(i64::from(target)-i64::from(call+5)) as i32;
+            dll[offset+1..offset+5].copy_from_slice(&rel.to_le_bytes());
+        }
+        let pe=parse_pe32(&dll).unwrap();
+        assert_eq!(dll_e25c_allocator_paths(&dll,&pe).unwrap(),(32,8,16));
+        let offset=0x200+(0xE2FE-0xD000) as usize;
+        dll[offset]=0x90;
+        assert!(dll_e25c_allocator_paths(&dll,&pe).is_err());
     }
 
     #[test]
