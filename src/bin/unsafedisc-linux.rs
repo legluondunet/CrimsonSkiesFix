@@ -1066,6 +1066,20 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
 // instructions actually visible in the user's exact original DLL.
 // These RVAs are direct CALL instruction starts, not guessed functions.
 // We never load, execute or change either the historical DLL or a game.
+// Only recognize a *specific* two-byte x86 MOV r32,[absolute VA]
+// instruction (8B /r with disp32 absolute), and bind it to an
+// original DLL import. Do not treat random embedded DWORDs as code.
+fn dll_absolute_import_load(
+    dll:&[u8],pe:&Pe32,site:u32,op:[u8;2],base:u32
+)->Result<u32>{
+    let at=executable_rva_to_file_offset(pe,site,6)?;
+    if dll.get(at..at+2)!=Some(&op){
+        return Err(format!("expected exact x86 absolute import load opcode at RVA 0x{site:08X}"));
+    }
+    let va=read_u32(dll,at+2)?;
+    va.checked_sub(base).ok_or("absolute import pointer lies below preferred DLL ImageBase".into())
+}
+
 fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
     const CALLS: [(u32, &str); 10] = [
         (0xFD81, "DllMain startup wrapper"),
@@ -1089,6 +1103,51 @@ fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
     } else { "absent" });
     let bindings = dll_import_bindings(dll, &pe)?;
     println!("  Verified PE import bindings: {}", bindings.len());
+    // Distinguish the *ordinary* CRT, heap, TLS and environment setup
+    // from the obfuscated process-attach handler. All instruction
+    // boundaries below are anchored to the exact known SHA-256 DLL,
+    // not inferred by a blind linear disassembler.
+    println!("  Verified ordinary startup-chain semantics (original Windows import bindings):");
+    for (callsite,dest,description) in [
+        (0xFC18u32,0x116E0u32,"heap initialization"),
+        (0xFC53,0x10820,"TLS setup"),
+        (0xFC71,0x12FF0,"CRT environment strings"),
+        (0xFD81,0x9770,"separate obfuscated DllMain handler"),
+    ] {
+        let actual=dll_relative_call_target(dll,&pe,callsite)?;
+        if actual!=dest {
+            return Err(format!("unexpected original startup E8 target at RVA 0x{callsite:08X}"));
+        }
+        println!("    E8 0x{callsite:08X} -> 0x{actual:08X} ({description})");
+    }
+    for (site,expected) in [
+        (0x116E9u32,"HeapCreate"),
+        (0x10826u32,"TlsAlloc"),
+    ] {
+        let (_,iat_rva)=dll_indirect_import_call(dll,&pe,site,base)?;
+        let binding=bindings.iter().find(|b|b.iat_rva==iat_rva)
+            .ok_or("startup FF15 IAT pointer not present in original DLL imports")?;
+        if binding.symbol!=expected || !binding.library.eq_ignore_ascii_case("KERNEL32.dll"){
+            return Err(format!("unexpected Windows API at exact original startup FF15 RVA 0x{site:08X}"));
+        }
+        println!("    FF15 RVA 0x{site:08X}: {}!{} (verified)",binding.library,binding.symbol);
+    }
+    for (site,op,expected) in [
+        (0x12FF7u32,[0x8Bu8,0x2Du8],"GetEnvironmentStrings"),
+        (0x13003u32,[0x8Bu8,0x3Du8],"GetEnvironmentStringsW"),
+        (0x119C1u32,[0x8Bu8,0x3Du8],"VirtualAlloc"),
+    ]{
+        let iat_rva=dll_absolute_import_load(dll,&pe,site,op,base)?;
+        let binding=bindings.iter().find(|b|b.iat_rva==iat_rva)
+            .ok_or("startup MOV absolute IAT pointer not present in original DLL imports")?;
+        if binding.symbol!=expected || !binding.library.eq_ignore_ascii_case("KERNEL32.dll"){
+            return Err(format!("unexpected Windows API at original startup import MOV RVA 0x{site:08X}"));
+        }
+        println!("    MOV absolute import RVA 0x{site:08X}: {}!{} (verified)",binding.library,binding.symbol);
+    }
+    println!("  The observed VirtualAlloc load is within the conventional heap allocator at RVA 0x11990.");
+    println!("  It is NOT independent proof of .txt decryption; the separate 0x9770 handler remains unresolved.");
+
     // These IAT VAs are actually referenced by the user-provided
     // 0xFC00 / startup helper code. Name only recognized entries.
     for va in [
@@ -3500,6 +3559,20 @@ mod tests {
                 slots:3,targets_data:1,targets_rdata:1,
                 targets_txt:1,targets_other:0,out_of_image:0,page_crossings:0
         });
+    }
+
+    #[test]
+    fn fixed_absolute_import_load_checks_original_x86_operand_encoding() {
+        let mut image=synthetic_pe();
+        let at=0x250usize;
+        image[at..at+6].copy_from_slice(&[
+            0x8B,0x2D,0xAC,0xE0,0x8F,0x00
+        ]);
+        let pe=parse_pe32(&image).unwrap();
+        assert_eq!(dll_absolute_import_load(
+            &image,&pe,0x1050,[0x8B,0x2D],0x008E0000).unwrap(),0x1E0AC);
+        assert!(dll_absolute_import_load(
+            &image,&pe,0x1050,[0x8B,0x3D],0x008E0000).is_err());
     }
 
     #[test]
