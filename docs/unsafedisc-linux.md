@@ -428,6 +428,56 @@ resolve symbols dynamically, call through unrecognised pointers,
 or modify its own mapped pages through other mechanisms.
 The data displayed remain static on-disk excerpts only;
 no protected DLL code is executed or patched.
+#### Overlapping process-attach CALL candidates (read-only)
+
+The latest user run extracted 256 original, hash-verified on-disk bytes
+starting at DllMain attach helper `0x9770`. This region contains
+overlapping instruction decodes. In particular, bytes at RVA `0x9850`:
+
+```asm
+0x9850: 2B FF                   sub edi, edi
+0x9852: 15 04 E0 8F 00          adc eax, 0x008FE004
+
+; alternate instruction boundary
+0x9851: FF 15 04 E0 8F 00       call dword ptr [0x008FE004]
+```
+
+Thus a naive linear x86 disassembler can miss a hidden IAT call.
+Whether original control flow **ever reaches `0x9851`** is still
+unproven; the bytes alone are insufficient to assert execution.
+
+The user-provided region also contains E8 rel32 encodings at
+these original RVA sites:
+
+| CALL RVA | Computed target RVA | Original section |
+| --- | --- | --- |
+| `0x97BE` | `0xD62C` | `.text` |
+| `0x97EE` | `0xA550` | `.text` |
+| `0x9821` | `0x1A20D` | `.txt2` |
+| `0x9861` | `0xE25C` | `.text` |
+
+The `0x1A20D` target's location in executable `.txt2` is
+especially worth inspecting, but it is not proof that `.txt2`
+executes or that `.txt` is decrypted. Some E8 encodings can
+themselves be part of overlapping dead bytes.
+
+Native `inspect --attach-research` now validates **four E8
+and two FF15 opcode encodings** in the exact original DLL,
+calculates direct targets via signed rel32, requires target
+bytes to be in a backed executable PE section, shows 128
+bytes per destination, and matches indirect IAT VAs to the
+same independently parsed original PE import table.
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --attach-research
+```
+
+Both `FF15` candidates are at `0x9851` and `0x986A`.
+The tool deliberately does **not** assert that either is a
+reachable instruction boundary, nor that any target implements
+the SafeDisc title-specific DLL EAX modifiers. Protected
+code is never executed, patched, decrypted or copied into
+the Git repository.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
