@@ -86,6 +86,31 @@ and verify the latter's 245 site-dependent import variants.
 Do not count incidental equal bytes as evidence of decryption,
 do not publish the user-supplied binaries, and do not execute
 the original DLL in the native CLI.
+### Rust-native comparison oracle: optional --reference-audit
+
+The optional inspect **--reference-audit** flag allows the Rust CLI
+to repeat the most important independent analysis locally when
+the owner supplies the **exact SHA-256-verified original**
+TESTME.EXE reference. It is a verification gate, not an unpacker.
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --reference '.\TESTME.EXE' --reference-audit
+```
+
+The comparison uses the real ICD HIGHLOW relocation directory to
+mark each complete 4-byte relocation word, reports identical
+protected/reference DWORDs separately from unrelated .text
+bytes, and gives first-page non-relocated byte matches.
+Differing relocation DWORDs are counted as import-address
+variants only if both VAs are aligned and lie in the original
+.idata section. A source VA mapping to more than one unwrapped
+VA is detected as an ambiguous global import mapping.
+
+The implementation reads the inputs and prints counts only;
+original binaries are not embedded in test fixtures, distributed
+or committed to this repository. A synthetic test exercises
+relocation-covered equality, non-relocated differences and
+ambiguous IAT mappings without depending on game files.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
