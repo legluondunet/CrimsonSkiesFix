@@ -1933,6 +1933,23 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     ] {dll_expect_raw_x86(dll,pe,at,bytes)?;}
     println!("  Writer branch: TEST EAX,EAX at 0x967D; nonzero jumps to copy at 0x9690, zero jumps toward 0x9702.");
     println!("  The first VirtualProtect must succeed before REP MOVSD / MOVSB; section destination remains unresolved.");
+    // Both call sites in the same 0x92B0 stack frame pass &([EBP+8]).
+    // This establishes the descriptor identity between section selection
+    // and the later guarded memory copy, not its absolute runtime value.
+    for (rva,code) in [
+        (0x9332u32,&[0x6A,0x01,0x8D,0x4D,0x08,0x51][..]),
+        (0x9338,&[0xE8,0xC3,0xF4,0x00,0x00][..]),
+        (0x95B5,&[0x8D,0x4D,0x08,0x51][..]),
+        (0x95B9,&[0xE8,0x82,0x00,0x00,0x00][..]),
+        (0x18B94,&[0x8B,0x41,0x08,0x85,0xC0,0x74,0x0A][..]),
+        (0x18B9B,&[0x8B,0x49,0x10,0x3B,0xC1,0x72,0x06][..]),
+        (0x18BA2,&[0x8B,0xC1,0xC3][..]),
+        (0x18BA5,&[0x8B,0x41,0x10,0xC3][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,code)?;}
+    println!("  Identity: 0x9334 and 0x95B5 both form &([EBP+8]) in the same 0x92B0 frame.");
+    println!("  The first call selects the section via selector 1; 0x95B9 passes the descriptor onward to 0x9640.");
+    println!("  The helper 0x18B90 yields min(nonzero field +8, field +0x10), otherwise field +0x10.");
+    println!("  The stored descriptor +4 field still needs runtime-base/section-header provenance validation.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
