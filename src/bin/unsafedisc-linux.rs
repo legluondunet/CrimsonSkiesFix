@@ -2141,6 +2141,25 @@ fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     }
     println!("  Original PE section-header cursors: .txt 0x1A8; .text 0x1D0; .txt2 0x1F8.");
     println!("  The 0x28 scan step follows these actual header cursors, not the section VirtualAddress values.");
+    // A complete boolean return from 0x18B00 always goes through a
+    // recognizable branch prefix: mismatch takes JE directly to 0x938E;
+    // match writes the flag and follows flag-preserving Jccs until 0x938C.
+    // The intervening MOV and Jcc instructions preserve TEST EAX flags.
+    for (site,bytes) in [
+        (0x935Fu32,&[0x74,0x2D][..]),
+        (0x9367,&[0x78,0x11][..]),
+        (0x9369,&[0x79,0x0F][..]),
+        (0x937A,&[0x7F,0xEE][..]),
+        (0x936A,&[0x0F,0x80,0x0F,0,0,0][..]),
+        (0x9370,&[0x77,0x0D][..]),
+        (0x937F,&[0x7B,0x0B][..]),
+        (0x938C,&[0x80,0xEB,0x37][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    println!("  Comparator=0: TEST -> JE directly to 0x938E (cursor increment).");
+    println!("  Comparator=1: TEST -> flag set -> 0x937A -> 0x936A -> 0x9370 -> 0x937F -> 0x938C.");
+    println!("  For comparator=1, ZF=SF=OF=CF=PF=0 from TEST 1 until 0x938C; both paths reach cursor advancement.");
+    println!("  This is a local prefix proof only: subsequent opaque branches and overall loop exit are still unverified.");
+
 
     println!("  Therefore the first CODE|EXEC match alone does NOT identify the section processed by the loop.");
     println!("  This proves named-section comparison; it does NOT prove whether .txt2 is decoded, skipped or acts as a boundary.");
