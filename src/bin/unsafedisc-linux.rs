@@ -1923,6 +1923,16 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  Selector 1 at 0x18800 forwards to 0x181E0; (selector-1)==0 uses jump table case 0x183C2.");
     println!("  Case 0x183C2 calls 0x189F0 with required section flags 0x20000020 (CODE | EXECUTE).");
     println!("  0x189F0 compares section Characteristics at +0x24 after AND mask; no specific destination RVA is asserted.");
+    // Check VirtualProtect's branch semantics rather than merely the FF15
+    // instruction: if the first call fails, the REP MOVS copy is skipped.
+    // These are verified byte sequences, not a claim of runtime execution.
+    for (at,bytes) in [
+        (0x967Du32,&[0x85,0xC0,0x75,0x0F,0xEB,0x7F][..]),
+        (0x9690,&[0x8B,0x4D,0x10,0x8B,0x75,0x14,0x8B,0x7D,0xF8][..]),
+        (0x969B,&[0xC1,0xE9,0x02,0xF3,0xA5,0x8B,0xCA,0x83,0xE1,0x03,0xF3,0xA4][..]),
+    ] {dll_expect_raw_x86(dll,pe,at,bytes)?;}
+    println!("  Writer branch: TEST EAX,EAX at 0x967D; nonzero jumps to copy at 0x9690, zero jumps toward 0x9702.");
+    println!("  The first VirtualProtect must succeed before REP MOVSD / MOVSB; section destination remains unresolved.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
