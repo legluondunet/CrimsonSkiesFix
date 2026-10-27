@@ -237,6 +237,83 @@ fn pe_relocation_blocks(image: &[u8], pe: &Pe32) -> Result<(Vec<RelocBlock>, usi
     parse_relocation_blocks(bytes)
 }
 
+// Historical unSafeDisc 1.5.5 static branch evidence:
+// 0x401FCF calls 0x402257 before the checksum phase.
+// 0x402505 stores IMAGE_DIRECTORY_ENTRY_BASERELOC.VirtualAddress
+// (NT headers +0xA0) at [0x403B2B].
+// 0x40230B..0x402366 walks PE section headers looking for this RVA
+// inside a file-backed raw section. It also tests the DWORD at +0x34
+// of the chosen header against the directory RVA (the following
+// section header's RVA where another header exists).
+// On matching it executes 0x40236C: mov dword [0x403CAC], 4.
+// 0x401D48 selects the relocation-aware checksum branch for 4.
+// This is *static path inference*, NOT a trace of executing SafeDisc.
+#[derive(Debug, PartialEq, Eq)]
+struct HistoricalRelocBranchEvidence {
+    directory_rva: u32,
+    directory_len: u32,
+    section_name: String,
+    section_rva: u32,
+    next_header_guard: u32,
+}
+
+fn infer_historical_reloc_branch(
+    image: &[u8], pe: &Pe32,
+) -> Result<Option<HistoricalRelocBranchEvidence>> {
+    let nt = read_u32(image, 0x3C)? as usize;
+    let optional_at = nt.checked_add(24).ok_or("PE optional header overflow")?;
+    let opt_size = read_u16(image, nt + 20)? as usize;
+    const BASERELOC_OFFSET: usize = 96 + 5 * 8;
+    if opt_size < BASERELOC_OFFSET + 8 {
+        return Err("optional header lacks relocation data directory".into());
+    }
+    let reloc_rva = read_u32(image, optional_at + BASERELOC_OFFSET)?;
+    let reloc_len = read_u32(image, optional_at + BASERELOC_OFFSET + 4)?;
+    if reloc_rva == 0 || reloc_len == 0 {
+        // Other historical fallback scans by section name; no inference
+        // from this RVA-based branch can be made.
+        return Ok(None);
+    }
+    let section_at = optional_at.checked_add(opt_size)
+        .ok_or("PE section headers overflow")?;
+    for (idx, section) in pe.sections.iter().enumerate() {
+        if section.raw_offset == 0 || section.raw_len == 0 {
+            continue;
+        }
+        let begin = section.virtual_address as u64;
+        let end = begin + section.raw_len as u64;
+        let dir = reloc_rva as u64;
+        // Original 0x40232E uses <= for the high boundary. Here use
+        // the stricter backed byte span (< end), as the following raw
+        // data extraction must be valid too.
+        if !(begin <= dir && dir < end) {
+            continue;
+        }
+        let guard_offset = section_at
+            .checked_add(idx.checked_mul(40).ok_or("section index overflow")?)
+            .and_then(|n| n.checked_add(0x34))
+            .ok_or("section guard offset overflow")?;
+        let next_header_guard = read_u32(image, guard_offset)?;
+        if next_header_guard == reloc_rva {
+            // Original jumps to the next section at 0x402348.
+            continue;
+        }
+        let rel = (reloc_rva - section.virtual_address) as u64;
+        if rel + reloc_len as u64 > section.raw_len as u64 {
+            // Metadata points outside this actual file-backed section.
+            continue;
+        }
+        let section_name = String::from_utf8_lossy(
+            section.name.split(|&b| b == 0).next().unwrap_or(&[])
+        ).to_string();
+        return Ok(Some(HistoricalRelocBranchEvidence {
+            directory_rva: reloc_rva, directory_len: reloc_len,
+            section_name, section_rva: section.virtual_address, next_header_guard,
+        }));
+    }
+    Ok(None)
+}
+
 // Split one 4-KiB page into adjacent byte spans, omitting each 32-bit
 // relocation. The original checksum mixer resets its weight per span, while
 // its accumulation persists. Do NOT mistake this isolated primitive for
@@ -541,7 +618,7 @@ fn checksum_research_page_contributions(
 // Opt-in two-hypothesis comparison on the exact hash-verified protected ICD.
 // These numbers are NOT recovered SafeDisc checksums or TEA key words.
 fn print_checksum_research(
-    image: &[u8], section: &PeSection, blocks: &[RelocBlock],
+    image: &[u8], pe: &Pe32, section: &PeSection, blocks: &[RelocBlock],
 ) -> Result<()> {
     let stop = section.raw_offset.checked_add(section.raw_len)
         .ok_or(".text raw range overflow")?;
@@ -574,7 +651,16 @@ fn print_checksum_research(
     println!("  raw bytes: {}, selected bytes: {}, ignored raw tail: {}",
         section.raw_len, effective_len, section.raw_len - effective_len);
     println!("  branch at 0x401D48: if runtime [0x403CAC] == 4 then relocation-aware; otherwise simple pages.");
-    println!("  runtime branch selector for Crimson Skies: NOT YET VERIFIED");
+    if let Some(evidence) = infer_historical_reloc_branch(image, pe)? {
+        println!("  static dispatch path: relocation directory RVA 0x{:08X}, size {}",
+            evidence.directory_rva, evidence.directory_len);
+        println!("  directory located in PE section {} (RVA 0x{:08X}); following-header guard 0x{:08X}",
+            evidence.section_name, evidence.section_rva, evidence.next_header_guard);
+        println!("  static expected assignment at 0x40236C: [0x403CAC] = 4 (relocation-aware).");
+    } else {
+        println!("  static dispatch path: INCONCLUSIVE (directory/section guards not established).");
+    }
+    println!("  actual historical runtime branch selector for Crimson Skies: NOT DYNAMICALLY OBSERVED");
     println!("  simple-page, no relocation exclusions: 0x{bounded_simple_page:08X}");
     println!("  relocation-aware extent-bounded:       0x{bounded_page_local:08X}");
     println!("  independent relocation-walk comparison: MATCH");
@@ -894,7 +980,7 @@ fn inspect(options: Options) -> Result<()> {
         let text_relocs: Vec<_> = relocs.iter()
             .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
             .cloned().collect();
-        print_checksum_research(&icd, text, &text_relocs)?;
+        print_checksum_research(&icd, &protected_pe, text, &text_relocs)?;
     }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
     println!("Verified original Crimson Skies 1.0.2.0 files (SHA-256 + size).");
@@ -1535,6 +1621,49 @@ mod tests {
         for x in [0,1,3,5,u32::MAX] {
             assert!(!branch_uses_relocs(x));
         }
+    }
+
+    #[test]
+    fn historical_branch_inference_checks_actual_pe_header_guards() {
+        let mut image = synthetic_pe();
+        let section_at = 0x178usize;
+        let optional = 0x98usize;
+        let reloc_directory = optional + 96 + 5 * 8;
+        image[section_at + 12..section_at + 16].copy_from_slice(&0x3000u32.to_le_bytes());
+        image[reloc_directory..reloc_directory + 4]
+            .copy_from_slice(&0x3020u32.to_le_bytes());
+        image[reloc_directory + 4..reloc_directory + 8]
+            .copy_from_slice(&16u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        let found = infer_historical_reloc_branch(&image, &pe).unwrap().unwrap();
+        assert_eq!(found.directory_rva, 0x3020);
+        assert_eq!(found.directory_len, 16);
+        assert_eq!(found.section_name, ".idata");
+        assert_eq!(found.section_rva, 0x3000);
+        assert_eq!(found.next_header_guard, 0);
+
+        // Original branch checks the +0x34 guard DWORD of the
+        // relocation-containing section header before setting 4.
+        image[section_at+0x34..section_at+0x38]
+            .copy_from_slice(&0x3020u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert!(infer_historical_reloc_branch(&image, &pe).unwrap().is_none());
+        image[section_at+0x34..section_at+0x38].fill(0);
+
+        // An unbacked section, missing directory or directory past raw
+        // section data may not be treated as proven static dispatch.
+        image[section_at+20..section_at+24].fill(0);
+        let pe = parse_pe32(&image).unwrap();
+        assert!(infer_historical_reloc_branch(&image, &pe).unwrap().is_none());
+        image[section_at+20..section_at+24]
+            .copy_from_slice(&0x200u32.to_le_bytes());
+        image[reloc_directory..reloc_directory+4].fill(0);
+        let pe = parse_pe32(&image).unwrap();
+        assert!(infer_historical_reloc_branch(&image, &pe).unwrap().is_none());
+        image[reloc_directory..reloc_directory+4]
+            .copy_from_slice(&0x30FFu32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert!(infer_historical_reloc_branch(&image, &pe).unwrap().is_none());
     }
 
     #[test]
