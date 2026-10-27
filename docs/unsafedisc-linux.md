@@ -208,18 +208,18 @@ The Rust inspection never executes the historical tool or its DLL.
 
 In SafeDisc 1.50.20 the extra decoding layer calls two
 **title-specific** EAX modifier functions, at relative virtual
-addresses \`0x65BE\` and \`0x6621\` (first + \`0x63\`).
+addresses `0x65BE` and `0x6621` (first + `0x63`).
 The historical SafeDisc 1.5.5 decoder and the
 [June 2001 technical analysis](https://gbppr.net/cracking/krobar/other/com26.html)
 agree on these **routine RVAs**, but their bytes are
 **not necessarily the same in other games' dplayerx.dll builds**.
 
 Use the native **read-only** flag on the exact SHA-256 verified
-Crimson Skies \`dplayerx.dll\`:
+Crimson Skies `dplayerx.dll`:
 
-\`\`\`powershell
+```powershell
 .\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --modifier-research
-\`\`\`
+```
 
 The report first maps each RVA to its actual backed file offset
 using the original DLL's PE32 section headers. It rejects an RVA
