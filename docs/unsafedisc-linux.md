@@ -2236,3 +2236,25 @@ This is a statically verified failure guard, **not a runtime trace**.
 The destination is still derived from a caller-provided descriptor;
 section membership and any plaintext reconstruction require separate
 proof. Private originals remain unmodified and unpublished.
+
+
+### Selector-to-writer stack descriptor identity and extent rule (2026-10-27)
+
+Instruction-aligned disassembly of the exact private DLL resolves a
+previous missing link: inside one `0x92B0` frame, `0x9334` and `0x95B5`
+both form `LEA reg,[EBP+8]`, passing the **same in-frame descriptor** to
+selector `0x18800` and protected writer `0x9640`, respectively. Thus the
+writer does consume the descriptor operated on by the executable CODE
+section selector, although its absolute `+4` destination value still needs
+independent confirmation against the original ICD load/base context.
+
+The section extent helper `0x18B90` is independently verified against
+original bytes. It returns `field(+0x10)` when `field(+8)==0`, otherwise
+`min(field(+8),field(+0x10))`; this corresponds to the familiar nonzero
+`VirtualSize` bound when the working structure contains PE section fields.
+It does **not** prove whether every later copy uses that bound unchanged.
+
+The native read-only `--modifier-research` checks exact original opcodes
+at both descriptor-passing call sites, writer call target and the complete
+extent selection branches. No Windows code execution, protected-code output,
+or user-file modification is involved.
