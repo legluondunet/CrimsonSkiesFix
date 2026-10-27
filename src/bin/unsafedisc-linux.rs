@@ -3228,7 +3228,7 @@ mod tests {
         assert!(historical_155_section_selected(&section));
         assert!(!historical_155_section_checksum_eligible(&section));
         for name in [
-            *b".rsrc\0\0\0",*b".bss\0\0\0",*b"BSS\0\0\0\0\0",
+            *b".rsrc\0\0\0",*b".bss\0\0\0\0",*b"BSS\0\0\0\0\0",
             *b".tls\0\0\0\0",*b".idata\0\0",
             *b".rdata\0\0",*b".edata\0\0",*b".reloc\0\0",
         ] {
