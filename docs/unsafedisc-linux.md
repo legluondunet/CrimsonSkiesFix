@@ -2175,3 +2175,30 @@ Tracing the caller's descriptor initialization and the result from `.txt2`
 helper `0x181E0` is the remaining prerequisite to proving whether any
 specific `.txt` address is targeted. This observation alone does not
 validate a decrypted page or establish the full unpacking algorithm.
+
+
+### Selector 1 resolves executable CODE-section criterion (2026-10-27)
+
+The private, SHA-256-verified original DLL has a six-argument call at
+`0x9338` into wrapper `0x18800` with selector **1**. This wrapper calls
+`0x181E0` at `0x18823`. The latter decrements selector at `0x18255`,
+checks the range at `0x18263`, and performs a fixed jump-table dispatch
+from original DLL RVA `0x18680` at `0x18272`. Case index zero is the
+original absolute VA `0x008F83C2` -> RVA `0x183C2`.
+
+Case `0x183C2` pushes the mask and required flags **`0x20000020`**
+(twice) then calls `0x189F0` at `0x183D4`. The latter reads section
+header `Characteristics` at **offset `+0x24`** (`0x18A1A`), ANDs with the
+provided mask and compares against the required flags (`0x18A24`).
+The criterion is `IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE`.
+
+The original `CRIMSON.ICD` has only one section with both bits, `.text`
+(`Characteristics=0x60000020`); all other ICD sections fail that mask.
+**This is strong static evidence that selector 1 chooses ICD `.text`,**
+conditional on the helper receiving the ICD headers and returning the
+successful section descriptor. We have not yet completed the full pointer
+provenance chain proving the writer's runtime destination, nor produced a
+validated decoded page.
+
+The native Rust research CLI now checks the precise original opcode windows,
+both E8 targets and the first jump-table DWORD in the local DLL.
