@@ -3606,3 +3606,83 @@ The owner's exact original ICD/reference files are not accessible
 in this session; no measured retail results are claimed for this
 additional probe. All new code is read-only and restricted to the
 already gated `--key-research --reference TESTME.EXE` path.
+
+
+### Exact-original EAX hypothesis measurements and direct F2 counterexample (2026-10-28)
+
+On 2026-10-28, the user supplied the exact source archive directly
+to this conversation. All four original file lengths and SHA-256
+digests were independently checked against the existing, pinned
+retail 1.0.2.0 input/reference list, as was historical
+`unSafedisc.exe`. The extra layer was analyzed **offline and
+read-only**, using a standalone temporary C TEA-reversal helper and
+separate Python scripts in a private local workspace. None of these
+private binaries, recovered DWORDs or lookup tables is checked in.
+
+The independent local analysis parsed all 558 relocation blocks,
+confirmed 61,743 HIGHLOW DWORD positions in `.text`, reversed
+the historical overlapping TEA operation with the previously
+validated four-word key and reconfirmed:
+
+| Test on exact `CRIMSON.ICD` and `testme.exe` | Measured result |
+| --- | ---: |
+| Relocation-free fragments in `.text` | 59,622 |
+| Eligible DWORD observations | 440,422 |
+| Unaltered tail bytes matching (all fragment shapes) | 93,801 / 93,801 |
+| Unique index-keyed observations | 361,480 |
+| Index-zero unique input/output observations | 31,799 |
+| Index-zero GF(2) rank / contradicting pairs | **32 / 31,766** |
+| `rotl(input,r)+k` candidates passing all first-word pairs | **0 / 32** |
+| `rotl(input+k,r)` candidates passing all first-word pairs | **0 / 32** |
+| Joint input/mask GF(2) rank / contradicting pairs | **42 / 361,437** |
+| Different index values with identical mask, distinct mask values overall | **312 / 572** |
+| Index-keyed observations after exact-mask canonicalization | **361,346** |
+| Repeated canonical (mask,input) pairs across indexes | **134** |
+| Canonical forward/inverse conflicts | **0 / 0** |
+| Distinct masked inputs seen under two or more different masks | **13** |
+| F2-only XOR-difference relations / rank / contradictions | **13 / 8 / 5** |
+| Distinct mask-difference classes / repeated classes | **12 / 1** |
+| Identical mask-difference classes with incompatible output deltas | **1** |
+| Fixed-input output collisions across different masks | **0** |
+
+All 13 multiply-masked inputs were observed under **exactly two**
+different masks; 361,320 other distinct inputs were seen with only
+one mask. These limited cross-mask samples are still powerful because
+they include one *direct, independent* contradiction: the same
+nonzero XOR mask difference leads to two different XOR output
+differences from two separate input contexts. This is incompatible
+with any **bit-affine F2**, whether F1 is affine or arbitrarily
+nonlinear, under the recovered historical
+`F2(F1(input) XOR mask)` expression.
+
+The broader Gaussian-elimination F2-only test has 13 difference
+relations, 8 independent mask-difference features, and 5
+contradicting dependent relations. The zero output-collision result
+does **not** prove F2 injective on unseen values; it only means no
+injectivity contradiction was observed here. Likewise, the 42-rank
+joint model is too small to identify a general 64-dimensional map,
+but the large number of contradictions decisively rejects that
+candidate family on these observations.
+
+An independent pure-Python TEA forward implementation rechecked
+40 fixed-seed sampled original `.text` fragments against the C
+inverse-fragment helper with zero mismatches, including fragment
+tails and overlapping-block cases. With a one-bit-corrupted fourth
+TEA key word, the whole-fragment tail-match statistic fell to
+35,902 / 93,801. The 35,725 untouched tail bytes of sub-8-byte
+fragments explain why this differs from the previous restricted
+`177 / 58,076` key-discrimination count.
+
+The Rust inspector's exact pinned-reference path now asserts all
+four **aggregate research signatures** (index-zero algebra,
+joint affine, canonical mask aliases, F2-only differentials)
+and reports them only after the established SHA-256, relocation,
+tail, and wrong-key gates succeed. No real-game data files are
+committed; the new signatures consist of counts only.
+
+**Research consequence:** simple rotation/translation and general
+GF(2) affine families are eliminated. The next investigation should
+focus on nonlinear arithmetic, carries, bitwise Boolean networks,
+state dependence or original instruction deobfuscation. No single
+actual modifier function has yet been reconstructed and no
+`unpack` operation is enabled.
