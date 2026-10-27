@@ -34,6 +34,17 @@ Keep the protected SafeDisc `CRIMSON.EXE`, `CRIMSON.ICD` and
   --dplayerx './dplayerx.dll'
 ```
 
+To report the **geometry only** of the `.text` relocation coverage (no game
+checksum is computed), add the optional `--layout` flag:
+
+```bash
+./target/release/unsafedisc-linux inspect \
+  --loader './CRIMSON(1).EXE' \
+  --icd './CRIMSON.ICD' \
+  --dplayerx './dplayerx.dll' \
+  --layout
+```
+
 Optionally compare against your **locally obtained** and verified working
 `TESTME.EXE`, providing the key displayed by unSafeDisc 1.5.5:
 
@@ -114,6 +125,8 @@ The older hypothesis of reading the four DWORDs directly after
 | PE32 relocation directory and 4-KiB page parsing | Implemented; strict exact-file checks |
 | Per-page relocation-skipping checksum helper | Implemented, synthetic only; rejects cross-page DWORDs |
 | Joined-page relocation-skipping checksum primitive | Implemented, synthetic only; handles straddling DWORDs, not the full SafeDisc traversal |
+| Optional `inspect --layout` geometry report | Implemented; reads verified original `.text` relocation metadata only, **no full checksum** |
+| Page-oriented pre-TEA modifier adapter | Implemented with synthetic modifiers; resets word index every 4-KiB page |
 | Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
 | Full checksum traversal (PE flags, cross-page relocations, DLL modifiers) | Not implemented |
 | Game-specific EAX modifiers in `dplayerx.dll` | Not implemented |
@@ -181,6 +194,15 @@ delimited span and at each page boundary. Tests cover offsets `0xFFD`,
 `0xFFE`, `0xFFF`, a second-page relocation, a truncated last page,
 and a directory with overlapping relocations across adjacent pages.
 
+The opt-in `inspect --layout` path reports, from the **verified original**
+ICD, the `.text` RVA and raw offset, page count, excluded HIGHLOW bytes,
+retained bytes, page-boundary crossing count and the number of nonempty
+page-local spans. The validation uses the **same exclusion windows** as the
+experimental checksum helper, without invoking the checksum mixer. A new
+synthetic invariant test shows that changing any skipped relocation byte
+cannot change that helper's result. Counts of page-local spans are a
+research convention, not proof of unSafeDisc's actual chunk ordering.
+
 **This is not a validated original SafeDisc checksum**. The helper uses
 a page-oriented calling convention that must still be checked against the
 unSafeDisc 1.5.5 control flow. It has not been run on the user's retail
@@ -206,7 +228,14 @@ for index i in 0..floor(section_fragment_len / 4):
 
 The exact *outer adapter* has been ported as
 `pre_tea_dwords_with_modifiers`, with synthetic function callbacks for
-testing its XOR placement and call order. **The real EAX modifier routines
+testing its XOR placement and call order. The new
+`pre_tea_section_pages_with_modifiers` wrapper resets this word index on
+**each 4-KiB page**, processing complete DWORDs and leaving trailing bytes
+untouched. Synthetic tests cover a full first and second page and a
+short third page, including the full-width mask at index `0x100`.
+This page-local sequencing also agrees with the independent
+[SafeDisc 1.50.20 image-cipher implementation used by MW4Remastered](https://github.com/Icehellionx/MechWarrior-4-Remastered/blob/main/src/MW4Remastered.Core/Install/SafeDisc15020ImageCipher.cs),
+but its title-specific modifiers are **not suitable for Crimson Skies**. **The real EAX modifier routines
 from the original protected `dplayerx.dll` have not yet been recovered,
 so this is not a functioning decryption step.** The Rust program continues
 to expose **`inspect` only**, and it never alters game files.
