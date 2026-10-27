@@ -13,6 +13,27 @@ known Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files: SHA-256 verification,
 PE32 parsing, version-specific raw-key extraction, and optional import-RVA
 XOR comparison against a user-provided `TESTME.EXE`.
 
+**The four-word SafeDisc TEA key for the exact supported retail files is
+independently verified.** With the private, unmodified `TESTME.EXE`
+reference supplied, the Rust CLI validates **28,947 / 28,947** unchanged
+fragment tails (**58,076 / 58,076** bytes), including overlapping TEA
+blocks. A second audit confirms **93,801 / 93,801** unchanged
+second-layer fragment-tail bytes and **31,799** distinct consistent
+first-DWORD input/output observations for Crimson's unknown EAX
+modifier composition. All private reference data stays in memory and is
+never uploaded or included in builds.
+
+```bash
+unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \
+  --dplayerx dplayerx.dll --reference TESTME.EXE --key-research
+```
+
+The exact-version first key word defaults to `0x7496538F`; use
+`--reported-key` only to override it for controlled experiments.
+**This is a validated key and diagnostic framework, not a working
+unpacker:** two game-specific protected EAX modifier functions
+remain unrecovered.
+
 **It does not yet decrypt or reconstruct `CRIMSON.ICD`, and it does not
 modify the existing `crimson-patcher` functionality.** See the
 [portage guide](docs/unsafedisc-linux.md) for build instructions,
