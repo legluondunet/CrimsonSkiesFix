@@ -2202,3 +2202,23 @@ validated decoded page.
 
 The native Rust research CLI now checks the precise original opcode windows,
 both E8 targets and the first jump-table DWORD in the local DLL.
+
+
+### Section-header iterator and descriptor output confirmed from original DLL
+
+Additional original-file static x86 validation shows selector helper
+`0x189F0` walks PE section headers in **0x28-byte** increments (`0x18A2C`),
+reads `IMAGE_SECTION_HEADER.Characteristics` at `+0x24` (`0x18A1A`),
+and returns the matching **header address** (`0x18A3A`). This is not
+itself the image memory address where transformed bytes are written.
+
+At `0x183E6..0x18405` selector case 1 copies output fields derived from
+the selected section header / local working structure into caller-provided
+pointers, then invokes `0x18B90` at `0x18405`. That helper reads
+structure offsets `+0x08` and `+0x10`, returning a bounded value.
+This is strong evidence of a structured section-selection API rather than
+an arbitrary byte search, but the exact provenance of the **writer's**
+`descriptor[1]` (its `+4` DWORD) still requires a full call-argument trace.
+Native inspection now checks the corresponding exact original instruction
+bytes and the helper's E8 target. No decryption, execution or original
+binary modification was performed.
