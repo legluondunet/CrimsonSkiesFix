@@ -1164,7 +1164,8 @@ fn dll_c5c0_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
                     },
                     0xC5D6=>{
                         check(dll,pe,pc,&[0x7F,0xF3])?;
-                        if sf==of{0xC5CB}else{0xC5D8}
+                        if sf!=of{return Err("C5D6 JG predicate contradicts the path into C5D4".into())}
+                        0xC5CB
                     },
                     0xC5CB=>{check(dll,pe,pc,&[0x90])?;0xC5CC},
                     0xC5CC=>{check(dll,pe,pc,&[0x87,0xED])?;0xC5CE},
@@ -1175,7 +1176,8 @@ fn dll_c5c0_first_call_paths(dll:&[u8],pe:&Pe32)->Result<Vec<Vec<u32>>>{
                     0xC5D0=>{check(dll,pe,pc,&[0x87,0xD2])?;0xC5D2},
                     0xC5D2=>{
                         check(dll,pe,pc,&[0x79,0x05])?;
-                        if !sf{0xC5D9}else{0xC5D9}
+                        if sf{return Err("C5D2 JNS reached when SF=1".into())}
+                        0xC5D9
                     },
                     0xC5D9=>{
                         check(dll,pe,pc,&[0x68,0x08,0x05,0x90,0x00])?;
