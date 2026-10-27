@@ -411,6 +411,32 @@ fn dll_import_bindings(bytes: &[u8], pe: &Pe32) -> Result<Vec<DllImportBinding>>
     Ok(bindings)
 }
 
+// The original 0x9770 DLL_PROCESS_ATTACH handler has two branch
+// instructions whose destinations converge. Validate their actual
+// x86 opcode+rel32 bytes instead of trusting previously guessed RVAs.
+// Only the two specifically identified forms (0F 84 and E9) are
+// recognized; this is not a generic disassembler/control-flow graph.
+fn dll_known_near_branch_target(
+    dll: &[u8], pe: &Pe32, rva: u32, conditional: bool,
+) -> Result<u32> {
+    let len: usize = if conditional { 6 } else { 5 };
+    let off = executable_rva_to_file_offset(pe, rva, len)?;
+    if conditional {
+        if dll.get(off..off+2) != Some(&b"\x0F\x84"[..]) {
+            return Err(format!("expected 0F84 near JZ at 0x{rva:08X}"));
+        }
+    } else if dll.get(off).copied() != Some(0xE9) {
+        return Err(format!("expected E9 near JMP at 0x{rva:08X}"));
+    }
+    let displacement_at = off + if conditional { 2 } else { 1 };
+    let signed = read_u32(dll, displacement_at)? as i32 as i64;
+    let dest = i64::from(rva) + len as i64 + signed;
+    let dest = u32::try_from(dest)
+        .map_err(|_| "near branch target outside x86 RVA range")?;
+    executable_rva_to_file_offset(pe, dest, 32)?;
+    Ok(dest)
+}
+
 // Build a bounded, statically validated next-stage call map from
 // instructions actually visible in the user's exact original DLL.
 // These RVAs are direct CALL instruction starts, not guessed functions.
@@ -452,6 +478,39 @@ fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
         } else {
             println!("  IAT VA 0x{va:08X}: no named import found in original PE import table");
         }
+    }
+    // All three paths below are backed by known x86 branch opcode
+    // boundaries supplied by the user's exact verified original.
+    // For reasons other than process attach, two branches leave the
+    // obfuscated region and reach a common tail; process attach
+    // enters the suspicious code at 0x9792 instead.
+    let zero_reason = dll_known_near_branch_target(dll, &pe, 0x9781, true)?;
+    let non_attach = dll_known_near_branch_target(dll, &pe, 0x978D, false)?;
+    if zero_reason != non_attach {
+        return Err("DLL initialization non-attach branches unexpectedly diverge".into());
+    }
+    println!("  DLL initialization branch map (verified x86 opcodes, not executed):");
+    println!("    0x9781 JZ  -> 0x{zero_reason:08X} (reason == 0)");
+    println!("    0x978D JMP -> 0x{non_attach:08X} (reason not 0 or 1)");
+    println!("    process-attach reason == 1: falls through into irregular code near 0x9792");
+    print_dll_code_window(dll, &pe, "DllMain process attach region (contains obfuscation)", 0x9770, 256)?;
+    print_dll_code_window(dll, &pe, "shared non-attach branch target", non_attach, 192)?;
+    let mut relevant = 0usize;
+    for binding in &bindings {
+        let name = binding.symbol.to_ascii_lowercase();
+        if [
+            "virtualprotect", "virtualalloc", "virtualquery",
+            "getprocaddress", "loadlibrary", "getmodulehandle",
+            "flushinstructioncache", "writeprocessmemory",
+            "readprocessmemory", "ntprotectvirtualmemory",
+        ].iter().any(|pattern| name.contains(pattern)) {
+            println!("  Potential code-loading/memory-protection import: IAT RVA 0x{:08X} {}!{}",
+                binding.iat_rva, binding.library, binding.symbol);
+            relevant += 1;
+        }
+    }
+    if relevant == 0 {
+        println!("  No direct imports matching common code-loading/protection APIs; dynamic resolution and internal calls remain possible.");
     }
     for va in [0x0090_519Cu32, 0x0090_6C70u32] {
         let rva = va.checked_sub(base).ok_or("startup data VA below preferred image base")?;
@@ -2323,6 +2382,26 @@ mod tests {
         assert_eq!(dll_import_bindings(&image,&pe).unwrap(),Vec::new());
         image[dir+4..dir+8].copy_from_slice(&40u32.to_le_bytes());
         assert!(dll_import_bindings(&image,&pe).is_err());
+    }
+
+    #[test]
+    fn dll_obfuscated_entry_near_branches_must_converge_on_valid_code() {
+        let mut data = synthetic_pe();
+        let sec = 0x178usize;
+        data[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        data[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        data[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        data[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        // Relative branches from 0x1005 and 0x1010 share 0x1040.
+        data[0x205..0x20B].copy_from_slice(&[0x0F,0x84,0x35,0,0,0]);
+        data[0x210..0x215].copy_from_slice(&[0xE9,0x2B,0,0,0]);
+        let pe = parse_pe32(&data).unwrap();
+        assert_eq!(dll_known_near_branch_target(&data,&pe,0x1005,true).unwrap(),0x1040);
+        assert_eq!(dll_known_near_branch_target(&data,&pe,0x1010,false).unwrap(),0x1040);
+        assert!(dll_known_near_branch_target(&data,&pe,0x1005,false).is_err());
+        assert!(dll_known_near_branch_target(&data,&pe,0x1010,true).is_err());
+        data[0x211..0x215].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(dll_known_near_branch_target(&data,&pe,0x1010,false).is_err());
     }
 
     #[test]
