@@ -2426,3 +2426,28 @@ objects contains decrypted `.txt` code.
 `inspect --modifier-research` now validates key original instruction
 sequences and direct CALL targets. The raw game binaries remain private;
 no DLL execution, unpacking, or protected plaintext emission is added.
+
+
+### Eight auxiliary pointers index linked interval/range lists (2026-10-27)
+
+Independent disassembly of the exact private `dplayerx.dll` clarifies the
+previously unknown `0xB7C0` path. It allocates a **12-byte list header**
+through `0xB610` (`0xB7C0..0xB7C8`), clears two link-related fields,
+then calls `0xC2A0` at `0xB7F3` to allocate a **12-byte list node**.
+`0xC2A0` stores three caller-provided DWORDs into node offsets
+`+0`, `+4`, and `+8`. Other consumers reveal these as a starting
+position, length/extent, and comparison tag: `0xC350` checks membership
+within a half-open interval and the associated tag, while `0xC3D0`
+compares the current node's start against a probe value.
+
+`0xBAD0` traverses this linked node structure (`0xBAF1` / `0xBB15`),
+calling `0xC3D0` and `0xC350` on successive nodes. `0xBB70`
+iterates eight list pointers and invokes a list cleanup procedure on
+each. Thus the auxiliary structures are **range bookkeeping** and
+should not be described as eight containers of decrypted machine-code
+bytes. What the particular eight categories or range tags mean for
+SafeDisc's protected regions remains unknown.
+
+The read-only Rust inspector now checks instruction-backed list-node
+construction, traversal, range-boundary and call-target evidence.
+Original binaries remain local, with no game plaintext emitted.
