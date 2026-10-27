@@ -175,6 +175,36 @@ modifiers remain unresolved. The bounded output is therefore still
 an **experimental candidate, not the recovered SafeDisc checksum**.
 No original game data or external binary is committed.
 
+### Independent verification of relocation-aware page traversal
+
+User-run `--checksum-research` with the exact original protected
+Crimson Skies 1.0.2.0 files produced an **extent-bounded candidate**
+of `0x1B09633B` when processing the 2,102,461 selected bytes in
+the CODE section `.text`. This value remains provisional.
+
+An additional Rust routine now independently walks sorted relocation
+intervals **page by page**, recording each nonempty byte-mixer call.
+It explicitly carries the excluded bytes of a HIGHLOW DWORD that
+begins at page offset `0xFFD`, `0xFFE` or `0xFFF` into the next
+4-KiB page, including when the final page is shorter than 4 KiB.
+
+The inspector checks that its candidate checksum agrees with the
+previous page-local implementation and that retained plus excluded
+bytes exactly equal the historical effective section length.
+It reports effective retained/skipped byte counts, nonempty
+fragment calls and the number of page-crossing relocations.
+The diagnostic **fails** if the independent walks disagree.
+Tests cover no relocations, missing relocation blocks, multiple
+page crossings and partial final pages.
+
+That check is a **cross-validation of two native code paths**,
+not proof that the original unSafeDisc program selected its
+relocation-aware branch. Its historical disassembly at
+`0x401D48` explicitly selects between the straightforward
+4-KiB path and the relocation-aware path based on a runtime DWORD
+at `0x403CAC`; the corresponding runtime value for Crimson Skies
+has not yet been established. The original DLL transformations
+also remain unrecovered.
 ### Observed Windows baseline (2026-10-27)
 
 The user ran the exact-hash-verified Crimson Skies 1.0.2.0 inputs on the
