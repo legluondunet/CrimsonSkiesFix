@@ -758,6 +758,57 @@ test checks 32 initial, 32 post-allocation cases
 paths), and ensures a replaced fake RET is rejected.
 No game binary or Windows program is executed
 or published.
+### Byte-level transformation found inside `DF96`: a provable XOR primitive at `0xE205`
+
+Continuing the call reached on successful 128-byte allocation,
+the SHA-256 verified original `dplayerx.dll` has an
+`0xE11E: E8 CALL 0xE205` inside the bounded
+DF96 processing pathway.
+
+The E205 entrypoint itself contains overlapping
+opaque-predicate instructions, but **all 32 combinations
+of initial ZF/CF/PF/SF/OF** reach the same meaningful
+arithmetic sequence at `0xE228`. Only four distinct
+control-flow paths occur. The original exact code is:
+
+```asm
+mov eax, [ebp+8]
+and eax, 0xff
+mov ecx, [ebp+0xc]
+and ecx, 0xff
+xor eax, ecx
+mov byte ptr [ebp-4], al
+```
+
+The XOR result is necessarily in `0..255`, so
+**OF=SF=0** after `xor`; the subsequent `JL` at
+`0xE23E` cannot be taken. The other reached
+branch is `0xE244: JMP 0xE252`, where
+`mov al,[ebp-4]` returns the byte value.
+
+The resulting independent mathematical primitive is:
+
+```text
+fn e205(a, b): u8 = ((a & 0xFF) XOR (b & 0xFF))
+```
+
+A separate offline Python symbolic branch checker
+independently confirmed 32/32 flag states converge
+before the XOR. The read-only native Rust
+`--attach-research` now verifies the actual first
+entry bytes, DF96 E11E relative call, all 32
+paths, low-byte XOR opcode sequence, and return.
+A synthetic Rust test checks four distinct branch
+traces, 256 XOR vectors and failure on tampered
+opcode bytes.
+
+**Important boundary:** This verifies a genuine
+bytewise XOR helper used by the 128-byte DF96
+initialization/processing routine, rather than a
+mere obfuscation stub. It does **not** yet show
+that DF96 operates on encrypted `.txt` section
+bytes or establish the separate title-specific
+SafeDisc modifier functions at `0x65BE` and `0x6621`.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
