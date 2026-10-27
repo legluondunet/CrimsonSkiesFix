@@ -218,6 +218,22 @@ moduli, and the rotation depends explicitly on the operand
 RVA. This resolves the earlier apparent ambiguity that
 65 protected VAs could map to multiple reference VAs.
 
+### Independent modular constraint on the first key DWORD
+
+The 245 original import-reference pairs themselves imply:
+
+```text
+first_word % 74 = 73    (all 182 KERNEL32 sites)
+first_word % 62 = 49    (all 63 USER32 sites)
+first_word % lcm(74,62) = 2219, with lcm = 2294
+0x7496538F % 2294 = 2219
+```
+
+This is an **independent congruence check** on the reported
+first SafeDisc key word from code-reference rotations.
+It alone does NOT uniquely recover a 32-bit word;
+the eight separately verified `.idata` XOR differences
+still provide the full 32-bit first word.
 Example original source RVA `0x1294` has protected value
 `0x00A1FD78`, restored to reference `0x00A1FD9C`; USER32
 site `0x48C5` has `0x00A20458` → `0x00A20430`.
