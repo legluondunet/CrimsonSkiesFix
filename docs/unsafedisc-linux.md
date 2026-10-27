@@ -1894,3 +1894,24 @@ Examples of original code-site RVA → original decoded data-label RVA:
 The already-proven attach path reaches the decoding helper `0xE25C` with the pointer to the first of those labels. The extra static references reveal how broadly the same metadata scheme is used, but do not establish that the protected executable `.txt` section has been decoded.
 
 The native read-only `--strings` option now reports both all 27 candidate data labels and all 23 code references. Synthetic Rust tests cover exact literal PUSH operands, mismatching opcodes and the byte decoder. All input binaries are SHA-256 validated before inspection.
+
+### PE relocation corroboration for decoded metadata references (2026-10-27)
+
+The `--strings` report now cross-references every one of the **23 original
+`0x68 imm32` byte-pattern matches** against the **original DLL's PE32
+`IMAGE_REL_BASED_HIGHLOW` relocation table**. It classifies a match as
+`HIGHLOW-backed` only when a relocation begins at **the four-byte immediate
+operand** (instruction RVA + 1), not merely somewhere in the instruction.
+
+This helps distinguish genuine absolute-address operands from incidental
+overlapping byte sequences. The native CLI reports **both categories and
+their counts**, rather than hard-coding an unverified number of
+relocation-backed references. The expected *total* stays 23 for the
+exact-hash original DLL. The independent synthetic regression explicitly
+tests an operand relocation, an unrelated opcode-position relocation, and
+RVA overflow rejection.
+
+**Evidence limit:** PE relocation corroboration establishes a probable
+absolute-address operand; it does not itself prove x86 instruction
+alignment, static control-flow reachability or execution, and it does
+not recover the encrypted `.txt` code. All analysis remains read-only.
