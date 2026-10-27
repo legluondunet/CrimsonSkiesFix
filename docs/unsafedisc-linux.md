@@ -1937,3 +1937,62 @@ control-flow reachability cannot be inferred.
 
 The actual `.txt` ciphertext is explicitly **excluded** from
 this metadata pointer survey.
+
+---
+
+### Original contiguous API pointer table recovered from 13 x86 resolver sequences
+
+An independent, offline, byte-exact scan of the owner's original SHA-256
+verified Crimson dplayerx.dll identifies thirteen highly structured
+resolver-style x86 sequences in the plaintext .text section.
+Each follows an absolute encoded-name pointer, an input module handle
+and the same E8-relative call target RVA 0xC708. The returned EAX is
+stored in an original DLL .data DWORD, then that same DWORD is
+immediately checked against zero.
+
+| Encoded API name | E8 callsite | Destination RVA |
+| --- | --- | --- |
+| ReadProcessMemory | 0xD6C5 | 0x24EF8 |
+| WriteProcessMemory | 0xD76F | 0x24EFC |
+| VirtualProtect | 0xD7ED | 0x24F00 |
+| CreateProcessA | 0xD84F | 0x24F04 |
+| CreateProcessW | 0xD8C9 | 0x24F08 |
+| GetStartupInfoA | 0xD95A | 0x24F0C |
+| GetStartupInfoW | 0xD9BB | 0x24F10 |
+| GetSystemTime | 0xDA30 | 0x24F14 |
+| GetSystemTimeAsFileTime | 0xDA8D | 0x24F18 |
+| TerminateProcess | 0xDAF2 | 0x24F1C |
+| Sleep | 0xDB84 | 0x24F20 |
+| SendASPI32Command | 0xDDCC | 0x24F24 |
+| GetASPI32SupportInfo | 0xDD5D | 0x24F28 |
+
+All 13 store addresses are distinct consecutive 4-byte slots
+covering original RVAs 0x24EF8..0x24F28 inclusive. The original
+.data raw section covers RVA 0x20000..0x23E00 while its
+VirtualSize covers up to 0x26C80, so **every target is
+in memory-only zero-filled .data**, not an initialized
+on-disk function-pointer table.
+
+The evidence is unusually strong because the original
+IMAGE_REL_BASED_HIGHLOW relocation table independently
+identifies ALL THREE absolute DWORD operands in every
+sequence: (1) the PUSH string pointer, (2) the
+MOV [absolute],EAX storage, and (3) CMP [same absolute],0.
+The resolver E8 rel32 targets also all independently
+equal 0xC708. This yields 39 confirmed absolute
+pointer relocations across the 13 sequences.
+
+The new native read-only inspect --strings diagnostic
+derives and checks every sequence, its expected decoded
+name, its specific 4-byte slot, relocation evidence
+and the memory-only .data bounds. A synthetic Rust test
+requires three matching HIGHLOW operands and rejects
+a tampered storage-check operand.
+
+This establishes a static resolver-style API pointer
+table. It does NOT establish that every sequence is
+dynamically reached, prove exactly how RVA 0xC708
+resolves Windows exports, or show that any API call
+actually decrypts protected .txt machine code. The
+original executable and DLL remain unexecuted, private
+and unchanged.
