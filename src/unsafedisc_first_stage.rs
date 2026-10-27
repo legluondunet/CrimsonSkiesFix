@@ -197,7 +197,7 @@ mod tests {
     fn cyclic_incompatible_xor_edges_detect_bad_injectivity_assumption(){
         let pairs=HashMap::from([
             ((0,1u32),50u32),((1,2),50),
-            ((2,1),60),((3,2),60)
+            ((2,1),60),((4,2),60)
         ]);
         let r=diagnose(&pairs);
         assert_eq!(r.graph_vertices,2);
