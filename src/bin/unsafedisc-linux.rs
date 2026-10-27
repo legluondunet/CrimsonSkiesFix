@@ -1935,6 +1935,12 @@ fn synthetic_first_code_exec(flags:&[u32])->Option<usize> {
     flags.iter().position(|f| (*f&0x2000_0020)==0x2000_0020)
 }
 
+// Synthetic representation of the three scalar outputs of selector case 1.
+// Do not confuse a PE raw file offset with an in-memory virtual RVA.
+fn synthetic_selector_fields(raw:u32,rva:u32,vsize:u32,raw_size:u32)->(u32,u32,u32) {
+    (raw,rva,if vsize==0 {raw_size} else {vsize.min(raw_size)})
+}
+
 fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // A conditionally reached startup site initializes descriptor mode
     // to 0x67. The actual runtime reachability through opaque branches
@@ -1977,6 +1983,36 @@ fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  Read helper 0xA810 dispatches mode 0x67 to 0xA620, which can copy bytes from module_base+offset.");
     println!("  Original DLL CODE|EXEC sections, in header order: .txt (RVA 0x1000), .text, .txt2.");
     println!("  Selector 1 uses a first-match loop; with DLL headers it selects .txt (RVA 0x1000, VirtualSize 0x7671).");
+    for (rva,code) in [
+        (0x183EDu32,&[0x8B,0x44,0x24,0x24][..]),
+        (0x183F1,&[0x8B,0x54,0x24,0x1C][..]),
+        (0x183F5,&[0x89,0x01][..]),
+        (0x183FE,&[0x8D,0x4C,0x24,0x10][..]),
+        (0x18403,&[0x89,0x10][..]),
+        (0x944D,&[0x8D,0x85,0xD8,0xEF,0xFF,0xFF,0x50][..]),
+        (0x9458,&[0x8B,0x55,0xDC,0x52][..]),
+        (0x95B1,&[0x8B,0x45,0xDC,0x50][..]),
+        (0x9717,&[0x8B,0x45,0x08,0x8B,0x48,0x04,0x03,0x4D,0x0C,0x89,0x4D,0xFC][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,code)?;}
+    for (site,target) in [(0x9460u32,0x9710u32),(0x95B9,0x9640),(0x18405,0x18B90)] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err("DLL selector-to-copy x86 call target changed".into());
+        }
+    }
+    let selected=matching[0];
+    if selected.raw_offset!=0x400 || selected.raw_len!=0x7800 {
+        return Err("unexpected DLL .txt file-backed geometry".into());
+    }
+    let (disk_offset,virtual_rva,extent)=synthetic_selector_fields(
+        selected.raw_offset as u32,selected.virtual_address,
+        selected.virtual_size,selected.raw_len as u32);
+    if (disk_offset,virtual_rva,extent)!=(0x400,0x1000,0x7671) {
+        return Err("unexpected DLL .txt selector outputs".into());
+    }
+    println!("  Selector-1 section output: disk pointer 0x400, VirtualAddress 0x1000, bounded extent 0x7671.");
+    println!("  0x9458 and 0x95B1 both pass [EBP-0x24] (the section RVA + current chunk offset).");
+    println!("  Both 0x9710 (copy-in) and 0x9640 (copy-out) derive module_base + that RVA offset.");
+    println!("  This statically links DLL .txt as the candidate destination, conditional on mode/selection success.");
     println!("  This is conditional on the passed descriptor referring to the original DLL; no plaintext or execution asserted.");
     Ok(())
 }
@@ -5059,6 +5095,16 @@ mod tests {
         assert_eq!(record,(100,15,3)); // end-exclusive 115, not 114
         assert!(!synthetic_extend_matching_range(&mut record,115,1,3));
         assert!(!synthetic_extend_matching_range(&mut record,99,1,3));
+    }
+
+    #[test]
+    fn synthetic_selector_distinguishes_raw_offset_rva_and_virtual_extent(){
+        assert_eq!(synthetic_selector_fields(0x400,0x1000,0x7671,0x7800),
+                   (0x400,0x1000,0x7671));
+        assert_eq!(synthetic_selector_fields(0x400,0x1000,0,0x7800),
+                   (0x400,0x1000,0x7800));
+        assert_eq!(synthetic_selector_fields(0x400,0x1000,0x8000,0x7800),
+                   (0x400,0x1000,0x7800));
     }
 
     #[test]
