@@ -19,8 +19,27 @@ cargo test --bin unsafedisc-linux
 cargo build --release --bin unsafedisc-linux
 ```
 
-An experimental x86_64 Linux build is also produced under
+Experimental native **Linux x86_64** and **Windows x86_64** builds are
+published as downloadable artifacts by
 [GitHub Actions](../.github/workflows/unsafedisc-linux.yml) on this branch.
+They are inspect-only research builds, not game patches or unpackers.
+
+On Windows, open the latest successful **Experimental native unSafeDisc Linux
+CLI** workflow run (despite its historical name), scroll to **Artifacts**,
+and download `unsafedisc-windows-x86_64-inspect-only`. Extract the ZIP and
+run the executable from PowerShell in the folder containing your original
+verified game files:
+
+```powershell
+.\\unsafedisc-linux.exe inspect `
+  --loader '.\\CRIMSON(1).EXE' `
+  --icd '.\\CRIMSON.ICD' `
+  --dplayerx '.\\dplayerx.dll' `
+  --layout
+```
+
+PowerShell uses a backtick (`\``) to continue a command on the next line.
+This action only reads files; the original EXE, ICD and DLL are never modified.
 
 ## Inspect your own original files
 
