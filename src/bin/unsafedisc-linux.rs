@@ -4088,6 +4088,22 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("reconstructed TEA key FAILED exact original/reference tail oracle; no full-key validation".into());
             }
             println!("  CONFIRMED: the four TEA key words and overlapping block order match 58,076 independently checkable original bytes.");
+            // Falsifiability control: for the exact same source/reference
+            // data, toggling only one bit of the fourth TEA key word must
+            // destroy essentially all agreement. This also rules out a
+            // comparison accidentally dominated by key-independent bytes.
+            let mut wrong_key=key;
+            wrong_key[3]^=1;
+            let negative=validate_tea_key_by_unchanged_fragment_tails(
+                &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,wrong_key)?;
+            println!("  TEA one-bit negative control: {} / {} exact tails; {} / {} equal bytes.",
+                negative.matching_fragments,negative.fragments,
+                negative.matching_bytes,negative.checked_bytes);
+            if negative.fragments!=28_947 || negative.checked_bytes!=58_076 ||
+               negative.matching_fragments!=39 || negative.matching_bytes!=177 {
+                return Err("TEA one-bit negative control differs from independent original/reference result".into());
+            }
+
             let composite=inspect_original_modifier_reference_pairs(
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
