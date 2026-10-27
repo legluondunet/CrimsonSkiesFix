@@ -591,6 +591,56 @@ matches, always deriving addresses from the real PE ImageBase.
 Original DLL binary is not executed, loaded, or modified;
 the expanded counts have not yet been observed against the
 user's local DLL in this research step.
+#### No `.txt` references in *any* other file-backed HIGHLOW word
+
+The user ran the expanded `--xref-research` against the exact
+original Crimson Skies SafeDisc 1.50.20 `dplayerx.dll`:
+
+```text
+DLL relocation blocks: 33
+HIGHLOW relocations: 1694; ABSOLUTE padding: 16
+File-backed HIGHLOW source DWORDs from other executable sections: 1198
+File-backed HIGHLOW source DWORDs from all other sections: 1480
+Pointers to .txt from executable sections: 0
+Pointers to .txt from ALL other backed sections: 0
+Exact pointers to modifiers 0x65BE and 0x6621: 0
+```
+
+Thus **282 additional file-backed HIGHLOW words** in non-code
+sections provided no pointers to the original protected code.
+This rules out one specific on-disk address-referencing mechanism
+for the original DLL, but not non-relocated literals or runtime
+computed targets.
+
+New **`--literal-research`** searches the exact verified original
+DLL for non-relocated four-byte **little-endian candidates** in
+`.text`, `.txt2`, `.rdata` and `.data` (excluding protected
+`.txt` and `.reloc`). It checks every byte offset, including
+unaligned patterns that may occur in overlapping x86 code,
+and excludes every four-byte window overlapping any original
+HIGHLOW relocated DWORD. Reported categories per section:
+
+- An exact little-endian DWORD encoding an RVA **within**
+  protected `.txt` (`0x1000` through `0x8670`).
+- An absolute virtual-address DWORD in the corresponding
+  preferred-image-base range (`0x008E1000` through `0x008E8670`).
+- Exact markers for the start/end, VirtualSize/SizeOfRawData
+  of `.txt`, and the two EAX modifier RVA/VA values.
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --literal-research
+```
+
+Results are counts and at most 16 raw RVA/value pairs per
+category and source section, not a fully disassembled or verified
+control-flow graph. Both negative results and positive matches
+remain **inconclusive** as to whether code can reach these
+addresses at runtime. A file-backed DWORD matching a RVA may
+be an ordinary integer, an obfuscated overlapping instruction,
+a pointer-table entry, or a real address operand.
+
+Inputs are hash-verified, read-only; no DLL is loaded, decrypted
+or written.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
