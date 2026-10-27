@@ -91,8 +91,10 @@ fn sha256(data: &[u8]) -> String {
 struct PeSection {
     name: [u8; 8],
     virtual_address: u32,
+    virtual_size: u32,
     raw_offset: usize,
     raw_len: usize,
+    characteristics: u32,
 }
 #[derive(Debug)]
 struct Pe32 {
@@ -138,12 +140,14 @@ fn parse_pe32(data: &[u8]) -> Result<Pe32> {
         let at = section_at.checked_add(i * 40).ok_or("PE section table overflow")?;
         let sec = data.get(at..at + 40).ok_or("truncated PE section")?;
         let name: [u8; 8] = sec[..8].try_into().unwrap();
+        let virtual_size = read_u32(data, at + 8)?;
         let virtual_address = read_u32(data, at + 12)?;
         let raw_len = read_u32(data, at + 16)? as usize;
         let raw_offset = read_u32(data, at + 20)? as usize;
+        let characteristics = read_u32(data, at + 36)?;
         let end = raw_offset.checked_add(raw_len).ok_or("PE section length overflow")?;
         if end > data.len() { return Err("PE section extends past EOF".into()); }
-        result.push(PeSection { name, virtual_address, raw_offset, raw_len });
+        result.push(PeSection { name, virtual_address, virtual_size, raw_offset, raw_len, characteristics });
     }
     Ok(Pe32 { entry_rva: entry, sections: result })
 }
@@ -503,6 +507,56 @@ fn print_text_relocation_layout(
     Ok(())
 }
 
+// Show PE section-header properties, with base relocation DWORD *starts*
+// mapped to each section's backed file bytes. The PE flags are evidence
+// for research, NOT a proof of unSafeDisc's actual section-selection logic.
+fn section_highlow_start_count(section: &PeSection, relocs: &[RelocBlock]) -> usize {
+    let low = section.virtual_address as u64;
+    let high = low + section.raw_len as u64;
+    relocs.iter().map(|block| {
+        block.highlow_offsets.iter().filter(|&&off| {
+            let rva = block.page_rva as u64 + off as u64;
+            rva >= low && rva < high
+        }).count()
+    }).sum()
+}
+
+fn print_pe_section_headers(pe: &Pe32, relocs: &[RelocBlock]) {
+    const CODE: u32 = 0x0000_0020;
+    const INITIALIZED: u32 = 0x0000_0040;
+    const UNINITIALIZED: u32 = 0x0000_0080;
+    const EXECUTE: u32 = 0x2000_0000;
+    const READ: u32 = 0x4000_0000;
+    const WRITE: u32 = 0x8000_0000;
+
+    println!("Original ICD PE32 section headers (metadata only, NOT unSafeDisc's confirmed selection):");
+    println!("  flags: C=code, I=initialized data, B=uninitialized data; X=execute, R=read, W=write");
+    for sec in &pe.sections {
+        let name = String::from_utf8_lossy(
+            sec.name.split(|b| *b == 0).next().unwrap_or(&[]));
+        let flags = sec.characteristics;
+        let type_flags = [
+            if flags & CODE != 0 { 'C' } else { '-' },
+            if flags & INITIALIZED != 0 { 'I' } else { '-' },
+            if flags & UNINITIALIZED != 0 { 'B' } else { '-' },
+        ];
+        let memory_flags = [
+            if flags & EXECUTE != 0 { 'X' } else { '-' },
+            if flags & READ != 0 { 'R' } else { '-' },
+            if flags & WRITE != 0 { 'W' } else { '-' },
+        ];
+        let count = section_highlow_start_count(sec, relocs);
+        println!(
+            "  {:8} RVA 0x{:08X}, vsize {:>7}, raw +0x{:X} ({:>7} bytes), chars 0x{:08X} [{}|{}], HIGHLOW starts {}",
+            name, sec.virtual_address, sec.virtual_size, sec.raw_offset, sec.raw_len,
+            flags, type_flags.iter().collect::<String>(), memory_flags.iter().collect::<String>(),
+            count,
+        );
+    }
+    println!("  These are file-backed section spans; virtual-only/BSS bytes and loader-mapped memory are not inspected.");
+    println!("  No section has been designated as included or excluded by the real SafeDisc checksum.");
+}
+
 fn read_original(path: &Path, expected_len: usize, expected_sha: &str) -> Result<Vec<u8>> {
     let meta = fs::symlink_metadata(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -569,13 +623,14 @@ struct Options {
     reported_key: Option<u32>,
     layout: bool,
     checksum_research: bool,
+    sections: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -606,6 +661,11 @@ fn parse_args() -> Result<Option<Options>> {
         if key == "--layout" {
             if options.layout { return Err("repeated --layout argument".into()); }
             options.layout = true;
+            continue;
+        }
+        if key == "--sections" {
+            if options.sections { return Err("repeated --sections argument".into()); }
+            options.sections = true;
             continue;
         }
         if key == "--checksum-research" {
@@ -660,6 +720,9 @@ fn inspect(options: Options) -> Result<()> {
         || text_page_count != 514 || text_blocks != 514 || text_highlow != 61_743
         || crossed_highlow != 36 {
         return Err("relocation layout differs from the expected Crimson Skies original".into());
+    }
+    if options.sections {
+        print_pe_section_headers(&protected_pe, &relocs);
     }
     if options.layout {
         let text_relocs: Vec<_> = relocs.iter()
@@ -1136,6 +1199,32 @@ mod tests {
             checksum_pages_without_highlow(&plain, 0x1000, &[], 0).unwrap());
         assert_eq!(b.iter().fold(0u32, |s, v| s.wrapping_add(*v)),
             checksum_section_without_highlow(&plain, 0x1000, &[], 0).unwrap());
+    }
+
+    #[test]
+    fn pe_section_metadata_flags_and_highlow_start_count() {
+        // Header offsets are prescribed by PE/COFF: VirtualSize +8,
+        // Characteristics +36, independent of the base relocation directory.
+        let mut image = synthetic_pe();
+        let section = 0x178usize;
+        image[section + 8..section + 12].copy_from_slice(&0xE0u32.to_le_bytes());
+        image[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[section + 36..section + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        let metadata = pe.section(b".idata").unwrap();
+        assert_eq!(metadata.virtual_size, 0xE0);
+        assert_eq!(metadata.virtual_address, 0x1000);
+        assert_eq!(metadata.characteristics, 0x6000_0020);
+        assert_eq!(metadata.raw_len, 0x100);
+
+        let relocs = vec![
+            RelocBlock { page_rva: 0x1000, highlow_offsets: vec![0x0, 0x0FE, 0x100, 0xFFD] },
+            RelocBlock { page_rva: 0x2000, highlow_offsets: vec![0x0] },
+        ];
+        // The relocation at +0xFE starts in raw .idata, although its
+        // 4-byte DWORD spans beyond this section's file-backed RVA span.
+        // The start at +0x100 is outside the section and must not count.
+        assert_eq!(section_highlow_start_count(metadata, &relocs), 2);
     }
 
     #[test]
