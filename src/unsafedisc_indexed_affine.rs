@@ -64,6 +64,59 @@ pub fn diagnose(pairs: &HashMap<(u32, u32), u32>) -> IndexedAffineAudit {
     report
 }
 
+// Original index masks alias: mask(1) == mask(257) == 0x01010101.
+// The actual extra layer is indexed by its *mask value*, not by the
+// integer index as an independent family. Canonicalizing across distinct
+// indices tests an additional necessary deterministic/injective property.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MaskAliasAudit {
+    pub samples: usize,
+    pub distinct_masks: usize,
+    pub masks_with_multiple_indices: usize,
+    pub distinct_masked_input_pairs: usize,
+    pub repeated_masked_input_pairs: usize,
+    pub forward_conflicts: usize,
+    pub inverse_conflicts: usize,
+}
+
+pub fn audit_mask_aliases(pairs: &HashMap<(u32, u32), u32>) -> MaskAliasAudit {
+    let mut ordered: Vec<_> = pairs.iter()
+        .map(|(&(index, input), &output)| (index, input, output))
+        .collect();
+    ordered.sort_unstable();
+    let mut audit = MaskAliasAudit {
+        samples: ordered.len(), ..MaskAliasAudit::default()
+    };
+    let mut masks = HashMap::<u32, u32>::new();
+    let mut aliased = std::collections::HashSet::<u32>::new();
+    let mut forward = HashMap::<(u32, u32), u32>::new();
+    let mut inverse = HashMap::<(u32, u32), u32>::new();
+    for (index, input, output) in ordered {
+        let mask=index_mask(index);
+        if let Some(&prior) = masks.get(&mask) {
+            if prior!=index { aliased.insert(mask); }
+        } else {
+            masks.insert(mask,index);
+        }
+        let key=(mask,input);
+        if let Some(&prior_output) = forward.get(&key) {
+            audit.repeated_masked_input_pairs+=1;
+            if prior_output!=output { audit.forward_conflicts+=1; }
+        } else {
+            forward.insert(key,output);
+        }
+        if let Some(&prior_input) = inverse.get(&(mask,output)) {
+            if prior_input!=input { audit.inverse_conflicts+=1; }
+        } else {
+            inverse.insert((mask,output),input);
+        }
+    }
+    audit.distinct_masks=masks.len();
+    audit.masks_with_multiple_indices=aliased.len();
+    audit.distinct_masked_input_pairs=forward.len();
+    audit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +175,51 @@ mod tests {
         for &(i,x,y) in &entries { a.insert((i,x),y); }
         for &(i,x,y) in entries.iter().rev() { b.insert((i,x),y); }
         assert_eq!(diagnose(&a), diagnose(&b));
+    }
+
+    #[test]
+    fn full_width_masks_are_not_injective_above_index_255() {
+        assert_eq!(index_mask(1),index_mask(257));
+        assert_eq!(index_mask(3),index_mask(259));
+        assert_eq!(index_mask(3),index_mask(515));
+        assert_eq!(index_mask(3),index_mask(771));
+        let mut families=HashMap::<u32, usize>::new();
+        for index in 0..=1006u32 {
+            *families.entry(index_mask(index)).or_default()+=1;
+        }
+        assert_eq!(families.len(),572);
+        assert_eq!(families.values().filter(|&&count|count>=2).count(),312);
+    }
+
+    #[test]
+    fn equal_masks_must_produce_equal_results_for_equal_inputs() {
+        let pairs=HashMap::from([
+            ((1u32,123u32),7u32),((257,123),7),((3,44),19),((259,44),19)
+        ]);
+        let audit=audit_mask_aliases(&pairs);
+        assert_eq!(audit.samples,4);
+        assert_eq!(audit.distinct_masks,2);
+        assert_eq!(audit.masks_with_multiple_indices,2);
+        assert_eq!(audit.distinct_masked_input_pairs,2);
+        assert_eq!(audit.repeated_masked_input_pairs,2);
+        assert_eq!(audit.forward_conflicts,0);
+        assert_eq!(audit.inverse_conflicts,0);
+        let bad=HashMap::from([
+            ((1,123),7),((257,123),8),
+            ((3,100),19),((259,101),19)
+        ]);
+        let report=audit_mask_aliases(&bad);
+        assert_eq!(report.forward_conflicts,1);
+        assert_eq!(report.inverse_conflicts,1);
+    }
+
+    #[test]
+    fn mask_alias_audit_is_insertion_order_independent() {
+        let entries=[((1,101),7),((257,101),8),((3,9),12),((259,10),12)];
+        let a=HashMap::from(entries);
+        let mut b=HashMap::new();
+        for &(key,value) in entries.iter().rev() {b.insert(key,value);}
+        assert_eq!(audit_mask_aliases(&a),audit_mask_aliases(&b));
     }
 
     #[test]
