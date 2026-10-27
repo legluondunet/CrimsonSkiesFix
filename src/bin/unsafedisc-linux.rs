@@ -1878,6 +1878,40 @@ fn synthetic_adjacent_ranges(a:(u32,u32,u32),b:(u32,u32,u32))->bool {
     (a.0.wrapping_add(a.1)==b.0 || b.0.wrapping_add(b.1)==a.0)
 }
 
+// The index is a raw 32-bit caller argument in the original x86. This
+// synthetic guard states the legal geometry, NOT a runtime x86 bounds check.
+fn synthetic_range_category_field(index:u32)->Option<u32> {
+    if index<8 { Some(0x14+4*index) } else { None }
+}
+
+fn original_category_dispatch_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    dll_expect_raw_x86(dll,pe,0xA2BE,&[0x8B,0x74,0xB8,0x14])?;
+    // PUSH imm8 is the fourth caller argument; the adjacent E8 is the
+    // actual dispatcher call. The seven independently witnessed numeric
+    // categories do not assign names or document every possible caller.
+    for (push_site,call_site,category) in [
+        (0xAAB3u32,0xAAB8u32,6u8),
+        (0xAB43,0xAB48,5),
+        (0xABD3,0xABD8,4),
+        (0xAC28,0xAC2D,7),
+        (0xAE27,0xAE2C,0),
+        (0xB0B1,0xB0B7,2),
+        (0xBFED,0xBFF2,3),
+    ] {
+        dll_expect_raw_x86(dll,pe,push_site,&[0x6A,category])?;
+        if dll_relative_call_target(dll,pe,call_site)?!=0xA2A0 {
+            return Err("category dispatch E8 target mismatch".into());
+        }
+        if synthetic_range_category_field(u32::from(category)).is_none(){
+            return Err("observed category outside eight-record table".into());
+        }
+    }
+    println!("  0xA2BE indexes one of eight category pointers using [record + 0x14 + category*4].");
+    println!("  Original callers demonstrably pass numeric categories 0,2,3,4,5,6,7; no category meaning is inferred.");
+    println!("  No bounds check at 0xA2BE has been established; synthetic tooling rejects indices >=8.");
+    Ok(())
+}
+
 fn original_range_sort_and_adjacency_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // 0xC3D0's CMP/SBB/NEG returns 1 iff the unsigned probe is BELOW
     // the current node start; equality returns 0. It is NOT an equality test.
@@ -2086,6 +2120,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  Failed allocation invokes 0xB770 for cleanup, then returns AX=0; success returns AX=1.");
     println!("  0xB640 requests a 0xCC-byte record aligned to 0x10, initializes two linked objects via 0xB7C0.");
     original_range_sort_and_adjacency_proof(dll,pe)?;
+    original_category_dispatch_proof(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
     // third is a caller-supplied classification/tag value.
@@ -4920,6 +4955,15 @@ mod tests {
         assert_eq!(actual.len(),src.len());
         assert_ne!(actual,src);
         assert_eq!(actual[0],0x53);
+    }
+
+    #[test]
+    fn synthetic_category_field_geometry_is_bounded_to_eight_slots(){
+        assert_eq!(synthetic_range_category_field(0),Some(0x14));
+        assert_eq!(synthetic_range_category_field(1),Some(0x18));
+        assert_eq!(synthetic_range_category_field(7),Some(0x30));
+        assert_eq!(synthetic_range_category_field(8),None);
+        assert_eq!(synthetic_range_category_field(u32::MAX),None);
     }
 
     #[test]
