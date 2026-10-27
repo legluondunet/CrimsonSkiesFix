@@ -1863,3 +1863,14 @@ remain unchanged by this new branch. Keep this proposed port
 
 License for the newly written Rust implementation:
 **GPL-3.0-or-later**, copyright **legluondunet**.
+
+
+## Original DLL encoded-text recovery
+
+An independent native offline examination of the user's exact, hash-verified DLL shows that its data section contains short strings encoded by a seeded byte transform. This transform is separate from the still-unresolved protected code section.
+
+At RVA `0x20508`, the source bytes `F6 02 63 D5 00 63 8A 51 0D` recover `Kernel32` followed by a NUL terminator. Applying the same transformation across the original file-backed `.data` yields 27 readable candidate strings, including `User32` at RVA `0x20528`.
+
+The recoverable state starts at `0x00DE88BD`; the low byte is XORed with each input byte; the state then updates as `(state * 0xDD437681 - 0x5F9ABCD6) mod 2^32`. A decoded NUL terminates the string, with a bound of 128 bytes. Static x86 instructions at `0xE205` and `0xDF96` support this model.
+
+This is a verified data decoding result, **not** a claim that DLL `.txt` functions at `0x65BE` and `0x6621` have been restored. The original DLL is never executed or published.
