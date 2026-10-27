@@ -4108,15 +4108,25 @@ fn inspect(options: Options) -> Result<()> {
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
-            println!("  Composite EAX pair observations: {}; unique input/output DWORDs: {} / {}; contradictions: {} forward, {} reverse.",
+            println!("  Composite EAX pair observations at index=0: {}; unique input/output DWORDs: {} / {}; contradictions: {} forward, {} reverse.",
                 composite.modifier_fragments,composite.distinct_inputs,
                 composite.distinct_outputs,composite.input_conflicts,composite.output_conflicts);
+            println!("  Index-aware extra-layer observations: {} words; {} unique (index,masked-input) pairs; {} repeated, {} forward contradictions, {} reverse collisions.",
+                composite.modified_dwords,composite.indexed_distinct_inputs,
+                composite.indexed_repeated_observations,
+                composite.indexed_forward_conflicts,composite.indexed_reverse_conflicts);
+            println!("  Maximum observed fragment-local DWORD index: {} (original x86 full-width mask).",
+                composite.max_index);
             if composite!=(ModifierReferenceAudit{
                 total_fragments:59_622,modifier_fragments:48_149,
                 modified_dwords:440_422,
                 checked_tail_bytes:93_801,matching_tail_bytes:93_801,
                 distinct_inputs:31_799,distinct_outputs:31_799,
                 input_conflicts:0,output_conflicts:0,
+                indexed_distinct_inputs:361_480,indexed_distinct_outputs:361_480,
+                indexed_repeated_observations:78_942,
+                indexed_forward_conflicts:0,indexed_reverse_conflicts:0,
+                max_index:1006,
             }){
                 return Err("independent title-specific composite modifier observations differ from verified reference".into());
             }
@@ -4501,6 +4511,12 @@ struct ModifierReferenceAudit {
     distinct_outputs:usize,
     input_conflicts:usize,
     output_conflicts:usize,
+    indexed_distinct_inputs:usize,
+    indexed_distinct_outputs:usize,
+    indexed_repeated_observations:usize,
+    indexed_forward_conflicts:usize,
+    indexed_reverse_conflicts:usize,
+    max_index:usize,
 }
 fn insert_observed_composite_pair(
     forward:&mut std::collections::HashMap<u32,u32>,
@@ -4517,6 +4533,28 @@ fn insert_observed_composite_pair(
     }
     (forward_conflict,reverse_conflict)
 }
+// The composite is F2(F1(encrypted_word XOR mask) XOR mask).
+// Different fragment-local word indices have different masks and must
+// never be treated as observations of the same unindexed mapping.
+// Reference-derived pair tables are kept strictly in process memory.
+fn insert_indexed_modifier_observation(
+    forward:&mut std::collections::HashMap<(u32,u32),u32>,
+    reverse:&mut std::collections::HashMap<(u32,u32),u32>,
+    index:u32,masked_input:u32,output:u32,
+)->(bool,bool,bool){
+    let key=(index,masked_input);
+    let reverse_key=(index,output);
+    let previously_seen=forward.contains_key(&key);
+    let forward_conflict=forward.get(&key).is_some_and(|&prior|prior!=output);
+    let reverse_conflict=reverse.get(&reverse_key)
+        .is_some_and(|&prior|prior!=masked_input);
+    if !forward_conflict && !reverse_conflict {
+        forward.entry(key).or_insert(output);
+        reverse.entry(reverse_key).or_insert(masked_input);
+    }
+    (previously_seen,forward_conflict,reverse_conflict)
+}
+
 fn inspect_original_modifier_reference_pairs(
     icd:&[u8], reference:&[u8],
     original:&Pe32, decoded:&Pe32,
@@ -4555,6 +4593,8 @@ fn inspect_original_modifier_reference_pairs(
     let mut audit=ModifierReferenceAudit::default();
     let mut forward=std::collections::HashMap::<u32,u32>::new();
     let mut reverse=std::collections::HashMap::<u32,u32>::new();
+    let mut indexed_forward=std::collections::HashMap::<(u32,u32),u32>::new();
+    let mut indexed_reverse=std::collections::HashMap::<(u32,u32),u32>::new();
     for (page_number,page) in reserved.chunks(4096).enumerate() {
         let base=page_number.checked_mul(4096)
             .ok_or("composite audit page number overflow")?;
@@ -4584,10 +4624,26 @@ fn inspect_original_modifier_reference_pairs(
                 &mut forward,&mut reverse,source,target);
             audit.input_conflicts+=usize::from(fconf);
             audit.output_conflicts+=usize::from(rconf);
+            for index in 0..length/4 {
+                let idx=u32::try_from(index)
+                    .map_err(|_| "composite fragment word index overflow")?;
+                let mask=(idx<<24)|(idx<<16)|(idx<<8)|idx;
+                let at=absolute_start+index*4;
+                let source=read_u32(encrypted,at)? ^mask;
+                let intermediate=read_u32(&inverse,index*4)?;
+                let (seen,fconf,rconf)=insert_indexed_modifier_observation(
+                    &mut indexed_forward,&mut indexed_reverse,idx,source,intermediate);
+                audit.indexed_repeated_observations+=usize::from(seen);
+                audit.indexed_forward_conflicts+=usize::from(fconf);
+                audit.indexed_reverse_conflicts+=usize::from(rconf);
+                audit.max_index=audit.max_index.max(index);
+            }
         }
     }
     audit.distinct_inputs=forward.len();
     audit.distinct_outputs=reverse.len();
+    audit.indexed_distinct_inputs=indexed_forward.len();
+    audit.indexed_distinct_outputs=indexed_reverse.len();
     Ok(audit)
 }
 
@@ -6214,6 +6270,26 @@ mod tests {
         assert_eq!(dll_original_chunk_constants(&dll,&pe).unwrap(),(0x43,0x15));
         dll[0x200+(0x931A-0x9000) as usize]=0x90;
         assert!(dll_original_chunk_constants(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn synthetic_indexed_modifier_observations_separate_different_word_masks() {
+        let mut f=std::collections::HashMap::new();
+        let mut r=std::collections::HashMap::new();
+        assert_eq!(insert_indexed_modifier_observation(
+            &mut f,&mut r,0,123,999),(false,false,false));
+        assert_eq!(insert_indexed_modifier_observation(
+            &mut f,&mut r,0,123,999),(true,false,false));
+        // Same input but different index is not a contradiction:
+        // the mask is XORed between F1 and F2.
+        assert_eq!(insert_indexed_modifier_observation(
+            &mut f,&mut r,1,123,998),(false,false,false));
+        assert_eq!(insert_indexed_modifier_observation(
+            &mut f,&mut r,0,123,998),(true,true,false));
+        assert_eq!(insert_indexed_modifier_observation(
+            &mut f,&mut r,0,124,999),(false,false,true));
+        assert_eq!(f.len(),2);
+        assert_eq!(r.len(),2);
     }
 
     #[test]
