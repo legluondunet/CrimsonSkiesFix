@@ -336,6 +336,49 @@ build a complete control-flow graph or prove that any target
 changes protected memory; dynamic calls through IAT or function
 pointers are not followed. No decryption, loading, execution or
 modification is performed.
+#### Identify the actual Windows API imports behind startup helper calls
+
+The user supplied the native `--startup-research` result from the
+original, exact SHA-256-verified Crimson Skies 1.50.20 DLL.
+Confirmed ten direct E8 call destinations:
+
+| From RVA | To RVA |
+| --- | --- |
+| `0xFD81` | `0x9770` |
+| `0xFC18` | `0x116E0` |
+| `0xFC53` | `0x10820` |
+| `0xFC5C` | `0x11720` |
+| `0xFC71` | `0x12FF0` |
+| `0xFC89` | `0x129E0` |
+| `0xFC8E` | `0x126A0` |
+| `0xFC93` | `0x12D40` |
+| `0xFC98` | `0x12C50` |
+| `0xFC9D` | `0xF920` |
+
+The raw x86 code at `0x116E0` creates/initializes a resource
+using an imported function at VA `0x8FE020`, and stores its
+return value at VA `0x906C68`. The complementary routine
+`0x11720` traverses its objects, makes a three-argument
+indirect call via VA `0x8FE0A4`, and invokes an imported
+function at VA `0x8FE0A0` during cleanup. These patterns look
+like a heap/resource-management subsystem, not by themselves
+a title-specific SafeDisc decoder.
+
+To establish the actual API names, native
+`--startup-research` now parses original PE32 import descriptors
+and import-by-name / ordinal thunks with strict bounds. It
+matches ten IAT virtual addresses used by the readable
+entry/startup code, printing `library!symbol` when found;
+it never calls the API or loads the DLL. Signed relative
+targets are still independently validated.
+
+**Important:** the original DLL's `.txt` modifier bytes
+at RVA `0x65BE` and `0x6621` remain unreadable as normal
+x86 on disk. The call map and named startup imports
+cannot, alone, prove that any particular routine decodes
+that section. A stronger test requires finding the actual
+byte-transform/memory-write loop and validating it against
+the original memory image or independent plaintext.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
