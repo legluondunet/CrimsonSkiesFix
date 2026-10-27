@@ -2560,3 +2560,39 @@ and wrapping arithmetic. These are **static memory-management semantics**,
 not evidence of SafeDisc game-code plaintext. The eight category meanings,
 the source of their numeric tags and the link to encrypted ICD pages remain
 unverified.
+
+
+### Numeric range categories map to the eight pointer slots (2026-10-27)
+
+The original dispatcher `0xA2A0` looks up the module record through
+`0xB5D0`. At `0xA2BE` the x86 instruction `MOV ESI,[EAX+EDI*4+0x14]`
+selects the current category's list pointer. Based on the eight-pointer
+initialization already verified, its field offsets are `+0x14`,
+`+0x18`, ... `+0x30` for indices 0..7.
+
+The fourth argument at seven independently verified direct call sites is an
+immediate category value:
+
+| PUSH at | E8 call at | Index |
+| --- | --- | --- |
+| `0xAE27` | `0xAE2C` | 0 |
+| `0xB0B1` | `0xB0B7` | 2 |
+| `0xBFED` | `0xBFF2` | 3 |
+| `0xABD3` | `0xABD8` | 4 |
+| `0xAB43` | `0xAB48` | 5 |
+| `0xAAB3` | `0xAAB8` | 6 |
+| `0xAC28` | `0xAC2D` | 7 |
+
+All seven exact original `PUSH imm8` operands and E8 targets
+(`0xA2A0`) are checked in the read-only Rust inspector.
+This demonstrates the indexing mechanism and that at least seven
+numeric categories are used directly. **No direct constant-1 call is
+proven by this sample**, but that does not establish that category 1 is
+unused: indirect or dynamically computed indices must still be examined.
+Nor does the category number alone identify what kind of protected
+memory it represents.
+
+An isolated synthetic helper validates `0..7` as the legal slot indices
+and rejects `8` and larger; **this must not be mistaken for a runtime
+bounds check in the original function**. This is about registry
+organization, not game plaintext recovery.
