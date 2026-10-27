@@ -2830,6 +2830,34 @@ fn inspect(options: Options) -> Result<()> {
         }
         println!("  A matching operand relocation strengthens an absolute-address interpretation.");
         println!("  Scanned byte patterns do not prove instruction alignment, reachability or execution.");
+        // Invert the search: inspect all genuine base-relocation DWORDs
+        // in unencrypted, file-backed .text and .txt2. This may identify
+        // address references using opcodes other than PUSH imm32, without
+        // guessing instruction boundaries in x86 overlapping code.
+        println!("  Relocation-backed metadata pointer survey (all backed HIGHLOW slots):");
+        for name in [b".text".as_slice(), b".txt2".as_slice()] {
+            let section = pe.section(name)?;
+            let raw_end = section.raw_offset.checked_add(section.raw_len)
+                .ok_or("DLL relocated section raw end overflow")?;
+            let source = dll.get(section.raw_offset..raw_end)
+                .ok_or("DLL relocated section bytes outside file")?;
+            let matches = unsafedisc_strings::scan_relocated_label_pointers(
+                source, section.virtual_address, base, &entries, &relocation_sites)?;
+            let name = std::str::from_utf8(name).map_err(|_| "invalid static section name")?;
+            println!("    {name}: {} metadata-address relocation slots", matches.len());
+            for hit in matches.iter().take(128) {
+                let label=entries.iter().find(|e| e.rva==hit.label_rva)
+                    .ok_or("relocated pointer refers to unknown metadata")?;
+                let prev=hit.previous_byte.map(|b| format!("{b:02X}"))
+                    .unwrap_or_else(|| "n/a".to_string());
+                println!("      operand RVA 0x{:08X} -> data RVA 0x{:08X}: {} (preceding byte {prev})",
+                    hit.operand_rva,hit.label_rva,label.value);
+            }
+            if matches.len() > 128 {
+                println!("      (first 128 slots shown; full count above)");
+            }
+        }
+        println!("  This scan recognizes relocatable pointer data, not reached instructions.");
         println!("No DLL code was executed or decrypted.");
     }
     if options.modifier_research {
