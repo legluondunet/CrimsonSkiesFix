@@ -2078,6 +2078,94 @@ fn decode_original_section_tag(data:&[u8])->Result<Vec<u8>> {
     Err("encoded section tag lacks bounded terminator".into())
 }
 
+// Model only the known flag-preserving opaque detour AFTER cursor+0x28.
+// All eight CF/ZF/OF combinations are deliberately tested; PF/SF are not
+// consulted here. This is a bounded control-flow check, not DLL execution.
+fn synthetic_section_cursor_detour(cf:bool,zf:bool,of:bool)->Result<Vec<u32>> {
+    let mut pc=0x9397u32;
+    let mut path=Vec::new();
+    for _ in 0..32 {
+        if pc==0x93C0 {
+            return Ok(path);
+        }
+        path.push(pc);
+        pc=match pc {
+            0x9397=>0x93A0,
+            0x93A0=>0x9399,
+            0x9399=>0x939B, // MOV EDX, EDX preserves flags
+            0x939B=>if !cf {0x93A3} else {0x939D}, // JAE
+            0x939D=>0x939E, // NOP
+            0x939E=>if cf {0x93A3} else {return Err("unexpected JB".into())},
+            0x93A3=>if of {0x93B0} else {0x93A5}, // JO
+            0x93B0=>if of {0x93A5} else {return Err("unexpected JO".into())},
+            0x93A5=>if !cf && !zf {0x93AE} else {0x93A7}, // JA
+            0x93A7=>0x93A9, // XCHG ESI, ESI
+            0x93A9=>if zf {0x93AE} else {0x93AB}, // JE
+            0x93AB=>0x93AD, // XCHG EBX, EBX
+            0x93AD=>0x93AE, // NOP
+            0x93AE=>0x93B3, // JMP
+            0x93B3=>if cf || zf {0x93C0} else {0x93B5}, // JBE
+            0x93B5=>0x93B6, // PUSH EAX
+            0x93B6=>0x93BB, // CALL 0x93FC (a single RET)
+            0x93BB=>0x93BC, // POP EAX
+            0x93BC=>if !cf && !zf {0x93C0} else {return Err("unexpected JA".into())},
+            _=>return Err(format!("unexpected selector-detour RVA 0x{pc:X}")),
+        };
+    }
+    Err("selector-detour budget exhausted".into())
+}
+
+fn dll_selector_detour_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    // Every reached instruction in the candidate detour is checked against
+    // the exact hash-validated original on-disk x86 byte encoding.
+    for (site,bytes) in [
+        (0x9397u32,&[0xEB,0x07][..]),
+        (0x9399,&[0x8B,0xD2][..]),
+        (0x939B,&[0x73,0x06][..]),
+        (0x939D,&[0x90][..]),
+        (0x939E,&[0x72,0x03][..]),
+        (0x93A0,&[0xEB,0xF7][..]),
+        (0x93A3,&[0x70,0x0B][..]),
+        (0x93A5,&[0x77,0x07][..]),
+        (0x93A7,&[0x87,0xF6][..]),
+        (0x93A9,&[0x74,0x03][..]),
+        (0x93AB,&[0x87,0xDB][..]),
+        (0x93AD,&[0x90][..]),
+        (0x93AE,&[0xEB,0x03][..]),
+        (0x93B0,&[0x70,0xF3][..]),
+        (0x93B3,&[0x76,0x0B][..]),
+        (0x93B5,&[0x50][..]),
+        (0x93B6,&[0xE8,0x41,0x00,0x00,0x00][..]),
+        (0x93BB,&[0x58][..]),
+        (0x93BC,&[0x77,0x02][..]),
+        (0x93BE,&[0xC3][..]), // intentionally unreachable false RET
+        (0x93C0,&[0xE9,0x5D,0xFF,0xFF,0xFF][..]),
+        (0x93FC,&[0xC3][..]), // no-effect CALL/RET detour
+        (0x9343,&[0x83,0x7D,0xF4,0x00][..]), // selector-result check
+        (0x9347,&[0x74,0x7C][..]), // absent -> final match-flag check
+        (0x93C5,&[0x8B,0x45,0xFC,0x25,0xFF,0xFF,0x00,0x00,0x85,0xC0,0x75,0x32][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    if dll_relative_call_target(dll,pe,0x93B6)?!=0x93FC ||
+       dll_known_near_branch_target(dll,pe,0x93C0,false)?!=0x9322 {
+        return Err("original selector back-edge/RET-decoy target mismatch".into());
+    }
+    for cf in [false,true] {
+        for zf in [false,true] {
+            for of in [false,true] {
+                let path=synthetic_section_cursor_detour(cf,zf,of)?;
+                if path.is_empty() || path.contains(&0x93BE) ||
+                   path.last()!=Some(&if cf || zf {0x93B3} else {0x93BC}) {
+                    return Err("synthetic flag path reaches an unexpected return".into());
+                }
+            }
+        }
+    }
+    println!("  0x9397..0x93C0: all eight CF/ZF/OF paths converge on the loop back-edge, no false RET.");
+    println!("  0x9347: selector exhausted -> 0x93C5; matching .txt2 is a required flag for the chunk-loop gate.");
+    println!("  Still unverified: exact persistence of selector output fields across the final exhausted iteration.");
+    Ok(())
+}
+
 fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // Wrapper constructs a local decoded string and passes its address
     // as the third argument of 0x92B0. The section comparator reads 0x28
@@ -2477,6 +2565,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     original_category_dispatch_proof(dll,pe)?;
     original_dll_self_section_proof(dll,pe)?;
     original_txt2_section_name_proof(dll,pe)?;
+    dll_selector_detour_proof(dll,pe)?;
     original_category_selector_relation(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
@@ -5387,6 +5476,24 @@ mod tests {
         assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
         // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
         assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
+    }
+
+    #[test]
+    fn synthetic_section_cursor_detour_converges_for_all_flag_inputs() {
+        let mut different=std::collections::HashSet::new();
+        for cf in [false,true] {
+            for zf in [false,true] {
+                for of in [false,true] {
+                    let path=synthetic_section_cursor_detour(cf,zf,of).unwrap();
+                    assert!(!path.contains(&0x93BE));
+                    assert!(path.contains(&0x93B3));
+                    assert_eq!(path.last(),
+                        Some(&if cf || zf {0x93B3} else {0x93BC}));
+                    different.insert(path);
+                }
+            }
+        }
+        assert!(different.len()>=4);
     }
 
     #[test]
