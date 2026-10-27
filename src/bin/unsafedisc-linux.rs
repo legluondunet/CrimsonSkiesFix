@@ -273,6 +273,86 @@ fn print_dll_code_window(dll: &[u8], pe: &Pe32, title: &str, rva: u32, len: usiz
     Ok(())
 }
 
+// Distinguish PE virtual-zero-fill from an RVA outside the mapped DLL.
+// When VirtualSize > SizeOfRawData, the loader zero-initializes the
+// remainder of the section's memory span; it cannot be read from disk.
+fn dll_zero_filled_section<'a>(
+    pe: &'a Pe32, rva: u32, len: usize,
+) -> Option<&'a PeSection> {
+    if len == 0 { return None; }
+    pe.sections.iter().find(|sec| {
+        if sec.virtual_size as usize <= sec.raw_len { return false; }
+        let Some(rel) = rva.checked_sub(sec.virtual_address) else { return false; };
+        let rel = rel as usize;
+        rel >= sec.raw_len
+            && rel.checked_add(len).is_some_and(|end| end <= sec.virtual_size as usize)
+    })
+}
+
+// Decode ONLY a known x86 direct relative CALL (E8 rel32) at a
+// confirmed instruction boundary, then validate its target inside a
+// file-backed executable section. Not a generic x86 disassembler.
+fn dll_relative_call_target(dll: &[u8], pe: &Pe32, call_rva: u32) -> Result<u32> {
+    let offset = executable_rva_to_file_offset(pe, call_rva, 5)?;
+    if dll.get(offset).copied() != Some(0xE8) {
+        return Err(format!("expected E8 rel32 at DLL RVA 0x{call_rva:08X}"));
+    }
+    let relative = read_u32(dll, offset + 1)? as i32 as i64;
+    let after = i64::from(call_rva) + 5;
+    let target = u32::try_from(after + relative)
+        .map_err(|_| "relative DLL call points outside 32-bit RVA space")?;
+    executable_rva_to_file_offset(pe, target, 64)?;
+    Ok(target)
+}
+
+// Build a bounded, statically validated next-stage call map from
+// instructions actually visible in the user's exact original DLL.
+// These RVAs are direct CALL instruction starts, not guessed functions.
+// We never load, execute or change either the historical DLL or a game.
+fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
+    const CALLS: [(u32, &str); 10] = [
+        (0xFD81, "DllMain startup wrapper"),
+        (0xFC18, "initialization helper A"),
+        (0xFC53, "initialization helper B"),
+        (0xFC5C, "initialization cleanup"),
+        (0xFC71, "startup routine C"),
+        (0xFC89, "startup routine D"),
+        (0xFC8E, "startup routine E"),
+        (0xFC93, "startup routine F"),
+        (0xFC98, "startup routine G"),
+        (0xFC9D, "startup routine H"),
+    ];
+    let pe = parse_pe32(dll)?;
+    let nt = read_u32(dll, 0x3C)? as usize;
+    let base = read_u32(dll, nt + 24 + 28)?;
+    println!("SafeDisc 1.50.20 DLL startup call research (no disassembly or execution):");
+    println!("  Preferred DLL image base 0x{base:08X}, DLL entrypoint RVA 0x{:08X}", pe.entry_rva);
+    println!("  TLS directory: {}", if dll_tls_metadata(dll, &pe)?.is_some() {
+        "present (see --modifier-research for callback details)"
+    } else { "absent" });
+    for va in [0x0090_519C, 0x0090_6C70] {
+        let rva = va.checked_sub(base).ok_or("startup data VA below preferred image base")?;
+        if let Some(section) = dll_zero_filled_section(&pe, rva, 4) {
+            let name = String::from_utf8_lossy(
+                section.name.split(|&b| b == 0).next().unwrap_or(&[]));
+            println!("  Data VA 0x{va:08X} -> RVA 0x{rva:08X}: section {name}, zero-filled virtual memory (not backed on disk)");
+        } else if let Ok(at) = dll_backed_rva_offset(&pe, rva, 4) {
+            println!("  Data VA 0x{va:08X} -> RVA 0x{rva:08X}: file +0x{at:06X} DWORD 0x{:08X}",
+                read_u32(dll, at)?);
+        } else {
+            println!("  Data VA 0x{va:08X} -> RVA 0x{rva:08X}: not found in backed or zero-fill PE section");
+        }
+    }
+    for (call_rva, purpose) in CALLS {
+        let dest = dll_relative_call_target(dll, &pe, call_rva)?;
+        println!("  CALL RVA 0x{call_rva:08X} -> 0x{dest:08X} ({purpose}; target only, no inferred semantics)");
+        print_dll_code_window(dll, &pe, "raw target bytes", dest, 64)?;
+    }
+    println!("  Call target RVAs come from E8 signed rel32 instructions in the exact hash-verified file.");
+    println!("  Code appearance does not establish that any call decrypts protected .txt or .txt2.");
+    Ok(())
+}
+
 // These addresses identify where *loaded* code is expected by
 // historical analysis. Their on-disk bytes need NOT be decoded x86:
 // SafeDisc DLL initialization may transform its executable section.
@@ -335,7 +415,15 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
                     let word = read_u32(dll, at)?;
                     println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, raw +0x{at:06X}, on-disk DWORD 0x{word:08X}");
                 }
-                Err(_) => println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, not file-backed"),
+                Err(_) => {
+                    if let Some(section) = dll_zero_filled_section(&pe, rva, 4) {
+                        let section_name = String::from_utf8_lossy(
+                            section.name.split(|&b| b == 0).next().unwrap_or(&[]));
+                        println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, virtual zero-fill in section {section_name} (not backed on disk)");
+                    } else {
+                        println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, not mapped to file-backed or virtual-only section");
+                    }
+                },
             }
         } else {
             println!("  {name}: VA 0x{absolute_va:08X} is below the preferred image base");
@@ -1083,13 +1171,14 @@ struct Options {
     sections: bool,
     key_research: bool,
     modifier_research: bool,
+    startup_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1142,6 +1231,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.modifier_research = true;
             continue;
         }
+        if key == "--startup-research" {
+            if options.startup_research { return Err("repeated --startup-research argument".into()); }
+            options.startup_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -1167,6 +1261,9 @@ fn inspect(options: Options) -> Result<()> {
     let dll = read_original(options.dplayerx.as_ref().unwrap(), DLL_LEN, DLL_SHA)?;
     if options.modifier_research {
         print_modifier_research(&dll)?;
+    }
+    if options.startup_research {
+        print_dll_startup_calls(&dll)?;
     }
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
@@ -2024,6 +2121,49 @@ mod tests {
         image[dir_at+4..dir_at+8].copy_from_slice(&24u32.to_le_bytes());
         image[0x22C..0x230].copy_from_slice(&0x0080_0000u32.to_le_bytes());
         assert!(dll_tls_metadata(&image, &pe).is_err());
+    }
+
+    #[test]
+    fn dll_zero_fill_mapping_vs_unmapped_and_raw_sections() {
+        let mut image = synthetic_pe();
+        let section = 0x178usize;
+        image[section..section+8].copy_from_slice(b".data\0\0\0");
+        image[section+12..section+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[section+8..section+12].copy_from_slice(&0x180u32.to_le_bytes());
+        image[section+16..section+20].copy_from_slice(&0x100u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert!(dll_zero_filled_section(&pe, 0x20FF, 4).is_none());
+        assert!(dll_zero_filled_section(&pe, 0x2100, 4).is_some());
+        assert!(dll_zero_filled_section(&pe, 0x217C, 4).is_some());
+        assert!(dll_zero_filled_section(&pe, 0x217D, 4).is_none());
+        assert!(dll_zero_filled_section(&pe, 0x2180, 4).is_none());
+        assert!(dll_zero_filled_section(&pe, 0x2100, 0).is_none());
+        assert!(dll_zero_filled_section(&pe, 0xFFFF_FFFF, 4).is_none());
+        image[section+8..section+12].copy_from_slice(&0x80u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert!(dll_zero_filled_section(&pe, 0x2100, 4).is_none());
+    }
+
+    #[test]
+    fn dll_rel32_call_targets_follow_signed_x86_displacement() {
+        let mut image = synthetic_pe();
+        let section = 0x178usize;
+        image[section..section+8].copy_from_slice(b".text\0\0\0");
+        image[section+12..section+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[section+8..section+12].copy_from_slice(&0x100u32.to_le_bytes());
+        image[section+36..section+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        // Raw section file +0x200, RVA 0x1000. 0x1008 -> 0x1040.
+        image[0x208] = 0xE8;
+        image[0x209..0x20D].copy_from_slice(&0x33i32.to_le_bytes());
+        // 0x1040 -> 0x1008 uses a negative signed rel32.
+        image[0x240] = 0xE8;
+        image[0x241..0x245].copy_from_slice(&(-0x3Di32).to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert_eq!(dll_relative_call_target(&image, &pe, 0x1008).unwrap(), 0x1040);
+        assert_eq!(dll_relative_call_target(&image, &pe, 0x1040).unwrap(), 0x1008);
+        assert!(dll_relative_call_target(&image, &pe, 0x1009).is_err());
+        image[0x241..0x245].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(dll_relative_call_target(&image, &pe, 0x1040).is_err());
     }
 
     #[test]
