@@ -1,7 +1,7 @@
 # unSafeDisc Linux — experimental native port for Crimson Skies
 
-This branch begins a **native Linux Rust implementation** of the unSafeDisc
-1.5.5 workflow for the *Windows PC 1.0.2.0* release of **Crimson Skies**.
+This branch begins a **native Rust implementation for Linux and Windows** of the unSafeDisc
+1.5.5 research workflow for the *Windows PC 1.0.2.0* release of **Crimson Skies**.
 
 **Current status: inspection only, not a working unpacker.** The new
 `unsafedisc-linux` binary reads and verifies locally supplied game files,
@@ -37,6 +37,30 @@ verified game files:
   --dplayerx '.\dplayerx.dll' `
   --layout
 ```
+
+For a separate experimental research report, add `--checksum-research` to
+the **same** `inspect` command, with or without `--layout`. Example using
+the Windows executable already downloaded from GitHub Actions:
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --checksum-research
+```
+
+This reports **two different candidate values**, using exactly the same
+61,743 relocation exclusions in `.text`, a zero starting accumulator and
+the isolated byte-mixer recovered from unSafeDisc 1.5.5:
+
+1. **Page-local model:** the byte-mixer's weight restarts at each relocation-
+   bounded span and at every 4-KiB page.
+2. **Section-wide model:** the weight restarts only at the HIGHLOW exclusion
+   boundaries (without an additional 4-KiB page split).
+
+Neither candidate includes the original unSafeDisc full PE section traversal,
+the SafeDisc `dplayerx.dll` modifier or a verified starting checksum state.
+The comparison exists **to test competing traversal hypotheses**, not to
+claim a final checksum or recover a TEA key. No files are written or decrypted.
+Synthetic fixtures demonstrate that the two models may diverge on otherwise
+identical input, including a relocation that crosses a page.
 
 PowerShell uses a backtick to continue a command on the next line.
 This action only reads files; the original EXE, ICD and DLL are never modified.
@@ -145,6 +169,7 @@ The older hypothesis of reading the four DWORDs directly after
 | Per-page relocation-skipping checksum helper | Implemented, synthetic only; rejects cross-page DWORDs |
 | Joined-page relocation-skipping checksum primitive | Implemented, synthetic only; handles straddling DWORDs, not the full SafeDisc traversal |
 | Optional `inspect --layout` geometry report | Implemented; reads verified original `.text` relocation metadata only, **no full checksum** |
+| Optional `inspect --checksum-research` report | Implemented; **two provisional `.text` mixer models**, strictly read-only and not a verified SafeDisc checksum |
 | Page-oriented pre-TEA modifier adapter | Implemented with synthetic modifiers; resets word index every 4-KiB page |
 | Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
 | Full checksum traversal (PE flags, cross-page relocations, DLL modifiers) | Not implemented |
