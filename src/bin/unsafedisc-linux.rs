@@ -1950,6 +1950,28 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  The first call selects the section via selector 1; 0x95B9 passes the descriptor onward to 0x9640.");
     println!("  The helper 0x18B90 yields min(nonzero field +8, field +0x10), otherwise field +0x10.");
     println!("  The stored descriptor +4 field still needs runtime-base/section-header provenance validation.");
+    // The caller constructs a by-value 12-byte descriptor on the stack.
+    // Its initial fields are loaded from dynamic (zero-on-disk) DLL .data.
+    // This shows where the writer base comes from, without claiming a value
+    // for that runtime-initialized field.
+    for (rva,bytes) in [
+        (0x9232u32,&[0x83,0xEC,0x0C,0x8B,0xD4][..]),
+        (0x9237,&[0xA1,0xE0,0x59,0x90,0x00][..]),
+        (0x923C,&[0x89,0x02][..]),
+        (0x923E,&[0x8B,0x0D,0xE4,0x59,0x90,0x00][..]),
+        (0x9244,&[0x89,0x4A,0x04][..]),
+        (0x9247,&[0xA1,0xE8,0x59,0x90,0x00][..]),
+        (0x924C,&[0x89,0x42,0x08][..]),
+        (0x924F,&[0xE8,0x5C,0x00,0x00,0x00][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,bytes)?;}
+    for rva in [0x259E0u32,0x259E4,0x259E8] {
+        if dll_zero_filled_section(pe,rva,4).is_none() {
+            return Err("descriptor source DWORD is not in original virtual-only .data".into());
+        }
+    }
+    if dll_relative_call_target(dll,pe,0x924F)?!=0x92B0 {return Err("descriptor producer call target changed".into());}
+    println!("  Caller 0x9232..0x924F copies virtual .data DWORDs 0x259E0/0x259E4/0x259E8 into a by-value stack descriptor.");
+    println!("  Its second DWORD (writer base candidate) initially comes from RVA 0x259E4, whose runtime initializer is unproven.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
