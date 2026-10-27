@@ -261,20 +261,25 @@ We independently disassembled it as an x86 DLL startup wrapper:
 - At `0xFD23`, it reads the 3-argument DllMain `reason` from the
   stack and checks for `1` (process attach) and `2` (thread attach)
   before calling its startup handlers.
-- At `0xFD31` and `0xFD56`, it reads data/pointer values from
+- At `0xFD31` and `0xFD56`, it references data/pointer values at
   absolute virtual addresses `0x90519C` and `0x906C70`.
-  If the actual preferred image base is `0x900000`, these are
-  RVAs `0x519C` and `0x6C70`, inside the still-unreadable
-  `.txt` section.
+  The user's **actual** DLL ImageBase is `0x008E0000`: these
+  are RVAs **`0x2519C` and `0x26C70`**, both inside the
+  **virtual-only, loader-zero-filled** tail of the `.data` section.
+  No bytes for these variables exist on disk; they may be assigned
+  during initialization. An earlier guessed base `0x900000`
+  incorrectly placed them in `.txt` and is superseded here.
 - At `0xFD6C`, a relative call with bytes
   `E8 8F FE FF FF` points to **DLL RVA `0xFC00`**, another
   on-disk executable `.text` location.
 - Startup continues at `0xFD7E`; only the first two bytes
   of this path were present in the initial 96-byte excerpt.
 
-These observations make early DLL **initialization and TLS callbacks**
-the most useful next investigation. They do **not** demonstrate that
-`.txt` is decrypted by any specific routine or at any specific time.
+The user's SHA-256-verified original DLL explicitly reports **no PE
+TLS directory**. Therefore there are no PE-declared TLS callbacks to
+follow for this image. We focus on DllMain/CRT initialization and
+its other calls. No particular startup routine has yet been shown
+to decrypt `.txt` or `.txt2`.
 
 The enhanced `--modifier-research` output additionally reports:
 
@@ -284,8 +289,8 @@ The enhanced `--modifier-research` output additionally reports:
   **before** the DLL entrypoint;
 - **160 bytes at RVA `0xFC00`**, the actual relative-call target;
 - **96 bytes at RVA `0xFD7E`**, the rest of the startup branch;
-- original *on-disk* DWORDs from VAs `0x90519C` and `0x906C70`
-  when those VAs resolve to backed PE sections.
+- the location of VAs `0x90519C` and `0x906C70`, including whether
+  each is file-backed or is only present in the mapped image.
 
 The output never loads the DLL and refuses malformed RVA/VA pointer
 ranges or unterminated callback lists. Raw data is never assumed to
@@ -298,6 +303,39 @@ Do not assume the raw modifier windows are already decoded x86.
 Until that is confirmed, even the four reconstructed
 conditional TEA words must **not** be used to assert success.
 
+#### Trace the original DLL startup calls without loading it
+
+The previous user's native run confirmed original DLL ImageBase
+**`0x008E0000`**, no PE TLS directory, and original `.data`:
+
+- Section RVA `0x20000`, `SizeOfRawData = 15,872`,
+  `VirtualSize = 27,776`.
+- Backed RVA span `[0x20000, 0x23E00)`; virtual-zero-fill tail
+  `[0x23E00, 0x26C80)`.
+- Address `0x90519C` maps to RVA `0x2519C`, and
+  `0x906C70` maps to RVA `0x26C70`: both in virtual-zero-fill.
+
+The readable DLL `0xFC00` helper resembles conventional DLL
+runtime initialization and calls many other routines, but the
+present evidence does **not** identify it as the `.txt` decoder.
+
+The opt-in read-only **`--startup-research`** flag checks the
+actual original bytes at ten known `E8 rel32` CALL instruction
+locations in the DllMain and `0xFC00` paths, computes signed
+relative destination RVAs, validates that each has at least
+64 original file-backed executable bytes, and prints a 64-byte
+excerpt for each. It also distinguishes backed data from
+loader-zero-filled `.data` metadata and reports TLS presence.
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --startup-research
+```
+
+These are **validated direct-call targets only**. This does not
+build a complete control-flow graph or prove that any target
+changes protected memory; dynamic calls through IAT or function
+pointers are not followed. No decryption, loading, execution or
+modification is performed.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
