@@ -2642,3 +2642,53 @@ dispatch, module-base/offset copy opcodes and the three actual DLL
 section-header records. Synthetic tests cover first-match section order.
 No copyrighted code bytes, DLL plaintext, or modified executable are
 committed.
+
+
+### Recovered DLL `.txt` selector outputs and copy-in/copy-out offset identity (2026-10-27)
+
+Following the original `0x92B0` caller's descriptor through selector 1
+gives the **three original DLL section fields**, on the condition that the
+descriptor is initialized for `dplayerx.dll` as described above:
+
+| Selector output | Value for first CODE+EXEC DLL section | PE source |
+| --- | --- | --- |
+| Section disk offset | `0x400` | `.txt.PointerToRawData` at section header `+0x14` |
+| Section memory RVA | `0x1000` | `.txt.VirtualAddress` at header `+0x0C` |
+| Effective extent | `0x7671` | `min(VirtualSize, SizeOfRawData)` |
+
+The selected-section helper fills a 40-byte scratch header, then
+`0x183ED/0x183F5` writes the raw offset into one output,
+`0x183F1/0x18403` writes the **virtual RVA** into another, and
+`0x18405 -> 0x18B90` writes the bounded extent to the final output.
+
+At the `0x92B0` caller these map to stack locals:
+`[EBP-8]` (disk offset), `[EBP-0x24]` (virtual RVA) and
+`[EBP-0x14]` (remaining length). On the chunk path both
+`0x9458` (copy-in to `0x9710`) and `0x95B1`
+(copy-out to `0x9640`) pass `[EBP-0x24]` as the offset.
+The two helpers independently compute
+`descriptor[+4] + offset` (`0x9717..` and `0x9649..`).
+This statically connects **read and write to the same relative DLL
+virtual address**, rather than the raw file offset.
+
+For the original `.txt` selection, the first candidate mapped address
+is therefore `loaded_dplayerx_base + 0x1000`; the preferred-base
+example is `0x008E1000`, **not** the game's `0x00401000`.
+Later chunks advance the selected virtual offset while reducing the
+remaining length. Copy-out remains conditional on the first
+`VirtualProtect` call succeeding.
+
+The inspector now checks exact instruction boundaries, direct call targets,
+`.txt` header order and expected geometry. A synthetic test explicitly
+distinguishes `PointerToRawData`, `VirtualAddress` and bounded
+extent. **This is a convincing static DLL self-modification address
+dependency**, but still not a runtime trace, a verified reconstructed
+`.txt` page or an unprotected `CRIMSON.ICD`.
+
+A standalone, read-only experiment applying the current *candidate*
+byte recurrence to the first 4-KiB backed `.txt` block yielded no
+independently verified executable-code signature or matched plaintext.
+It is deliberately **not** claimed as decryption evidence; selector
+reachability, real chunk initialization, relocation effects and comparison
+against trusted DLL plaintext are still required. No output page is
+committed or distributed.
