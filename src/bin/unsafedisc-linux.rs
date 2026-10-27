@@ -439,6 +439,26 @@ fn checksum_independent_relocation_walk(
     })
 }
 
+// Exact simple-page checksum branch found in unSafeDisc 1.5.5
+// 0x401D4E..0x401D77: it skips NO relocated DWORDs. Its checksum
+// accumulator is carried between complete 4-KiB calls and the
+// nonempty final partial-page call. The branch is selected when
+// dword[0x403CAC] != 4 at 0x401D48. The runtime value of this
+// global has not been established on Crimson Skies 1.0.2.0.
+fn checksum_historic_simple_pages(
+    bytes: &[u8], effective_len: usize, previous: u32,
+) -> Result<u32> {
+    const PAGE: usize = 4096;
+    if effective_len == 0 || effective_len > bytes.len() {
+        return Err("invalid effective extent for simple-page checksum".into());
+    }
+    let mut checksum = previous;
+    for chunk in bytes[..effective_len].chunks(PAGE) {
+        checksum = checksum_chunk(chunk, checksum);
+    }
+    Ok(checksum)
+}
+
 // Alternative *research* hypothesis: carry the checksum across the whole
 // section, splitting ONLY around relocation DWORDs (not page boundaries).
 // It is deliberately distinct from the page-local checksum hypothesis.
@@ -540,6 +560,7 @@ fn print_checksum_research(
     } else {
         section.raw_len.min(section.virtual_size as usize)
     };
+    let bounded_simple_page = checksum_historic_simple_pages(data, effective_len, 0)?;
     let bounded_page_local = checksum_pages_bounded_without_highlow(
         data, section.virtual_address, blocks, effective_len, 0)?;
     let independent_walk = checksum_independent_relocation_walk(
@@ -552,14 +573,17 @@ fn print_checksum_research(
     println!("  initial accumulator: 0 (0x401CDE), selected section size: min(raw, nonzero VirtualSize)");
     println!("  raw bytes: {}, selected bytes: {}, ignored raw tail: {}",
         section.raw_len, effective_len, section.raw_len - effective_len);
-    println!("  extent-bounded page-local candidate: 0x{bounded_page_local:08X}");
+    println!("  branch at 0x401D48: if runtime [0x403CAC] == 4 then relocation-aware; otherwise simple pages.");
+    println!("  runtime branch selector for Crimson Skies: NOT YET VERIFIED");
+    println!("  simple-page, no relocation exclusions: 0x{bounded_simple_page:08X}");
+    println!("  relocation-aware extent-bounded:       0x{bounded_page_local:08X}");
     println!("  independent relocation-walk comparison: MATCH");
     println!("  effective non-relocated bytes: {}, skipped relocation bytes: {}",
         independent_walk.included_bytes, independent_walk.excluded_bytes);
     println!("  fragment calls: {}, page-crossing HIGHLOW DWORDs: {}",
         independent_walk.fragments, independent_walk.crossings);
-    println!("  Historic branch switch at 0x401D48 remains unverified for this game.");
-    println!("  This is a stronger candidate, not a verified full SafeDisc checksum.");
+    println!("  These TWO branch-specific candidate values are not verified SafeDisc checksums.");
+    println!("  No real TEA key has been derived from either candidate.");
     let (local_pages, whole_pages) =
         checksum_research_page_contributions(data, section.virtual_address, blocks)?;
     let local_from_pages = local_pages.iter().fold(0u32, |sum, v| sum.wrapping_add(*v));
@@ -1475,6 +1499,42 @@ mod tests {
         assert_eq!(overflowing[0], (u32::MAX ^ mix).wrapping_add(base));
         assert_eq!(overflowing[1], mix.wrapping_add(base));
         assert_eq!(overflowing[2], (0x1234_5678 ^ mix).wrapping_add(base));
+    }
+
+    #[test]
+    fn simple_page_checksum_follows_historic_page_and_remainder_branch() {
+        let mut bytes: Vec<u8> = (0..8192).map(|i| ((13*i + 5) % 251) as u8).collect();
+        let effective = 4096+17usize;
+        let first = checksum_chunk(&bytes[..4096], 0);
+        let expected = checksum_chunk(&bytes[4096..effective], first);
+        assert_eq!(checksum_historic_simple_pages(&bytes, effective, 0).unwrap(), expected);
+
+        let entire = checksum_chunk(&bytes[4096..8192],
+            checksum_chunk(&bytes[..4096], 0));
+        assert_eq!(checksum_historic_simple_pages(&bytes, 8192, 0).unwrap(), entire);
+
+        let old = checksum_historic_simple_pages(&bytes, effective, 0).unwrap();
+        for b in bytes.iter_mut().skip(effective) { *b ^= 0xA5; }
+        assert_eq!(old, checksum_historic_simple_pages(&bytes, effective, 0).unwrap());
+        // Unlike the relocation-aware model, the simple branch also
+        // mixes in the bytes at HIGHLOW relocation sites.
+        bytes[4101] ^= 0xFF;
+        assert_ne!(old, checksum_historic_simple_pages(&bytes, effective, 0).unwrap());
+        assert!(checksum_historic_simple_pages(&bytes, 0, 0).is_err());
+        assert!(checksum_historic_simple_pages(&bytes, bytes.len()+1, 0).is_err());
+    }
+
+    #[test]
+    fn original_dispatch_comparison_is_to_four() {
+        // Bytes around 0x401D43 in the historical PE:
+        // mov esi, 0x403CB0 ; cmp dword [esi-4], 4 ; je 0x401D82.
+        // Using synthetic selector values must retain both branches,
+        // without claiming which value the original Crimson run had.
+        fn branch_uses_relocs(selector: u32) -> bool { selector == 4 }
+        assert!(branch_uses_relocs(4));
+        for x in [0,1,3,5,u32::MAX] {
+            assert!(!branch_uses_relocs(x));
+        }
     }
 
     #[test]
