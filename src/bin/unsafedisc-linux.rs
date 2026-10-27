@@ -1786,6 +1786,72 @@ fn audit_protected_dll_relocations(
     Ok(out)
 }
 
+// Bounded, exact-byte confirmation of a likely on-the-fly
+// protected-code writer. The decrypted output region is not
+// identified here: source bytes, actual arguments and runtime
+// reachability must be recovered before claiming .txt decoding.
+fn dll_expect_raw_x86(dll:&[u8],pe:&Pe32,rva:u32,bytes:&[u8])->Result<()> {
+    if bytes.is_empty() || bytes.len()>256{
+        return Err("invalid DLL exact instruction pattern length".into());
+    }
+    let offset=executable_rva_to_file_offset(pe,rva,bytes.len())?;
+    if dll.get(offset..offset+bytes.len())!=Some(bytes){
+        return Err(format!("expected original DLL instruction bytes at RVA 0x{rva:08X}"));
+    }
+    Ok(())
+}
+fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
+    let nt=read_u32(dll,0x3C)? as usize;
+    let base=read_u32(dll,nt+24+28)?;
+    let imports=dll_import_bindings(dll,pe)?;
+    for (site,dest,role) in [
+        (0x9460u32,0x9710u32,"copy current input chunk into stack buffer"),
+        (0x95B9,0x9640,"commit modified stack buffer to protected destination"),
+    ]{
+        let actual=dll_relative_call_target(dll,pe,site)?;
+        if actual!=dest{
+            return Err(format!("original DLL memory-copy CALL 0x{site:X} unexpectedly targets 0x{actual:X}"));
+        }
+        println!("  E8 0x{site:05X} -> 0x{dest:05X}: {role}");
+    }
+    for site in [0x9677u32,0x96DC] {
+        let (_,iat_rva)=dll_indirect_import_call(dll,pe,site,base)?;
+        let import=imports.iter().find(|item|item.iat_rva==iat_rva)
+            .ok_or("protected copy VirtualProtect not in original IAT")?;
+        if import.symbol!="VirtualProtect" || !import.library.eq_ignore_ascii_case("KERNEL32.dll"){
+            return Err("protected memory-copy indirect API is not KERNEL32!VirtualProtect".into());
+        }
+        println!("  FF15 0x{site:05X}: original imported KERNEL32!VirtualProtect at RVA 0x{iat_rva:X}");
+        if iat_rva!=0x24F00{
+            return Err("original protected copy does not use the decoded API slot RVA 0x24F00".into());
+        }
+    }
+    // 0x940D tests the remaining input length against the
+    // maximum 0x1000-byte chunk size. One copy-in function
+    // and a separate temporarily-writable copy-out function
+    // are verified from concrete original instructions.
+    for (rva,bytes,description) in [
+        (0x940Du32,&[0x81,0x7D,0xEC,0x00,0x10,0x00,0x00][..],"clamp remaining length to 4096 bytes"),
+        (0x9669,&[0x8D,0x55,0xF4,0x52,0x6A,0x04][..],"pass old-protection pointer and PAGE_READWRITE"),
+        (0x969B,&[0xC1,0xE9,0x02][..],"divide copy size by four"),
+        (0x969E,&[0xF3,0xA5][..],"copy DWORDs into writable destination"),
+        (0x96A2,&[0x83,0xE1,0x03][..],"compute trailing byte count"),
+        (0x96A5,&[0xF3,0xA4][..],"copy trailing bytes"),
+        (0x950Du32,&[0x8A,0x94,0x0D,0xD8,0xEF,0xFF,0xFF][..],"load current stack-buffer byte"),
+        (0x9519,&[0x8A,0x8C,0x05,0xD7,0xEF,0xFF,0xFF][..],"load previous stack-buffer byte"),
+        (0x9520,&[0x33,0xD1][..],"XOR current and previous bytes"),
+        (0x9525,&[0x88,0x94,0x05,0xD8,0xEF,0xFF,0xFF][..],"store XOR-transformed byte"),
+        (0x955D,&[0x03,0xD0][..],"add state-derived value to transformed byte"),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,bytes)?;
+        println!("  Original x86 RVA 0x{rva:05X}: {description}");
+    }
+    println!("  Static sequence: 4KiB-bounded copy-in -> byte transform -> VirtualProtect -> memory copy -> restore protection.");
+    println!("  Unknown: input buffer mapping, per-byte state, actual destination and whether the modified region is protected .txt.");
+    println!("  These checks do not emulate SafeDisc, decrypt any code, or call Win32 APIs.");
+    Ok(())
+}
+
 fn print_modifier_research(dll: &[u8]) -> Result<()> {
     const WINDOW: usize = 128;
     const ROUTINES: [(&str, u32); 2] = [
@@ -1794,6 +1860,7 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     ];
     let pe = parse_pe32(dll)?;
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
+    print_dll_memory_patch_research(dll,&pe)?;
     println!("  Original DLL PE32 entry RVA: 0x{:08X} (on-disk code, NOT a memory dump).",
         pe.entry_rva);
     println!("  DLL PE sections:");
@@ -4467,6 +4534,22 @@ mod tests {
         let off=0x200+(0xE228-0xD000) as usize;
         dll[off+3]=0x24; // Tamper with AND EAX,0xFF opcode.
         assert!(dll_e205_xor_proof(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn protected_copy_instruction_check_is_bounded_and_fail_closed(){
+        let mut dll=synthetic_pe();
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        dll[0x260..0x262].copy_from_slice(&[0xF3,0xA5]);
+        let pe=parse_pe32(&dll).unwrap();
+        assert!(dll_expect_raw_x86(&dll,&pe,0x1060,&[0xF3,0xA5]).is_ok());
+        assert!(dll_expect_raw_x86(&dll,&pe,0x1060,&[0xF3,0xA4]).is_err());
+        assert!(dll_expect_raw_x86(&dll,&pe,0xF000,&[0xF3,0xA5]).is_err());
+        assert!(dll_expect_raw_x86(&dll,&pe,0x1060,&[]).is_err());
     }
 
     #[test]
