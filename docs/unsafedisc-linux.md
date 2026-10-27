@@ -689,6 +689,75 @@ The Rust `--attach-research` output now shows the
 four-case convergence and the verified E8 destination;
 the corresponding synthetic test rejects altered
 candidate opcodes without embedding private DLL bytes.
+## Original E25C disassembled beyond opaque branches: CRT allocation and DF96 (2026-10-27)
+
+Independent offline instruction-boundary tracing of the
+SHA-256-verified private original Crimson `dplayerx.dll`
+continued from the proven attach-chain callee
+`0xC5DE: CALL 0xE25C`.
+
+Unlike the previous D62C/C5C0 case, the prologue
+of **E25C does not set EFLAGS**. Therefore its starting
+PF/CF/ZF/SF/OF cannot be assumed. Every **32 of 32**
+possible Boolean flag states was independently
+simulated, accepting only reached, file-backed original
+instruction bytes and signed x86 relative branches.
+
+- All 32 flag combinations reach `0xE298: PUSH 0x80`
+  (128 bytes), then `0xE29D: CALL 0xF850`.
+- The 32 cases produce 32 distinct paths, but all
+  converge on that same first **nontrivial** CALL.
+- Sixteen of the cases additionally encounter
+  `0xE28D: PUSH EAX; 0xE28E: CALL 0xE2FE;`
+  where the exact original E2FE byte is `C3` (RET),
+  followed by `0xE293: POP EAX`. This is a
+  push/call/ret/pop obfuscation detour, not a decryptor.
+- The genuine `0xF850` helper reads allocation state
+  at preferred VA `0x00905214`, forwards its input
+  size to `0xF870`, and the latter uses `0xF8C0`
+  as the allocator. This is standard CRT-like
+  heap allocation behavior.
+- After the allocation call returns, `0xE2A2`
+  restores the stack and `0xE2A5` saves the result
+  at `[ebp-4]`. Its `ADD ESP,4` can modify EFLAGS,
+  so a **separate** 32-state post-call enumeration
+  is required. Eight distinct instruction paths
+  all converge on `0xE2CC: CMP [ebp-4],0`.
+- On the **non-NULL** allocation branch, the code
+  pushes the caller's `[ebp+8]` and the newly
+  allocated `[ebp-4]` and performs
+  **`0xE2DE: CALL 0xDF96`**. The return value is
+  masked with `AND EAX,0xFFFF` at `0xE2E6`.
+
+Verified static subchain:
+
+```text
+C5DE -> E25C
+       -> E28E CALL E2FE (single-byte RET; 16/32 paths)
+       -> E298 PUSH 0x80
+       -> E29D CALL F850 -> F870 -> F8C0 (CRT allocator)
+       -> E2A5 store allocation pointer
+       -> E2CC test allocation pointer for NULL
+       -> E2DE CALL DF96 (if allocation succeeded)
+```
+
+**Interpretation:** this proves that E25C includes
+ordinary allocation and processing of a freshly
+allocated 128-byte object. The purpose of its
+callee `0xDF96` is not yet determined. Nothing in
+this finding alone shows any `.txt` decryption,
+or recovers the game-specific EAX modifier bytes
+at DLL RVAs `0x65BE` and `0x6621`.
+
+The native `--attach-research` now includes the
+two 32-state branch checks, confirms the exact
+original E8 calls, RET-only decoy, allocator adapter,
+NULL pointer branch and the DF96 target. A synthetic
+test checks 32 initial, 32 post-allocation cases
+(with 16 decoy cases and eight distinct post-alloc
+paths), and ensures a replaced fake RET is rejected.
+No game binary or Windows program is executed
+or published.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
