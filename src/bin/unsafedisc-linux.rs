@@ -305,6 +305,112 @@ fn dll_relative_call_target(dll: &[u8], pe: &Pe32, call_rva: u32) -> Result<u32>
     Ok(target)
 }
 
+// Parse the original DLL's normal IMAGE_IMPORT_DESCRIPTOR metadata.
+// This lets us NAME the imported APIs referenced by indirect CALLs
+// in the readable .text startup code, without assuming that every
+// internal function is specific to the SafeDisc protection.
+//
+// PE32 import descriptor entries: OriginalFirstThunk at +0,
+// DLL Name RVA at +12, FirstThunk (IAT) at +16. Lookup DWORD:
+// bit31 = ordinal, otherwise RVA of IMAGE_IMPORT_BY_NAME,
+// whose ASCII function name begins at +2 after the 16-bit hint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DllImportBinding {
+    iat_rva: u32,
+    library: String,
+    symbol: String,
+}
+fn dll_pe_import_string(bytes: &[u8], pe: &Pe32, rva: u32) -> Result<String> {
+    const MAX_CHARS: usize = 127;
+    let mut value = String::new();
+    for i in 0..=MAX_CHARS {
+        let at_rva = rva.checked_add(i as u32).ok_or("DLL import string RVA overflow")?;
+        let at = dll_backed_rva_offset(pe, at_rva, 1)?;
+        let byte = *bytes.get(at).ok_or("DLL import string outside input file")?;
+        if byte == 0 {
+            if value.is_empty() { return Err("empty DLL import string".into()); }
+            return Ok(value);
+        }
+        if !byte.is_ascii_graphic() {
+            return Err("non-ASCII-printable DLL import string".into());
+        }
+        value.push(char::from(byte));
+    }
+    Err("DLL import string exceeds 127-byte maximum".into())
+}
+fn dll_import_bindings(bytes: &[u8], pe: &Pe32) -> Result<Vec<DllImportBinding>> {
+    let nt = read_u32(bytes, 0x3C)? as usize;
+    let opt = nt.checked_add(24).ok_or("DLL optional header overflow")?;
+    let opt_len = read_u16(bytes, nt + 20)? as usize;
+    const IMPORT_DIR: usize = 96 + 1 * 8;
+    if opt_len < IMPORT_DIR + 8 {
+        return Err("DLL optional header too small for import directory".into());
+    }
+    let directory_rva = read_u32(bytes, opt + IMPORT_DIR)?;
+    let directory_size = read_u32(bytes, opt + IMPORT_DIR + 4)?;
+    if directory_rva == 0 && directory_size == 0 { return Ok(Vec::new()); }
+    if directory_rva == 0 || directory_size < 40 || directory_size > 65536 {
+        return Err("invalid DLL import directory RVA/size".into());
+    }
+    const MAX_DESCRIPTORS: usize = 128;
+    const MAX_THUNKS: usize = 2048;
+    let mut bindings = Vec::new();
+    let mut found_terminator = false;
+    for index in 0..MAX_DESCRIPTORS {
+        let delta = index.checked_mul(20).ok_or("import descriptor offset overflow")?;
+        if delta + 20 > directory_size as usize {
+            return Err("DLL import directory terminator is outside declared size".into());
+        }
+        let at_rva = directory_rva.checked_add(delta as u32)
+            .ok_or("DLL import descriptor RVA overflow")?;
+        let at = dll_backed_rva_offset(pe, at_rva, 20)?;
+        let original_thunk = read_u32(bytes, at)?;
+        let name_rva = read_u32(bytes, at + 12)?;
+        let first_thunk = read_u32(bytes, at + 16)?;
+        if original_thunk == 0 && name_rva == 0 && first_thunk == 0 {
+            found_terminator = true;
+            break;
+        }
+        if name_rva == 0 || first_thunk == 0 {
+            return Err("DLL import descriptor missing DLL name or FirstThunk".into());
+        }
+        let library = dll_pe_import_string(bytes, pe, name_rva)?;
+        let lookup_rva = if original_thunk != 0 { original_thunk } else { first_thunk };
+        let mut terminated = false;
+        for n in 0..MAX_THUNKS {
+            let inc = n.checked_mul(4).ok_or("import thunk overflow")? as u32;
+            let lookup_entry_rva = lookup_rva.checked_add(inc)
+                .ok_or("DLL original thunk RVA overflow")?;
+            let iat_rva = first_thunk.checked_add(inc)
+                .ok_or("DLL IAT thunk RVA overflow")?;
+            let lookup_at = dll_backed_rva_offset(pe, lookup_entry_rva, 4)?;
+            // Validate the target IAT slot exists on disk too. It is
+            // used for address-bound functions at runtime, never called.
+            dll_backed_rva_offset(pe, iat_rva, 4)?;
+            let entry = read_u32(bytes, lookup_at)?;
+            if entry == 0 {
+                terminated = true;
+                break;
+            }
+            let symbol = if entry & 0x8000_0000 != 0 {
+                format!("#{}", entry & 0xFFFF)
+            } else {
+                let name_rva = entry.checked_add(2)
+                    .ok_or("DLL import by-name RVA overflow")?;
+                dll_pe_import_string(bytes, pe, name_rva)?
+            };
+            bindings.push(DllImportBinding {
+                iat_rva, library: library.clone(), symbol,
+            });
+        }
+        if !terminated { return Err("DLL import thunk list exceeds 2048 entries".into()); }
+    }
+    if !found_terminator {
+        return Err("DLL import descriptor list lacks bounded terminator".into());
+    }
+    Ok(bindings)
+}
+
 // Build a bounded, statically validated next-stage call map from
 // instructions actually visible in the user's exact original DLL.
 // These RVAs are direct CALL instruction starts, not guessed functions.
@@ -330,6 +436,23 @@ fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
     println!("  TLS directory: {}", if dll_tls_metadata(dll, &pe)?.is_some() {
         "present (see --modifier-research for callback details)"
     } else { "absent" });
+    let bindings = dll_import_bindings(dll, &pe)?;
+    println!("  Verified PE import bindings: {}", bindings.len());
+    // These IAT VAs are actually referenced by the user-provided
+    // 0xFC00 / startup helper code. Name only recognized entries.
+    for va in [
+        0x008F_E020u32, 0x008F_E0A0, 0x008F_E0A4,
+        0x008F_E090, 0x008F_E08C, 0x008F_E054,
+        0x008F_E078, 0x008F_E074,
+        0x008F_E0E0, 0x008F_E0E4,
+    ] {
+        let rva = va.checked_sub(base).ok_or("DLL imported API VA below preferred image base")?;
+        if let Some(b) = bindings.iter().find(|b| b.iat_rva == rva) {
+            println!("  IAT VA 0x{va:08X} -> {}!{}", b.library, b.symbol);
+        } else {
+            println!("  IAT VA 0x{va:08X}: no named import found in original PE import table");
+        }
+    }
     for va in [0x0090_519Cu32, 0x0090_6C70u32] {
         let rva = va.checked_sub(base).ok_or("startup data VA below preferred image base")?;
         if let Some(section) = dll_zero_filled_section(&pe, rva, 4) {
@@ -2164,6 +2287,42 @@ mod tests {
         assert!(dll_relative_call_target(&image, &pe, 0x1009).is_err());
         image[0x241..0x245].copy_from_slice(&i32::MAX.to_le_bytes());
         assert!(dll_relative_call_target(&image, &pe, 0x1040).is_err());
+    }
+
+    #[test]
+    fn dll_import_directory_resolves_pe32_original_thunks_and_ordinals() {
+        let mut image = synthetic_pe();
+        let section = 0x178usize;
+        let opt = 0x98usize;
+        let dir = opt + 96 + 8;
+        image[section+12..section+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[section+8..section+12].copy_from_slice(&0x100u32.to_le_bytes());
+        image[dir..dir+4].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[dir+4..dir+8].copy_from_slice(&40u32.to_le_bytes());
+        image[0x200..0x204].copy_from_slice(&0x2080u32.to_le_bytes()); // OriginalFirstThunk
+        image[0x20C..0x210].copy_from_slice(&0x2050u32.to_le_bytes()); // Name
+        image[0x210..0x214].copy_from_slice(&0x2090u32.to_le_bytes()); // FirstThunk
+        image[0x250..0x25D].copy_from_slice(b"KERNEL32.dll\0");
+        image[0x280..0x284].copy_from_slice(&0x20A0u32.to_le_bytes());
+        image[0x284..0x288].copy_from_slice(&0x8000_0032u32.to_le_bytes());
+        image[0x288..0x28C].fill(0); // end lookup list
+        image[0x290..0x294].copy_from_slice(&0x20A0u32.to_le_bytes());
+        image[0x294..0x298].copy_from_slice(&0x8000_0032u32.to_le_bytes());
+        image[0x298..0x29C].fill(0); // end IAT list
+        image[0x2A0..0x2A2].copy_from_slice(&7u16.to_le_bytes()); // hint
+        image[0x2A2..0x2AD].copy_from_slice(b"HeapCreate\0");
+        let pe = parse_pe32(&image).unwrap();
+        let found = dll_import_bindings(&image,&pe).unwrap();
+        assert_eq!(found,vec![
+            DllImportBinding { iat_rva:0x2090,library:"KERNEL32.dll".into(),symbol:"HeapCreate".into() },
+            DllImportBinding { iat_rva:0x2094,library:"KERNEL32.dll".into(),symbol:"#50".into() },
+        ]);
+        assert!(dll_pe_import_string(&image,&pe,0x20F0).is_err());
+        image[dir..dir+4].fill(0);
+        image[dir+4..dir+8].fill(0);
+        assert_eq!(dll_import_bindings(&image,&pe).unwrap(),Vec::new());
+        image[dir+4..dir+8].copy_from_slice(&40u32.to_le_bytes());
+        assert!(dll_import_bindings(&image,&pe).is_err());
     }
 
     #[test]
