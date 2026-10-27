@@ -2297,3 +2297,35 @@ pointer as the next elements to resolve before asserting the exact value
 written into the selected section descriptor or passing a plaintext
 comparison. There is no claim yet that its pointer is an on-disk ICD
 buffer, a loaded module base, or a mapped `.text` destination.
+
+
+### Exact role of `0x18940`: read DOS and NT headers, then validate PE signature
+
+Independent `objdump -D -Mintel` inspection of the user's private original
+`dplayerx.dll` (`.txt2` RVA `0x18940`) establishes the following exact sequence:
+
+- `0x18942` and `0x18947` take the first input pointer and first scratch buffer;
+  `0x1894B..0x18951` call `0xA810` with requested **0x40 bytes**, offset zero.
+- `0x1895A` reads DWORD `e_lfanew` from the DOS scratch buffer at `+0x3C`.
+- `0x18960..0x18968` call `0xA810` again, this time with **0xF8 bytes**,
+  starting at `e_lfanew`, into the second scratch buffer.
+- `0x1896D..0x1897F` compares its first DWORD to **0x00004550** (`PE\\0\\0`)
+  and returns a boolean in AL. This is a *header validation* helper, not
+  itself a section selector or destination address computation.
+
+The caller `0x181E0` obtains section count and optional-header size from
+this scratch structure, constructs a `40 * section_index` stride and then
+passes the resulting section table address to a selector. The original
+`0x183C2` path calls `0x189F0`; success copies selected-section metadata
+into three caller-supplied output locations. In particular it writes its
+first two output DWORDs from scratch offsets `+0x24` and `+0x1C`
+(`0x183ED..0x18403`). Determining the exact scratch-buffer layout and
+those outputs' runtime meanings is still necessary before asserting an
+absolute `.text` write address.
+
+**Important scope correction:** merely finding a section header does not
+mean `0x18940` supplies an image base. Its observed job is reading and
+validating PE headers through `0xA810`. The actual pointer and offset
+passed to `0xA810` must be traced through the caller to determine whether
+it addresses disk-backed ICD bytes or a loaded image. No decrypted output
+is claimed.
