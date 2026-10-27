@@ -1875,6 +1875,12 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     let base=read_u32(dll,nt+24+28)?;
     let (first,second)=dll_original_chunk_constants(dll,pe)?;
     dll_chunk_byte_recurrence_proof(dll,pe)?;
+    for (rva,code) in [
+        (0x95A6u32,&[0x8D,0x8D,0xD8,0xEF,0xFF,0xFF,0x51,0x8B,0x55,0xD8,0x52,0x8B,0x45,0xDC,0x50,0x8D,0x4D,0x08,0x51][..]),
+        (0x9649,&[0x8B,0x45,0x08,0x8B,0x48,0x04,0x03,0x4D,0x0C,0x89,0x4D,0xF8][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,code)?;}
+    println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
+    println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
     println!("  Candidate recurrence: out[0]=in[0]^0x43; state=out[0]^0x15; out[i]=(in[i]^out[i-1])+state (mod 256); state+=out[i] (mod 256).");
     println!("  This is a local byte model, NOT yet validated against plaintext protected code or confirmed across chunk boundaries.");
