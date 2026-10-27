@@ -2115,6 +2115,55 @@ fn synthetic_section_cursor_detour(cf:bool,zf:bool,of:bool)->Result<Vec<u32>> {
     Err("selector-detour budget exhausted".into())
 }
 
+// Synthetic model of what the real selector's three zero stores do at
+// entry to EVERY lookup (0x18255, 0x1825C, 0x18266). Not a runtime emulator.
+fn synthetic_exhausted_selector_outputs(earlier:[u32;3],matched:bool)->([u32;3],bool){
+    let _=earlier;
+    ([0,0,0],matched)
+}
+
+fn original_selector_exhaustion_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    // 0x18800 forwards three output pointers to 0x181E0. It zeroes
+    // all three output DWORDs BEFORE any dispatch. A failed final
+    // section lookup consequently clears caller [EBP-0x14] (extent).
+    for (site,bytes) in [
+        (0x18800u32,&[0x8B,0x4C,0x24,0x18,0x8B,0x54,0x24,0x14][..]),
+        (0x18808,&[0x8D,0x44,0x24,0x18,0x50][..]),
+        (0x18811,&[0x51,0x8B,0x4C,0x24,0x14][..]),
+        (0x18816,&[0x52,0x8B,0x54,0x24,0x14][..]),
+        (0x1881B,&[0x50,0x8B,0x44,0x24,0x14][..]),
+        (0x18820,&[0x51,0x52,0x50][..]),
+        (0x18239,&[0x8B,0x94,0x24,0x80,0x01,0x00,0x00][..]),
+        (0x18247,&[0x8B,0xAC,0x24,0x84,0x01,0x00,0x00][..]),
+        (0x1824E,&[0x8B,0xB4,0x24,0x88,0x01,0x00,0x00][..]),
+        (0x18255,&[0x49,0xC7,0x02,0x00,0x00,0x00,0x00][..]),
+        (0x1825C,&[0xC7,0x45,0x00,0x00,0x00,0x00,0x00][..]),
+        (0x18266,&[0xC7,0x06,0x00,0x00,0x00,0x00][..]),
+        (0x18500,&[0x8B,0xC6][..]), // return path for failed match
+        (0x9347,&[0x74,0x7C][..]), // zero selector result -> 0x93C5
+        (0x9403,&[0x83,0x7D,0xEC,0x00][..]), // cmp selected extent,0
+        (0x9407,&[0x0F,0x84,0x20,0x02,0x00,0x00][..]), // zero -> 0x962D
+        (0x962D,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    if dll_relative_call_target(dll,pe,0x18823)?!=0x181E0 ||
+       dll_known_near_branch_target(dll,pe,0x9407,true)?!=0x962D {
+        return Err("selector exhaustive empty result / zero-sized exit changed".into());
+    }
+    for seen in [false,true] {
+        let (output,flag)=synthetic_exhausted_selector_outputs(
+            [0x400,0x18000,0x5497],seen);
+        if output!=[0,0,0] || flag!=seen {
+            return Err("synthetic exhausted selector did not clear outputs".into());
+        }
+    }
+    println!("  0x18800 -> 0x181E0: every selector iteration clears all three output DWORDs first.");
+    println!("  If the final call returns zero, selected extent [EBP-0x14] is also reset to zero.");
+    println!("  0x9347 -> 0x93C5; on a set name-match flag, 0x9403/0x9407 skips all chunk copies when extent is zero.");
+    println!("  CONDITIONAL: on ordinary finite selector exhaustion, this specific 0x92B0 invocation performs no copy.");
+    println!("  This suggests an obfuscated/dead initialization path, not a demonstrated DLL .txt restoration.");
+    Ok(())
+}
+
 fn dll_selector_detour_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // Every reached instruction in the candidate detour is checked against
     // the exact hash-validated original on-disk x86 byte encoding.
@@ -2566,6 +2615,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     original_dll_self_section_proof(dll,pe)?;
     original_txt2_section_name_proof(dll,pe)?;
     dll_selector_detour_proof(dll,pe)?;
+    original_selector_exhaustion_proof(dll,pe)?;
     original_category_selector_relation(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
@@ -5476,6 +5526,17 @@ mod tests {
         assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
         // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
         assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
+    }
+
+    #[test]
+    fn synthetic_selector_failure_clears_even_previous_successful_extent(){
+        for matched in [false,true] {
+            let (out,flag)=synthetic_exhausted_selector_outputs(
+                [0x16200,0x18000,0x5497],matched);
+            assert_eq!(out,[0;3]);
+            assert_eq!(flag,matched);
+            assert_eq!(out[2],0);
+        }
     }
 
     #[test]
