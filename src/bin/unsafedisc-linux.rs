@@ -1020,7 +1020,7 @@ mod tests {
         }
         assert_eq!(checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), local);
         assert_eq!(checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), whole);
-        bytes[0x3500] ^= 1;
+        bytes[0x2500] ^= 1;
         assert_ne!(checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), local);
         assert_ne!(checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), whole);
     }
