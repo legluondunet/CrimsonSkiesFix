@@ -5,7 +5,7 @@
 // Research stage: strictly read-only. No loader/DLL execution, no executable
 // reconstruction, no SafeDisc driver, and no Wine requirement.
 
-#[path = "unsafedisc_strings.rs"]
+#[path = "../unsafedisc_strings.rs"]
 mod unsafedisc_strings;
 
 use std::env;
