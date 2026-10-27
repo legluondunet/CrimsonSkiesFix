@@ -4162,6 +4162,8 @@ fn inspect(options: Options) -> Result<()> {
             println!("  F2-only canonicalization: {} observations, {} conflicts, {} distinct observed masks.",
                 second_stage.canonical_observations,second_stage.conflicting_canonical_pairs,
                 second_stage.distinct_masks_observed);
+            println!("  F2-only injectivity probe: {} same-input output collisions across different masks (advisory).",
+                second_stage.distinct_mask_output_collisions);
             if second_stage.differential_observations==0 {
                 println!("  F2-only audit is INCONCLUSIVE: no input recurs under different masks.");
             }
