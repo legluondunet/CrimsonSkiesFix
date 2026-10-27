@@ -950,6 +950,29 @@ fn checksum_chunk(data: &[u8], previous: u32) -> u32 {
     result
 }
 
+// Key-material staging observed in historical unSafeDisc 1.5.5
+// at 0x401CA2..0x401CDD, AFTER the checksum routine:
+//   ebx = dword[0x403C50] + 0x2D8
+//   eax = (dword[0x403C30] - ebx) XOR dword[0x403C40]
+//   for i = 2,1,0:
+//       dword[0x403C34 + i*4] =
+//           (dword[0x403C44 + i*4] XOR eax XOR checksum) + ebx
+// The full runtime values of these source globals have not been
+// validated or mapped to Crimson Skies' stored raw key DWORDs.
+// This pure function is a synthetic-only *adapter*, not key recovery.
+#[allow(dead_code)]
+fn derive_three_checksum_dependent_words(
+    source_words: [u32; 3],
+    source_anchor: u32,
+    loader_base: u32,
+    scalar_word: u32,
+    checksum: u32,
+) -> [u32; 3] {
+    let adjusted_base = loader_base.wrapping_add(0x2D8);
+    let common = source_anchor.wrapping_sub(adjusted_base) ^ scalar_word ^ checksum;
+    source_words.map(|word| (word ^ common).wrapping_add(adjusted_base))
+}
+
 // Exact EAX call ordering observed in unSafeDisc 1.5.5 at 0x401F62:
 // for each DWORD, XOR by index-derived mask, call 0x65BE, XOR same mask,
 // call 0x6621, write transformed DWORD. Neither real protected DLL routine
@@ -1433,6 +1456,25 @@ mod tests {
         assert_eq!(result.fragments, 4);
         assert!(checksum_independent_relocation_walk(&data, 0x2000, &[], 0).is_err());
         assert!(checksum_independent_relocation_walk(&data, 0x2000, &[], 8193).is_err());
+    }
+
+    #[test]
+    fn historic_three_word_checksum_stage_matches_instruction_formula() {
+        let sources = [0x1122_3344, 0x5566_7788, 0x99AA_BBCC];
+        let derived = derive_three_checksum_dependent_words(
+            sources, 0x1234_5678, 0x0002_8000, 0x0F0E_0D0C, 0x1B09_633B);
+        assert_eq!(derived, [0x1717_11AB, 0x5353_4CF7, 0x9F9E_8933]);
+
+        // The historical x86 arithmetic is modulo 2^32, including the
+        // address adjustment and final addition.
+        let overflowing = derive_three_checksum_dependent_words(
+            [u32::MAX, 0, 0x1234_5678],
+            0, u32::MAX, 0x1234_5678, 0x55AA_55AA);
+        let base = u32::MAX.wrapping_add(0x2D8);
+        let mix = 0u32.wrapping_sub(base) ^ 0x1234_5678 ^ 0x55AA_55AA;
+        assert_eq!(overflowing[0], (u32::MAX ^ mix).wrapping_add(base));
+        assert_eq!(overflowing[1], mix.wrapping_add(base));
+        assert_eq!(overflowing[2], (0x1234_5678 ^ mix).wrapping_add(base));
     }
 
     #[test]
