@@ -3015,3 +3015,47 @@ provides synthetic eight-combination flag proof plus a model showing
 that a failed final selector call clears an earlier successful extent.
 This does **not** execute `dplayerx.dll`, reconstruct protected
 pages, or weaken the SHA-256 gating. Proprietary originals stay private.
+
+
+### Critical correction: the .txt2 MATCH exits the selector before zeroing its extent
+
+**This supersedes the preceding no-copy-after-exhaustion hypothesis for
+normal successful .txt2 selection.** Running the actual Linux research
+inspector on the exact private original exposed a mistaken x86 instruction
+boundary: original RVA 0x938C contains the two bytes **EB 37**,
+a JMP directly to **0x93C5**. The earlier presumed three-byte
+SUB BL,0x37 begins at **0x938B**, an overlapping decoy, and
+is not the reached instruction at 0x938C.
+
+The correct local branch flow after 0x935D TEST EAX,EAX is:
+
+- **Mismatch (EAX=0):** 0x935F JE 0x938E advances the section-header
+  cursor by 0x28. The flag-preserving opaque detour at 0x9397..0x93C0
+  returns to the selector at 0x9322, potentially trying another section.
+- **Match (EAX=1):** 0x9361 stores match flag=1; the reached Jcc path
+  goes to 0x937F JNP. Because TEST EAX=1 sets PF=0, it jumps to
+  **0x938C JMP 0x93C5**. This is *before* the header increment
+  and next selector call. The successful section's output fields
+  therefore remain intact, including the **0x5497-byte extent**
+  of .txt2; 0x93C5 branches to 0x9403, where its nonzero extent
+  permits the 4-KiB block loop.
+- **Exhaustion without prior matching exit:** the three output fields
+  are indeed cleared to zero by 0x181E0, and 0x9407 skips copies.
+  But the normal successful name-match path does **not** exhaust.
+
+Therefore the preceding finite-exhaustion simulation was incorrect as
+a claim that the normal 0x92B0 invocation does no copying: it omitted
+the exact early-exit jump on name match. This is an explicitly
+documented correction, not a separate SafeDisc algorithm.
+
+**Corrected conclusion:** if this DLL initialization path is reached,
+and the original section-header enumeration and name comparison succeed,
+the loop selects **DLL .txt2**, memory RVA **0x18000**, original raw
+offset **0x16200**, extent **0x5497**, and enters the
+byte-transforming copy loop. Its actual runtime execution and restored
+plaintext quality are still unverified. It does **not** establish
+decryption of the game ICD.
+
+The Rust exact-byte inspector checks the reached opcode EB 37 at
+0x938C, along with both match/mismatch branches. The proprietary
+DLL is neither distributed nor modified.
