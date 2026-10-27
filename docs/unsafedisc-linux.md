@@ -175,6 +175,35 @@ modifiers remain unresolved. The bounded output is therefore still
 an **experimental candidate, not the recovered SafeDisc checksum**.
 No original game data or external binary is committed.
 
+### Static branch-selector path located in unSafeDisc 1.5.5
+
+Follow-up static disassembly of archived unSafeDisc 1.5.5 establishes
+an initialization path *before* checksum computation:
+
+- `0x402505`: copy the protected PE32 relocation data-directory
+  RVA from NT headers offset `+0xA0` into runtime `[0x403B2B]`.
+- `0x401FCF`: unconditionally invoke `0x402257`, which normalizes
+  section names and searches for the protected relocation-directory RVA.
+- `0x40230B..0x402365`: scan PE sections, checking file backing,
+  raw RVA containment and a guard DWORD at the chosen header's `+0x34`.
+- `0x402366..0x402373`: on success, set runtime
+  `[0x403CAC] = 4`. The checksum dispatch at `0x401D48`
+  therefore selects the relocation-aware path when this setup succeeds.
+
+The opt-in `--checksum-research` command now evaluates these **static
+directory/section guard conditions** against the exact hash-verified
+Crimson Skies ICD. On a matching section it prints its RVA,
+directory size and relevant guard DWORD, then reports the
+**expected selector assignment to 4**. If any guard fails,
+the report is **INCONCLUSIVE**, not a guessed value.
+
+This is stronger evidence for the relocation-aware candidate
+`0x1B09633B`, but not a dynamic observation of the original
+Windows tool's runtime state, nor an independent validation of the
+checksum's result against a historically reported checksum.
+Both DLL modifier routines and full TEA key derivation remain unresolved.
+The Rust inspection never executes the historical tool or its DLL.
+
 ### Both historical checksum branches implemented as candidate calculations
 
 Historical unSafeDisc 1.5.5 x86 code at `0x401D43..0x401D4E` is:
@@ -200,7 +229,10 @@ HIGHLOW DWORD bytes. Both start with accumulator zero.
 The independently implemented relocation walker still verifies (b).
 
 **The value of the historical runtime selector `[0x403CAC]`
-for the original Crimson Skies run is unknown.** The archived
+has not been dynamically observed in the original Crimson Skies run.**
+However, the newly recovered initialization path provides a conditional
+static assignment to `4` when the PE relocation-directory guards match.
+The archived
 tool's on-disk DATA initial value cannot resolve this alone:
 the variable is used in a runtime-populated table. Neither
 candidate is asserted as the actual SafeDisc checksum or TEA key.
