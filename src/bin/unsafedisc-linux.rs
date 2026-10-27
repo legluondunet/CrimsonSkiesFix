@@ -2048,6 +2048,55 @@ fn original_category_selector_relation(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+// Unlike the longer metadata strings decoded by unsafedisc_strings,
+// this small original .txt2 identifier uses a chained (input-1) XOR.
+// The read bound prevents accidental traversal beyond its NUL terminator.
+fn decode_original_section_tag(data:&[u8])->Result<Vec<u8>> {
+    let first=*data.first().ok_or("empty encoded section tag")?;
+    if first==0 {return Err("empty encoded section name".into());}
+    let mut out=vec![first];
+    for &c in data.iter().skip(1).take(63) {
+        if c==0 {return Ok(out);}
+        let next=c.wrapping_sub(1)^out[out.len()-1];
+        out.push(next);
+    }
+    Err("encoded section tag lacks bounded terminator".into())
+}
+
+fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    // Wrapper constructs a local decoded string and passes its address
+    // as the third argument of 0x92B0. The section comparator reads 0x28
+    // bytes from the candidate section header and compares that name.
+    for (site,bytes) in [
+        (0x9201u32,&[0x68,0x88,0x00,0x90,0x00,0x8D,0x45,0xF8,0x50][..]),
+        (0x920Au32,&[0xE8,0xA1,0xF9,0x00,0x00][..]),
+        (0x922Eu32,&[0x8D,0x4D,0xF8,0x51][..]),
+        (0x9349u32,&[0x8B,0x55,0x14,0x52][..]),
+        (0x9355u32,&[0xE8,0xA6,0xF7,0x00,0x00][..]),
+        (0x935Du32,&[0x85,0xC0,0x74,0x2D][..]),
+        (0x18BC5u32,&[0x8B,0x45,0x0C,0x03,0x45,0xFC][..]),
+        (0x18BE6u32,&[0x83,0xE9,0x01][..]),
+        (0x18BEFu32,&[0x33,0xC0,0x8A,0x42,0xFF,0x33,0xC8][..]),
+        (0x18B11u32,&[0x50,0x6A,0x28][..]),
+        (0x18B3Bu32,&[0x8A,0x10,0x8A,0x1E,0x8A,0xCA,0x3A,0xD3][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    for (site,target) in [
+        (0x920Au32,0x18BB0u32),(0x9355,0x18B00),(0x18B16,0xA810),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err("original encoded section-name call target mismatch".into());
+        }
+    }
+    let off=dll_backed_rva_offset(pe,0x20088,64)?;
+    let tag=decode_original_section_tag(&dll[off..off+64])?;
+    if tag!=b".txt2" {return Err("unexpected original decoded section tag".into());}
+    println!("  0x18BB0 decodes original data RVA 0x20088 to the 5-byte section name '.txt2'.");
+    println!("  0x922E passes that local tag as the third argument to 0x92B0.");
+    println!("  0x18B00 reads a candidate 0x28-byte section header and compares its name with '.txt2'.");
+    println!("  This proves named-section comparison; it does NOT prove whether .txt2 is decoded, skipped or acts as a boundary.");
+    Ok(())
+}
+
 fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // A conditionally reached startup site initializes descriptor mode
     // to 0x67. The actual runtime reachability through opaque branches
@@ -2358,6 +2407,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     original_range_sort_and_adjacency_proof(dll,pe)?;
     original_category_dispatch_proof(dll,pe)?;
     original_dll_self_section_proof(dll,pe)?;
+    original_txt2_section_name_proof(dll,pe)?;
     original_category_selector_relation(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
@@ -5248,6 +5298,17 @@ mod tests {
         assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
         // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
         assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
+    }
+
+    #[test]
+    fn short_section_name_chain_decoder_handles_boundaries() {
+        // Self-contained synthetic string; no original protected content.
+        assert_eq!(decode_original_section_tag(&[0x4F,0x05,0]).unwrap(),b"OK");
+        assert!(decode_original_section_tag(&[]).is_err());
+        assert!(decode_original_section_tag(&[0]).is_err());
+        assert!(decode_original_section_tag(&[0x41,0x43]).is_err());
+        assert!(decode_original_section_tag(&vec![0x41;65]).is_err());
+        assert_eq!(decode_original_section_tag(&[0x41,0]).unwrap(),b"A");
     }
 
     #[test]
