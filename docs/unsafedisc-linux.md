@@ -2957,3 +2957,61 @@ outputs survive until the guarded copy. The inspector checks each
 reached instruction's original opcode window and reports the
 conditional conclusion explicitly. No final decrypted section is
 asserted.
+
+
+### Major control-flow correction: the observed 0x92B0 iteration appears to avoid all block copies
+
+A bounded original-byte/static flag proof resolves the opaque
+`0x9397..0x93C0` detour. Its preserved CF/ZF/OF flags have eight
+possible combinations; all eight reach **`0x93C0 -> JMP 0x9322`**,
+never the planted `RET` decoy at `0x93BE`.
+
+The exact reached structure is:
+
+- `0x9397 JMP 0x93A0 -> JMP 0x9399`.
+  `0x9399 MOV EDX,EDX` preserves flags; the complement
+  `0x939B JAE` / `0x939E JB` rejoins at `0x93A3`.
+- `0x93A3 JO` / `0x93B0 JO` rejoin at `0x93A5`.
+  `0x93A5 JA`, `0x93A9 JE` and flag-preserving XCHGs
+  rejoin at `0x93AE JMP 0x93B3`.
+- `0x93B3 JBE` goes directly to `0x93C0` when CF or ZF is set.
+  Otherwise `0x93B5 PUSH EAX; 0x93B6 CALL 0x93FC` (a single-byte
+  RET); `0x93BB POP EAX; 0x93BC JA 0x93C0` reaches the same
+  back-edge. No original instruction on the reached route changes the
+  tested flags. The earlier direct `0x93BE RET` is a decoy.
+- All paths return to the section-selection call at `0x9322`
+  after advancing the current section-header cursor by `0x28`.
+
+An even more important *data-flow* observation follows. `0x18800`
+passes the three output pointers to `0x181E0`; the latter first
+stores **zero to all three outputs**, at `0x18255`, `0x1825C`,
+and `0x18266`, before attempting the requested section lookup.
+These outputs correspond to `0x92B0` locals
+`[EBP-8]` (disk offset), **`[EBP-0x14]` (extent)** and
+`[EBP-0x24]` (memory RVA). During an ordinary finite scan of the
+DLL's sections, the next failed lookup therefore replaces *all three*
+previous success values with zero.
+
+On zero return from the selector, `0x9347 JE` enters `0x93C5`.
+Even if the `.txt2` name-match flag was previously set and
+`0x93CF JNE` reaches `0x9403`, the extent at
+**`[EBP-0x14] == 0`** makes `0x9407 JE 0x962D` skip the
+entire chunk-copy body. Consequently **the observed valid finite-scan
+path through this particular 0x92B0 invocation does not execute its
+0x9710/0x9640 byte-copy helpers at all**.
+
+This is a major limitation of the earlier candidate
+`dplayerx.dll .txt self-restoration` narrative. The presence of the
+memory writer and byte-transforming code proves only that such a
+mechanism *exists* in the binary; it does not establish an actually
+reached decoding path. Here, under the static original-header traversal
+and documented flag branches, its work appears *bypassed* on exhausted
+section selection. Another invocation or a different code path could
+still reach those helpers; this audit does not exclude them globally.
+
+The Rust research inspector now validates every opcode of the opaque
+detour, the original output-zero stores, call/branch targets, and
+provides synthetic eight-combination flag proof plus a model showing
+that a failed final selector call clears an earlier successful extent.
+This does **not** execute `dplayerx.dll`, reconstruct protected
+pages, or weaken the SHA-256 gating. Proprietary originals stay private.
