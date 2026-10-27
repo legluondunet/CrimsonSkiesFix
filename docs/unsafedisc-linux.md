@@ -2803,3 +2803,40 @@ The Rust inspector now validates the original directory-copy and
 comparison instruction windows, the call targets, and the actual
 sixteen PE directory RVAs. Synthetic tests model exact first-match
 exclusion. No source or destination code is decrypted or published.
+
+
+### Discovery: a second, independent decoder reconstructs the sentinel name `.txt2`
+
+The caller that prepares the three-DWORD module descriptor uses a
+**different decoder** from the previously recovered `E25C` metadata
+strings. The verified x86 `0x9201` pushes original preferred
+VA `0x00900088` (`.data` RVA `0x20088`), `0x9206`
+prepares a local destination buffer, and `0x920A` calls `0x18BB0`.
+
+The real x86 loop in `0x18BB0` copies byte zero unchanged, then for
+each later, non-NUL input byte computes
+`output[i] = (input[i] - 1 mod 256) XOR output[i-1]`.
+The original **six-byte** source at RVA `0x20088` decodes exactly to
+the NUL-terminated ASCII name **`.txt2`**. This does not use the
+seeded LCG/XOR algorithm from `unsafedisc_strings.rs`.
+
+At `0x922E` the caller pushes a pointer to that local decoded name,
+and `0x92B0` forwards its third argument at `0x9349` to the
+`0x9355 -> 0x18B00` call. This second helper reads **0x28 bytes**
+through `0xA810` from the current candidate's section header and
+compares the beginning of that buffer as a NUL-terminated string.
+Thus there is a **byte-verified section-name comparison with `.txt2`**,
+rather than merely a Characteristics-mask search.
+
+A successful comparison affects `0x92B0` control flow, but because
+the surrounding x86 includes overlapping/opaque branches, the
+static comparison itself does **not** prove whether `.txt2` is
+transformed, bypassed, or used as a stopping marker. That distinction
+is the next control-flow task, crucial before attempting a complete
+DLL section decode.
+
+The read-only native inspector checks the original decoder and call
+opcodes, confirms the decoded name from the exact local original, and
+adds synthetic bounds tests for the separate tag algorithm.
+No decrypted code, original DLL contents or modified game binaries
+are added to the repository.
