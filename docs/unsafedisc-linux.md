@@ -478,6 +478,52 @@ reachable instruction boundary, nor that any target implements
 the SafeDisc title-specific DLL EAX modifiers. Protected
 code is never executed, patched, decrypted or copied into
 the Git repository.
+#### Verified cross-links between `.txt2` and `.text`
+
+From the user's `--attach-research` run with the original,
+SHA-256-verified Crimson Skies SafeDisc 1.50.20 DLL, a
+128-byte static excerpt at `.txt2` RVA `0x1A20D` contains
+two direct E8 CALLs and two indirect FF15 CALL-shaped
+byte sequences. Crucially, the direct destinations are
+shared with previously discovered `.text` routines:
+
+| Instruction candidate | Static destination |
+| --- | --- |
+| `.txt2` `0x1A23A` FF15 | `KERNEL32!GetCurrentProcess` IAT |
+| `.txt2` `0x1A247` E8 | `.text` `0xE25C` |
+| `.txt2` `0x1A250` FF15 | `KERNEL32!GetModuleHandleA` IAT |
+| `.txt2` `0x1A25F` E8 | `.text` `0xA550` |
+
+Static disassembly of the original 12-byte `.text`
+helper at RVA `0xA550`:
+
+```asm
+mov ecx, [esp+4]
+mov eax, [esp+8]
+mov [ecx+8], eax
+ret
+```
+
+This helper only stores the second argument into the
+first argument's structure at `+8`. In the `.txt2` excerpt
+it receives immediate `0x67`, so it appears to store a
+type/tag field or state value; **it is not a proven decoder**.
+
+A related `.text` routine at RVA `0xA560` references
+IAT VA `0x8FE044` and `0x8FE040`, in a four-argument
+file-position-call / five-argument file-read-call pattern.
+These names were *not* previously resolved in the output.
+The enhanced `--attach-research` therefore checks the
+exact `FF15` instruction bytes at `0xA578` and
+`0xA597` and resolves both names against the original
+PE import descriptors. It also checks the two shared
+`.txt2` calls and asserts the original 12 bytes at `0xA550`.
+
+**Important:** overlapping jump/instruction boundaries in
+both `.text` and `.txt2` still make all of these instruction
+decodes **static candidates**, not proof of runtime reachability.
+Nothing has established a byte-transforming loop for `.txt`
+or actual decrypted EAX modifier code at `0x65BE`/`0x6621`.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
