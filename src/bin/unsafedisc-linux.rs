@@ -181,6 +181,98 @@ fn executable_rva_to_file_offset(pe: &Pe32, rva: u32, min_bytes: usize) -> Resul
     Err(format!("executable RVA 0x{rva:08X} not backed by requested bytes"))
 }
 
+// General backed-file RVA mapper for metadata. In particular, TLS
+// directory and callback tables may be in readable NON-executable PE
+// sections; use a separate resolver from executable_rva_to_file_offset.
+fn dll_backed_rva_offset(pe: &Pe32, rva: u32, len: usize) -> Result<usize> {
+    if len == 0 || len > 256 {
+        return Err("invalid metadata RVA byte count".into());
+    }
+    for sec in &pe.sections {
+        let Some(rel) = rva.checked_sub(sec.virtual_address) else { continue; };
+        let rel = rel as usize;
+        let backed_len = if sec.virtual_size == 0 { sec.raw_len }
+            else { sec.raw_len.min(sec.virtual_size as usize) };
+        if rel.checked_add(len).is_some_and(|end| end <= backed_len) {
+            return sec.raw_offset.checked_add(rel)
+                .ok_or("DLL RVA metadata file offset overflow".into());
+        }
+    }
+    Err(format!("DLL metadata RVA 0x{rva:08X} not fully file-backed"))
+}
+
+// IMAGE_DIRECTORY_ENTRY_TLS = 9, IMAGE_TLS_DIRECTORY32 is 24 bytes.
+// IMAGE_TLS_DIRECTORY32.AddressOfCallBacks (offset +12) contains a
+// *virtual address*, not an RVA. TLS callbacks run BEFORE DllMain.
+// Only report callbacks backed by verified original bytes; never call.
+#[derive(Debug, PartialEq, Eq)]
+struct DllTlsMetadata {
+    directory_rva: u32,
+    directory_size: u32,
+    callbacks_va: u32,
+    callback_rvas: Vec<u32>,
+}
+fn dll_tls_metadata(dll: &[u8], pe: &Pe32) -> Result<Option<DllTlsMetadata>> {
+    let nt = read_u32(dll, 0x3C)? as usize;
+    let opt = nt.checked_add(24).ok_or("DLL PE optional header overflow")?;
+    let opt_size = read_u16(dll, nt + 20)? as usize;
+    let dir_offset = 96 + 9 * 8;
+    if opt_size < dir_offset + 8 {
+        return Err("DLL optional header lacks complete TLS directory slot".into());
+    }
+    let directory_rva = read_u32(dll, opt + dir_offset)?;
+    let directory_size = read_u32(dll, opt + dir_offset + 4)?;
+    if directory_rva == 0 && directory_size == 0 {
+        return Ok(None);
+    }
+    if directory_rva == 0 || directory_size < 24 {
+        return Err("malformed DLL TLS directory RVA or size".into());
+    }
+    let image_base = read_u32(dll, opt + 28)?;
+    let directory_off = dll_backed_rva_offset(pe, directory_rva, 24)?;
+    let callbacks_va = read_u32(dll, directory_off + 12)?;
+    let mut callback_rvas = Vec::new();
+    if callbacks_va != 0 {
+        let callbacks_rva = callbacks_va.checked_sub(image_base)
+            .ok_or("DLL TLS callbacks VA below preferred image base")?;
+        for idx in 0..8usize {
+            let byte_offset = (idx * 4) as u32;
+            let elem_rva = callbacks_rva.checked_add(byte_offset)
+                .ok_or("TLS callbacks RVA overflow")?;
+            let elem_off = dll_backed_rva_offset(pe, elem_rva, 4)?;
+            let callback_va = read_u32(dll, elem_off)?;
+            if callback_va == 0 {
+                return Ok(Some(DllTlsMetadata {
+                    directory_rva, directory_size, callbacks_va, callback_rvas,
+                }));
+            }
+            callback_rvas.push(callback_va.checked_sub(image_base)
+                .ok_or("TLS callback VA below preferred image base")?);
+        }
+        return Err("DLL TLS callback list has no terminator within bounded eight entries".into());
+    }
+    Ok(Some(DllTlsMetadata {
+        directory_rva, directory_size, callbacks_va, callback_rvas,
+    }))
+}
+
+// Print executable code windows by explicit RVA, rather than assuming
+// the DLL entry is the only path executed by the Windows PE loader.
+fn print_dll_code_window(dll: &[u8], pe: &Pe32, title: &str, rva: u32, len: usize) -> Result<()> {
+    let offset = executable_rva_to_file_offset(pe, rva, len)?;
+    let code = dll.get(offset..offset + len)
+        .ok_or("requested startup code outside original DLL file")?;
+    println!("  {title}: RVA 0x{rva:08X}, raw file +0x{offset:06X}, {len}-byte static excerpt");
+    for (line, chunk) in code.chunks(16).enumerate() {
+        let at_rva = rva.checked_add((line * 16) as u32)
+            .ok_or("startup code label RVA overflow")?;
+        let hex = chunk.iter().map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>().join(" ");
+        println!("    0x{at_rva:08X}: {hex}");
+    }
+    Ok(())
+}
+
 // These addresses identify where *loaded* code is expected by
 // historical analysis. Their on-disk bytes need NOT be decoded x86:
 // SafeDisc DLL initialization may transform its executable section.
@@ -211,16 +303,43 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
             name, section.virtual_address, section.raw_offset, section.raw_len,
             section.virtual_size, section.characteristics);
     }
-    let entry_offset = executable_rva_to_file_offset(&pe, pe.entry_rva, 96)?;
-    let entry = dll.get(entry_offset..entry_offset+96)
-        .ok_or("verified DLL entry bytes are not backed by the original file")?;
-    println!("  DLL entrypoint: RVA 0x{:08X}, raw file +0x{entry_offset:06X}, 96-byte static excerpt",
-        pe.entry_rva);
-    for (line, sixteen) in entry.chunks(16).enumerate() {
-        let at_rva = pe.entry_rva + (line * 16) as u32;
-        let hex = sixteen.iter().map(|byte| format!("{byte:02X}"))
-            .collect::<Vec<_>>().join(" ");
-        println!("    0x{at_rva:08X}: {hex}");
+    let nt = read_u32(dll, 0x3C)? as usize;
+    let preferred_base = read_u32(dll, nt + 24 + 28)?;
+    println!("  DLL preferred image base: 0x{preferred_base:08X}");
+    match dll_tls_metadata(dll, &pe)? {
+        None => println!("  PE TLS directory: absent (does not exclude other decoding mechanisms)."),
+        Some(tls) => {
+            println!("  PE TLS directory: RVA 0x{:08X}, size {}, AddressOfCallbacks VA 0x{:08X}",
+                tls.directory_rva, tls.directory_size, tls.callbacks_va);
+            println!("  TLS callback entries (before DLL entrypoint): {}", tls.callback_rvas.len());
+            for (index, &callback_rva) in tls.callback_rvas.iter().enumerate() {
+                println!("    TLS callback[{index}] VA 0x{:08X}, RVA 0x{callback_rva:08X}",
+                    preferred_base.wrapping_add(callback_rva));
+                print_dll_code_window(dll, &pe, "TLS callback raw code", callback_rva, 64)?;
+            }
+        }
+    }
+    print_dll_code_window(dll, &pe, "DLL entrypoint", pe.entry_rva, 96)?;
+    // 0xFD6C is a relative CALL with destination 0xFC00 in the
+    // user-verified original entrypoint bytes. The offset is NOT guessed
+    // from a different title's DLL. These are bounded static excerpts.
+    print_dll_code_window(dll, &pe, "DllMain startup helper (entrypoint CALL)", 0xFC00, 160)?;
+    print_dll_code_window(dll, &pe, "DllMain branch continuation", 0xFD7E, 96)?;
+    for (name, absolute_va) in [
+        ("DllMain referenced pointer A", 0x90519Cu32),
+        ("DllMain referenced pointer B", 0x906C70u32),
+    ] {
+        if let Some(rva) = absolute_va.checked_sub(preferred_base) {
+            match dll_backed_rva_offset(&pe, rva, 4) {
+                Ok(at) => {
+                    let word = read_u32(dll, at)?;
+                    println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, raw +0x{at:06X}, on-disk DWORD 0x{word:08X}");
+                }
+                Err(_) => println!("  {name}: VA 0x{absolute_va:08X}, RVA 0x{rva:08X}, not file-backed"),
+            }
+        } else {
+            println!("  {name}: VA 0x{absolute_va:08X} is below the preferred image base");
+        }
     }
     println!("  NOTE: raw modifier bytes may be encrypted on disk or intended to be decoded at load time.");
     println!("  The historical tool dynamically loaded its DLL; PE execute flags alone do not imply valid raw x86.");
@@ -1871,6 +1990,40 @@ mod tests {
         image[sec+36..sec+40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
         let non_executable = parse_pe32(&image).unwrap();
         assert!(executable_rva_to_file_offset(&non_executable, 0x100A, 16).is_err());
+    }
+
+    #[test]
+    fn dll_tls_reader_distinguishes_absent_and_valid_callbacks() {
+        let mut image = synthetic_pe();
+        let section_at = 0x178usize;
+        let optional_at = 0x98usize;
+        let dir_at = optional_at + 96 + 9*8;
+        image[optional_at+28..optional_at+32].copy_from_slice(&0x0090_0000u32.to_le_bytes());
+        image[section_at+12..section_at+16].copy_from_slice(&0x3000u32.to_le_bytes());
+        image[section_at+8..section_at+12].copy_from_slice(&0x100u32.to_le_bytes());
+        let pe = parse_pe32(&image).unwrap();
+        assert_eq!(dll_tls_metadata(&image, &pe).unwrap(), None);
+        image[dir_at..dir_at+4].copy_from_slice(&0x3020u32.to_le_bytes());
+        image[dir_at+4..dir_at+8].copy_from_slice(&24u32.to_le_bytes());
+        // Section raw starts at 0x200; TLS directory at RVA +0x20.
+        image[0x22C..0x230].copy_from_slice(&0x0090_3040u32.to_le_bytes());
+        // callback list at RVA 0x3040 -> file 0x240.
+        image[0x240..0x244].copy_from_slice(&0x0090_1040u32.to_le_bytes());
+        image[0x244..0x248].fill(0);
+        let pe = parse_pe32(&image).unwrap();
+        let tls = dll_tls_metadata(&image, &pe).unwrap().unwrap();
+        assert_eq!(tls.directory_rva, 0x3020);
+        assert_eq!(tls.directory_size, 24);
+        assert_eq!(tls.callback_rvas, vec![0x1040]);
+        assert_eq!(dll_backed_rva_offset(&pe, 0x3040, 4).unwrap(), 0x240);
+        assert!(dll_backed_rva_offset(&pe, 0x3100, 4).is_err());
+
+        // An unterminated or malformed directory may not be presented as valid.
+        image[dir_at+4..dir_at+8].copy_from_slice(&4u32.to_le_bytes());
+        assert!(dll_tls_metadata(&image, &pe).is_err());
+        image[dir_at+4..dir_at+8].copy_from_slice(&24u32.to_le_bytes());
+        image[0x22C..0x230].copy_from_slice(&0x0080_0000u32.to_le_bytes());
+        assert!(dll_tls_metadata(&image, &pe).is_err());
     }
 
     #[test]
