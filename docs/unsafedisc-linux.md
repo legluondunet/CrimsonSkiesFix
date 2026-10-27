@@ -3503,6 +3503,17 @@ values** are shared by at least two different indices. These counts
 follow entirely from the public algebraic expression and do not
 require private game bytes.
 
+The apparent 32-bit mask is especially simple for the entire
+`0 <= i < 1024` range. Write `i = a + 256*b` where
+`0 <= a <= 255`, `0 <= b <= 3`. Because the historical
+operation uses bitwise OR (not XOR) for every shifted copy, the
+four little-endian mask bytes are
+`[a, a|b, a|b, a|b]`. Thus the full 1024-index domain
+contains only **576** distinct masks (rather than 1024).
+The observed 0..1006 subset has **572**; the four missing
+masks require excluded indices 1007..1023. Both totals and
+every per-index equality are now checked in synthetic Rust tests.
+
 This yields a stronger observational check, independent of any guessed
 bit-affine model: if two samples have identical **(mask, input)** but
 different integer indices, the output must be identical because the
