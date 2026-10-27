@@ -2118,3 +2118,43 @@ established from subsequent instructions. The native research CLI now
 states these limitations and rechecks the two exact SIB encodings.
 This corrects earlier descriptive shortcuts; it does **not** establish a
 new decryption algorithm, or prove a destination in protected `.txt`.
+
+
+### Original 4-KiB chunk byte recurrence: instruction-backed candidate (2026-10-27)
+
+New offline disassembly of the **private hash-matched** original Crimson
+`dplayerx.dll` makes the earlier register-index ambiguity resolvable:
+`0x9508 MOV ECX,[EBP-0x10]` and `0x9514 MOV EAX,[EBP-0x10]`
+load the **same** index before the two differently based memory reads.
+Therefore `0x950D` addresses byte `i` and `0x9519` byte `i-1`.
+The index is initialized to **1** at `0x94EA`, incremented at
+`0x94F3`, and compared against the chunk count at `0x94FC`.
+Register upper bits are zeroed before the XOR at `0x9520`, and the low
+byte is stored at `0x9525`. `0x9555..0x9562` adds the low byte of
+state, storing the truncated result; `0x9581..0x958E` adds the transformed
+current byte to the stored state as an 8-bit ADD.
+
+For a **nonempty separately initialized chunk**, a candidate model is:
+
+```text
+out[0] = in[0] XOR 0x43
+state = out[0] XOR 0x15
+for i = 1 .. chunk_length-1:
+    out[i] = ((in[i] XOR out[i-1]) + state) mod 256
+    state = (state + out[i]) mod 256
+```
+
+This is more specific than the previous two independent indexed-read
+observations. The new read-only Rust check asserts actual original x86
+instruction spans, and synthetic test vectors exercise the isolated model.
+It does not yet prove the *input buffer provenance*, control-flow
+reachability under every opaque predicate, how state behaves between chunks,
+or whether the destination is encrypted `.txt`. Neither original executable
+nor generated plaintext is committed.
+
+The `.txt2` helper at `0x18800` is itself a short argument-forwarding
+wrapper calling `0x181E0` at RVA `0x18823`. The helper `0x18B00`
+begins by calling `0xA810` with a length of `0x28`, followed by a
+bytewise comparison against the supplied buffer. This is evidence of
+selection and checking, not yet evidence of where the selected memory
+actually points.
