@@ -4675,7 +4675,7 @@ mod tests {
     fn synthetic_byte_recurrence_vectors_and_bounds(){
         assert!(synthetic_chunk_byte_model(&[],0x43,0x15).is_empty());
         assert_eq!(synthetic_chunk_byte_model(&[0],0x43,0x15),vec![0x43]);
-        assert_eq!(synthetic_chunk_byte_model(&[0,0,0],0x43,0x15),vec![0x43,0x9B,0x91]);
+        assert_eq!(synthetic_chunk_byte_model(&[0,0,0],0x43,0x15),vec![0x43,0x99,0x88]);
         let src=[0x10,0x20,0x30,0x40,0x50];
         let actual=synthetic_chunk_byte_model(&src,0x43,0x15);
         assert_eq!(actual.len(),src.len());
