@@ -641,6 +641,60 @@ a pointer-table entry, or a real address operand.
 
 Inputs are hash-verified, read-only; no DLL is loaded, decrypted
 or written.
+#### Literal scan results: 779 overlapping DWORD candidates but no VA-range matches
+
+The user's most recent SHA-256 verified Crimson Skies DLL
+`--literal-research` run reported:
+
+| Source section | Unrelocated 4-byte window values in `.txt` RVA range |
+| --- | ---: |
+| `.text` | 372 |
+| `.txt2` | 52 |
+| `.rdata` | 160 |
+| `.data` | 195 |
+| **Total** | **779** |
+
+There were **zero** non-relocated four-byte values in the
+preferred-base `.txt` *VA* range and **28 exact special
+markers** (19 `.text`, 4 `.txt2`, 5 `.data`).
+
+Almost all of these can be **incidental little-endian
+patterns**: the scanner includes byte offsets *inside* x86
+instructions, ASCII metadata and ordinary small integer
+constants. Do not interpret the 779 as cross-references.
+
+Two prominent markers warrant contextual inspection:
+
+- `0x1000` = 4096, a ubiquitous memory granularity and
+  also the `HeapCreate` initial size in the previously
+  identified startup call at RVA `0x116E3`.
+- `0x7800` = 30,720, exactly the original `.txt` section
+  **SizeOfRawData**, observed at `.data` source RVAs
+  `0x22FFF` and `0x230CF`. This match alone is not a
+  demonstrated pointer or code-unpacking loop.
+
+The **original output truncated the 19 exact markers
+in `.text` after 16 lines**, so the absence of exact
+modifier RVA words **cannot yet be concluded from the
+reported lines**. To resolve that ambiguity, the revised
+`--literal-research` now prints *all* exact markers
+(up to 64 per section), separately counts exact `0x65BE`
+and `0x6621` *RVA* literals and their ImageBase-adjusted
+virtual addresses, and counts exact `0x7800` markers.
+
+It also prints tightly bounded, verified read-only byte
+context around ten known examples: `.text` at `0x9410`,
+`0x9427`, `0x116E3` (HeapCreate control), `.txt2` at
+`0x1921A`, `0x19230`, `0x19287`, `0x192A1`, and `.data`
+at `0x22FFF`, `0x230CF`, `0x23148`.
+Each known original DWORD is rechecked before reading
+the 16 bytes preceding and 28 after its start, and
+the output explicitly avoids claiming that the DWORD
+corresponds to an instruction boundary.
+
+Even if all these constants are mundane sizes and no
+other reference is found, a **runtime-computed address**
+or on-load code transformation cannot be excluded.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
