@@ -307,14 +307,35 @@ fn relocation_windows(
 fn checksum_pages_without_highlow(
     bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], previous: u32,
 ) -> Result<u32> {
+    checksum_pages_bounded_without_highlow(
+        bytes, first_page_rva, blocks, bytes.len(), previous)
+}
+
+// Unlike the earlier full-raw fixture, the historical unSafeDisc 1.5.5
+// section loop bounds its input to min(SizeOfRawData, VirtualSize) when
+// VirtualSize is nonzero (0x401D1A..0x401D34). The last page can therefore
+// be shorter than 4 KiB. Validate the COMPLETE file-backed relocation
+// range first, then clip only the spans mixed into the checksum.
+//
+// The loop's section-type gate (0x401F01) only calls the checksum mixer
+// when Characteristics & IMAGE_SCN_CNT_CODE (0x20) is set. This function
+// handles a SINGLE eligible code section; the caller enforces the flag.
+// It remains a candidate until full relocation traversal is verified.
+fn checksum_pages_bounded_without_highlow(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock],
+    effective_len: usize, previous: u32,
+) -> Result<u32> {
     const PAGE: usize = 4096;
+    if effective_len == 0 || effective_len > bytes.len() {
+        return Err("effective PE section extent is empty or exceeds raw data".into());
+    }
     let ranges = relocation_windows(first_page_rva, bytes.len(), blocks)?;
 
     let mut checksum = previous;
     let mut relocation_index = 0usize;
-    for page_index in 0..bytes.len() / PAGE {
+    for page_index in 0..effective_len.div_ceil(PAGE) {
         let start_page = page_index * PAGE;
-        let end_page = start_page + PAGE;
+        let end_page = (start_page + PAGE).min(effective_len);
         while relocation_index < ranges.len() && ranges[relocation_index].1 <= start_page {
             relocation_index += 1;
         }
@@ -425,6 +446,26 @@ fn print_checksum_research(
         .ok_or(".text bytes outside verified PE file")?;
     let page_local = checksum_pages_without_highlow(data, section.virtual_address, blocks, 0)?;
     let section_wide = checksum_section_without_highlow(data, section.virtual_address, blocks, 0)?;
+    const CODE_SECTION: u32 = 0x20;
+    if section.characteristics & CODE_SECTION == 0 {
+        return Err("checksum research section must have IMAGE_SCN_CNT_CODE".into());
+    }
+    // Verified in historical unSafeDisc 1.5.5: a zero VirtualSize means
+    // the raw section length is used; otherwise the shorter size wins.
+    let effective_len = if section.virtual_size == 0 {
+        section.raw_len
+    } else {
+        section.raw_len.min(section.virtual_size as usize)
+    };
+    let bounded_page_local = checksum_pages_bounded_without_highlow(
+        data, section.virtual_address, blocks, effective_len, 0)?;
+    println!("Historical unSafeDisc 1.5.5 code-section gate and extent:");
+    println!("  checksum section: .text (Characteristics & 0x20; IMAGE_SCN_CNT_CODE)");
+    println!("  initial accumulator: 0 (0x401CDE), selected section size: min(raw, nonzero VirtualSize)");
+    println!("  raw bytes: {}, selected bytes: {}, ignored raw tail: {}",
+        section.raw_len, effective_len, section.raw_len - effective_len);
+    println!("  extent-bounded page-local candidate: 0x{bounded_page_local:08X}");
+    println!("  This is a stronger candidate, not a verified full SafeDisc checksum.");
     let (local_pages, whole_pages) =
         checksum_research_page_contributions(data, section.virtual_address, blocks)?;
     let local_from_pages = local_pages.iter().fold(0u32, |sum, v| sum.wrapping_add(*v));
@@ -435,7 +476,8 @@ fn print_checksum_research(
     println!("Experimental .text byte-mixer hypotheses (NOT the SafeDisc key/checksum):");
     println!("  page-local weight reset:    0x{page_local:08X}");
     println!("  section-wide weight reset:  0x{section_wide:08X}");
-    println!("  initial accumulator: 0; both models exclude the same HIGHLOW DWORD bytes.");
+    println!("  initial accumulator: 0; both legacy full-raw models exclude the same HIGHLOW DWORD bytes.");
+    println!("  Note: these two legacy full-raw values are NOT the actual historical section extent.");
     let differing_pages = local_pages.iter().zip(&whole_pages)
         .filter(|(a, b)| a != b).count();
     println!("  different page contributions: {differing_pages} / {}", local_pages.len());
@@ -1225,6 +1267,42 @@ mod tests {
         // 4-byte DWORD spans beyond this section's file-backed RVA span.
         // The start at +0x100 is outside the section and must not count.
         assert_eq!(section_highlow_start_count(metadata, &relocs), 2);
+    }
+
+    #[test]
+    fn historical_bounded_checksum_clips_raw_section_tail() {
+        let bytes: Vec<u8> = (0..8192).map(|n| ((n * 11 + 7) % 256) as u8).collect();
+        let blocks = [
+            RelocBlock { page_rva: 0x3000, highlow_offsets: vec![0xFFD] },
+            RelocBlock { page_rva: 0x4000, highlow_offsets: vec![0x001, 0x010, 0xF00] },
+        ];
+        // The first relocation crosses a page; the second page has a
+        // relocation that straddles a deliberately short virtual limit.
+        let effective = 4096 + 18;
+        let mut altered = bytes.clone();
+        let base = checksum_pages_bounded_without_highlow(
+            &bytes, 0x3000, &blocks, effective, 0).unwrap();
+        let full_raw = checksum_pages_without_highlow(&bytes, 0x3000, &blocks, 0).unwrap();
+        assert_ne!(base, full_raw);
+        for byte in &mut altered[effective..] { *byte ^= 0xFF; }
+        assert_eq!(base, checksum_pages_bounded_without_highlow(
+            &altered, 0x3000, &blocks, effective, 0).unwrap());
+        // Only excluded relocation bytes in the effective portion are
+        // immaterial, including the 4 KiB page-straddling DWORD.
+        for &at in &[4093usize,4094,4095,4096,4097, 4112,4113] {
+            altered[at] ^= 0xA5;
+        }
+        assert_eq!(base, checksum_pages_bounded_without_highlow(
+            &altered, 0x3000, &blocks, effective, 0).unwrap());
+        altered[4100] ^= 0x7F;
+        assert_ne!(base, checksum_pages_bounded_without_highlow(
+            &altered, 0x3000, &blocks, effective, 0).unwrap());
+        assert!(checksum_pages_bounded_without_highlow(
+            &bytes, 0x3000, &blocks, 0, 0).is_err());
+        assert!(checksum_pages_bounded_without_highlow(
+            &bytes, 0x3000, &blocks, bytes.len()+1, 0).is_err());
+        assert_eq!(full_raw, checksum_pages_bounded_without_highlow(
+            &bytes, 0x3000, &blocks, bytes.len(), 0).unwrap());
     }
 
     #[test]
