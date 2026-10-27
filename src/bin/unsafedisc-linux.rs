@@ -11,6 +11,9 @@ mod unsafedisc_strings;
 #[path = "../unsafedisc_algebra.rs"]
 mod unsafedisc_algebra;
 
+#[path = "../unsafedisc_indexed_affine.rs"]
+mod unsafedisc_indexed_affine;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4107,7 +4110,7 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("TEA one-bit negative control differs from independent original/reference result".into());
             }
 
-            let (composite,algebra)=inspect_original_modifier_reference_pairs(
+            let (composite,algebra,indexed_affine)=inspect_original_modifier_reference_pairs(
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
@@ -4137,6 +4140,9 @@ fn inspect(options: Options) -> Result<()> {
                 algebra.pairs,algebra.affine_input_rank,algebra.affine_violations);
             println!("  Candidate families passing every observed pair: rotate(x,r)+k: {} of 32; rotate(x+k,r): {} of 32.",
                 algebra.rotate_then_add_matches,algebra.add_then_rotate_matches);
+            println!("  Indexed GF(2) two-modifier model over {} distinct observations: joint rank {}/64; {} contradicting samples.",
+                indexed_affine.samples,indexed_affine.feature_rank,indexed_affine.contradictory_samples);
+            println!("  This 64-feature test is a necessary condition only if BOTH original EAX modifiers are bit-affine.");
             println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
             println!("  CONFIRMED: the first-DWORD composite modifier acts consistently and injectively on 31,799 observed inputs.");
             println!("  These are observed pairs only; the two protected DLL functions are NOT yet reconstructed.");
@@ -4567,7 +4573,8 @@ fn inspect_original_modifier_reference_pairs(
     icd:&[u8], reference:&[u8],
     original:&Pe32, decoded:&Pe32,
     relocations:&[RelocBlock], key:[u32;4],
-)->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit)> {
+)->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit,
+           unsafedisc_indexed_affine::IndexedAffineAudit)> {
     let protected=original.section(b".text")?;
     let plain=decoded.section(b".text")?;
     if protected.virtual_address!=plain.virtual_address ||
@@ -4635,7 +4642,7 @@ fn inspect_original_modifier_reference_pairs(
             for index in 0..length/4 {
                 let idx=u32::try_from(index)
                     .map_err(|_| "composite fragment word index overflow")?;
-                let mask=(idx<<24)|(idx<<16)|(idx<<8)|idx;
+                let mask=unsafedisc_indexed_affine::index_mask(idx);
                 let at=absolute_start+index*4;
                 let source=read_u32(encrypted,at)? ^mask;
                 let intermediate=read_u32(&inverse,index*4)?;
@@ -4653,7 +4660,8 @@ fn inspect_original_modifier_reference_pairs(
     audit.indexed_distinct_inputs=indexed_forward.len();
     audit.indexed_distinct_outputs=indexed_reverse.len();
     let algebra=unsafedisc_algebra::diagnose(&forward);
-    Ok((audit,algebra))
+    let indexed_affine=unsafedisc_indexed_affine::diagnose(&indexed_forward);
+    Ok((audit,algebra,indexed_affine))
 }
 
 // Standard TEA reference routine, tested with synthetic vectors.
