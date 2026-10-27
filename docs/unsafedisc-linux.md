@@ -2050,3 +2050,38 @@ copy-in / copy-out relative-call targets, and the specific
 original x86 operation bytes. A bounded synthetic
 regression checks that altered copy instructions fail
 closed. No protected code is executed or emitted.
+
+### The 4KiB byte transformation hides two verified constants: 0x43 and 0x15
+
+The original routine at RVA 0x92B0 starts with stack-frame
+size 0x102C, enough room for a 4096-byte scratch buffer
+plus bookkeeping. Its intentionally redundant immediate
+loads disguise two small initial byte constants:
+
+```text
+0x92F6: MOV EAX,0xF3E97EC9
+0x92FB: MOV EBX,0xF3E97E8A
+0x9302: XOR EAX,EBX       = 0x43
+0x9305: MOV [EBP-0x18],EAX
+
+0x9309: MOV EBX,0xC502BDE6
+0x9313: MOV ECX,0xC502BDD1
+0x931A: SUB EBX,ECX       = 0x15
+0x931F: MOV [EBP-0x20],EAX
+```
+
+The code reuses these locals in its later buffer
+manipulation. It also has static direct E8 calls:
+RVA 0x924F -> 0x92B0 (transform entry),
+0x9338 -> 0x18800 and 0x9355 -> 0x18B00
+(file-backed .txt2 helpers involved in input selection).
+
+The native read-only --modifier-research recomputes
+the two constants from the actual original immediate
+DWORDs and asserts exact relevant x86 instruction bytes
+and three call destinations. A standalone synthetic
+fixture confirms the values and rejects altered SUB
+opcode bytes. This gets closer to reconstructing
+the per-chunk byte transform, but does not establish
+its input, complete state update, or decrypted .txt
+plaintext. No original binary is modified or executed.
