@@ -4178,27 +4178,27 @@ fn inspect(options: Options) -> Result<()> {
             // pair. These expected aggregate values were independently
             // cross-checked offline, without preserving proprietary
             // per-word observations in the repository.
-            if algebra!=unsafedisc_algebra::AlgebraAudit{
+            if algebra!=(unsafedisc_algebra::AlgebraAudit{
                 pairs:31_799,affine_input_rank:32,affine_violations:31_766,
                 rotate_then_add_matches:0,add_then_rotate_matches:0,
-            } {
+            }) {
                 return Err("pinned retail/reference index-zero algebraic audit signature mismatch".into());
             }
-            if indexed_affine!=unsafedisc_indexed_affine::IndexedAffineAudit{
+            if indexed_affine!=(unsafedisc_indexed_affine::IndexedAffineAudit{
                 samples:361_480,feature_rank:42,contradictory_samples:361_437,
-            } {
+            }) {
                 return Err("pinned retail/reference joint GF(2) audit signature mismatch".into());
             }
-            if mask_alias!=unsafedisc_indexed_affine::MaskAliasAudit{
+            if mask_alias!=(unsafedisc_indexed_affine::MaskAliasAudit{
                 samples:361_480,distinct_masks:572,
                 masks_with_multiple_indices:312,
                 distinct_masked_input_pairs:361_346,
                 repeated_masked_input_pairs:134,
                 forward_conflicts:0,inverse_conflicts:0,
-            } {
+            }) {
                 return Err("pinned retail/reference original-mask alias audit signature mismatch".into());
             }
-            if second_stage!=unsafedisc_second_stage::SecondStageAudit{
+            if second_stage!=(unsafedisc_second_stage::SecondStageAudit{
                 raw_observations:361_480,canonical_observations:361_346,
                 conflicting_canonical_pairs:0,multi_mask_inputs:13,
                 differential_observations:13,differential_rank:8,
@@ -4208,7 +4208,7 @@ fn inspect(options: Options) -> Result<()> {
                 conflicting_mask_difference_classes:1,
                 distinct_mask_output_collisions:0,
                 distinct_masks_observed:572,
-            } {
+            }) {
                 return Err("pinned retail/reference F2-only audit signature mismatch".into());
             }
             println!("  CONFIRMED: all four title-specific aggregate research signatures match the independent original/reference audit.");
