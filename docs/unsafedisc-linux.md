@@ -2840,3 +2840,43 @@ opcodes, confirms the decoded name from the exact local original, and
 adds synthetic bounds tests for the separate tag algorithm.
 No decrypted code, original DLL contents or modified game binaries
 are added to the repository.
+
+
+### Correction: named `.txt2` condition prevents equating first match with final copy target
+
+The initial CODE|EXEC selector result of `.txt` is only the **first
+candidate**, not an established final output destination of `0x92B0`.
+Further original x86 validation establishes the following control
+dependencies:
+
+- `0x935D TEST EAX,EAX; 0x935F JE 0x938E` branches on the
+  `0x18B00` section-name comparison result.
+- `0x9361` sets a local 16-bit flag to **1** on the name-match
+  path (the string was decoded as `.txt2`).
+- `0x938E..0x9394` advances the search cursor by **0x28**, exactly one
+  `IMAGE_SECTION_HEADER`.
+- `0x93C0 E9 5D FF FF FF` is a genuine near branch back to
+  `0x9322`, permitting repeated section-selection passes.
+- `0x93C5..` tests that local flag and can jump to
+  `0x9403`, the start of the 4-KiB chunk loop, when nonzero.
+
+This establishes a **multi-candidate, named-section-gated** control
+structure rather than a first-match-and-immediately-transform
+algorithm. The original flag-setting and branching are checked by
+the read-only Rust inspector. Branches surrounding these sites include
+overlapping/opaque instructions, and their *complete reached path*
+has not been verified for all relevant flags/inputs.
+
+**Consequence:** earlier preferred-base arithmetic
+`dplayerx_base + 0x1000` remains valid only for the initial `.txt`
+candidate. It must not be described as the **final write target**
+without tracking whether the cursor advances to `.text` or `.txt2`,
+and exactly when its output locals change. The actual `.txt2`
+section has raw offset `0x16200`, mapped RVA `0x18000`, and bounded
+size `0x5497`. These are independently verified PE header values,
+not a claim that this section is transformed.
+
+The code path's role could be a restoration, re-encoding or
+initialization operation. We explicitly do **not** claim that the
+existing candidate byte recurrence decrypts DLL `.txt` or
+`CRIMSON.ICD` based solely on these findings.
