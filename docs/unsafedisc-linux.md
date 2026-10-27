@@ -3282,3 +3282,63 @@ the entire original plaintext from protected inputs alone and
 does not generate or modify an executable. The reference is
 read only, checked by exact SHA-256, and never embedded in
 the repository.
+
+
+### First reference-backed characterization of Crimson's unknown composite EAX modifiers
+
+The independently confirmed TEA key allows inversion of the full
+historical block sequence on *each* non-relocated fragment in the
+user's hash-verified reference `TESTME.EXE`. For a fragment shorter
+than eight bytes there is no TEA block, so its known plaintext
+is already the second-layer output. This produces **observable
+input/output pairs for the combined Crimson modifier functions**
+without executing `dplayerx.dll`:
+
+```text
+original_first_DWORD -> SecondModifier(FirstModifier(original_first_DWORD))
+```
+
+This specific form holds for **the first DWORD of each fragment**,
+because its word-index mask is zero. Subsequent DWORDs have nonzero
+index masks *between* the two unknown modifier functions; one cannot
+substitute those pairs into a single global composite lookup blindly.
+
+An independent read-only Python analysis of the original matched
+protected/reference pair gives:
+
+| Observation | Count |
+| --- | ---: |
+| Non-relocated fragments of all lengths | **59,622** |
+| Fragments with a complete first DWORD | **48,149** |
+| First-DWORD composite modifier samples | **48,149** |
+| Distinct input DWORDs | **31,799** |
+| Distinct output DWORDs | **31,799** |
+| Inconsistent outputs for repeated input DWORDs | **0** |
+| Distinct inputs colliding on a known output DWORD | **0** |
+| Tail bytes untouched by the modifier, all fragment lengths | **93,801 / 93,801 identical** |
+
+The **93,801-byte control** includes all tails, even entire
+non-relocated fragments shorter than four bytes. It extends the
+58,076-byte TEA-key oracle (which intentionally required length>=8)
+to *all* fragment lengths.
+
+This is strong, independent evidence of the actual composite
+transformation's consistency and one-to-one behavior across the
+**observed** 31,799 input words, plus evidence that the
+relocation-aware fragment boundaries and reconstructed TEA
+overlap ordering are faithful. It is **not proof of a universal
+32-bit permutation** and does not constitute a reusable implementation
+of the unknown Crimson title-specific routines: the mapping was
+obtained with the exact user-owned plaintext reference, and unseen
+inputs cannot yet be decoded.
+
+The Rust inspector now implements
+`inspect_original_modifier_reference_pairs`: it reconstructs the
+intermediate bytes only **in memory** from the verified reference and
+confirmed TEA key, checks all 93,801 fragment-tail bytes against the
+original protected ICD, and audits the consistency and reverse
+uniqueness of first-DWORD pairs in ephemeral hash maps. It
+asserts all expected original statistics and **prints counts only**,
+never publishes any proprietary original DWORD values or stored
+mapping table. A synthetic test confirms that inconsistent and
+non-injective candidate pairs are rejected.
