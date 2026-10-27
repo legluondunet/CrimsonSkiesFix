@@ -1123,9 +1123,11 @@ fn checksum_chunk(data: &[u8], previous: u32) -> u32 {
 //   for i = 2,1,0:
 //       dword[0x403C34 + i*4] =
 //           (dword[0x403C44 + i*4] XOR eax XOR checksum) + ebx
-// The full runtime values of these source globals have not been
-// validated or mapped to Crimson Skies' stored raw key DWORDs.
-// This pure function is a synthetic-only *adapter*, not key recovery.
+// A 2001 SafeDisc 1.45+ analysis maps the source words to the raw
+// loader key (at [0x403C40..]) and the scalar base to the original
+// ICD PE entry RVA. The first TEA word and checksum are still merely
+// candidate inputs until real title-specific decryption is checked.
+// This is pure arithmetic, NOT independently validated key recovery.
 #[allow(dead_code)]
 fn derive_three_checksum_dependent_words(
     source_words: [u32; 3],
