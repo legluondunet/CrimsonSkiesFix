@@ -1988,7 +1988,15 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     }
     println!("  RVA 0x986A calls KERNEL32!GetModuleHandleA, then 0x9870 stores EAX into virtual .data RVA 0x259E4.");
     println!("  Hence descriptor +4 contains a module handle/base when initialization succeeds, not a hardcoded preferred .text address.");
-    println!("  Still unknown: which module name is passed, return success, module relocation and effective section-relative write offset.");
+    dll_expect_raw_x86(dll,pe,0x985C,&[0x68,0x30,0x00,0x90,0x00])?;
+    if dll_relative_call_target(dll,pe,0x9861)?!=0xE25C {return Err("module-name decoder call target changed".into());}
+    let encoded_at=dll_backed_rva_offset(pe,0x20030,128)?;
+    let (module_name,_)=unsafedisc_strings::decode(&dll[encoded_at..])
+        .ok_or("original module name cannot be decoded")?;
+    if module_name!="dplayerx.dll"{return Err("unexpected original GetModuleHandleA module name".into());}
+    println!("  The argument decoded at 0x9861 from data RVA 0x20030 is 'dplayerx.dll'.");
+    println!("  Thus on successful resolution writer descriptor +4 is dplayerx.dll module base (not CRIMSON.ICD image base).");
+    println!("  Actual loaded base and exact relative target within dplayerx.dll remain to be established.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
