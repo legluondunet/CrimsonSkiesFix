@@ -4307,6 +4307,124 @@ where F:FnMut(u32)->u32,G:FnMut(u32)->u32 {
     Ok(calls)
 }
 
+// Invert precisely the original 1.5.5 0x4019F5/0x401A01 block
+// ordering on a *reference plaintext fragment*. The caller needs no
+// game-specific EAX modifier to check the last 1..3 unmodified bytes:
+// 0x401F62 works in complete 4-byte DWORDs, leaving the fragment tail
+// unchanged, even though the overlapping TEA blocks touch those bytes.
+//
+// For a >=8-byte fragment, the legacy decryptor consumes leading 8-byte
+// blocks until <=15 remain, then decrypts a last overlapping block
+// (if length !=8) BEFORE decrypting the current head. Inverse must
+// encrypt those exact blocks in the reverse order.
+fn tea_encrypt_block(v0:u32,v1:u32,key:[u32;4])->(u32,u32){
+    let mut left=v0;let mut right=v1;
+    let mut sum=0x9E37_79B9u32;
+    for _ in 0..32 {
+        left=left.wrapping_add(
+            (right.wrapping_shl(4).wrapping_add(key[0]))
+                ^(sum.wrapping_add(right))
+                ^((right>>5).wrapping_add(key[1])));
+        right=right.wrapping_add(
+            (left.wrapping_shl(4).wrapping_add(key[2]))
+                ^(sum.wrapping_add(left))
+                ^((left>>5).wrapping_add(key[3])));
+        sum=sum.wrapping_add(0x9E37_79B9);
+    }
+    (left,right)
+}
+
+fn original_tea_reverse_fragment(plain:&[u8],key:[u32;4])->Result<Vec<u8>>{
+    let mut intermediate=plain.to_vec();
+    if intermediate.len()<8 {return Ok(intermediate);}
+    let mut order=Vec::new();
+    let mut cursor=0usize;
+    let mut remaining=intermediate.len();
+    while remaining>15 {
+        order.push(cursor);
+        cursor+=8;
+        remaining-=8;
+    }
+    if remaining>=8 {
+        if remaining!=8 {order.push(cursor+remaining-8);}
+        order.push(cursor);
+    }
+    for &at in order.iter().rev() {
+        let left=read_u32(&intermediate,at)?;
+        let right=read_u32(&intermediate,at+4)?;
+        let (a,b)=tea_encrypt_block(left,right,key);
+        intermediate[at..at+4].copy_from_slice(&a.to_le_bytes());
+        intermediate[at+4..at+8].copy_from_slice(&b.to_le_bytes());
+    }
+    Ok(intermediate)
+}
+
+#[derive(Debug,Default,PartialEq,Eq)]
+struct TeaTailOracle {
+    fragments:usize,
+    matching_fragments:usize,
+    checked_bytes:usize,
+    matching_bytes:usize,
+}
+fn validate_tea_key_by_unchanged_fragment_tails(
+    icd:&[u8], reference:&[u8],
+    protected_pe:&Pe32, reference_pe:&Pe32,
+    relocation_blocks:&[RelocBlock],key:[u32;4],
+)->Result<TeaTailOracle>{
+    let sec=protected_pe.section(b".text")?;
+    let refsec=reference_pe.section(b".text")?;
+    if sec.virtual_address!=refsec.virtual_address ||
+       sec.virtual_size!=refsec.virtual_size ||
+       sec.raw_offset!=refsec.raw_offset ||
+       sec.raw_len!=refsec.raw_len {
+        return Err("TEA reference .text layout differs from protected ICD".into());
+    }
+    let extent=sec.virtual_size.min(sec.raw_len as u32) as usize;
+    let end=sec.raw_offset.checked_add(extent).ok_or("TEA section extent overflow")?;
+    let c=icd.get(sec.raw_offset..end).ok_or("protected TEA source out of bounds")?;
+    let p=reference.get(refsec.raw_offset..end).ok_or("reference TEA source out of bounds")?;
+    let limit=sec.virtual_address.checked_add(extent as u32).ok_or("TEA RVA upper bound overflow")?;
+    let mut protected=vec![false;extent];
+    for block in relocation_blocks {
+        for &slot in &block.highlow_offsets {
+            let rva=block.page_rva.checked_add(u32::from(slot))
+                .ok_or("TEA HIGHLOW RVA overflow")?;
+            if rva<sec.virtual_address || rva>=limit {continue;}
+            let begin=(rva-sec.virtual_address) as usize;
+            let finish=begin.checked_add(4).ok_or("TEA HIGHLOW length overflow")?;
+            if finish>extent {return Err("TEA HIGHLOW straddles section end".into());}
+            if protected[begin..finish].contains(&true){
+                return Err("overlapping TEA HIGHLOW positions".into());
+            }
+            protected[begin..finish].fill(true);
+        }
+    }
+    let mut out=TeaTailOracle::default();
+    for (page_idx,page) in protected.chunks(4096).enumerate(){
+        let start=page_idx.checked_mul(4096).ok_or("TEA page index overflow")?;
+        let mut i=0usize;
+        while i<page.len(){
+            if page[i]{i+=1;continue;}
+            let begin=i;
+            while i<page.len() && !page[i] {i+=1;}
+            let a=start+begin;
+            let b=start+i;
+            let len=b-a;
+            if len<8 || len%4==0 {continue;}
+            let tail=len%4;
+            let candidate=original_tea_reverse_fragment(&p[a..b],key)?;
+            out.fragments+=1;
+            out.checked_bytes+=tail;
+            let mut exact=true;
+            for (&x,&y) in candidate[len-tail..].iter().zip(&c[b-tail..b]){
+                if x==y {out.matching_bytes+=1;} else {exact=false;}
+            }
+            if exact {out.matching_fragments+=1;}
+        }
+    }
+    Ok(out)
+}
+
 // Standard TEA reference routine, tested with synthetic vectors.
 // NOT a full SafeDisc 1.50.20 decoder: its input needs the DLL's extra layer undone.
 #[cfg(test)]
@@ -4418,6 +4536,43 @@ mod tests {
         }
         assert_eq!(pre_tea_relocation_fragments_with_modifiers(
             &mut bytes,&[],|x|x,|x|x).unwrap(),1);
+    }
+
+    #[test]
+    fn tea_encrypt_is_inverse_of_original_decrypt_vector(){
+        assert_eq!(tea_encrypt_block(0,0,[0;4]),(0x41EA_3A0A,0x94BA_A940));
+        for key in [[0u32;4],[1,2,3,4],[0x7496_538F,0xE9C7_914F,0xCF10_EA3F,0x82F5_DE2F]] {
+            for (a,b) in [(0u32,0u32),(1,2),(0xFFFF_FFFF,0x1234_5678)]{
+                let (x,y)=tea_encrypt_block(a,b,key);
+                assert_eq!(tea_decrypt(x,y,key),(a,b));
+            }
+        }
+    }
+
+    #[test]
+    fn tea_reverse_overlap_matches_historic_tail_first_decrypt_order(){
+        let key=[0x7496_538F,0xE9C7_914F,0xCF10_EA3F,0x82F5_DE2F];
+        for size in [8usize,9,10,11,12,13,14,15,16,17,23,31,32,33,127,4096] {
+            let intermediate:Vec<u8>=(0..size).map(|i|(i as u8).wrapping_mul(37)).collect();
+            // Test-only independent simulation of forward historical
+            // DECRYPT: full 8B blocks; overlapping tail first, then head.
+            let mut plain=intermediate.clone();
+            let mut cursor=0usize;let mut remaining=size;
+            let mut positions=Vec::new();
+            while remaining>15 {positions.push(cursor);cursor+=8;remaining-=8;}
+            if remaining>=8 {
+                if remaining!=8{positions.push(cursor+remaining-8);}
+                positions.push(cursor);
+            }
+            for at in positions {
+                let a=read_u32(&plain,at).unwrap();
+                let b=read_u32(&plain,at+4).unwrap();
+                let (x,y)=tea_decrypt(a,b,key);
+                plain[at..at+4].copy_from_slice(&x.to_le_bytes());
+                plain[at+4..at+8].copy_from_slice(&y.to_le_bytes());
+            }
+            assert_eq!(original_tea_reverse_fragment(&plain,key).unwrap(),intermediate);
+        }
     }
 
     #[test]
