@@ -2018,7 +2018,28 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     if (0x24EF8u32-0x24AE8u32)/0xD0!=5 {return Err("module-record table geometry invalid".into());}
     println!("  0xA140 -> 0xB540: five 0xD0-byte module records at RVA 0x24AE8..0x24EF7.");
     println!("  0xB540 copies all three descriptor DWORDs at offsets +4/+8/+12 and calls 0xB6D0 for further initialization.");
-    println!("  0xB6D0 initializes an eight-pointer auxiliary array; its allocator and later consumers remain to trace.");
+    for (rva,opcode) in [
+        (0xB6D0u32,&[0x83,0xEC,0x20,0x56,0x57,0x33,0xF6][..]),
+        (0xB6DB,&[0x56,0xE8,0x5F,0xFF,0xFF,0xFF][..]),
+        (0xB6E4,&[0x89,0x07,0x85,0xC0,0x74,0x22][..]),
+        (0xB6EE,&[0x83,0xFE,0x08,0x7C,0xE8][..]),
+        (0xB6F7,&[0xB9,0x08,0x00,0x00,0x00][..]),
+        (0xB700,&[0x66,0xB8,0x01,0x00,0xF3,0xA5][..]),
+        (0xB70C,&[0x8D,0x44,0x24,0x08,0x50][..]),
+        (0xB711,&[0xE8,0x5A,0x00,0x00,0x00][..]),
+        (0xB719,&[0x66,0x33,0xC0][..]),
+        (0xB640,&[0x56,0x57,0x6A,0x10,0x68,0xCC,0x00,0x00,0x00][..]),
+        (0xB676,&[0x89,0x06,0x85,0xC0][..]),
+        (0xB692,&[0x89,0x41,0x04][..]),
+        (0xB69A,&[0x89,0x42,0x08][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,opcode)?;}
+    for (site,target) in [(0xB6DCu32,0xB640u32),(0xB711,0xB770),(0xB649,0xB610)] {
+        if dll_relative_call_target(dll,pe,site)?!=target {return Err("auxiliary allocator call target changed".into());}
+    }
+    println!("  0xB6D0 calls 0xB640 eight times and commits eight DWORD pointers only after all calls succeed.");
+    println!("  Failed allocation invokes 0xB770 for cleanup, then returns AX=0; success returns AX=1.");
+    println!("  0xB640 requests a 0xCC-byte record aligned to 0x10, initializes two linked objects via 0xB7C0.");
+    println!("  No evidence these eight records contain decrypted .txt machine code.");
     println!("  Thus on successful resolution writer descriptor +4 is dplayerx.dll module base (not CRIMSON.ICD image base).");
     println!("  Actual loaded base and exact relative target within dplayerx.dll remain to be established.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
