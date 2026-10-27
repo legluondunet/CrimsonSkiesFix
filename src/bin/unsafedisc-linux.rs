@@ -1903,6 +1903,20 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  Static sequence: 4KiB-bounded copy-in -> byte transform -> VirtualProtect -> memory copy -> restore protection.");
     println!("  Unknown: input buffer mapping, per-byte state, actual destination and whether the modified region is protected .txt.");
     println!("  These checks do not emulate SafeDisc, decrypt any code, or call Win32 APIs.");
+    // Keep the evidence local: dump only bounded, original file-backed code
+    // windows for the unresolved selector and per-byte state transitions.
+    // No executable bytes or generated plaintext are stored in the repo.
+    for (title, rva, length) in [
+        ("chunk setup and state (0x92B0)", 0x92B0u32, 96usize),
+        ("selector callsites and chunk initialization", 0x9300, 96),
+        ("input bounds and buffer initialization", 0x9400, 96),
+        ("byte recurrence and state update", 0x9500, 128),
+        (".txt2 selection helper (0x18800)", 0x18800, 96),
+        (".txt2 range helper (0x18B00)", 0x18B00, 96),
+    ] {
+        print_dll_code_window(dll, pe, title, rva, length)?;
+    }
+    println!("  Windows are raw bytes from the verified local DLL, not disassembly or proof of execution.");
     Ok(())
 }
 
