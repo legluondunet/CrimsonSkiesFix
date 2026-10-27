@@ -1995,6 +1995,30 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
         .ok_or("original module name cannot be decoded")?;
     if module_name!="dplayerx.dll"{return Err("unexpected original GetModuleHandleA module name".into());}
     println!("  The argument decoded at 0x9861 from data RVA 0x20030 is 'dplayerx.dll'.");
+    // A140 does not merely stash a pointer: B540 copies the 12-byte
+    // descriptor into one of five 0xD0-byte per-module records.
+    for (rva,op) in [
+        (0x9875u32,&[0x6A,0x01,0x68,0xE0,0x59,0x90,0x00][..]),
+        (0x987C,&[0xE8,0xBF,0x08,0x00,0x00][..]),
+        (0xA14B,&[0x50,0x53,0x33,0xFF][..]),
+        (0xA14F,&[0xE8,0xEC,0x13,0x00,0x00][..]),
+        (0xB554,&[0xBE,0xE8,0x4A,0x90,0x00][..]),
+        (0xB55F,&[0x81,0xC6,0xD0,0x00,0x00,0x00][..]),
+        (0xB565,&[0x81,0xFE,0xF8,0x4E,0x90,0x00][..]),
+        (0xB573,&[0xB9,0x34,0x00,0x00,0x00][..]),
+        (0xB57C,&[0xF3,0xAB][..]),
+        (0xB583,&[0x8B,0x0B][..]),
+        (0xB58B,&[0x8B,0x53,0x04][..]),
+        (0xB591,&[0x8B,0x4B,0x08][..]),
+        (0xB5A4,&[0xE8,0x27,0x01,0x00,0x00][..]),
+    ] {dll_expect_raw_x86(dll,pe,rva,op)?;}
+    for (call,target) in [(0x987Cu32,0xA140u32),(0xA14F,0xB540),(0xB5A4,0xB6D0)] {
+        if dll_relative_call_target(dll,pe,call)?!=target {return Err("module record initializer call target changed".into());}
+    }
+    if (0x24EF8u32-0x24AE8u32)/0xD0!=5 {return Err("module-record table geometry invalid".into());}
+    println!("  0xA140 -> 0xB540: five 0xD0-byte module records at RVA 0x24AE8..0x24EF7.");
+    println!("  0xB540 copies all three descriptor DWORDs at offsets +4/+8/+12 and calls 0xB6D0 for further initialization.");
+    println!("  0xB6D0 initializes an eight-pointer auxiliary array; its allocator and later consumers remain to trace.");
     println!("  Thus on successful resolution writer descriptor +4 is dplayerx.dll module base (not CRIMSON.ICD image base).");
     println!("  Actual loaded base and exact relative target within dplayerx.dll remain to be established.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
