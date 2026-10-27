@@ -379,6 +379,55 @@ cannot, alone, prove that any particular routine decodes
 that section. A stronger test requires finding the actual
 byte-transform/memory-write loop and validating it against
 the original memory image or independent plaintext.
+#### Confirmed startup API bindings and process-attach research
+
+The user tested the exact SHA-256 verified Crimson Skies `dplayerx.dll`
+using native `--startup-research`. The PE import parser resolved
+**69 import bindings** and mapped the following startup IAT VAs:
+
+| IAT VA | Imported function |
+| --- | --- |
+| `0x8FE020` | `KERNEL32.dll!HeapCreate` |
+| `0x8FE0A0` | `KERNEL32.dll!HeapDestroy` |
+| `0x8FE0A4` | `KERNEL32.dll!VirtualFree` |
+| `0x8FE090` | `KERNEL32.dll!TlsAlloc` |
+| `0x8FE08C` | `KERNEL32.dll!TlsSetValue` |
+| `0x8FE054` | `KERNEL32.dll!GetModuleFileNameA` |
+| `0x8FE078` | `KERNEL32.dll!GetVersion` |
+| `0x8FE074` | `KERNEL32.dll!GetCommandLineA` |
+| `0x8FE0E0` | `KERNEL32.dll!GetEnvironmentStrings` |
+| `0x8FE0E4` | `KERNEL32.dll!GetEnvironmentStringsW` |
+
+These confirm the roles of several previously unknown CRT/runtime
+startup calls (heap management, TLS allocation, command-line and
+environment setup). They do **not** identify the proprietary
+SafeDisc code-section decoder.
+
+The more unusual helper at **DLL RVA `0x9770`** receives the
+DllMain `reason` value and contains irregular control flow.
+Direct signed relative x86 branch bytes already supplied by the
+user show **two paths converge on DLL RVA `0x98F5`**:
+
+- `0x9781`: `0F 84 6E 01 00 00`, JZ to RVA `0x98F5`
+  when `reason == 0`.
+- `0x978D`: `E9 63 01 00 00`, JMP to RVA `0x98F5`
+  when `reason` is neither `0` nor `1`.
+- Process attach (`reason == 1`) enters the irregular instruction
+  region near `0x9792`, which may contain opaque control flow.
+
+A further read-only extension to **`--startup-research`**
+now verifies both actual instruction encodings, checks that the
+computed branch targets converge and map to backed executable code,
+then prints **256 bytes at `0x9770`** and **192 bytes at
+`0x98F5`**. It also lists any imported APIs whose names indicate
+code-memory protection, dynamic symbol resolution or code loading
+(e.g. `VirtualProtect`, `VirtualAlloc`, `GetProcAddress`).
+
+**No such API's absence proves no decoder exists:** a loader may
+resolve symbols dynamically, call through unrecognised pointers,
+or modify its own mapped pages through other mechanisms.
+The data displayed remain static on-disk excerpts only;
+no protected DLL code is executed or patched.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
