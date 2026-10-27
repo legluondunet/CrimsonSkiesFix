@@ -2085,3 +2085,21 @@ opcode bytes. This gets closer to reconstructing
 the per-chunk byte transform, but does not establish
 its input, complete state update, or decrypted .txt
 plaintext. No original binary is modified or executed.
+
+
+### Bounded local inspection of unresolved chunk-mixer instructions (2026-10-27)
+
+The read-only `inspect --modifier-research` output now includes six bounded
+raw-code windows from the **locally supplied, SHA-256-verified original DLL**:
+`0x92B0` (96 bytes), `0x9300` (96 bytes), `0x9400` (96 bytes),
+`0x9500` (128 bytes), `0x18800` (96 bytes) and `0x18B00` (96 bytes).
+The first four expose context around the currently incomplete chunk-state
+reconstruction; the final two expose the `.txt2` selection helpers.
+All reads use validated file-backed executable RVAs. No DLL bytes are embedded
+in source or documentation, and the tool never executes the DLL.
+
+These are **byte dumps, not instruction-boundary proofs**, and they do not
+establish the source or destination of protected chunks. In particular,
+interpreting `0x43` and `0x15` as complete per-byte keys would be premature.
+A verified per-chunk algorithm still requires a documented data selector,
+initial and carried state, loop termination and destination-section evidence.
