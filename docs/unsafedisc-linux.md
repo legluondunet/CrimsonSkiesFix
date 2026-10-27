@@ -2103,3 +2103,18 @@ establish the source or destination of protected chunks. In particular,
 interpreting `0x43` and `0x15` as complete per-byte keys would be premature.
 A verified per-chunk algorithm still requires a documented data selector,
 initial and carried state, loop termination and destination-section evidence.
+
+
+### Correction: indexed byte reads do not yet prove an adjacent-byte recurrence
+
+Exact original x86 encodings at `0x950D` and `0x9519` reveal the effective
+addresses `[EBP + ECX - 0x1028]` and `[EBP + EAX - 0x1029]`, respectively.
+They reference different live index registers. Even though their constant
+displacements differ by one, adjacency depends on the still-untraced values
+of EAX and ECX. Furthermore `33 D1` at `0x9520` is `XOR EDX,ECX`, and
+`03 D0` at `0x955D` is `ADD EDX,EAX`: both operate on **32-bit registers**,
+not intrinsically on bytes. Any final byte storage/truncation must be
+established from subsequent instructions. The native research CLI now
+states these limitations and rechecks the two exact SIB encodings.
+This corrects earlier descriptive shortcuts; it does **not** establish a
+new decryption algorithm, or prove a destination in protected `.txt`.
