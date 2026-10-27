@@ -4170,6 +4170,53 @@ fn pre_tea_section_pages_with_modifiers<F, G>(
     }
 }
 
+// Historical unSafeDisc 1.5.5 calls its per-DWORD adapter (0x401F62)
+// separately for each NON-relocated byte interval emitted by 0x401EF5,
+// not necessarily only once per 4KiB page. Each such call initializes
+// EBX=0 as its word index. This variant models the relocation-aware path
+// without touching protected user files or executing the DLL functions.
+//
+// 'highlow_offsets' are section-relative positions of full 4-byte HIGHLOW
+// slots; they must be sorted, nonoverlapping and fully backed by 'data'.
+// Byte runs separated by relocated DWORDs restart the word index; trailing
+// incomplete bytes in each run remain unchanged, matching SHR ECX,2.
+#[allow(dead_code)]
+fn pre_tea_relocation_fragments_with_modifiers<F,G>(
+    data:&mut[u8], highlow_offsets:&[usize],
+    mut first:F,mut second:G,
+)->Result<usize>
+where F:FnMut(u32)->u32,G:FnMut(u32)->u32 {
+    let mut previous_end=0usize;
+    for &start in highlow_offsets {
+        let end=start.checked_add(4).ok_or("HIGHLOW slot offset overflow")?;
+        if start<previous_end || end>data.len() {
+            return Err("unsorted, overlapping or out-of-range HIGHLOW offset".into());
+        }
+        previous_end=end;
+    }
+    let mut protected=vec![false;data.len()];
+    for &start in highlow_offsets {
+        protected[start..start+4].fill(true);
+    }
+    let mut calls=0usize;
+    for page in data.chunks_mut(4096).enumerate() {
+        let (page_index,buf)=page;
+        let page_start=page_index.checked_mul(4096).ok_or("page position overflow")?;
+        let mut i=0usize;
+        while i<buf.len() {
+            if protected[page_start+i] {i+=1;continue;}
+            let begin=i;
+            while i<buf.len() && !protected[page_start+i] {i+=1;}
+            let run=&mut buf[begin..i];
+            if run.len()>=4 {
+                pre_tea_dwords_with_modifiers(run,&mut first,&mut second);
+                calls+=1;
+            }
+        }
+    }
+    Ok(calls)
+}
+
 // Standard TEA reference routine, tested with synthetic vectors.
 // NOT a full SafeDisc 1.50.20 decoder: its input needs the DLL's extra layer undone.
 #[cfg(test)]
@@ -4210,6 +4257,56 @@ mod tests {
     fn sha_256_vectors() {
         assert_eq!(sha256(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn relocation_fragment_adapter_skips_slots_and_resets_word_index(){
+        let original:Vec<u8>=(0..64).map(|i| ((i*17+9)&255) as u8).collect();
+        let first=|w:u32|w.rotate_left(3).wrapping_add(0x1234_5678);
+        let second=|w:u32|w^0xA55A_9669;
+        let mut page_only=original.clone();
+        pre_tea_section_pages_with_modifiers(&mut page_only,first,second);
+        let mut split=original.clone();
+        let calls=pre_tea_relocation_fragments_with_modifiers(
+            &mut split,&[12,32,48],first,second).unwrap();
+        assert_eq!(calls,4);
+        for &offset in &[12usize,32,48] {
+            assert_eq!(&split[offset..offset+4],&original[offset..offset+4]);
+        }
+        // Distinct word indices after a relocated slot must matter.
+        assert_ne!(&split[16..20],&page_only[16..20]);
+        let mut expected=original.clone();
+        for &(begin,end) in &[(0usize,12usize),(16,32),(36,48),(52,64)] {
+            pre_tea_dwords_with_modifiers(&mut expected[begin..end],first,second);
+        }
+        assert_eq!(split,expected);
+    }
+
+    #[test]
+    fn relocation_fragment_adapter_handles_cross_page_highlow_and_tails(){
+        let mut bytes=vec![0x44u8;4107];
+        let original=bytes.clone();
+        let calls=pre_tea_relocation_fragments_with_modifiers(
+            &mut bytes,&[4094],|x|x.wrapping_add(3),|x|x.rotate_right(2)
+        ).unwrap();
+        assert_eq!(calls,2);
+        assert_eq!(&bytes[4094..4098],&original[4094..4098]);
+        assert_eq!(&bytes[4092..4094],&original[4092..4094]);
+        assert_eq!(&bytes[4106..4107],&original[4106..4107]);
+        assert_ne!(&bytes[..4],&original[..4]);
+        assert_ne!(&bytes[4098..4102],&original[4098..4102]);
+    }
+
+    #[test]
+    fn relocation_fragment_adapter_rejects_malformed_slots(){
+        let mut bytes=vec![0u8;36];
+        for slots in [&[5usize,4][..],&[4,6][..],&[33][..],&[usize::MAX][..]]{
+            assert!(pre_tea_relocation_fragments_with_modifiers(
+                &mut bytes,slots,|x|x,|x|x
+            ).is_err());
+        }
+        assert_eq!(pre_tea_relocation_fragments_with_modifiers(
+            &mut bytes,&[],|x|x,|x|x).unwrap(),1);
     }
 
     #[test]
