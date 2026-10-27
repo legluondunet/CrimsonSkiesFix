@@ -3482,3 +3482,47 @@ modifiers are bit-affine* under the verified historical expression;
 it would not identify which modifier is nonlinear. Even zero
 contradictions would only establish finite-sample compatibility,
 not recover either original routine nor decrypt unseen game data.
+
+
+### Newly discovered index-mask aliases in the historical OR formula (2026-10-28)
+
+A mathematical property of the original *full-width* x86 mask formula
+was overlooked by earlier index-keyed observations:
+
+```text
+mask(i) = ((i << 24) | (i << 16) | (i << 8) | i) mod 2^32
+mask(1)   = 0x01010101
+mask(257) = 0x01010101       # same mask at a different index
+mask(3) = mask(259) = mask(515) = mask(771) = 0x03030303
+```
+
+**The mask is not injective when the word index exceeds 255.**
+For the exact already observed index range 0..1006 there are only
+**572 distinct mask values** for 1007 integer indices, and **312 mask
+values** are shared by at least two different indices. These counts
+follow entirely from the public algebraic expression and do not
+require private game bytes.
+
+This yields a stronger observational check, independent of any guessed
+bit-affine model: if two samples have identical **(mask, input)** but
+different integer indices, the output must be identical because the
+original historical computation is deterministic. Likewise two
+different inputs under the same mask cannot yield the same output
+if both original EAX modifiers are permutations.
+
+The optional exact-reference inspector now canonically regroups the
+previously verified `(index,masked_input) -> observed_result` pairs by
+`(mask(index),masked_input)`. It reports aggregate mask aliases,
+canonical input-pair count, cross-index repeated observations and
+forward/inverse conflicts. It uses deterministic input ordering and
+never prints any private word, intermediate value or lookup table.
+Three synthetic regression tests cover the exact mask alias count,
+consistent/inconsistent repeated-input and inverse mappings, and
+insertion-order independence.
+
+**Unverified retail impact:** the aggregate results have not yet been
+computed against the exact original private ICD+TESTME reference in
+this session. Any contradiction is reported as a **warning**, not a
+fatal error, pending independent validation of the historical state
+semantics. The implementation does not alter game binaries or produce
+an unpacker.
