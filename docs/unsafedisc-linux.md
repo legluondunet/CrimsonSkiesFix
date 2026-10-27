@@ -2222,3 +2222,17 @@ an arbitrary byte search, but the exact provenance of the **writer's**
 Native inspection now checks the corresponding exact original instruction
 bytes and the helper's E8 target. No decryption, execution or original
 binary modification was performed.
+
+
+### Memory-writer control-flow guard (2026-10-27)
+
+Original `dplayerx.dll` bytes at RVA `0x967D` implement `TEST EAX,EAX`
+after the first indirect `VirtualProtect` call. A nonzero return proceeds
+toward RVA `0x9690`, where ECX/ESI/EDI are initialized for the
+`REP MOVSD` and `REP MOVSB` copy. A zero result takes an unconditional
+short jump toward RVA `0x9702`, bypassing these copies. The native
+research CLI checks the exact branch and copy-setup opcode windows.
+This is a statically verified failure guard, **not a runtime trace**.
+The destination is still derived from a caller-provided descriptor;
+section membership and any plaintext reconstruction require separate
+proof. Private originals remain unmodified and unpublished.
