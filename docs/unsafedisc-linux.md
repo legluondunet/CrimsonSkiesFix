@@ -254,37 +254,37 @@ No file is created or modified.
 
 #### What we learned from the original DLL entrypoint
 
-The user-supplied 96-byte entrypoint excerpt at DLL RVA \`0xFD20\`
-is intelligible x86 and includes a conventional \`ret 0xC\`.
+The user-supplied 96-byte entrypoint excerpt at DLL RVA `0xFD20`
+is intelligible x86 and includes a conventional `ret 0xC`.
 We independently disassembled it as an x86 DLL startup wrapper:
 
-- At \`0xFD23\`, it reads the 3-argument DllMain \`reason\` from the
-  stack and checks for \`1\` (process attach) and \`2\` (thread attach)
+- At `0xFD23`, it reads the 3-argument DllMain `reason` from the
+  stack and checks for `1` (process attach) and `2` (thread attach)
   before calling its startup handlers.
-- At \`0xFD31\` and \`0xFD56\`, it reads data/pointer values from
-  absolute virtual addresses \`0x90519C\` and \`0x906C70\`.
-  If the actual preferred image base is \`0x900000\`, these are
-  RVAs \`0x519C\` and \`0x6C70\`, inside the still-unreadable
-  \`.txt\` section.
-- At \`0xFD6C\`, a relative call with bytes
-  \`E8 8F FE FF FF\` points to **DLL RVA \`0xFC00\`**, another
-  on-disk executable \`.text\` location.
-- Startup continues at \`0xFD7E\`; only the first two bytes
+- At `0xFD31` and `0xFD56`, it reads data/pointer values from
+  absolute virtual addresses `0x90519C` and `0x906C70`.
+  If the actual preferred image base is `0x900000`, these are
+  RVAs `0x519C` and `0x6C70`, inside the still-unreadable
+  `.txt` section.
+- At `0xFD6C`, a relative call with bytes
+  `E8 8F FE FF FF` points to **DLL RVA `0xFC00`**, another
+  on-disk executable `.text` location.
+- Startup continues at `0xFD7E`; only the first two bytes
   of this path were present in the initial 96-byte excerpt.
 
 These observations make early DLL **initialization and TLS callbacks**
 the most useful next investigation. They do **not** demonstrate that
-\`.txt\` is decrypted by any specific routine or at any specific time.
+`.txt` is decrypted by any specific routine or at any specific time.
 
-The enhanced \`--modifier-research\` output additionally reports:
+The enhanced `--modifier-research` output additionally reports:
 
 - DLL preferred image base (read from PE32 OptionalHeader);
 - PE TLS directory metadata and up to eight bounded callback pointers,
   with short raw x86 excerpts when available; Windows calls TLS callbacks
   **before** the DLL entrypoint;
-- **160 bytes at RVA \`0xFC00\`**, the actual relative-call target;
-- **96 bytes at RVA \`0xFD7E\`**, the rest of the startup branch;
-- original *on-disk* DWORDs from VAs \`0x90519C\` and \`0x906C70\`
+- **160 bytes at RVA `0xFC00`**, the actual relative-call target;
+- **96 bytes at RVA `0xFD7E`**, the rest of the startup branch;
+- original *on-disk* DWORDs from VAs `0x90519C` and `0x906C70`
   when those VAs resolve to backed PE sections.
 
 The output never loads the DLL and refuses malformed RVA/VA pointer
