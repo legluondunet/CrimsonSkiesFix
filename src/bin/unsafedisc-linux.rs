@@ -1800,9 +1800,59 @@ fn dll_expect_raw_x86(dll:&[u8],pe:&Pe32,rva:u32,bytes:&[u8])->Result<()> {
     }
     Ok(())
 }
+// The native byte-transforming chunk routine at 0x92B0
+// deliberately hides two small constants behind 32-bit
+// arithmetic instead of storing literal 0x43 and 0x15.
+// Decode the MOV immediates from the checked original x86
+// instructions. No encrypted .txt data is read or written.
+fn dll_original_chunk_constants(dll:&[u8],pe:&Pe32)->Result<(u8,u8)>{
+    fn imm(dll:&[u8],pe:&Pe32,at:u32,opcode:u8)->Result<u32>{
+        let file=executable_rva_to_file_offset(pe,at,5)?;
+        if dll[file]!=opcode{
+            return Err(format!("unexpected original MOV opcode at RVA 0x{at:08X}"));
+        }
+        read_u32(dll,file+1)
+    }
+    let xor_a=imm(dll,pe,0x92F6,0xB8)?;
+    let xor_b=imm(dll,pe,0x92FB,0xBB)?;
+    let sub_a=imm(dll,pe,0x9309,0xBB)?;
+    let sub_b=imm(dll,pe,0x9313,0xB9)?;
+    for (rva,bytes) in [
+        (0x92B3u32,&[0xB8,0x2C,0x10,0x00,0x00][..]),
+        (0x9302,&[0x33,0xC3][..]),
+        (0x9305,&[0x89,0x45,0xE8][..]),
+        (0x931A,&[0x2B,0xD9][..]),
+        (0x931C,&[0x8B,0xC3][..]),
+        (0x931F,&[0x89,0x45,0xE0][..]),
+    ]{
+        dll_expect_raw_x86(dll,pe,rva,bytes)?;
+    }
+    let first=xor_a ^ xor_b;
+    let second=sub_a.wrapping_sub(sub_b);
+    if first!=0x43 || second!=0x15{
+        return Err("original chunk-mixer scrambled constants do not decode to 0x43,0x15".into());
+    }
+    Ok((first as u8,second as u8))
+}
+
 fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
+    let (first,second)=dll_original_chunk_constants(dll,pe)?;
+    println!("  Original RVA 0x92B0 chunk routine disguises byte constants as 32-bit immediates.");
+    println!("    XOR pair 0xF3E97EC9 ^ 0xF3E97E8A => 0x{first:02X}.");
+    println!("    SUB pair 0xC502BDE6 - 0xC502BDD1 => 0x{second:02X}.");
+    for (site,target,role) in [
+        (0x924Fu32,0x92B0u32,"chunk-transform entry"),
+        (0x9338,0x18800,"original .txt2 chunk source/selection helper"),
+        (0x9355,0x18B00,"original .txt2 range validation helper")
+    ] {
+        let actual=dll_relative_call_target(dll,pe,site)?;
+        if actual!=target{
+            return Err(format!("original chunk setup E8 at 0x{site:X} no longer targets 0x{target:X}"));
+        }
+        println!("    E8 0x{site:X} -> 0x{target:X}: {role}");
+    }
     let data=pe.section(b".data")?;
     let zero_fill_start=data.virtual_address.checked_add(data.raw_len as u32)
         .ok_or("original DLL .data backed boundary overflow")?;
@@ -4554,6 +4604,35 @@ mod tests {
         assert!(dll_expect_raw_x86(&dll,&pe,0x1060,&[0xF3,0xA4]).is_err());
         assert!(dll_expect_raw_x86(&dll,&pe,0xF000,&[0xF3,0xA5]).is_err());
         assert!(dll_expect_raw_x86(&dll,&pe,0x1060,&[]).is_err());
+    }
+
+    #[test]
+    fn original_chunk_state_constants_are_recovered_from_x86_immediates(){
+        let mut dll=synthetic_pe();
+        dll.resize(0x600,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x400u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x9000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x400u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        for (rva,bytes) in [
+            (0x92B3u32,&[0xB8,0x2C,0x10,0,0][..]),
+            (0x92F6,&[0xB8,0xC9,0x7E,0xE9,0xF3]),
+            (0x92FB,&[0xBB,0x8A,0x7E,0xE9,0xF3]),
+            (0x9302,&[0x33,0xC3]),(0x9305,&[0x89,0x45,0xE8]),
+            (0x9309,&[0xBB,0xE6,0xBD,0x02,0xC5]),
+            (0x9313,&[0xB9,0xD1,0xBD,0x02,0xC5]),
+            (0x931A,&[0x2B,0xD9]),(0x931C,&[0x8B,0xC3]),
+            (0x931F,&[0x89,0x45,0xE0]),
+        ]{
+            let offset=0x200+(rva-0x9000) as usize;
+            dll[offset..offset+bytes.len()].copy_from_slice(bytes);
+        }
+        let pe=parse_pe32(&dll).unwrap();
+        assert_eq!(dll_original_chunk_constants(&dll,&pe).unwrap(),(0x43,0x15));
+        dll[0x200+(0x931A-0x9000) as usize]=0x90;
+        assert!(dll_original_chunk_constants(&dll,&pe).is_err());
     }
 
     #[test]
