@@ -2478,3 +2478,33 @@ address against the node start, then invokes this range matcher. This
 supports a mutable range-bookkeeping interpretation; it does not establish
 what the eight registry categories mean, whether ranges refer to the DLL
 or ICD, or any decrypted plaintext. Original files remain private.
+
+
+### Distinguishing the C3D0 callers in linked-range traversal (2026-10-27)
+
+Rechecked the owner's original DLL disassembly at original RVAs
+`0xBC00..0xBC34`, `0xBC40..0xBC97`, and `0xBCA0..0xBD0D`.
+`0xBC00` takes `(head, probe)`, walks nodes using the link at `+4`,
+and calls `0xC3D0` at `0xBC12` with the current node's stored pointer
+and the probe. On a match it **returns the node pointer**, otherwise
+continues or returns NULL. This call site does not supply a separate
+range tag and therefore cannot by itself reveal the eight category IDs.
+
+`0xBC40` takes `(head, address, size, tag)` and tries `0xC4B0` first
+at `0xBC5E` (four arguments: current node payload plus three inputs).
+If that check succeeds it returns the node. Otherwise it invokes
+`0xC3D0` at `0xBC6F` on the current node's payload and `address`;
+a match on this fallback terminates the search without claiming success.
+This is materially different from `0xBC00`'s plain search: matching a
+start key need not mean a requested interval/tag can be accepted.
+
+`0xBCA0` additionally invokes `0xBD10` to obtain a candidate before
+searching with `0xBC00`, and conditionally delegates to `0xBD50` for
+node/list manipulation. Therefore the `0xC3D0` references are mostly
+**linked-list search and insertion helpers**, not direct evidence of
+which encrypted code region is selected. The values used as eight
+categories still require upstream caller tracing.
+
+All addresses and relative calls in this note were verified by static
+inspection of the private original DLL. No DLL execution, plaintext
+reconstruction or proprietary binary upload was performed.
