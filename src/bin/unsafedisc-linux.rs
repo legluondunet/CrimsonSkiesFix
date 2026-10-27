@@ -181,6 +181,11 @@ fn executable_rva_to_file_offset(pe: &Pe32, rva: u32, min_bytes: usize) -> Resul
     Err(format!("executable RVA 0x{rva:08X} not backed by requested bytes"))
 }
 
+// These addresses identify where *loaded* code is expected by
+// historical analysis. Their on-disk bytes need NOT be decoded x86:
+// SafeDisc DLL initialization may transform its executable section.
+// Therefore the excerpts below are intentionally labelled raw bytes,
+// not validated callable functions.
 // The two SafeDisc 1.50.20 EAX modifier routine RVAs are documented in
 // ArthaXerXes' June 2001 version analysis and in historical unSafeDisc
 // 1.5.5's call sequence at 0x401F62. These are RVA offsets within the
@@ -195,6 +200,30 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     ];
     let pe = parse_pe32(dll)?;
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
+    println!("  Original DLL PE32 entry RVA: 0x{:08X} (on-disk code, NOT a memory dump).",
+        pe.entry_rva);
+    println!("  DLL PE sections:");
+    for section in &pe.sections {
+        let name = String::from_utf8_lossy(
+            section.name.split(|&b| b == 0).next().unwrap_or(&[])
+        );
+        println!("    {}: RVA 0x{:08X}, raw +0x{:06X}, raw bytes {}, vsize {}, flags 0x{:08X}",
+            name, section.virtual_address, section.raw_offset, section.raw_len,
+            section.virtual_size, section.characteristics);
+    }
+    let entry_offset = executable_rva_to_file_offset(&pe, pe.entry_rva, 96)?;
+    let entry = dll.get(entry_offset..entry_offset+96)
+        .ok_or("verified DLL entry bytes are not backed by the original file")?;
+    println!("  DLL entrypoint: RVA 0x{:08X}, raw file +0x{entry_offset:06X}, 96-byte static excerpt",
+        pe.entry_rva);
+    for (line, sixteen) in entry.chunks(16).enumerate() {
+        let at_rva = pe.entry_rva + (line * 16) as u32;
+        let hex = sixteen.iter().map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>().join(" ");
+        println!("    0x{at_rva:08X}: {hex}");
+    }
+    println!("  NOTE: raw modifier bytes may be encrypted on disk or intended to be decoded at load time.");
+    println!("  The historical tool dynamically loaded its DLL; PE execute flags alone do not imply valid raw x86.");
     for (name, rva) in ROUTINES {
         let offset = executable_rva_to_file_offset(&pe, rva, WINDOW)?;
         let block = dll.get(offset..offset+WINDOW)
@@ -208,6 +237,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
             println!("    0x{at_rva:08X}: {hex}");
         }
     }
+    println!("  Unexpected privileged x86-like opcodes in raw excerpts do NOT prove executable code.");
+    println!("  This report cannot establish whether or how the DLL loader decodes these ranges.");
     println!("  Not a disassembly, executable code validation, or decoded function.");
     println!("  Only the exact SHA-256 verified local DLL was read; no files or PE sections were changed.");
     Ok(())
