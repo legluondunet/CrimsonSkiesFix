@@ -31,14 +31,14 @@ run the executable from PowerShell in the folder containing your original
 verified game files:
 
 ```powershell
-.\\unsafedisc-linux.exe inspect `
-  --loader '.\\CRIMSON(1).EXE' `
-  --icd '.\\CRIMSON.ICD' `
-  --dplayerx '.\\dplayerx.dll' `
+.\unsafedisc-linux.exe inspect `
+  --loader '.\CRIMSON(1).EXE' `
+  --icd '.\CRIMSON.ICD' `
+  --dplayerx '.\dplayerx.dll' `
   --layout
 ```
 
-PowerShell uses a backtick (`\``) to continue a command on the next line.
+PowerShell uses a backtick to continue a command on the next line.
 This action only reads files; the original EXE, ICD and DLL are never modified.
 
 ## Inspect your own original files
