@@ -111,6 +111,70 @@ original binaries are not embedded in test fixtures, distributed
 or committed to this repository. A synthetic test exercises
 relocation-covered equality, non-relocated differences and
 ambiguous IAT mappings without depending on game files.
+## Recovered selection/CRC gates from the owner's genuine unSafeDisc 1.5.5 (2026-10-27)
+
+The owner supplied the original historical zip containing
+`unSafedisc.exe` (20,480 bytes), `readme.txt` and `history.txt`.
+The exact PE32 executable SHA-256 is
+`e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f`.
+It has an ordinary IMAGE_BASE 0x00400000, CODE and DATA sections,
+and **no need for the later third-party version.dll import modification**.
+The executable is analyzed statically and kept private; neither this
+binary nor the user's game binaries are committed to the repository.
+
+The release's **own history.txt explicitly identifies Crimson Skies**:
+
+- v1.5.4 fixed a bug in which decryption mistakenly included Crimson
+  `.rdata`; the authors used `CRIMSON.ICD` to reproduce it.
+- v1.5.5 fixed the relocation-aware CRC regression introduced during
+  the Crimson workaround, and was tested against both Crimson and
+  Unreal Tournament.
+
+Independent static x86 inspection of the actual 20,480-byte original
+disassembled with `objdump -D -Mintel -j CODE` confirms:
+
+- `0x402257` through `0x4022B0`: collect section headers except
+  those whose **first four raw name bytes** are `.rsr`, `.bss`,
+  `BSS\0`, `.tls`, `.ida`, `.rda`, `.eda` or `.rel`. In
+  particular, `.rdata`, `.idata`, `.rsrc`, `.reloc` are skipped.
+- `0x401D1A` through `0x401D34`: cap the processing extent to
+  `min(SizeOfRawData, VirtualSize)` if VirtualSize is nonzero.
+- `0x401F01`: checksum byte accumulator only runs when selected
+  `IMAGE_SECTION_HEADER.Characteristics` contains bit `0x20`
+  (`IMAGE_SCN_CNT_CODE`); data sections can still be selected
+  for processing without contributing to that CRC stage.
+- `0x401F43` through `0x401F62`: original DLL size `0x21E00`
+  (138,752 bytes) activates the special extra pre-TEA stage.
+  That exactly matches the owner's Crimson `dplayerx.dll`.
+- `0x401A55`: standard 32-round TEA-like paired DWORD transform
+  for the protected payload, but it is **not sufficient** without
+  the DLL-specific modifiers and actual key.
+
+Applying this documented historical section filter directly
+to the original, hash-verified Crimson ICD PE metadata gives:
+
+| Original ICD section | Included in processing | Code-bit CRC eligible |
+| --- | --- | --- |
+| `.text` | **yes** | **yes** |
+| `.data` | **yes** | no |
+| `.rdata` | no | no |
+| `.idata` | no | no |
+| `.rsrc` | no | no |
+| `.reloc` | no | no |
+
+The new native read-only flag `--historical-selection` reports this
+result using the normal SHA-256 verified retail loader, ICD and DLL:
+
+```powershell
+.\unsafedisc-linux.exe inspect --loader '.\CRIMSON.EXE' --icd '.\CRIMSON.ICD' --dplayerx '.\dplayerx.dll' --historical-selection
+```
+
+It is guarded by a synthetic Rust test for the eight original
+prefix exclusions and the independent `IMAGE_SCN_CNT_CODE` gate.
+The actual historical SafeDisc DLL is **not loaded or executed**;
+this reproduces a static name-based filter, **not a successful
+whole-section decryption**. The `.data` codebit CRC exclusion
+should not be confused with skipping its separate decode step.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
