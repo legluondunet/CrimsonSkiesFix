@@ -354,6 +354,62 @@ fn checksum_section_without_highlow(
     Ok(checksum)
 }
 
+// Attribute every byte-mixer contribution to its source 4-KiB page
+// under two alternative fragment boundaries. This is a diagnostic of
+// proposed traversal models, NOT a recovered SafeDisc algorithm.
+//
+// Section-wide contributions are computed byte by byte with the original
+// fragment length in the weight recurrence, even when a fragment spans
+// pages. Page-local contributions restart their weight at the 4-KiB
+// boundary. Both skip the exact same relocation-byte windows.
+#[allow(dead_code)]
+fn checksum_research_page_contributions(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock],
+) -> Result<(Vec<u32>, Vec<u32>)> {
+    const PAGE: usize = 4096;
+    let ranges = relocation_windows(first_page_rva, bytes.len(), blocks)?;
+    let page_count = bytes.len() / PAGE;
+    let mut page_local = vec![0u32; page_count];
+    let mut section_wide = vec![0u32; page_count];
+
+    let mut attribute_span = |start: usize, end: usize| {
+        if start == end { return; }
+        let length = end - start;
+
+        // Section-wide hypothesis: initial weight and *whole-span*
+        // length apply until the next relocation, even across pages.
+        let mut weight = 0xFD37_9AB1u32;
+        for (index, &byte) in bytes[start..end].iter().enumerate() {
+            let page_index = (start + index) / PAGE;
+            section_wide[page_index] = section_wide[page_index]
+                .wrapping_add((byte as u32).wrapping_mul(weight));
+            weight = weight
+                .wrapping_mul(0xA775_3394)
+                .wrapping_add((length - index - 1) as u32)
+                .wrapping_add(0x3BC6_2BB2);
+        }
+
+        // Page-local hypothesis: each retained piece is a new chunk.
+        let mut cursor = start;
+        while cursor < end {
+            let next_page = (cursor / PAGE + 1) * PAGE;
+            let stop = end.min(next_page);
+            let page_index = cursor / PAGE;
+            page_local[page_index] = checksum_chunk(
+                &bytes[cursor..stop], page_local[page_index]);
+            cursor = stop;
+        }
+    };
+
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        attribute_span(cursor, start);
+        cursor = end;
+    }
+    attribute_span(cursor, bytes.len());
+    Ok((page_local, section_wide))
+}
+
 // Opt-in two-hypothesis comparison on the exact hash-verified protected ICD.
 // These numbers are NOT recovered SafeDisc checksums or TEA key words.
 fn print_checksum_research(
@@ -365,10 +421,36 @@ fn print_checksum_research(
         .ok_or(".text bytes outside verified PE file")?;
     let page_local = checksum_pages_without_highlow(data, section.virtual_address, blocks, 0)?;
     let section_wide = checksum_section_without_highlow(data, section.virtual_address, blocks, 0)?;
+    let (local_pages, whole_pages) =
+        checksum_research_page_contributions(data, section.virtual_address, blocks)?;
+    let local_from_pages = local_pages.iter().fold(0u32, |sum, v| sum.wrapping_add(*v));
+    let whole_from_pages = whole_pages.iter().fold(0u32, |sum, v| sum.wrapping_add(*v));
+    if local_from_pages != page_local || whole_from_pages != section_wide {
+        return Err("per-page attribution disagrees with existing checksum hypotheses".into());
+    }
     println!("Experimental .text byte-mixer hypotheses (NOT the SafeDisc key/checksum):");
     println!("  page-local weight reset:    0x{page_local:08X}");
     println!("  section-wide weight reset:  0x{section_wide:08X}");
     println!("  initial accumulator: 0; both models exclude the same HIGHLOW DWORD bytes.");
+    let differing_pages = local_pages.iter().zip(&whole_pages)
+        .filter(|(a, b)| a != b).count();
+    println!("  different page contributions: {differing_pages} / {}", local_pages.len());
+    println!("  first differing pages (RVA | page-local | section-wide | cumulative delta):");
+    let mut cumulative_local = 0u32;
+    let mut cumulative_whole = 0u32;
+    let mut printed = 0usize;
+    for (i, (&local, &whole)) in local_pages.iter().zip(&whole_pages).enumerate() {
+        cumulative_local = cumulative_local.wrapping_add(local);
+        cumulative_whole = cumulative_whole.wrapping_add(whole);
+        if local != whole && printed < 8 {
+            let page_rva = section.virtual_address
+                .checked_add((i * 4096) as u32).ok_or(".text page RVA overflow")?;
+            let delta = cumulative_local.wrapping_sub(cumulative_whole);
+            println!("    0x{page_rva:08X} | 0x{local:08X} | 0x{whole:08X} | 0x{delta:08X}");
+            printed += 1;
+        }
+    }
+    println!("  Per-page contributions are attributed estimates, not original SafeDisc checkpoints.");
     println!("  PE section flags, real unSafeDisc traversal and DLL modifiers remain unverified.");
     Ok(())
 }
@@ -1023,6 +1105,37 @@ mod tests {
         bytes[0x2500] ^= 1;
         assert_ne!(checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), local);
         assert_ne!(checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), whole);
+    }
+
+    #[test]
+    fn research_per_page_attribution_matches_both_models() {
+        let mut bytes: Vec<u8> = (0..12288).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let blocks = [
+            RelocBlock { page_rva: 0x1000, highlow_offsets: vec![0xFFE] },
+            RelocBlock { page_rva: 0x2000, highlow_offsets: vec![0x021] },
+        ];
+        let (a, b) = checksum_research_page_contributions(&bytes, 0x1000, &blocks).unwrap();
+        assert_eq!(a.len(), 3);
+        assert_eq!(b.len(), 3);
+        assert_eq!(a.iter().fold(0u32, |s, v| s.wrapping_add(*v)), 0x6D73_525C);
+        assert_eq!(b.iter().fold(0u32, |s, v| s.wrapping_add(*v)), 0x9C2B_674B);
+        assert!(a.iter().zip(&b).any(|(left, right)| left != right));
+
+        // The same excluded bytes must have zero contribution in both models.
+        for &index in &[0xFFEusize, 0xFFF, 0x1000, 0x1001, 0x1021, 0x1024] {
+            bytes[index] ^= 0xA5;
+        }
+        assert_eq!(checksum_research_page_contributions(&bytes, 0x1000, &blocks).unwrap(), (a, b));
+
+        // No-relocation model also attributes the full section by page.
+        let plain = vec![1u8; 8192];
+        let (a, b) = checksum_research_page_contributions(&plain, 0x1000, &[]).unwrap();
+        assert_eq!(a.len(), 2);
+        assert_eq!(b.len(), 2);
+        assert_eq!(a.iter().fold(0u32, |s, v| s.wrapping_add(*v)),
+            checksum_pages_without_highlow(&plain, 0x1000, &[], 0).unwrap());
+        assert_eq!(b.iter().fold(0u32, |s, v| s.wrapping_add(*v)),
+            checksum_section_without_highlow(&plain, 0x1000, &[], 0).unwrap());
     }
 
     #[test]
