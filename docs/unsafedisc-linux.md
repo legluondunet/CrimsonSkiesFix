@@ -2692,3 +2692,34 @@ It is deliberately **not** claimed as decryption evidence; selector
 reachability, real chunk initialization, relocation effects and comparison
 against trusted DLL plaintext are still required. No output page is
 committed or distributed.
+
+
+### All 214 original `.txt` relocations target readable DLL image regions
+
+A separate raw-PE relocation-directory walk of the exact original
+`dplayerx.dll` independently confirms **214** backed
+`IMAGE_REL_BASED_HIGHLOW` DWORDs starting within executable `.txt`.
+Each original on-disk DWORD already has a preferred-base VA that points
+inside the **same DLL image**, distributed as follows:
+
+| Target section | Original `.txt` HIGHLOW operands |
+| --- | ---: |
+| `.data` | 195 |
+| `.rdata` | 18 |
+| `.txt` | 1 |
+| Other/out-of-image | 0 |
+| **Total** | **214** |
+
+The Rust inspector now rejects mismatching original counts or targets
+and prints this distribution during `--modifier-research`. These
+recoverable pointers demonstrate that `.txt` contains valid relocation
+operands mixed with protected bytes. The current candidate recurrence,
+if naively applied to the complete first disk-backed page as an
+unfiltered stream, has **not** produced verified code; relocation
+handling and any transformation-span segmentation must be established
+from original control flow. The raw location of a valid pointer alone
+does not prove whether the DLL loader temporarily relocates it before
+another stage restores or preserves it.
+
+This finding is **not** a working decryptor and the tool does not
+modify, output or embed the private DLL image.
