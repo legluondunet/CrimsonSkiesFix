@@ -2451,3 +2451,30 @@ SafeDisc's protected regions remains unknown.
 The read-only Rust inspector now checks instruction-backed list-node
 construction, traversal, range-boundary and call-target evidence.
 Original binaries remain local, with no game plaintext emitted.
+
+
+### Original range matcher `0xC350`: conditional in-place extension (2026-10-27)
+
+Direct disassembly of the owner's SHA-256-verified original DLL at `.text`
+RVA `0xC350..0xC3A9` provides a more exact contract than simply
+“test range bounds”. This routine receives a pointer to a three-DWORD
+range record `(start, length, tag)` plus requested `address`, `size`,
+and `tag`. It first requires `start <= address < start + length` (unsigned).
+Then it calculates `last = address + size - 1` in 32-bit x86 arithmetic.
+
+If `start <= last < start + length`, it returns AX=1 only if the tags
+match, otherwise AX=0. Crucially, **when `last` is outside the recorded
+interval**, it still accepts a matching tag and **updates the stored
+length to `last - start`** at original RVA `0xC398..0xC39A`, returning
+AX=1. The exact function thus performs a **conditional range extension**,
+not a read-only interval membership check. Its arithmetic and comparisons
+should not be silently generalized to overflow-safe mathematical intervals:
+the observed code uses unsigned 32-bit machine operations, with no proven
+prior nonzero-size or overflow precondition.
+
+The only previously identified caller at RVA `0xBB08` lies in `0xBAD0`,
+which iterates linked range nodes, calls `0xC3D0` first to compare an
+address against the node start, then invokes this range matcher. This
+supports a mutable range-bookkeeping interpretation; it does not establish
+what the eight registry categories mean, whether ranges refer to the DLL
+or ICD, or any decrypted plaintext. Original files remain private.
