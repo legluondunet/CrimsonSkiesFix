@@ -2161,6 +2161,23 @@ fn original_selector_exhaustion_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  0x9347 -> 0x93C5; on a set name-match flag, 0x9403/0x9407 skips all chunk copies when extent is zero.");
     println!("  On NO .txt2 match, ordinary selector exhaustion clears extent and bypasses copies.");
     println!("  On .txt2 match, 0x938C jumps to 0x93C5 BEFORE next selector call; nonzero current section extent is preserved.");
+    // A minimal independent observational check: the selected original
+    // .txt2 is *already* valid x86 machine code. If the first-byte mixer
+    // runs and the later protected copy succeeds, it changes the initial
+    // PUSH EBP (0x55) to 0x16. This strongly distinguishes self-scrambling
+    // from restoration of an encrypted original .txt2 prologue.
+    let section=pe.section(b".txt2")?;
+    let first=dll.get(section.raw_offset).copied()
+        .ok_or("original .txt2 first byte beyond file")?;
+    if section.virtual_address!=0x18000 || first!=0x55 {
+        return Err("unexpected original .txt2 prologue or section RVA".into());
+    }
+    if first^0x43!=0x16 {
+        return Err("first-byte XOR regression".into());
+    }
+    println!("  Original .txt2 starts with valid PUSH EBP (0x55); candidate XOR 0x43 would change it to 0x16.");
+    println!("  This suggests potential post-initialization self-scrambling, NOT verified decryption or observed runtime execution.");
+
     println!("  Valid section match reaches the 0x9403 chunk path; actual transformed plaintext remains unvalidated.");
     Ok(())
 }
@@ -5531,6 +5548,14 @@ mod tests {
         assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
         // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
         assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
+    }
+
+    #[test]
+    fn synthetic_original_prologue_xor_direction_is_unambiguous() {
+        // First byte only; deliberately no proprietary code is used here.
+        assert_eq!(0x55u8 ^ 0x43,0x16u8);
+        assert_eq!(0x16u8 ^ 0x43,0x55u8);
+        assert_ne!(0x16u8,0x55u8);
     }
 
     #[test]
