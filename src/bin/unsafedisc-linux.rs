@@ -4007,8 +4007,9 @@ fn inspect(options: Options) -> Result<()> {
     println!("Raw key offset:  0x{raw_offset:X} (CRPE + 6 + 0x148)");
     println!("Selected raw DWORDs:");
     for (i, w) in raw.iter().enumerate() { println!("  raw[{i}] = 0x{w:08X}"); }
-    println!("No full 128-bit TEA key is asserted; checksum and DLL modifier stage remain unverified.");
+    println!("Full TEA key needs independent TESTME.EXE plaintext-tail verification; the title-specific DLL modifier stage remains unrecovered.");
     let mut first_word_reference_matches: Option<usize> = None;
+    let mut verified_reference: Option<Vec<u8>> = None;
     if let Some(path) = options.reference {
         // A user may have patched the resolution of TESTME.EXE with our
         // separate Python tool. The original backup remains the valid
@@ -4050,6 +4051,7 @@ fn inspect(options: Options) -> Result<()> {
         } else {
             println!("Specify --reported-key 0x7496538F to check matching import DWORDs.");
         }
+        verified_reference=Some(reference);
     } else if options.reported_key.is_some() {
         println!("To verify a reported key, also provide the local --reference TESTME.EXE.");
     }
@@ -4069,7 +4071,22 @@ fn inspect(options: Options) -> Result<()> {
         for (i, word) in key.iter().enumerate() {
             println!("  provisional TEA word[{i}] = 0x{word:08X}");
         }
-        println!("  This formula is supported by original x86 code, but reconstructed words have NOT been tested by game decryption.");
+        if let Some(ref_bytes)=verified_reference.as_deref() {
+            let reference_pe=parse_pe32(ref_bytes)?;
+            let proof=validate_tea_key_by_unchanged_fragment_tails(
+                &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
+            println!("  Independent key oracle: {} / {} exact non-DWORD fragment tails; {} / {} identical tail bytes.",
+                proof.matching_fragments,proof.fragments,proof.matching_bytes,proof.checked_bytes);
+            if proof.fragments!=28_947 || proof.checked_bytes!=58_076 ||
+                proof.matching_fragments!=proof.fragments ||
+                proof.matching_bytes!=proof.checked_bytes {
+                return Err("reconstructed TEA key FAILED exact original/reference tail oracle; no full-key validation".into());
+            }
+            println!("  CONFIRMED: the four TEA key words and overlapping block order match 58,076 independently checkable original bytes.");
+            println!("  This validates TEA key material, NOT the missing title-specific EAX modifier implementation.");
+        } else {
+            println!("  Key is only provisional: provide --reference TESTME.EXE to independently validate 128 bits.");
+        }
         println!("  SafeDisc 1.50.20 additionally requires two game-specific dplayerx.dll modifiers; no decrypted file is produced.");
     }
     println!("Unpacking is NOT implemented. Original input files have not been modified.");
