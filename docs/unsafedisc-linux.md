@@ -1996,3 +1996,57 @@ resolves Windows exports, or show that any API call
 actually decrypts protected .txt machine code. The
 original executable and DLL remain unexecuted, private
 and unchanged.
+
+### The on-the-fly memory writer: two VirtualProtect calls around a decoded buffer
+
+Following the resolved VirtualProtect pointer slot
+from original DLL RVA 0x24F00 back to its relocation-backed
+FF15 indirect callers uncovers two actual x86 encodings
+in the original plaintext .text section:
+
+- RVA 0x9677: FF15 indirect call via preferred VA 0x00904F00.
+- RVA 0x96DC: another FF15 via exactly the same runtime pointer.
+
+Between these two calls, the original code contains
+0x969B SHR ECX,2, 0x969E REP MOVSD, 0x96A2 AND ECX,3
+and 0x96A5 REP MOVSB. The first call is prepared with
+PUSH 4 (PAGE_READWRITE) and a pointer to an old-protection
+local variable at RVA 0x9669. The second call receives the
+saved prior protection. This supports a copy-into-protected-
+memory helper which makes the destination writable,
+copies the requested number of bytes, then attempts to
+restore the previous protection.
+
+The only literal E8 callsite to the copy-out helper RVA
+0x9640 in the original file-backed .text section occurs
+at RVA 0x95B9. Its caller's broader sequence also includes:
+
+- RVA 0x940D: compare remaining buffer bytes against
+  0x1000, so each selected chunk is at most 4096 bytes.
+- RVA 0x9460: E8 call to RVA 0x9710, a separate
+  copy-in helper for the original untransformed bytes.
+- RVAs 0x950D and 0x9519: reads of buffer byte
+  at the current index and immediately preceding index.
+- RVA 0x9520: an explicit XOR of those bytes,
+  followed by a write at RVA 0x9525.
+- RVA 0x955D: an ADD in the transformation sequence.
+- RVA 0x95B9: E8 call to RVA 0x9640 for the
+  protected copy-out operation.
+
+These are **verified instructions from the exact original
+hash-checked DLL** and they explain how a buffer can be
+transformed and copied into memory that is normally
+nonwritable. Both VirtualProtect calls use a pointer
+resolved earlier into virtual-only .data: they do **not**
+reference KERNEL32 through an ordinary imported IAT entry.
+
+This is the leading hypothesis for restoring protected
+SafeDisc code. It still needs a proven runtime call path,
+a demonstrated destination in the encrypted .txt section
+and exact recovery of the stateful byte transformation.
+The new read-only --modifier-research checks both indirect
+FF15 operands, the PE virtual-only slot geometry, the
+copy-in / copy-out relative-call targets, and the specific
+original x86 operation bytes. A bounded synthetic
+regression checks that altered copy instructions fail
+closed. No protected code is executed or emitted.
