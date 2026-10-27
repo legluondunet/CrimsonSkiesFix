@@ -1341,6 +1341,75 @@ fn dll_e25c_allocator_paths(dll:&[u8],pe:&Pe32)->Result<(usize,usize,usize)>{
     Ok((first_paths.len(),later_paths.len(),fake_call_count))
 }
 
+// Real byte-transforming primitive inside DF96's 128-byte
+// initialization path: E11E CALL E205. The opaque predicates
+// in E205 preserve pre-existing arbitrary flags, but all 32
+// flag states converge on E228. At E228 the 32-bit inputs
+// are masked with 0xFF, XORed, written to local AL and returned.
+// XOR of masked bytes has high 24 bits zero, OF=SF=CF=0;
+// the JL at E23E is then necessarily NOT taken.
+// No DLL, driver, game or x86 instruction is ever executed.
+fn dll_e205_xor_proof(dll:&[u8],pe:&Pe32)->Result<usize>{
+    fn check(dll:&[u8],pe:&Pe32,rva:u32,bytes:&[u8])->Result<()>{
+        let at=executable_rva_to_file_offset(pe,rva,bytes.len())?;
+        if dll.get(at..at+bytes.len())!=Some(bytes){
+            return Err(format!("E205 opcode bytes differ at RVA 0x{rva:08X}"));
+        }
+        Ok(())
+    }
+    check(dll,pe,0xE205,&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57])?;
+    if dll_relative_call_target(dll,pe,0xE11E)?!=0xE205{
+        return Err("DF96 no longer calls 8-bit XOR function E205".into());
+    }
+    // Validate exact arithmetic and return without treating
+    // misleading overlapping bytes as reachable instructions.
+    check(dll,pe,0xE228,&[
+        0x8B,0x45,0x08,0x25,0xFF,0,0,0,
+        0x8B,0x4D,0x0C,0x81,0xE1,0xFF,0,0,0,
+        0x33,0xC1,0x88,0x45,0xFC,
+    ])?;
+    check(dll,pe,0xE23E,&[0x7C,0x06,0x90,0x90,0x77,0x00,0xEB,0x0C])?;
+    check(dll,pe,0xE252,&[0x8A,0x45,0xFC,0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3])?;
+    let mut paths=std::collections::HashSet::new();
+    for state in 0..32u8{
+        let f=FiveFlags{
+            zf:state&1!=0,cf:state&2!=0,pf:state&4!=0,
+            sf:state&8!=0,of:state&16!=0,
+        };
+        let mut pc=0xE20Cu32;
+        let mut trace=Vec::new();
+        for _ in 0..24{
+            trace.push(pc);
+            if pc==0xE228{break}
+            // Opaque branch instructions all leave EFLAGS alone.
+            pc=if let Some(next)=dll_next_opaque_branch(dll,pe,pc,f)?{
+                next
+            } else {
+                match pc {
+                    0xE20E=>{check(dll,pe,pc,&[0x8B,0xED])?;pc+2},
+                    0xE212|0xE21A=>{check(dll,pe,pc,&[0x90])?;pc+1},
+                    0xE21B=>{check(dll,pe,pc,&[0x87,0xDB])?;pc+2},
+                    0xE21F=>{check(dll,pe,pc,&[0x87,0xD2])?;pc+2},
+                    _=>return Err(format!("unrecognized E205 pre-XOR instruction at 0x{pc:08X}")),
+                }
+            };
+            if !(0xE20C..=0xE228).contains(&pc){
+                return Err(format!("E205 flag path escaped bounded region at 0x{pc:08X}"));
+            }
+        }
+        if trace.last().copied()!=Some(0xE228){
+            return Err("E205 8-bit XOR is not reached by every incoming flag state".into());
+        }
+        paths.insert(trace);
+    }
+    Ok(paths.len())
+}
+// Algebraic description of the ORIGINAL E228..E23B instructions;
+// tested with synthetic data; not a general SafeDisc decode.
+fn e205_byte_xor_math(first:u32,second:u32)->u8{
+    ((first&0xFF) ^ (second&0xFF)) as u8
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -1379,6 +1448,11 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     println!("    After saving allocation pointer [EBP-4], {} distinct paths reach the NULL check E2CC.",after);
     println!("    If non-NULL, E2DE CALL DF96 receives pointer and original caller argument.");
     println!("    Neither the allocator nor DF96 is yet a proven protected-section decryptor.");
+    let xor_paths=dll_e205_xor_proof(dll,&pe)?;
+    println!("  DF96 calls E205 at RVA E11E; E205 has {} distinct flag-preserving paths, all reaching a masked 8-bit XOR.",xor_paths);
+    println!("  E205 arithmetic: AL = ((argument1 & 0xFF) XOR (argument2 & 0xFF)), returns AL.");
+    println!("  This is a verified byte-transforming helper within the 128-byte initialization path.");
+    println!("  It does not establish decryption of the DLL .txt section.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -4211,6 +4285,52 @@ mod tests {
         let offset=0x200+(0xE2FE-0xD000) as usize;
         dll[offset]=0x90;
         assert!(dll_e25c_allocator_paths(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn e205_xor_all_32_flag_states_and_byte_math(){
+        let mut dll=synthetic_pe();
+        dll.resize(0x3300,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x3000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0xD000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x3000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let parts:&[(u32,&[u8])]=&[
+            (0xE205,&[0x55,0x8B,0xEC,0x51,0x53,0x56,0x57]),
+            (0xE20C,&[0xEB,0x07]),(0xE20E,&[0x8B,0xED]),
+            (0xE210,&[0x78,0x06]),(0xE212,&[0x90]),
+            (0xE213,&[0x79,0x03]),(0xE215,&[0xEB,0xF7]),
+            (0xE218,&[0x7F,0x09]),(0xE21A,&[0x90]),
+            (0xE21B,&[0x87,0xDB]),(0xE21D,&[0x78,0x09]),
+            (0xE21F,&[0x87,0xD2]),(0xE221,&[0x79,0x05]),
+            (0xE223,&[0x77,0x00]),(0xE225,&[0x7F,0xF3]),
+            (0xE228,&[0x8B,0x45,0x08,0x25,0xFF,0,0,0,
+                0x8B,0x4D,0x0C,0x81,0xE1,0xFF,0,0,0,0x33,0xC1,0x88,0x45,0xFC]),
+            (0xE23E,&[0x7C,0x06,0x90,0x90,0x77,0x00,0xEB,0x0C]),
+            (0xE252,&[0x8A,0x45,0xFC,0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3]),
+        ];
+        for &(rva,bytes) in parts {
+            let off=0x200+(rva-0xD000) as usize;
+            dll[off..off+bytes.len()].copy_from_slice(bytes);
+        }
+        let site=0xE11Eu32;
+        let disp=(i64::from(0xE205u32)-i64::from(site+5)) as i32;
+        let off=0x200+(site-0xD000) as usize;
+        dll[off]=0xE8;
+        dll[off+1..off+5].copy_from_slice(&disp.to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        assert_eq!(dll_e205_xor_proof(&dll,&pe).unwrap(),4);
+        assert_eq!(e205_byte_xor_math(0x1000FF,0x3011),0xEE);
+        assert_eq!(e205_byte_xor_math(0,0),0);
+        assert_eq!(e205_byte_xor_math(0xFF,0x80),0x7F);
+        for i in 0..256u32 {
+            assert_eq!(e205_byte_xor_math(i,0x55),(i as u8)^0x55);
+        }
+        let off=0x200+(0xE228-0xD000) as usize;
+        dll[off+3]=0x24; // Tamper with AND EAX,0xFF opcode.
+        assert!(dll_e205_xor_proof(&dll,&pe).is_err());
     }
 
     #[test]
