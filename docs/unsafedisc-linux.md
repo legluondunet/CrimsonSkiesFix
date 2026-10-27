@@ -2158,3 +2158,20 @@ begins by calling `0xA810` with a length of `0x28`, followed by a
 bytewise comparison against the supplied buffer. This is evidence of
 selection and checking, not yet evidence of where the selected memory
 actually points.
+
+
+### Writer destination provenance: descriptor base plus chunk offset
+
+Disassembling the exact original DLL at `0x9649..0x9652` shows
+`MOV EAX,[EBP+8]; MOV ECX,[EAX+4]; ADD ECX,[EBP+0xC]; MOV [EBP-8],ECX`.
+The first argument to the writer is passed by its caller as `LEA [EBP+8]`
+at `0x95B5`, along with chunk offset, chunk length, and scratch-buffer
+address. Thus the write address is derived from the descriptor's DWORD
+at offset +4, plus the running chunk offset; it is **not hardcoded** in
+writer `0x9640`. The original opcode bytes at both sites are now checked
+by the native research CLI.
+
+Tracing the caller's descriptor initialization and the result from `.txt2`
+helper `0x181E0` is the remaining prerequisite to proving whether any
+specific `.txt` address is targeted. This observation alone does not
+validate a decrypted page or establish the full unpacking algorithm.
