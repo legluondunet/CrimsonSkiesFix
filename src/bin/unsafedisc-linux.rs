@@ -415,6 +415,132 @@ fn print_dll_protected_xrefs(dll: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// This is a deliberately limited *literal-byte* scan: unlike PE
+// HIGHLOW relocations, raw 32-bit constants cannot establish pointer
+// semantics. Scan both LE RVA and preferred-base VA encodings, but
+// exclude protected .txt bytes and every 4-byte window overlapping
+// any HIGHLOW DWORD (already handled by --xref-research).
+// Overlapping x86 instructions can also produce apparent constants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DllLiteralHit {
+    source_rva: u32,
+    value: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DllLiteralHits {
+    rvas: Vec<DllLiteralHit>,
+    absolute_vas: Vec<DllLiteralHit>,
+    special: Vec<DllLiteralHit>,
+}
+fn dll_unrelocated_literals(
+    dll: &[u8], section: &PeSection,
+    relocations: &[RelocBlock], preferred_base: u32,
+    target: &PeSection,
+) -> Result<DllLiteralHits> {
+    const CODE_SIZE: usize = 4;
+    let backed = section.raw_len.min(if section.virtual_size == 0 {
+        section.raw_len
+    } else { section.virtual_size as usize });
+    let end = section.raw_offset.checked_add(backed)
+        .ok_or("literal source raw range overflow")?;
+    let bytes = dll.get(section.raw_offset..end)
+        .ok_or("literal source raw section not within verified DLL")?;
+    let mut relocated = vec![false; backed];
+    for block in relocations {
+        for &offset in &block.highlow_offsets {
+            let source_rva = block.page_rva.checked_add(offset as u32)
+                .ok_or("literal relocation RVA overflow")?;
+            let Some(local) = source_rva.checked_sub(section.virtual_address) else { continue; };
+            let local = local as usize;
+            if local < backed {
+                let until = local.saturating_add(CODE_SIZE).min(backed);
+                relocated[local..until].fill(true);
+            }
+        }
+    }
+    let target_end = target.virtual_address.checked_add(target.virtual_size)
+        .ok_or("protected target RVA overflow")?;
+    let va_start = preferred_base.checked_add(target.virtual_address)
+        .ok_or("protected target VA overflow")?;
+    let va_end = preferred_base.checked_add(target_end)
+        .ok_or("protected target VA extent overflow")?;
+    let candidates = [
+        target.virtual_address,
+        target_end,
+        target.virtual_size,
+        target.raw_len as u32,
+        0x65BE,
+        0x6621,
+        preferred_base.checked_add(0x65BE).ok_or("modifier VA overflow")?,
+        preferred_base.checked_add(0x6621).ok_or("modifier VA overflow")?,
+    ];
+    let mut hits = DllLiteralHits {
+        rvas: Vec::new(),absolute_vas:Vec::new(),special:Vec::new(),
+    };
+    for i in 0..backed.saturating_sub(3) {
+        if relocated[i..i+CODE_SIZE].contains(&true) { continue; }
+        let value = u32::from_le_bytes(bytes[i..i+4].try_into().unwrap());
+        let location = section.virtual_address.checked_add(i as u32)
+            .ok_or("literal source RVA overflow")?;
+        let hit = DllLiteralHit { source_rva:location,value };
+        if target.virtual_address <= value && value < target_end {
+            hits.rvas.push(hit.clone());
+        }
+        if va_start <= value && value < va_end {
+            hits.absolute_vas.push(hit.clone());
+        }
+        if candidates.contains(&value) {
+            hits.special.push(hit);
+        }
+    }
+    Ok(hits)
+}
+
+fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
+    const MAX_LIST: usize = 16;
+    let pe = parse_pe32(dll)?;
+    let nt = read_u32(dll,0x3C)? as usize;
+    let base = read_u32(dll,nt+24+28)?;
+    let target = pe.section(b".txt")?;
+    let (blocks, _) = pe_relocation_blocks(dll,&pe)?;
+    let mut total_rva = 0;
+    let mut total_va = 0;
+    let mut total_special = 0;
+    println!("SafeDisc DLL protected .txt literal research (NON-relocated DWORD candidates):");
+    println!("  Base 0x{base:08X}; protected section RVA 0x{:08X}..0x{:08X} (end excluded)",
+        target.virtual_address,target.virtual_address.checked_add(target.virtual_size)
+            .ok_or("protected section virtual end overflow")?);
+    println!("  Exclude HIGHLOW-relocated DWORD overlaps; these were analyzed separately by --xref-research.");
+    for section in &pe.sections {
+        if section.name == target.name || section.name.starts_with(b".reloc") {
+            continue;
+        }
+        let name=String::from_utf8_lossy(section.name.split(|&b| b==0).next().unwrap_or(&[]));
+        let hits=dll_unrelocated_literals(dll,section,&blocks,base,target)?;
+        total_rva+=hits.rvas.len();total_va+=hits.absolute_vas.len();total_special+=hits.special.len();
+        println!("  Section {name}: raw LE RVA-range {}, preferred-base VA-range {}, exact section/modifier constants {}.",
+            hits.rvas.len(),hits.absolute_vas.len(),hits.special.len());
+        for (kind, values) in [
+            ("RVA-range", &hits.rvas),
+            ("VA-range", &hits.absolute_vas),
+            ("exact marker", &hits.special),
+        ] {
+            for item in values.iter().take(MAX_LIST) {
+                println!("    {kind} source RVA 0x{:08X}: 0x{:08X}",
+                    item.source_rva,item.value);
+            }
+            if values.len()>MAX_LIST {
+                println!("    {kind}: {} further unclassified matches omitted.",values.len()-MAX_LIST);
+            }
+        }
+    }
+    println!("  Total NON-relocated 4-byte window matches: RVA-range {total_rva}, VA-range {total_va}, exact special markers {total_special}.");
+    println!("  LE constants are not established absolute pointers or reachable x86 operands.");
+    println!("  A zero count cannot exclude computed addresses, relative branches, or decoded runtime code.");
+    println!("  Original DLL is only read; no protected code is executed or written.");
+    Ok(())
+}
+
 // Parse the original DLL's normal IMAGE_IMPORT_DESCRIPTOR metadata.
 // This lets us NAME the imported APIs referenced by indirect CALLs
 // in the readable .text startup code, without assuming that every
@@ -1571,13 +1697,14 @@ struct Options {
     startup_research: bool,
     attach_research: bool,
     xref_research: bool,
+    literal_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1645,6 +1772,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.xref_research = true;
             continue;
         }
+        if key == "--literal-research" {
+            if options.literal_research { return Err("repeated --literal-research argument".into()); }
+            options.literal_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -1679,6 +1811,9 @@ fn inspect(options: Options) -> Result<()> {
     }
     if options.xref_research {
         print_dll_protected_xrefs(&dll)?;
+    }
+    if options.literal_research {
+        print_dll_literal_research(&dll)?;
     }
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
@@ -2727,6 +2862,44 @@ mod tests {
         assert_eq!(all_refs[0].source_section,".text");
         assert_eq!(count,0);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn dll_literal_scanner_excludes_relocations_and_protected_source() {
+        let mut dll = synthetic_pe();
+        dll.resize(0xA00,0);
+        dll[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let first=0x178usize;
+        dll[first..first+8].copy_from_slice(b".text\0\0\0");
+        dll[first+8..first+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[first+12..first+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        dll[first+16..first+20].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[first+36..first+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let second=first+40;
+        dll[second..second+8].copy_from_slice(b".txt\0\0\0\0");
+        dll[second+8..second+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[second+12..second+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[second+16..second+20].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[second+20..second+24].copy_from_slice(&0x600u32.to_le_bytes());
+        dll[second+36..second+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let base=0x008E_0000u32;
+        dll[0x208..0x20C].copy_from_slice(&0x2050u32.to_le_bytes());
+        dll[0x220..0x224].copy_from_slice(&(base+0x2060).to_le_bytes());
+        dll[0x240..0x244].copy_from_slice(&(base+0x2070).to_le_bytes());
+        // This literal is exactly a candidate but marked relocated.
+        let blocks=[RelocBlock{page_rva:0x1000,highlow_offsets:vec![0x40]}];
+        let pe=parse_pe32(&dll).unwrap();
+        let hits=dll_unrelocated_literals(&dll,pe.section(b".text").unwrap(),
+            &blocks,base,pe.section(b".txt").unwrap()).unwrap();
+        assert!(hits.rvas.contains(&DllLiteralHit{source_rva:0x1008,value:0x2050}));
+        assert!(hits.absolute_vas.contains(&DllLiteralHit{source_rva:0x1020,value:base+0x2060}));
+        assert!(!hits.absolute_vas.iter().any(|h|h.source_rva==0x1040));
+        // End-exclusive bounds.
+        dll[0x250..0x254].copy_from_slice(&0x2100u32.to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        let hits=dll_unrelocated_literals(&dll,pe.section(b".text").unwrap(),
+            &blocks,base,pe.section(b".txt").unwrap()).unwrap();
+        assert!(!hits.rvas.iter().any(|h|h.source_rva==0x1050));
     }
 
     #[test]
