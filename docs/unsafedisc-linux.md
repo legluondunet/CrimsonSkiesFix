@@ -3342,3 +3342,72 @@ asserts all expected original statistics and **prints counts only**,
 never publishes any proprietary original DWORD values or stored
 mapping table. A synthetic test confirms that inconsistent and
 non-injective candidate pairs are rejected.
+
+
+### Complete, index-aware composite EAX observations across 440,422 ICD DWORDs (2026-10-27)
+
+The earlier read-only composite audit used only the first DWORD of
+each fragment, where historical `0x401F62` constructs the
+index-derived XOR mask `0`. It established 48,149 first-word
+observations, 31,799 distinct input/output DWORDs and zero
+contradictions.
+
+An independent **second implementation in Python** now walks all
+440,422 complete non-relocated DWORDs of the exact original
+`CRIMSON.ICD`, with the matching SHA-256-verified
+`TESTME.EXE`. For every fragment, it reverses the known TEA stage
+on the reference bytes (including the legacy overlapping tail),
+reconstructs the second-layer intermediate words, and considers
+the original historical mask:
+
+```text
+index = word offset FROM THE BEGINNING OF THIS RELOCATION-FREE FRAGMENT
+mask = (index << 24) | (index << 16) | (index << 8) | index
+source = original_ICD_word XOR mask
+observed_result = reference_after_inverse_TEA_word
+
+observed_result = second_modifier(first_modifier(source) XOR mask)
+```
+
+**Important:** the inner XOR is between the two still-protected
+modifiers, so this is a different function for each mask/index.
+Combining all samples in a single unindexed `input -> output` map
+would be misleading. Instead, use independent bidirectional maps
+for each `(index, masked_input)` and `(index, observed_result)`.
+
+Verified original-file results:
+
+| Measurement | Count |
+| --- | ---: |
+| All complete second-layer DWORD observations | **440,422** |
+| Distinct `(index, masked_input)` combinations | **361,480** |
+| Repeated observations of an existing combination | **78,942** |
+| Contradictory repeated results | **0** |
+| Inverse collisions within the same index | **0** |
+| Highest observed DWORD index within a fragment | **1,006** |
+| Separate index-0 pairs (subset) | **31,799** distinct |
+
+As a separate **negative control** using the last TEA word with its
+least-significant bit toggled, the same offline all-word audit found
+10 forward contradictions and 13 reverse collisions, and failed the
+existing independent tail oracle. The correct four-word key has zero
+such collisions and passes the 58,076-byte tail check. This provides
+a broader *structural consistency* check on the previously validated
+key and the exact relocation-fragment word-index reset.
+
+The native Rust inspector now computes the index-aware evidence
+**entirely in memory**, verifies all expected totals, and prints
+only aggregate counts (no original or reference DWORD pairs).
+Synthetic tests prove that different indices must be treated as
+distinct functions. The corresponding GitHub Actions build passed
+**80/80 tests on Linux and Windows**, and the downloaded Linux
+inspect-only artifact was also run against all four exact original
+files with `--key-research --reference-audit`; every new
+reference-backed assertion passed.
+
+**Limits:** these are observed finite samples of a 32-bit transformation,
+not a reconstructed executable algorithm, recovered plaintext from
+the protected inputs alone, or replacement for either encrypted
+`dplayerx.dll` EAX modifier. A 361,480-pair local oracle cannot
+be substituted for the title-specific functions when decoding
+unseen inputs.
