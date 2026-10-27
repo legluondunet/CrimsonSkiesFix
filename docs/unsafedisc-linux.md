@@ -2723,3 +2723,35 @@ another stage restores or preserves it.
 
 This finding is **not** a working decryptor and the tool does not
 modify, output or embed the private DLL image.
+
+
+### Categories 4, 5 and 6 originate in distinct original PE section selectors
+
+Comparing the original x86 at three loop entrypoints with their respective
+`0xA2A0` category-registering calls yields a direct static connection:
+
+| Original iterator | Selector PUSH/CALL to `0x18800` | Category PUSH/CALL to `0xA2A0` | First-stage PE section filter |
+| --- | --- | --- | --- |
+| `0xAA80` | `0xAA9A` / `0xAA9D`: selector **10** | `0xAAB3` / `0xAAB8`: **6** | `(Characteristics & 0xC0000060) == 0x40000040` |
+| `0xAB10` | `0xAB2A` / `0xAB2D`: selector **2** | `0xAB43` / `0xAB48`: **5** | `(Characteristics & 0xC0000040) == 0xC0000040` |
+| `0xABA0` | `0xABBA` / `0xABBD`: selector **1** | `0xABD3` / `0xABD8`: **4** | `(Characteristics & 0x20000020) == 0x20000020` |
+
+The original DLL's first matching section *by flags only* is `.txt` for
+category 4, `.data` for category 5, and `.rdata` for category 6.
+The selector-2 and selector-10 cases additionally call `0x187B0`,
+which can reject a candidate before the next 40-byte section header.
+Consequently `.data` and `.rdata` are **first-stage candidates, not
+independently proven final selections**. For selector 10, DLL `.reloc`
+also satisfies the initial masked comparison, but occurs after `.rdata`
+and can be subject to the same exclusion logic.
+
+The new offline Rust proof validates all six literal `PUSH imm8`
+instructions, all six E8 destinations, and the three actual paired
+Characteristics constants in the cases at RVAs `0x183C9`,
+`0x18514`, and `0x18645`. Synthetic tests demonstrate first-match
+semantics and why a matching relocation section is not automatically
+a valid final result. Numeric category meanings are now **partly
+linked to PE section classes**, rather than opaque integer labels.
+
+The other categories 0,2,3,7,1 remain to classify. No dynamic
+unpacking path or validated decrypted plaintext is claimed.
