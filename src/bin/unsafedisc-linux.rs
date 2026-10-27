@@ -1015,6 +1015,34 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
             None => println!("    FF15 at RVA 0x{site:08X} -> IAT VA 0x{va:08X}: unresolved original PE IAT ({role})"),
         }
     }
+    // Full static scan of original file-backed .text/.txt2 E8 bytes
+    // identifies five direct CALL candidates into high-entropy .txt.
+    // Unlike PE relocation-backed VA pointers, rel32 does NOT require
+    // a base relocation and thus was invisible to --xref-research.
+    // Match only the five specific sites independently recovered by
+    // inspection and assert the actual original 5-byte rel32 encoding
+    // and target. Overlapping / opaque x86 paths remain unresolved.
+    let protected = pe.section(b".txt")?;
+    let protected_end = protected.virtual_address.checked_add(
+        protected.virtual_size.min(protected.raw_len as u32)
+    ).ok_or("protected code range overflow")?;
+    println!("  Verified relative CALL encodings into on-disk encrypted .txt (STATIC CANDIDATES):");
+    for (site, expected_target, source) in [
+        (0x9197u32, 0x3B70u32, ".text"),
+        (0x989Fu32, 0x7212u32, ".text"),
+        (0x98C5u32, 0x7C4Fu32, ".text"),
+        (0x1ACF6u32, 0x8620u32, ".txt2"),
+        (0x1AD4Fu32, 0x8480u32, ".txt2"),
+    ] {
+        let target = dll_relative_call_target(dll, &pe, site)?;
+        if target != expected_target
+            || target < protected.virtual_address || target >= protected_end {
+            return Err(format!("original DLL .txt E8 candidate mismatch at RVA 0x{site:08X}"));
+        }
+        println!("    {source} E8 at 0x{site:08X} -> encrypted .txt RVA 0x{target:08X}");
+    }
+    println!("  Relative E8 cross-section calls are not PE HIGHLOW relocation references.");
+    println!("  Original encrypted .txt target bytes are NOT valid proof of decoded runtime code.");
     // This small deterministic helper is important when deciding
     // whether the helper CALL at 0x1A25F transforms any ciphertext.
     // On disk it simply copies argument 2 into [argument 1 + 8].
@@ -3322,6 +3350,40 @@ mod tests {
                 assert_eq!((corrected-first)%4,0);
             }
         }
+    }
+
+    #[test]
+    fn relative_call_into_protected_section_is_distinct_from_highlow_import_va() {
+        let mut image=synthetic_pe();
+        image.resize(0xA00,0);
+        image[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        let first=0x178usize;
+        image[first..first+8].copy_from_slice(b".text\0\0\0");
+        image[first+8..first+12].copy_from_slice(&0x200u32.to_le_bytes());
+        image[first+12..first+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[first+16..first+20].copy_from_slice(&0x200u32.to_le_bytes());
+        image[first+36..first+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let second=first+40;
+        image[second..second+8].copy_from_slice(b".txt\0\0\0\0");
+        image[second+8..second+12].copy_from_slice(&0x180u32.to_le_bytes());
+        image[second+12..second+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[second+16..second+20].copy_from_slice(&0x200u32.to_le_bytes());
+        image[second+20..second+24].copy_from_slice(&0x600u32.to_le_bytes());
+        image[second+36..second+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        // At RVA 0x1050, call .txt RVA 0x2050 by signed rel32.
+        let site=0x1050u32;
+        let dest=0x2050u32;
+        let disp=(i64::from(dest)-i64::from(site+5)) as i32;
+        image[0x250]=0xE8;
+        image[0x251..0x255].copy_from_slice(&disp.to_le_bytes());
+        let pe=parse_pe32(&image).unwrap();
+        assert_eq!(dll_relative_call_target(&image,&pe,site).unwrap(),dest);
+        // These raw bytes have no corresponding HIGHLOW relocation!
+        let source=pe.section(b".txt").unwrap();
+        let (count,hits)=dll_code_reloc_refs_to_section(
+            &image,&pe,&[],0x008E0000,source,true).unwrap();
+        assert_eq!(count,0);
+        assert!(hits.is_empty());
     }
 
     #[test]
