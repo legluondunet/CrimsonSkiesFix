@@ -1971,7 +1971,24 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     }
     if dll_relative_call_target(dll,pe,0x924F)?!=0x92B0 {return Err("descriptor producer call target changed".into());}
     println!("  Caller 0x9232..0x924F copies virtual .data DWORDs 0x259E0/0x259E4/0x259E8 into a by-value stack descriptor.");
-    println!("  Its second DWORD (writer base candidate) initially comes from RVA 0x259E4, whose runtime initializer is unproven.");
+    // The first initializer for the descriptor's second DWORD uses the
+    // *ordinary* PE import GetModuleHandleA rather than a decoded name.
+    for (site,code) in [
+        (0x9869u32,&[0x50,0xFF,0x15,0x98,0xE0,0x8F,0x00][..]),
+        (0x9870,&[0xA3,0xE4,0x59,0x90,0x00][..]),
+        (0x988E,&[0xA1,0xE4,0x59,0x90,0x00][..]),
+        (0x9893,&[0x89,0x41,0x04][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,code)?;}
+    let (_,iat_rva)=dll_indirect_import_call(dll,pe,0x986A,base)?;
+    let bindings=dll_import_bindings(dll,pe)?;
+    let binding=bindings.iter().find(|b|b.iat_rva==iat_rva)
+        .ok_or("module-handle initializer does not reference a declared import")?;
+    if binding.symbol!="GetModuleHandleA" || !binding.library.eq_ignore_ascii_case("KERNEL32.dll"){
+        return Err("descriptor base initializer is not KERNEL32!GetModuleHandleA".into());
+    }
+    println!("  RVA 0x986A calls KERNEL32!GetModuleHandleA, then 0x9870 stores EAX into virtual .data RVA 0x259E4.");
+    println!("  Hence descriptor +4 contains a module handle/base when initialization succeeds, not a hardcoded preferred .text address.");
+    println!("  Still unknown: which module name is passed, return success, module relocation and effective section-relative write offset.");
     println!("  Copy destination in 0x9640: *(u32*)(first_argument+4) + chunk_offset (0x9649..0x9652).");
     println!("  The first_argument is the address of [EBP+8] in caller 0x95B9, and its pointee must be traced before identifying a PE section.");
     println!("  Original x86 verifies index starts at 1; both indexed reads use the same [EBP-0x10] loop index.");
