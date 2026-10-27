@@ -3926,6 +3926,7 @@ fn inspect(options: Options) -> Result<()> {
     if options.historical_selection {
         print_historical_155_section_filter(&protected_pe);
     }
+    if options.key_research {audit_original_pretea_fragments(&protected_pe,&relocs)?;}
     let text = protected_pe.section(b".text")?;
     let text_page_start = text.virtual_address;
     let text_page_count = text.raw_len / 4096;
@@ -4170,6 +4171,84 @@ fn pre_tea_section_pages_with_modifiers<F, G>(
     }
 }
 
+#[derive(Debug,PartialEq,Eq)]
+struct PreTeaFragmentGeometry {
+    highlow_slots:usize,
+    highlow_bytes:usize,
+    modified_dwords:usize,
+    skipped_tail_bytes:usize,
+    calls:usize,
+}
+fn pretea_fragment_geometry(extent:usize, highlow_offsets:&[usize])->Result<PreTeaFragmentGeometry> {
+    let mut marked=vec![false;extent];
+    let mut previous_end=0usize;
+    for &start in highlow_offsets {
+        let end=start.checked_add(4).ok_or("HIGHLOW position overflow")?;
+        if start<previous_end || end>extent {
+            return Err("unsorted, overlapping, or out-of-extent HIGHLOW offset".into());
+        }
+        marked[start..end].fill(true);
+        previous_end=end;
+    }
+    let mut out=PreTeaFragmentGeometry{
+        highlow_slots:highlow_offsets.len(),
+        highlow_bytes:highlow_offsets.len().checked_mul(4)
+            .ok_or("HIGHLOW total overflow")?,
+        modified_dwords:0,skipped_tail_bytes:0,calls:0,
+    };
+    for (i,page) in marked.chunks(4096).enumerate(){
+        let _=i;
+        let mut pos=0usize;
+        while pos<page.len(){
+            if page[pos]{pos+=1;continue;}
+            let begin=pos;
+            while pos<page.len() && !page[pos]{pos+=1;}
+            let len=pos-begin;
+            if len>=4{out.calls+=1;out.modified_dwords+=len/4;}
+            out.skipped_tail_bytes+=len%4;
+        }
+    }
+    let total=out.modified_dwords.checked_mul(4)
+        .and_then(|n|n.checked_add(out.highlow_bytes))
+        .and_then(|n|n.checked_add(out.skipped_tail_bytes))
+        .ok_or("fragment audit accounting overflow")?;
+    if total!=extent{return Err("fragment audit lost one or more bytes".into());}
+    Ok(out)
+}
+fn audit_original_pretea_fragments(pe:&Pe32,relocs:&[RelocBlock])->Result<()>{
+    let section=pe.section(b".text")?;
+    let len=section.virtual_size.min(section.raw_len as u32) as usize;
+    let start=section.virtual_address;
+    let end=start.checked_add(len as u32).ok_or("text extent overflow")?;
+    let mut slots=Vec::new();
+    for block in relocs {
+        for &offset in &block.highlow_offsets {
+            let rva=block.page_rva.checked_add(u32::from(offset))
+                .ok_or("HIGHLOW section RVA overflow")?;
+            if rva>=start && rva.checked_add(4).is_some_and(|hi|hi<=end) {
+                slots.push((rva-start) as usize);
+            }
+        }
+    }
+    slots.sort_unstable();
+    let result=pretea_fragment_geometry(len,&slots)?;
+    if result!=(PreTeaFragmentGeometry{
+        highlow_slots:61_743,highlow_bytes:246_972,
+        modified_dwords:440_422,skipped_tail_bytes:93_801,
+        calls:48_149,
+    }){
+        return Err(format!("original relocation-fragment geometry changed: {result:?}"));
+    }
+    println!("Relocation-aware 1.50.20 extra-layer fragment geometry (STATIC, original ICD):");
+    println!("  .text bounded virtual extent: {len} bytes; HIGHLOW operands: {}",result.highlow_slots);
+    println!("  modifier calls (>=1 DWORD per fragment): {}",result.calls);
+    println!("  complete transformable DWORDs: {}",result.modified_dwords);
+    println!("  unchanged HIGHLOW bytes: {}; sub-DWORD gap tails: {}",
+        result.highlow_bytes,result.skipped_tail_bytes);
+    println!("  Fragment-local word mask restarts at 0; these are structural counts, not decoded content.");
+    Ok(())
+}
+
 // Historical unSafeDisc 1.5.5 calls its per-DWORD adapter (0x401F62)
 // separately for each NON-relocated byte interval emitted by 0x401EF5,
 // not necessarily only once per 4KiB page. Each such call initializes
@@ -4257,6 +4336,24 @@ mod tests {
     fn sha_256_vectors() {
         assert_eq!(sha256(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn fragment_geometry_accounts_for_protected_slots_and_nonword_tails(){
+        let result=pretea_fragment_geometry(22,&[5,13]).unwrap();
+        assert_eq!(result,PreTeaFragmentGeometry{
+            highlow_slots:2,highlow_bytes:8,
+            modified_dwords:2,skipped_tail_bytes:6,calls:2
+        });
+        // This crossing slot starts on the final two bytes of page 0.
+        let crossed=pretea_fragment_geometry(4107,&[4094]).unwrap();
+        assert_eq!(crossed.highlow_slots,1);
+        assert_eq!(crossed.highlow_bytes,4);
+        assert_eq!(crossed.calls,2);
+        assert_eq!(crossed.skipped_tail_bytes,3);
+        assert_eq!(crossed.modified_dwords,1025);
+        assert!(pretea_fragment_geometry(8,&[6]).is_err());
+        assert!(pretea_fragment_geometry(16,&[4,6]).is_err());
     }
 
     #[test]
