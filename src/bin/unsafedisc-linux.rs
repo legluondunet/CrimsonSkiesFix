@@ -4110,7 +4110,7 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("TEA one-bit negative control differs from independent original/reference result".into());
             }
 
-            let (composite,algebra,indexed_affine)=inspect_original_modifier_reference_pairs(
+            let (composite,algebra,indexed_affine,mask_alias)=inspect_original_modifier_reference_pairs(
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
@@ -4142,6 +4142,14 @@ fn inspect(options: Options) -> Result<()> {
                 algebra.rotate_then_add_matches,algebra.add_then_rotate_matches);
             println!("  Indexed GF(2) two-modifier model over {} distinct observations: joint rank {}/64; {} contradicting samples.",
                 indexed_affine.samples,indexed_affine.feature_rank,indexed_affine.contradictory_samples);
+            println!("  Equal-mask alias test: {} masks ({} shared by distinct word indices), {} canonical (mask,input) pairs, {} cross-index repeats.",
+                mask_alias.distinct_masks,mask_alias.masks_with_multiple_indices,
+                mask_alias.distinct_masked_input_pairs,mask_alias.repeated_masked_input_pairs);
+            println!("  Canonical-mask violations: {} forward inconsistencies, {} inverse collisions.",
+                mask_alias.forward_conflicts,mask_alias.inverse_conflicts);
+            if mask_alias.forward_conflicts!=0 || mask_alias.inverse_conflicts!=0 {
+                return Err("historical full-width mask alias invariant disagrees with protected/reference data".into());
+            }
             println!("  This 64-feature test is a necessary condition only if BOTH original EAX modifiers are bit-affine.");
             println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
             println!("  CONFIRMED: the first-DWORD composite modifier acts consistently and injectively on 31,799 observed inputs.");
@@ -4574,7 +4582,8 @@ fn inspect_original_modifier_reference_pairs(
     original:&Pe32, decoded:&Pe32,
     relocations:&[RelocBlock], key:[u32;4],
 )->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit,
-           unsafedisc_indexed_affine::IndexedAffineAudit)> {
+           unsafedisc_indexed_affine::IndexedAffineAudit,
+           unsafedisc_indexed_affine::MaskAliasAudit)> {
     let protected=original.section(b".text")?;
     let plain=decoded.section(b".text")?;
     if protected.virtual_address!=plain.virtual_address ||
@@ -4661,7 +4670,8 @@ fn inspect_original_modifier_reference_pairs(
     audit.indexed_distinct_outputs=indexed_reverse.len();
     let algebra=unsafedisc_algebra::diagnose(&forward);
     let indexed_affine=unsafedisc_indexed_affine::diagnose(&indexed_forward);
-    Ok((audit,algebra,indexed_affine))
+    let mask_alias=unsafedisc_indexed_affine::audit_mask_aliases(&indexed_forward);
+    Ok((audit,algebra,indexed_affine,mask_alias))
 }
 
 // Standard TEA reference routine, tested with synthetic vectors.
