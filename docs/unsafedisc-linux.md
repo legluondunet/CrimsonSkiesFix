@@ -543,6 +543,58 @@ NOP/Jcc/JMP instructions on that path. A synthetic Rust
 unit fixture checks the full 18-instruction sequence and
 rejects altered opaque-predicate bytes. The proprietary
 binaries remain private and unexecuted.
+### Second opaque branch set: `0xD62C` converges to `0xD7BE`
+
+Continuing the first-call path **without executing the DLL**,
+the first proven callee `0xD62C` begins with x86 bytes:
+
+```asm
+push ebp
+mov  ebp,esp
+sub  esp,8
+push ebx
+push esi
+push edi
+```
+
+For any conventional, valid stack where `sub esp,8` neither
+underflows nor yields zero, **CF=ZF=0**. The obfuscated
+branches immediately afterward preserve these flags;
+PF/SF/OF can vary and are therefore **enumerated rather
+than assumed**.
+
+Independent offline evaluation of *all eight* possible
+combinations of parity (PF), sign (SF) and overflow (OF)
+shows that every reached path ends with exactly:
+
+```text
+0xD635 ... flag-preserving opaque branches ...
+ -> RVA 0xD663: PUSH EAX
+ -> RVA 0xD664: E8 CALL 0xD7BE
+```
+
+| PF | SF | OF | First reachable call |
+| --- | --- | --- | --- |
+| 0/1 | 0/1 | 0/1 | **RVA 0xD664 → 0xD7BE** in every case |
+
+This extends the conditionally verified attach chain:
+
+```text
+DllMain RVA 0xFD81
+  -> attach handler 0x9770
+  -> CMP-flags proven E8 at 0x97BE to 0xD62C
+  -> eight-state opcode/flags proof E8 at 0xD664 to 0xD7BE
+```
+
+This **does not** prove `0xD7BE` decrypts `.txt`, nor
+runtime execution of the DLL. It simply removes two
+layers of anti-disassembly conditional jumps.
+
+The Rust read-only `--attach-research` emits the first
+bound and now summarizes the eight `0xD62C` paths.
+A synthetic regression test builds only the instruction
+bytes needed for branch decisions and ensures all eight
+cases converge, while failing closed on altered opcodes.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
