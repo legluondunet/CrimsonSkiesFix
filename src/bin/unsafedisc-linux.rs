@@ -437,6 +437,68 @@ fn dll_known_near_branch_target(
     Ok(dest)
 }
 
+// The user's verified original DllMain process-attach excerpt at RVA
+// 0x9770..0x986F contains overlapping x86 instructions: e.g. reading
+// from 0x9850 yields "2B FF ; 15 ...", but 0x9851 decodes a
+// perfectly formed "FF 15 04 E0 8F 00" indirect CALL. NEVER assume
+// these candidate CALL sites are dynamically reached from DllMain.
+// Restrict this research flag to known on-disk opcodes and IAT metadata.
+fn dll_indirect_import_call(
+    dll: &[u8], pe: &Pe32, call_rva: u32, base: u32,
+) -> Result<(u32, u32)> {
+    let at = executable_rva_to_file_offset(pe, call_rva, 6)?;
+    if dll.get(at..at+2) != Some(&b"\xFF\x15"[..]) {
+        return Err(format!("expected FF15 indirect CALL at DLL RVA 0x{call_rva:08X}"));
+    }
+    let absolute_va = read_u32(dll, at+2)?;
+    let iat_rva = absolute_va.checked_sub(base)
+        .ok_or("indirect call VA below DLL preferred image base")?;
+    Ok((absolute_va, iat_rva))
+}
+
+fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
+    const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
+        0x97BE, 0x97EE, 0x9821, 0x9861,
+    ];
+    const ATTACH_INDIRECT_CALL_SITES: [u32; 2] = [
+        0x9851, 0x986A,
+    ];
+    let pe = parse_pe32(dll)?;
+    let nt = read_u32(dll, 0x3C)? as usize;
+    let base = read_u32(dll, nt+24+28)?;
+    let bindings = dll_import_bindings(dll, &pe)?;
+    println!("Original SafeDisc DLL process-attach overlap research (STATIC ONLY):");
+    println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
+    println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
+    println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
+    for site in ATTACH_DIRECT_CALL_SITES {
+        let target = dll_relative_call_target(dll, &pe, site)?;
+        let section = pe.sections.iter().find(|sec| {
+            sec.virtual_address <= target && target - sec.virtual_address <
+                (if sec.virtual_size == 0 { sec.raw_len as u32 }
+                 else { sec.virtual_size.min(sec.raw_len as u32) })
+        }).ok_or("direct CALL target not in a backed PE section")?;
+        let section_name = String::from_utf8_lossy(
+            section.name.split(|&b| b == 0).next().unwrap_or(&[])
+        );
+        println!("  Candidate E8 at RVA 0x{site:08X}: target 0x{target:08X} in {section_name}");
+        print_dll_code_window(dll, &pe, "candidate direct CALL target raw bytes", target, 128)?;
+    }
+    for site in ATTACH_INDIRECT_CALL_SITES {
+        let (va, rva) = dll_indirect_import_call(dll, &pe, site, base)?;
+        if let Some(import) = bindings.iter().find(|i| i.iat_rva == rva) {
+            println!("  Candidate FF15 at RVA 0x{site:08X}: IAT VA 0x{va:08X} -> {}!{}",
+                import.library, import.symbol);
+        } else {
+            println!("  Candidate FF15 at RVA 0x{site:08X}: IAT VA 0x{va:08X}, no bound original PE import entry");
+        }
+    }
+    println!("  Direct or indirect CALL encodings alone do not establish reachability.");
+    println!("  In particular, 0x1A20D is inside .txt2, not proof of .txt decoding.");
+    println!("  No DLL was loaded or executed; no file was decrypted or modified.");
+    Ok(())
+}
+
 // Build a bounded, statically validated next-stage call map from
 // instructions actually visible in the user's exact original DLL.
 // These RVAs are direct CALL instruction starts, not guessed functions.
@@ -1354,13 +1416,14 @@ struct Options {
     key_research: bool,
     modifier_research: bool,
     startup_research: bool,
+    attach_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1418,6 +1481,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.startup_research = true;
             continue;
         }
+        if key == "--attach-research" {
+            if options.attach_research { return Err("repeated --attach-research argument".into()); }
+            options.attach_research = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -1446,6 +1514,9 @@ fn inspect(options: Options) -> Result<()> {
     }
     if options.startup_research {
         print_dll_startup_calls(&dll)?;
+    }
+    if options.attach_research {
+        print_dll_attach_research(&dll)?;
     }
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
@@ -2402,6 +2473,24 @@ mod tests {
         assert!(dll_known_near_branch_target(&data,&pe,0x1010,true).is_err());
         data[0x211..0x215].copy_from_slice(&i32::MAX.to_le_bytes());
         assert!(dll_known_near_branch_target(&data,&pe,0x1010,false).is_err());
+    }
+
+    #[test]
+    fn dll_indirect_call_requires_exact_ff15_and_valid_base() {
+        let mut image = synthetic_pe();
+        let sec = 0x178usize;
+        image[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        image[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        image[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        image[0x208..0x20E].copy_from_slice(&[0xFF,0x15,0x20,0xE0,0x8F,0x00]);
+        let pe = parse_pe32(&image).unwrap();
+        assert_eq!(dll_indirect_import_call(&image,&pe,0x1008,0x8E0000).unwrap(),
+                   (0x8FE020,0x1E020));
+        assert!(dll_indirect_import_call(&image,&pe,0x1007,0x8E0000).is_err());
+        assert!(dll_indirect_import_call(&image,&pe,0x1008,0x900000).is_err());
+        image[0x208] = 0x2B;
+        assert!(dll_indirect_import_call(&image,&pe,0x1008,0x8E0000).is_err());
     }
 
     #[test]
