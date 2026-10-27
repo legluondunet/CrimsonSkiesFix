@@ -595,6 +595,53 @@ bound and now summarizes the eight `0xD62C` paths.
 A synthetic regression test builds only the instruction
 bytes needed for branch decisions and ensures all eight
 cases converge, while failing closed on altered opcodes.
+### RET decoy unmasked: the next actual attach callee is `0xC5C0`
+
+Continued analysis of the **original SHA-256-verified**
+`dplayerx.dll` beyond the previously established
+`0xD664: CALL 0xD7BE` reveals an important correction:
+
+- Original RVA `0xD7BE` contains **only byte `C3` (RET)**.
+  The call is therefore an obfuscation/stack roundtrip,
+  **not a decrypting function**.
+- It returns immediately to RVA `0xD669: POP EAX`.
+  The CALL/RET, `PUSH`/`POP`, and the later MOV and Jcc
+  instructions **do not alter EFLAGS**.
+- With the previously proven normal stack condition
+  **CF=ZF=0**, the conditional branch `0xD66A: JA`
+  reaches `0xD66E: mov word [ebp-8],1`.
+- `0xD674: JBE` is not taken, `0xD676: JA` is taken;
+  `0xD687: JS` and `0xD689: JNS` cover either SF state
+  and converge to RVA `0xD677`.
+- `0xD677: JNP` and `0xD67D: JP` cover either PF state
+  and converge to **RVA `0xD68C`**.
+- `0xD68C` contains an exact **E8 relative CALL to `0xC5C0`**.
+
+Eight PF/SF/OF combinations give **four distinct instruction
+paths, all ending at `0xD68C -> 0xC5C0`**. This was
+independently verified by direct Python byte reads of
+the exact private original DLL and its signed relative
+displacements, and by a separate bounded Rust interpreter.
+
+Therefore, subject to normal stack and successful
+previous initialization, the stronger structural chain is:
+
+```text
+DllMain 0xFD81 -> attach handler 0x9770
+ -> 0x97BE CALL 0xD62C
+ -> 0xD664 CALL 0xD7BE (single-byte RET decoy)
+ -> 0xD669 resume; preserved flags select reachable Jcc
+ -> 0xD68C CALL 0xC5C0 (NEXT NONTRIVIAL CALLEE)
+```
+
+**Nothing here establishes that `0xC5C0` decrypts `.txt`.**
+That function and its callees require further examination.
+The native read-only `--attach-research` asserts every
+opcode and expected destination, rejects altered data,
+and enumerates all eight paths. A synthetic Rust fixture
+tests four different paths converging and rejects a
+tampered `RET`. Private executable bytes are not
+committed or published.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
