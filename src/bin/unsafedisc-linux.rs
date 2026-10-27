@@ -1803,7 +1803,11 @@ fn dll_expect_raw_x86(dll:&[u8],pe:&Pe32,rva:u32,bytes:&[u8])->Result<()> {
 fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
-    let imports=dll_import_bindings(dll,pe)?;
+    let data=pe.section(b".data")?;
+    let zero_fill_start=data.virtual_address.checked_add(data.raw_len as u32)
+        .ok_or("original DLL .data backed boundary overflow")?;
+    let virtual_end=data.virtual_address.checked_add(data.virtual_size)
+        .ok_or("original DLL .data virtual upper bound overflow")?;
     for (site,dest,role) in [
         (0x9460u32,0x9710u32,"copy current input chunk into stack buffer"),
         (0x95B9,0x9640,"commit modified stack buffer to protected destination"),
@@ -1816,15 +1820,15 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     }
     for site in [0x9677u32,0x96DC] {
         let (_,iat_rva)=dll_indirect_import_call(dll,pe,site,base)?;
-        let import=imports.iter().find(|item|item.iat_rva==iat_rva)
-            .ok_or("protected copy VirtualProtect not in original IAT")?;
-        if import.symbol!="VirtualProtect" || !import.library.eq_ignore_ascii_case("KERNEL32.dll"){
-            return Err("protected memory-copy indirect API is not KERNEL32!VirtualProtect".into());
+        // 0x24F00 is a *runtime-resolved* pointer in zero-filled
+        // .data, NOT a PE import-descriptor entry. Its static
+        // name association is proven separately by the original
+        // decoded-label -> C708 -> A3 0x904F00 chain.
+        if iat_rva!=0x24F00 || iat_rva<zero_fill_start ||
+           iat_rva.checked_add(4).is_none_or(|end|end>virtual_end){
+            return Err("original copy helper does not call the virtual-only VirtualProtect slot 0x24F00".into());
         }
-        println!("  FF15 0x{site:05X}: original imported KERNEL32!VirtualProtect at RVA 0x{iat_rva:X}");
-        if iat_rva!=0x24F00{
-            return Err("original protected copy does not use the decoded API slot RVA 0x24F00".into());
-        }
+        println!("  FF15 0x{site:05X}: indirect through runtime-resolved VirtualProtect slot 0x{iat_rva:X} (not an ordinary PE import)");
     }
     // 0x940D tests the remaining input length against the
     // maximum 0x1000-byte chunk size. One copy-in function
