@@ -496,6 +496,59 @@ fn dll_unrelocated_literals(
     Ok(hits)
 }
 
+// Print a small *byte context* around a verified exact literal.
+// This keeps the follow-up output focused on the few constants that
+// might plausibly encode a section boundary, allocation size or RVA.
+// The four-byte value is verified against the user's hash-verified
+// original before any surrounding bytes are printed.
+fn print_dll_exact_literal_context(
+    dll: &[u8], pe: &Pe32, source_rva: u32, expected: u32,
+    interpretation: &str,
+) -> Result<()> {
+    const BEFORE: u32 = 16;
+    const AFTER: u32 = 28;
+    let source_offset = dll_backed_rva_offset(pe, source_rva, 4)?;
+    let observed = read_u32(dll, source_offset)?;
+    if observed != expected {
+        return Err(format!(
+            "original DLL literal at RVA 0x{source_rva:08X} changed: expected 0x{expected:08X}, got 0x{observed:08X}"
+        ));
+    }
+    let source = pe.sections.iter().find(|sec| {
+        source_rva.checked_sub(sec.virtual_address).is_some_and(|rel| {
+            let len = sec.raw_len.min(if sec.virtual_size == 0 {
+                sec.raw_len
+            } else { sec.virtual_size as usize });
+            (rel as usize).checked_add(4).is_some_and(|end| end <= len)
+        })
+    }).ok_or("literal context source has no PE-backed section")?;
+    let raw_len = source.raw_len.min(if source.virtual_size == 0 {
+        source.raw_len
+    } else { source.virtual_size as usize });
+    let raw_start = source_rva - source.virtual_address;
+    let window_start = raw_start.saturating_sub(BEFORE);
+    let window_end = (raw_start as usize)
+        .checked_add(4+AFTER as usize)
+        .ok_or("literal context window overflow")?
+        .min(raw_len);
+    let start = source.raw_offset.checked_add(window_start as usize)
+        .ok_or("literal context raw-offset overflow")?;
+    let end = source.raw_offset.checked_add(window_end)
+        .ok_or("literal context end overflow")?;
+    let around = dll.get(start..end)
+        .ok_or("literal context outside original DLL file")?;
+    println!("  Focus RVA 0x{source_rva:08X} = 0x{observed:08X} ({interpretation}; not a decoded instruction)");
+    for (i, chunk) in around.chunks(16).enumerate() {
+        let rva = source.virtual_address
+            .checked_add(window_start)
+            .and_then(|value| value.checked_add((i * 16) as u32))
+            .ok_or("literal context display RVA overflow")?;
+        let value = chunk.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+        println!("    0x{rva:08X}: {value}");
+    }
+    Ok(())
+}
+
 fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
     const MAX_LIST: usize = 16;
     let pe = parse_pe32(dll)?;
@@ -535,6 +588,26 @@ fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
         }
     }
     println!("  Total NON-relocated 4-byte window matches: RVA-range {total_rva}, VA-range {total_va}, exact special markers {total_special}.");
+    println!("  Focused original on-disk byte contexts (literal starts at its RVA, not necessarily an instruction boundary):");
+    // Values from the user-observed report of the exact original DLL.
+    // 0x1000 also appears as HeapCreate initial size at RVA 0x116E3;
+    // 0x7800 equals the original .txt SizeOfRawData, 30720 bytes.
+    // Neither value is, by itself, a pointer to protected code.
+    for (rva, expected, why) in [
+        (0x9410u32, 0x1000u32, ".text 4 KiB marker"),
+        (0x9427, 0x1000, ".text 4 KiB marker"),
+        (0x116E3, 0x1000, "HeapCreate initial heap-size control"),
+        (0x1921A, 0x1000, ".txt2 4 KiB marker"),
+        (0x19230, 0x1000, ".txt2 4 KiB marker"),
+        (0x19287, 0x1000, ".txt2 4 KiB marker"),
+        (0x192A1, 0x1000, ".txt2 4 KiB marker"),
+        (0x22FFF, 0x7800, ".data value equals protected .txt raw size"),
+        (0x230CF, 0x7800, ".data value equals protected .txt raw size"),
+        (0x23148, 0x1000, ".data 4 KiB marker"),
+    ] {
+        print_dll_exact_literal_context(dll,&pe,rva,expected,why)?;
+    }
+    println!("  None of these exact constants proves a decoded .txt function or runtime reference.");
     println!("  LE constants are not established absolute pointers or reachable x86 operands.");
     println!("  A zero count cannot exclude computed addresses, relative branches, or decoded runtime code.");
     println!("  Original DLL is only read; no protected code is executed or written.");
@@ -2900,6 +2973,22 @@ mod tests {
         let hits=dll_unrelocated_literals(&dll,pe.section(b".text").unwrap(),
             &blocks,base,pe.section(b".txt").unwrap()).unwrap();
         assert!(!hits.rvas.iter().any(|h|h.source_rva==0x1050));
+    }
+
+    #[test]
+    fn literal_context_requires_bounded_verified_word() {
+        let mut image=synthetic_pe();
+        let sec=0x178usize;
+        image[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        image[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[0x240..0x244].copy_from_slice(&0x7800u32.to_le_bytes());
+        let pe=parse_pe32(&image).unwrap();
+        assert!(print_dll_exact_literal_context(
+            &image,&pe,0x1040,0x7800,"fixture").is_ok());
+        assert!(print_dll_exact_literal_context(
+            &image,&pe,0x1040,0x1000,"wrong value").is_err());
+        assert!(print_dll_exact_literal_context(
+            &image,&pe,0x10FF,0x7800,"out of backed section").is_err());
     }
 
     #[test]
