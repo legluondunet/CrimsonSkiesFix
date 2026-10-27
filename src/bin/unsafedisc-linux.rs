@@ -4148,7 +4148,7 @@ fn inspect(options: Options) -> Result<()> {
             println!("  Canonical-mask violations: {} forward inconsistencies, {} inverse collisions.",
                 mask_alias.forward_conflicts,mask_alias.inverse_conflicts);
             if mask_alias.forward_conflicts!=0 || mask_alias.inverse_conflicts!=0 {
-                return Err("historical full-width mask alias invariant disagrees with protected/reference data".into());
+                println!("  WARNING: this new mask-alias hypothesis disagrees with observations; do NOT infer title-specific modifier recovery.");
             }
             println!("  This 64-feature test is a necessary condition only if BOTH original EAX modifiers are bit-affine.");
             println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
