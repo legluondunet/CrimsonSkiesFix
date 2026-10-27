@@ -5,6 +5,9 @@
 // Research stage: strictly read-only. No loader/DLL execution, no executable
 // reconstruction, no SafeDisc driver, and no Wine requirement.
 
+#[path = "unsafedisc_strings.rs"]
+mod unsafedisc_strings;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2653,13 +2656,14 @@ struct Options {
     literal_research: bool,
     reference_audit: bool,
     historical_selection: bool,
+    strings: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -2742,6 +2746,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.historical_selection = true;
             continue;
         }
+        if key == "--strings" {
+            if options.strings { return Err("repeated --strings argument".into()); }
+            options.strings = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -2768,6 +2777,20 @@ fn inspect(options: Options) -> Result<()> {
     let loader = read_original(options.loader.as_ref().unwrap(), LOADER_LEN, LOADER_SHA)?;
     let icd = read_original(options.icd.as_ref().unwrap(), ICD_LEN, ICD_SHA)?;
     let dll = read_original(options.dplayerx.as_ref().unwrap(), DLL_LEN, DLL_SHA)?;
+    if options.strings {
+        let pe = parse_pe32(&dll)?;
+        let section = pe.section(b".data")?;
+        let end = section.raw_offset.checked_add(section.raw_len)
+            .ok_or("original DLL data file extent overflow")?;
+        let bytes = dll.get(section.raw_offset..end)
+            .ok_or("original DLL data extent outside file")?;
+        let entries = unsafedisc_strings::audit_original(bytes, section.virtual_address)?;
+        println!("Original DLL encoded metadata: {} verified printable labels", entries.len());
+        for item in entries {
+            println!("  RVA 0x{:08X}: {}", item.rva, item.value);
+        }
+        println!("No DLL code was executed or decrypted.");
+    }
     if options.modifier_research {
         print_modifier_research(&dll)?;
     }
