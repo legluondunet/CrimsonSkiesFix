@@ -108,6 +108,48 @@ pub fn scan_push_references(
     Ok(found)
 }
 
+/// Find metadata addresses at known PE HIGHLOW slots in a file-backed
+/// section. Unlike scanning for 0x68, this also discovers operands stored
+/// under other opcode encodings and identifies actual relocatable pointers.
+/// The byte *before* the slot is only context, not a disassembled instruction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelocatedLabelPointer {
+    pub operand_rva: u32,
+    pub label_rva: u32,
+    pub previous_byte: Option<u8>,
+}
+
+pub fn scan_relocated_label_pointers(
+    section_bytes: &[u8],
+    section_rva: u32,
+    image_base: u32,
+    labels: &[Label],
+    highlow_sites: &std::collections::HashSet<u32>,
+) -> Result<Vec<RelocatedLabelPointer>, String> {
+    let mut addresses = std::collections::HashMap::new();
+    for label in labels {
+        let va = image_base.checked_add(label.rva)
+            .ok_or_else(|| "metadata label VA overflow".to_string())?;
+        addresses.insert(va, label.rva);
+    }
+    let mut hits = Vec::new();
+    for &site in highlow_sites {
+        let Some(relative) = site.checked_sub(section_rva) else { continue };
+        let at = usize::try_from(relative)
+            .map_err(|_| "HIGHLOW RVA does not fit usize".to_string())?;
+        let Some(operand) = section_bytes.get(at..at.saturating_add(4)) else { continue };
+        let address = u32::from_le_bytes(operand.try_into().unwrap());
+        let Some(&label_rva) = addresses.get(&address) else { continue };
+        hits.push(RelocatedLabelPointer {
+            operand_rva: site,
+            label_rva,
+            previous_byte: at.checked_sub(1).and_then(|i| section_bytes.get(i).copied()),
+        });
+    }
+    hits.sort_unstable_by_key(|hit| (hit.operand_rva, hit.label_rva));
+    Ok(hits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +211,34 @@ mod tests {
         assert_eq!(push_operand_highlow_flags(&refs, &slots).unwrap(), vec![true, false]);
         let extra = [PushReference { instruction_rva: u32::MAX, label_rva: 1 }];
         assert!(push_operand_highlow_flags(&extra, &slots).is_err());
+    }
+
+    #[test]
+    fn relocated_label_scan_handles_cross_page_dwords_and_other_encodings() {
+        let labels = vec![Label { rva: 0x20508, value: "Label".into() }];
+        let mut bytes = vec![0u8; 4112];
+        let address = 0x0090_0508u32.to_le_bytes();
+        bytes[4..8].copy_from_slice(&address); // Matching but NOT relocated.
+        bytes[0xFFE - 1] = 0x68; // Preceding byte only, not disassembly.
+        bytes[0xFFE..0x1002].copy_from_slice(&address);
+        bytes[0x1005..0x1009].copy_from_slice(&address);
+        let slots = std::collections::HashSet::from([
+            0x9FFEu32, 0xA005, 0x9000, 0xA300,
+        ]);
+        let result = scan_relocated_label_pointers(
+            &bytes, 0x9000, 0x008E_0000, &labels, &slots,
+        ).unwrap();
+        assert_eq!(result, vec![
+            RelocatedLabelPointer {
+                operand_rva: 0x9FFE, label_rva: 0x20508, previous_byte: Some(0x68),
+            },
+            RelocatedLabelPointer {
+                operand_rva: 0xA005, label_rva: 0x20508, previous_byte: Some(0),
+            },
+        ]);
+        assert!(scan_relocated_label_pointers(
+            &bytes, 0x9000, u32::MAX, &labels, &slots,
+        ).is_err());
     }
 
     #[test]
