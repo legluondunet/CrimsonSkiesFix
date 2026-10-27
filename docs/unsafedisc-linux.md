@@ -2901,3 +2901,32 @@ demonstrate that the **mathematical candidate model** is reversible;
 they do not show that the original DLL calls that model with those
 inputs, that its state resets at those boundaries, or that any restored
 bytes match protected code. No actual decoded DLL bytes are emitted.
+
+
+### Verified DLL PE section header cursors for the `.txt2` name scan
+
+The exact original DLL uses `e_lfanew=0xB0` and PE32 optional-header
+size `0xE0`, putting its first 40-byte section header at file/mapped
+header offset `0x1A8`. The original section-header *cursor offsets*
+for CODE|EXECUTE sections are:
+
+| Section name | Section-header cursor within image | Section's VirtualAddress |
+| --- | --- | --- |
+| `.txt` | `0x1A8` | `0x1000` |
+| `.text` | `0x1D0` | `0x9000` |
+| `.txt2` | `0x1F8` | `0x18000` |
+
+These values are **different** from raw section file offsets
+(`0x400`, `0x7C00`, `0x16200`) and virtual section data RVAs.
+This matters because the `0x18800/0x189F0` selector returns a
+**section-header cursor**, which `0x18B00` uses to read the
+40-byte header and compare its Name field against decoded `.txt2`.
+The cursor advance at `0x938E` is likewise `+0x28`.
+The native inspector now derives all three original header positions
+from PE headers and verifies their names.
+
+The named match is demonstrably possible at cursor `0x1F8`,
+after the two earlier CODE|EXECUTE candidates. This does **not**
+by itself establish the ultimate section whose bytes are changed:
+the obfuscated loop's full branch paths and the moment output
+fields are retained or replaced must still be reconstructed.
