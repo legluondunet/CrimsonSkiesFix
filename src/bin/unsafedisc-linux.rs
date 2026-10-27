@@ -1231,6 +1231,7 @@ fn dll_next_opaque_branch(dll:&[u8],pe:&Pe32,pc:u32,f:FiveFlags)->Result<Option<
         0x78=>f.sf,0x79=>!f.sf,
         0x7A=>f.pf,0x7B=>!f.pf,
         0x7C=>f.sf!=f.of,0x7D=>f.sf==f.of,
+        0x7F=>!f.zf&&f.sf==f.of,
         _=>return Ok(None),
     };
     let ins=executable_rva_to_file_offset(pe,pc,2)?;
