@@ -559,6 +559,9 @@ fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
     let mut total_rva = 0;
     let mut total_va = 0;
     let mut total_special = 0;
+    let mut modifier_rva_hits = 0usize;
+    let mut modifier_va_hits = 0usize;
+    let mut raw_section_size_hits = 0usize;
     println!("SafeDisc DLL protected .txt literal research (NON-relocated DWORD candidates):");
     println!("  Base 0x{base:08X}; protected section RVA 0x{:08X}..0x{:08X} (end excluded)",
         target.virtual_address,target.virtual_address.checked_add(target.virtual_size)
@@ -571,6 +574,9 @@ fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
         let name=String::from_utf8_lossy(section.name.split(|&b| b==0).next().unwrap_or(&[]));
         let hits=dll_unrelocated_literals(dll,section,&blocks,base,target)?;
         total_rva+=hits.rvas.len();total_va+=hits.absolute_vas.len();total_special+=hits.special.len();
+        modifier_rva_hits += hits.special.iter().filter(|h| h.value == 0x65BE || h.value == 0x6621).count();
+        modifier_va_hits += hits.special.iter().filter(|h| h.value == base+0x65BE || h.value == base+0x6621).count();
+        raw_section_size_hits += hits.special.iter().filter(|h| h.value == target.raw_len as u32).count();
         println!("  Section {name}: raw LE RVA-range {}, preferred-base VA-range {}, exact section/modifier constants {}.",
             hits.rvas.len(),hits.absolute_vas.len(),hits.special.len());
         for (kind, values) in [
@@ -578,16 +584,19 @@ fn print_dll_literal_research(dll: &[u8]) -> Result<()> {
             ("VA-range", &hits.absolute_vas),
             ("exact marker", &hits.special),
         ] {
-            for item in values.iter().take(MAX_LIST) {
+            let limit = if kind == "exact marker" { 64 } else { MAX_LIST };
+            for item in values.iter().take(limit) {
                 println!("    {kind} source RVA 0x{:08X}: 0x{:08X}",
                     item.source_rva,item.value);
             }
-            if values.len()>MAX_LIST {
-                println!("    {kind}: {} further unclassified matches omitted.",values.len()-MAX_LIST);
+            if values.len()>limit {
+                println!("    {kind}: {} further unclassified matches omitted.",values.len()-limit);
             }
         }
     }
     println!("  Total NON-relocated 4-byte window matches: RVA-range {total_rva}, VA-range {total_va}, exact special markers {total_special}.");
+    println!("  Explicit exact modifier RVA hits (0x65BE, 0x6621): {modifier_rva_hits}; modifier preferred VA hits: {modifier_va_hits}.");
+    println!("  Exact original .txt raw-size marker (0x{:X}): {raw_section_size_hits} hits.",target.raw_len);
     println!("  Focused original on-disk byte contexts (literal starts at its RVA, not necessarily an instruction boundary):");
     // Values from the user-observed report of the exact original DLL.
     // 0x1000 also appears as HeapCreate initial size at RVA 0x116E3;
