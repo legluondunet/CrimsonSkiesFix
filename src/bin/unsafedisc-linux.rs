@@ -3868,7 +3868,7 @@ mod tests {
         let sec=0x178usize;
         dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
         dll[sec+8..sec+12].copy_from_slice(&0x2000u32.to_le_bytes());
-        dll[sec+12..sec+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0xC000u32.to_le_bytes());
         dll[sec+16..sec+20].copy_from_slice(&0x2000u32.to_le_bytes());
         dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
         for (rva,code) in [
@@ -3880,11 +3880,11 @@ mod tests {
             (0xD677,&[0x0F,0x8B,0x0F,0,0,0]),
             (0xD67D,&[0x7A,0x0D]),
         ]{
-            let offset=0x200+(rva-0x2000) as usize;
+            let offset=0x200+(rva-0xC000) as usize;
             dll[offset..offset+code.len()].copy_from_slice(code);
         }
         for (call,target) in [(0xD664u32,0xD7BEu32),(0xD68C,0xC5C0)] {
-            let off=0x200+(call-0x2000) as usize;
+            let off=0x200+(call-0xC000) as usize;
             let disp=(i64::from(target)-i64::from(call+5)) as i32;
             dll[off]=0xE8;
             dll[off+1..off+5].copy_from_slice(&disp.to_le_bytes());
@@ -3897,7 +3897,7 @@ mod tests {
         // but all must converge at the same nontrivial CALL.
         let distinct=paths.iter().cloned().collect::<std::collections::HashSet<_>>();
         assert_eq!(distinct.len(),4);
-        dll[0x200+(0xD7BE-0x2000) as usize]=0x90;
+        dll[0x200+(0xD7BE-0xC000) as usize]=0x90;
         assert!(dll_d62c_after_ret_paths(&dll,&pe).is_err());
     }
 
