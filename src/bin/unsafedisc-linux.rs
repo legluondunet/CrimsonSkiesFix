@@ -1171,6 +1171,65 @@ fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
 // exact hash-verified game-specific dplayerx.dll, NOT portable mixers.
 // 0x6621 = 0x65BE + 0x63. Show only two small code windows suitable for
 // independent static x86 disassembly; do not execute the protected DLL.
+// The on-disk .txt bytes have very high entropy, but the real
+// PE32 HIGHLOW slots remain usable as ordinary absolute VAs.
+// Count only file-backed 4-byte slots and classify their values.
+// The result is a structural property, NOT decoded x86 or a
+// runnable implementation of either EAX modifier function.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProtectedDllRelocAudit {
+    slots: usize,
+    targets_data: usize,
+    targets_rdata: usize,
+    targets_txt: usize,
+    targets_other: usize,
+    out_of_image: usize,
+    page_crossings: usize,
+}
+fn audit_protected_dll_relocations(
+    dll: &[u8], pe: &Pe32,
+    relocations: &[RelocBlock], base: u32,
+) -> Result<ProtectedDllRelocAudit> {
+    let protected=pe.section(b".txt")?;
+    let end=protected.virtual_address.checked_add(
+        protected.virtual_size.min(protected.raw_len as u32))
+        .ok_or("protected .txt extent overflow")?;
+    let mut out=ProtectedDllRelocAudit::default();
+    for block in relocations {
+        for &offset in &block.highlow_offsets {
+            let source=block.page_rva.checked_add(offset as u32)
+                .ok_or("protected DLL HIGHLOW RVA overflow")?;
+            if source<protected.virtual_address || source>=end {
+                continue;
+            }
+            let backed_end=source.checked_add(4)
+                .ok_or("protected DLL HIGHLOW extent overflow")?;
+            if backed_end>end {
+                return Err("relocation slot straddles the raw backed .txt extent".into());
+            }
+            let file=dll_backed_rva_offset(pe,source,4)?;
+            let va=read_u32(dll,file)?;
+            out.slots+=1;
+            if offset>0xFFC {out.page_crossings+=1;}
+            let Some(target_rva)=va.checked_sub(base) else {
+                out.out_of_image+=1;continue;
+            };
+            let name=pe.sections.iter().find(|sec|{
+                target_rva.checked_sub(sec.virtual_address)
+                    .is_some_and(|local|local<sec.virtual_size.max(sec.raw_len as u32))
+            }).map(|sec|sec.name.split(|&b|b==0).next().unwrap_or(&[]));
+            match name {
+                Some(b".data")=>out.targets_data+=1,
+                Some(b".rdata")=>out.targets_rdata+=1,
+                Some(b".txt")=>out.targets_txt+=1,
+                Some(_)=>out.targets_other+=1,
+                None=>out.out_of_image+=1,
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn print_modifier_research(dll: &[u8]) -> Result<()> {
     const WINDOW: usize = 128;
     const ROUTINES: [(&str, u32); 2] = [
@@ -1193,6 +1252,22 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     let nt = read_u32(dll, 0x3C)? as usize;
     let preferred_base = read_u32(dll, nt + 24 + 28)?;
     println!("  DLL preferred image base: 0x{preferred_base:08X}");
+    let (reloc_blocks,_) = pe_relocation_blocks(dll,&pe)?;
+    let protected_relocs=audit_protected_dll_relocations(
+        dll,&pe,&reloc_blocks,preferred_base)?;
+    println!("  On-disk encrypted .txt HIGHLOW relocation slots: {}",protected_relocs.slots);
+    println!("    Absolute VA targets: .data {}, .rdata {}, .txt {}, other section {}, outside image {}",
+        protected_relocs.targets_data,protected_relocs.targets_rdata,
+        protected_relocs.targets_txt,protected_relocs.targets_other,
+        protected_relocs.out_of_image);
+    println!("    HIGHLOW DWORDs spanning a 4-KiB page: {}",protected_relocs.page_crossings);
+    println!("    Protected .txt still needs decoding; relocation-backed VA values alone do not constitute decrypted x86.");
+    if protected_relocs != (ProtectedDllRelocAudit {
+        slots:214,targets_data:195,targets_rdata:18,targets_txt:1,
+        targets_other:0,out_of_image:0,page_crossings:1
+    }) {
+        return Err("original protected DLL .txt relocation slot geometry differs from separately checked original".into());
+    }
     match dll_tls_metadata(dll, &pe)? {
         None => println!("  PE TLS directory: absent (does not exclude other decoding mechanisms)."),
         Some(tls) => {
@@ -3384,6 +3459,47 @@ mod tests {
             &image,&pe,&[],0x008E0000,source,true).unwrap();
         assert_eq!(count,0);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn encrypted_dll_relocation_slots_remain_classifiable_with_highlow_metadata() {
+        let mut dll=synthetic_pe();
+        dll.resize(0xA00,0);
+        dll[0x86..0x88].copy_from_slice(&3u16.to_le_bytes());
+        let first=0x178usize;
+        dll[first..first+8].copy_from_slice(b".txt\0\0\0\0");
+        dll[first+8..first+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[first+12..first+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        dll[first+16..first+20].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[first+36..first+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let second=first+40;
+        dll[second..second+8].copy_from_slice(b".data\0\0\0");
+        dll[second+8..second+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[second+12..second+16].copy_from_slice(&0x2000u32.to_le_bytes());
+        dll[second+16..second+20].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[second+20..second+24].copy_from_slice(&0x600u32.to_le_bytes());
+        dll[second+36..second+40].copy_from_slice(&0xC000_0040u32.to_le_bytes());
+        let third=second+40;
+        dll[third..third+8].copy_from_slice(b".rdata\0\0");
+        dll[third+8..third+12].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[third+12..third+16].copy_from_slice(&0x3000u32.to_le_bytes());
+        dll[third+16..third+20].copy_from_slice(&0x100u32.to_le_bytes());
+        dll[third+20..third+24].copy_from_slice(&0x700u32.to_le_bytes());
+        dll[third+36..third+40].copy_from_slice(&0x4000_0040u32.to_le_bytes());
+        let base=0x008E_0000u32;
+        for (offset,rva) in [(0x10usize,0x2004u32),(0x20,0x3008),(0x30,0x1080)] {
+            dll[0x200+offset..0x204+offset].copy_from_slice(&(base+rva).to_le_bytes());
+        }
+        // The unmarked DWORD bytes are not counted, even if they
+        // happen to look like a valid in-image absolute VA.
+        dll[0x240..0x244].copy_from_slice(&(base+0x2004).to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        let blocks=[RelocBlock{page_rva:0x1000,highlow_offsets:vec![0x10,0x20,0x30]}];
+        assert_eq!(audit_protected_dll_relocations(
+            &dll,&pe,&blocks,base).unwrap(),ProtectedDllRelocAudit {
+                slots:3,targets_data:1,targets_rdata:1,
+                targets_txt:1,targets_other:0,out_of_image:0,page_crossings:0
+        });
     }
 
     #[test]
