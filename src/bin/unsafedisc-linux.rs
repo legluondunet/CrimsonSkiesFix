@@ -3564,6 +3564,14 @@ mod tests {
     #[test]
     fn fixed_absolute_import_load_checks_original_x86_operand_encoding() {
         let mut image=synthetic_pe();
+        // The general synthetic PE fixture has a non-executable
+        // .idata section. Give this isolated instruction fixture
+        // a real file-backed executable .text section.
+        let sec=0x178usize;
+        image[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        image[sec+8..sec+12].copy_from_slice(&0x100u32.to_le_bytes());
+        image[sec+12..sec+16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
         let at=0x250usize;
         image[at..at+6].copy_from_slice(&[
             0x8B,0x2D,0xAC,0xE0,0x8F,0x00
