@@ -3411,3 +3411,32 @@ the protected inputs alone, or replacement for either encrypted
 `dplayerx.dll` EAX modifier. A 361,480-pair local oracle cannot
 be substituted for the title-specific functions when decoding
 unseen inputs.
+
+
+### Algebraic hypotheses for reference-backed index-zero modifier pairs (2026-10-28)
+
+The exact-reference audit already establishes 31,799 distinct observed
+index-zero mappings of the *composite* two-stage EAX modifier. A new
+pure-Rust, **aggregate-only** probe tests three simple mathematical
+families against these pairs: an arbitrary affine transformation over
+GF(2) (32 input bits, 32 output bits), a bit rotation followed by
+32-bit wrapping addition, and wrapping addition followed by rotation.
+
+The affine check deterministically constructs an input-difference basis,
+reports its rank (at most 32), and counts violations of the resulting
+candidate model. The two rotate/add checks each test all 32 possible
+rotation counts, with an offset inferred from one observed pair and
+checked against *every* other distinct pair.
+
+These measurements are computed **only when the exact known plaintext
+TESTME.EXE reference is supplied and the existing key/tail consistency
+checks pass**. They never print input/output pairs, candidate offsets,
+matrices, or game bytes. Synthetic unit tests cover full-rank affine
+maps, modular rotations/additions, nonlinear counterexamples, sparse
+observations and order-independent results.
+
+**No result from the real retail/reference pair has yet been measured**
+for this additional probe. Even a complete fit would establish only
+consistency on the observed sample; it would not independently prove an
+algorithm on unseen words, reconstruct the two protected EAX functions
+at RVA 0x65BE/0x6621 or enable SafeDisc unpacking.

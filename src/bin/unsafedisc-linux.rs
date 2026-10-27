@@ -8,6 +8,9 @@
 #[path = "../unsafedisc_strings.rs"]
 mod unsafedisc_strings;
 
+#[path = "../unsafedisc_algebra.rs"]
+mod unsafedisc_algebra;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4104,7 +4107,7 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("TEA one-bit negative control differs from independent original/reference result".into());
             }
 
-            let composite=inspect_original_modifier_reference_pairs(
+            let (composite,algebra)=inspect_original_modifier_reference_pairs(
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
@@ -4130,6 +4133,11 @@ fn inspect(options: Options) -> Result<()> {
             }){
                 return Err("independent title-specific composite modifier observations differ from verified reference".into());
             }
+            println!("  Algebraic probe (index=0; {} distinct reference-backed pairs): GF(2) affine input rank {}/32; {} contradicting samples.",
+                algebra.pairs,algebra.affine_input_rank,algebra.affine_violations);
+            println!("  Candidate families passing every observed pair: rotate(x,r)+k: {} of 32; rotate(x+k,r): {} of 32.",
+                algebra.rotate_then_add_matches,algebra.add_then_rotate_matches);
+            println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
             println!("  CONFIRMED: the first-DWORD composite modifier acts consistently and injectively on 31,799 observed inputs.");
             println!("  These are observed pairs only; the two protected DLL functions are NOT yet reconstructed.");
             println!("  This validates TEA key material, NOT the missing title-specific EAX modifier implementation.");
@@ -4559,7 +4567,7 @@ fn inspect_original_modifier_reference_pairs(
     icd:&[u8], reference:&[u8],
     original:&Pe32, decoded:&Pe32,
     relocations:&[RelocBlock], key:[u32;4],
-)->Result<ModifierReferenceAudit> {
+)->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit)> {
     let protected=original.section(b".text")?;
     let plain=decoded.section(b".text")?;
     if protected.virtual_address!=plain.virtual_address ||
@@ -4644,7 +4652,8 @@ fn inspect_original_modifier_reference_pairs(
     audit.distinct_outputs=reverse.len();
     audit.indexed_distinct_inputs=indexed_forward.len();
     audit.indexed_distinct_outputs=indexed_reverse.len();
-    Ok(audit)
+    let algebra=unsafedisc_algebra::diagnose(&forward);
+    Ok((audit,algebra))
 }
 
 // Standard TEA reference routine, tested with synthetic vectors.
