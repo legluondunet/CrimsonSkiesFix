@@ -2376,3 +2376,29 @@ The CLI now verifies the original metadata PUSH/CALL, decodes the exact
 `dplayerx.dll` argument from the verified local DLL and checks the
 `GetModuleHandleA` IAT binding. It does not execute the code, obtain a
 runtime handle, or generate game/DLL plaintext.
+
+
+### Five-slot module registry behind DLL self-initialization (2026-10-27)
+
+Verified against the owner's original SHA-256-matched DLL (hash
+`dc43dbae45a8bfc39299ab0d1d5dbc72302f3bc37faf7c3b41e8ffdf4c6838ff`):
+RVA `0x987C` calls `0xA140` with the 3-DWORD global descriptor
+and mode `1`. At `0xA14F`, `0xA140` calls `0xB540`.
+
+`0xB540` searches a module-record table from DLL RVA `0x24AE8`
+through `0x24EF7`, in increments of `0xD0`. This yields **five slots**.
+It tests each slot's first 16-bit word for zero, clears 0x34 DWORDs
+(0xD0 bytes) upon allocating an unused slot, marks the slot active,
+and copies the original descriptor's three DWORDs into record offsets
+`+4`, `+8`, `+12` (`0xB583`, `0xB58B`, `0xB591`). It then calls
+`0xB6D0`, which initializes an auxiliary eight-pointer structure.
+The slots are adjacent to, but do not overlap, the earlier dynamically
+resolved API pointers beginning at RVA `0x24EF8`.
+
+This gives a stronger explanation for `0xA140`: a registry-backed
+module initialization routine, not a single standalone memory write.
+Its later helpers may initialize additional code/data sections, but
+**neither recovered game plaintext nor the precise target bytes of the
+`0x92B0` transformation have been verified**. The Rust inspector checks
+the original opcode windows and rel32 destinations. No proprietary
+source bytes or memory dumps are committed.
