@@ -24,8 +24,8 @@ published as downloadable artifacts by
 [GitHub Actions](../.github/workflows/unsafedisc-linux.yml) on this branch.
 They are inspect-only research builds, not game patches or unpackers.
 
-On Windows, open the latest successful **Experimental native unSafeDisc Linux
-CLI** workflow run (despite its historical name), scroll to **Artifacts**,
+On Windows, open the latest successful **Experimental native unSafeDisc CLI
+(Linux and Windows)** workflow run, scroll to **Artifacts**,
 and download `unsafedisc-windows-x86_64-inspect-only`. Extract the ZIP and
 run the executable from PowerShell in the folder containing your original
 verified game files:
