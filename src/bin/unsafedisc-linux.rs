@@ -1870,6 +1870,52 @@ fn synthetic_chunk_byte_model(input:&[u8], first:u8, second:u8)->Vec<u8> {
     buf
 }
 
+// These isolated comparators model exact unsigned x86 arithmetic. They are
+// only used with synthetic vectors, not to modify any protected binary.
+fn synthetic_probe_before_start(start:u32,probe:u32)->bool { probe < start }
+fn synthetic_adjacent_ranges(a:(u32,u32,u32),b:(u32,u32,u32))->bool {
+    a.2==b.2 &&
+    (a.0.wrapping_add(a.1)==b.0 || b.0.wrapping_add(b.1)==a.0)
+}
+
+fn original_range_sort_and_adjacency_proof(dll:&[u8],pe:&Pe32)->Result<()> {
+    // 0xC3D0's CMP/SBB/NEG returns 1 iff the unsigned probe is BELOW
+    // the current node start; equality returns 0. It is NOT an equality test.
+    dll_expect_raw_x86(dll,pe,0xC3D0,&[
+        0x8B,0x4C,0x24,0x04,0x8B,0x44,0x24,0x08,0x3B,0x01,
+        0x1B,0xC0,0xF7,0xD8,0xC3])?;
+    // 0xC4B0 checks same tag and either a.end==b.start or
+    // b.end==a.start (with native x86 wrapping 32-bit arithmetic).
+    dll_expect_raw_x86(dll,pe,0xC4B0,&[
+        0x8B,0x54,0x24,0x04,0x56,0x8B,0x74,0x24,0x14,0x33,
+        0xC0,0x8B,0x4A,0x08,0x3B,0xCE,0x75,0x1E,0x8B,0x0A,
+        0x8B,0x72,0x04,0x8B,0x54,0x24,0x0C,0x03,0xF1,
+        0x3B,0xD6,0x74,0x0A,0x8B,0x74,0x24,0x10,0x03,
+        0xF2,0x3B,0xF1,0x75,0x05,0xB8,0x01,0x00,0x00,
+        0x00,0x5E,0xC3])?;
+    // The record-versus-record variant is the merge-loop predicate.
+    dll_expect_raw_x86(dll,pe,0xC4F0,&[
+        0x56,0x8B,0x74,0x24,0x08,0x57,0x8B,0x7C,0x24,
+        0x10,0x8B,0x4E,0x08,0x33,0xC0,0x3B,0x4F,0x08,
+        0x75,0x1B,0x8B,0x0E,0x8B,0x76,0x04,0x8B,0x17,
+        0x03,0xF1,0x3B,0xD6,0x74,0x09,0x8B,0x77,0x04,
+        0x03,0xF2,0x3B,0xF1,0x75,0x05,0xB8,0x01,0x00,
+        0x00,0x00,0x5F,0x5E,0xC3])?;
+    for (site,target) in [
+        (0xBC12u32,0xC3D0u32),(0xBC5E,0xC4B0),
+        (0xBC6F,0xC3D0),(0xBEA1,0xC3D0),
+        (0xB9E6,0xC4F0),(0xBA35,0xC4F0),
+        (0xBA12,0xC310),(0xBA61,0xC310),
+    ] { if dll_relative_call_target(dll,pe,site)?!=target {
+        return Err(format!("range-list call target mismatch at RVA 0x{site:X}"));
+    }}
+    println!("  Original 0xC3D0 is unsigned (probe < node.start), NOT start equality.");
+    println!("  Original 0xC4B0/0xC4F0 test same-tag adjacency in either direction.");
+    println!("  0xB9D0 merges neighboring range records through 0xC4F0 and 0xC310.");
+    println!("  The eight list categories and any connection to protected ICD code remain unproven.");
+    Ok(())
+}
+
 fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
@@ -2039,6 +2085,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     println!("  0xB6D0 calls 0xB640 eight times and commits eight DWORD pointers only after all calls succeed.");
     println!("  Failed allocation invokes 0xB770 for cleanup, then returns AX=0; success returns AX=1.");
     println!("  0xB640 requests a 0xCC-byte record aligned to 0x10, initializes two linked objects via 0xB7C0.");
+    original_range_sort_and_adjacency_proof(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
     // third is a caller-supplied classification/tag value.
@@ -4873,6 +4920,26 @@ mod tests {
         assert_eq!(actual.len(),src.len());
         assert_ne!(actual,src);
         assert_eq!(actual[0],0x53);
+    }
+
+    #[test]
+    fn synthetic_range_ordering_is_strict_unsigned_less_than(){
+        assert!(synthetic_probe_before_start(100,99));
+        assert!(!synthetic_probe_before_start(100,100));
+        assert!(!synthetic_probe_before_start(100,101));
+        assert!(synthetic_probe_before_start(0x8000_0000,0x7FFF_FFFF));
+        assert!(!synthetic_probe_before_start(0x7FFF_FFFF,0x8000_0000));
+    }
+
+    #[test]
+    fn synthetic_same_tag_adjacency_both_sides_and_wrapping(){
+        let a=(100,20,4);
+        assert!(synthetic_adjacent_ranges(a,(120,10,4)));
+        assert!(synthetic_adjacent_ranges(a,(85,15,4)));
+        assert!(!synthetic_adjacent_ranges(a,(120,10,5)));
+        assert!(!synthetic_adjacent_ranges(a,(110,5,4)));
+        assert!(!synthetic_adjacent_ranges(a,(130,5,4)));
+        assert!(synthetic_adjacent_ranges((0xFFFF_FFF0,0x20,7),(0x10,10,7)));
     }
 
     #[test]
