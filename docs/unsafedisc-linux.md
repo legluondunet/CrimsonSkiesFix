@@ -175,6 +175,65 @@ The actual historical SafeDisc DLL is **not loaded or executed**;
 this reproduces a static name-based filter, **not a successful
 whole-section decryption**. The `.data` codebit CRC exclusion
 should not be confused with skipping its separate decode step.
+## Major breakthrough: exact original import permutation recovered (2026-10-27)
+
+With the user's privately supplied, SHA-256 verified original
+unSafedisc.exe **v1.5.5**, actual disassembly of
+`0x4017AC..0x401821` and `0x401869..0x4018D9` now explains the
+apparently noninvertible mappings of `.text` HIGHLOW DWORDs.
+
+These are the **245 differing relocation-covered DWORDs**
+between the private original CRIMSON.ICD and the exact
+unwrapped TESTME.EXE reference. Every one is an aligned
+Windows import-table VA from one of **two** original IAT
+tables:
+
+| Original imported table | Image VA start | Table entries | Differences |
+| --- | --- | ---: | ---: |
+| `KERNEL32.dll` | `0x00A1FC7C` | 74 | **182** |
+| `USER32.dll` | `0x00A2039C` | 62 | **63** |
+| **Total** | | | **245** |
+
+Historical code uses the instruction site's location to
+rotate the import index differently for every `FF15`
+instruction. The following pure arithmetic independently
+reproduces all 245 differences:
+
+```text
+first_word = 0x7496538F
+text_start_rva = 0x1000
+site_rva = RVA of original HIGHLOW operand DWORD
+table_first_va, count = (0x00A1FC7C, 74) or (0x00A2039C, 62)
+old_index = (encrypted_import_VA - table_first_va) / 4
+shift = (site_rva - text_start_rva - 2 + first_word) % count
+new_index = (old_index + count - shift) % count
+restored_import_VA = table_first_va + 4 * new_index
+```
+
+**Direct independent validation:** 182/182 KERNEL32 references
+and 63/63 USER32 references match the exact word at the same
+RVA in TESTME.EXE: **245/245 (100%), with no exceptions**.
+The two modules use different table lengths, hence different
+moduli, and the rotation depends explicitly on the operand
+RVA. This resolves the earlier apparent ambiguity that
+65 protected VAs could map to multiple reference VAs.
+
+Example original source RVA `0x1294` has protected value
+`0x00A1FD78`, restored to reference `0x00A1FD9C`; USER32
+site `0x48C5` has `0x00A20458` → `0x00A20430`.
+
+The optional native Rust `--reference-audit` now derives
+the expected restored VA for every changed imported
+relocation word, reports exact matches and unexplained
+mismatches, and refuses an unexpected total for the
+exact known verified Crimson image. The historical
+import-index transformation is implemented with **no
+execution of the game, SafeDisc DLL or Windows loader**.
+
+Important: This is the *import reference correction* stage;
+the pre-TEA modifier functions and `.text`/`.data`
+plaintext decoding remain unresolved. It does not mean
+the complete game can yet be unpacked or executed.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
