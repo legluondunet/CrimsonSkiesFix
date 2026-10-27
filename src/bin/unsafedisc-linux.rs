@@ -2858,6 +2858,49 @@ fn inspect(options: Options) -> Result<()> {
             }
         }
         println!("  This scan recognizes relocatable pointer data, not reached instructions.");
+
+        // A much stricter follow-up matches the complete original
+        // named-API resolver sequence: three independently HIGHLOW-
+        // relocated operands, E8 to the same routine C708, then a
+        // write + null-check to the SAME originally zero-filled .data
+        // DWORD slot. These are bounded static bytes, never executed.
+        let slots=unsafedisc_strings::scan_resolver_slots(
+            code_bytes,code.virtual_address,base,&entries,&relocation_sites,0xC708)?;
+        const EXPECTED: [&str;13]=[
+            "ReadProcessMemory","WriteProcessMemory","VirtualProtect",
+            "CreateProcessA","CreateProcessW","GetStartupInfoA",
+            "GetStartupInfoW","GetSystemTime","GetSystemTimeAsFileTime",
+            "TerminateProcess","Sleep","SendASPI32Command",
+            "GetASPI32SupportInfo"
+        ];
+        if slots.len()!=EXPECTED.len(){
+            return Err(format!("original DLL resolver-slot sequence count {} differs from expected {}",
+                slots.len(),EXPECTED.len()));
+        }
+        let raw_end=section.virtual_address.checked_add(section.raw_len as u32)
+            .ok_or("DLL file-backed data extent overflow")?;
+        let virtual_end=section.virtual_address.checked_add(section.virtual_size)
+            .ok_or("DLL virtual data extent overflow")?;
+        println!("  Verified C708 resolver-style x86 sequences: {} (three independent HIGHLOW pointers each)",slots.len());
+        for (index,(slot,expected)) in slots.iter().zip(EXPECTED).enumerate(){
+            let label=entries.iter().find(|l|l.rva==slot.label_rva)
+                .ok_or("original resolver referenced unknown decoded string")?;
+            let expected_slot=0x24EF8u32.checked_add((index as u32)*4)
+                .ok_or("resolver slot index overflow")?;
+            if label.value!=expected || slot.output_slot_rva!=expected_slot {
+                return Err(format!("original resolver slot mismatch for {expected} at index {index}"));
+            }
+            let end=slot.output_slot_rva.checked_add(4)
+                .ok_or("resolver slot upper bound overflow")?;
+            if slot.output_slot_rva<raw_end || end>virtual_end {
+                return Err("original resolved-API pointer slot is not wholly in virtual-only .data".into());
+            }
+            println!("    {}: label RVA 0x{:X}, PUSH 0x{:X}, CALL C708 at 0x{:X}, virtual-only storage RVA 0x{:X}",
+                label.value,slot.label_rva,slot.instruction_rva,slot.call_rva,slot.output_slot_rva);
+        }
+        println!("  All 13 destinations form a contiguous virtual-only .data pointer table (4-byte spacing).");
+        println!("  E8 call encoding and real PE HIGHLOW metadata support these STATIC resolver candidates.");
+        println!("  Actual execution and whether the C708 routine returns GetProcAddress results are not yet established.");
         println!("No DLL code was executed or decrypted.");
     }
     if options.modifier_research {
