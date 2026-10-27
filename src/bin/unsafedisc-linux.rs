@@ -1896,6 +1896,30 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     for (site,target) in [(0x18823u32,0x181E0u32),(0x183D4,0x189F0)] {
         if dll_relative_call_target(dll,pe,site)?!=target{return Err("selector helper call target changed".into());}
     }
+    // Original 0x189F0 walks IMAGE_SECTION_HEADER entries in 0x28-byte
+    // strides and returns the matching entry address, not a destination VA.
+    // The selector case subsequently reads offsets from its caller-owned
+    // scratch structure. These checks guard that distinction.
+    for (rva, code) in [
+        (0x18A1Au32, &[0x8B,0x57,0x24,0x8B,0xCB,0x23,0xCA][..]),
+        (0x18A24, &[0x3B,0xCD,0x74,0x12][..]),
+        (0x18A2C, &[0x83,0xC6,0x28][..]),
+        (0x18A3A, &[0x8B,0xC6,0x5F,0x5E,0x5D,0x5B,0xC3][..]),
+        (0x183E6, &[0x8B,0x8C,0x24,0x80,0x01,0x00,0x00][..]),
+        (0x183ED, &[0x8B,0x44,0x24,0x24][..]),
+        (0x183F1, &[0x8B,0x54,0x24,0x1C][..]),
+        (0x183F5, &[0x89,0x01][..]),
+        (0x183F7, &[0x8B,0x84,0x24,0x88,0x01,0x00,0x00][..]),
+        (0x183FE, &[0x8D,0x4C,0x24,0x10][..]),
+        (0x18405, &[0xE8,0x86,0x07,0x00,0x00][..]),
+        (0x18B90, &[0x8B,0x4C,0x24,0x04,0x8B,0x41,0x08][..]),
+    ] { dll_expect_raw_x86(dll,pe,rva,code)?; }
+    if dll_relative_call_target(dll,pe,0x18405)?!=0x18B90 {
+        return Err("selector case section-size helper target mismatch".into());
+    }
+    println!("  RVA 0x189F0: section-header walk compares Characteristics at +0x24 and advances 0x28 bytes per entry.");
+    println!("  RVA 0x183E6..0x18405: selector case copies out descriptor fields and calls 0x18B90 for bounded size.");
+    println!("  The selected PE header address is NOT itself proof of final write destination.");
     println!("  Selector 1 at 0x18800 forwards to 0x181E0; (selector-1)==0 uses jump table case 0x183C2.");
     println!("  Case 0x183C2 calls 0x189F0 with required section flags 0x20000020 (CODE | EXECUTE).");
     println!("  0x189F0 compares section Characteristics at +0x24 after AND mask; no specific destination RVA is asserted.");
