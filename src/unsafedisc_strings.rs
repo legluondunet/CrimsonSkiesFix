@@ -71,6 +71,21 @@ pub struct PushReference {
     pub label_rva: u32,
 }
 
+/// Report whether a candidate PUSH imm32 has an IMAGE_REL_BASED_HIGHLOW
+/// relocation on the *operand* (opcode RVA + 1), not on its opcode byte.
+/// This strengthens static evidence for an absolute pointer but does not
+/// establish instruction boundaries or runtime reachability.
+pub fn push_operand_highlow_flags(
+    references: &[PushReference],
+    relocation_sites: &std::collections::HashSet<u32>,
+) -> Result<Vec<bool>, String> {
+    references.iter().map(|reference| {
+        let operand_rva = reference.instruction_rva.checked_add(1)
+            .ok_or_else(|| "PUSH operand RVA overflow".to_string())?;
+        Ok(relocation_sites.contains(&operand_rva))
+    }).collect()
+}
+
 pub fn scan_push_references(
     code: &[u8], code_rva: u32, image_base: u32, labels: &[Label],
 ) -> Result<Vec<PushReference>, String> {
@@ -135,6 +150,25 @@ mod tests {
         assert_eq!(hits,vec![PushReference {
             instruction_rva:0x9007,label_rva:0x20508
         }]);
+    }
+
+    #[test]
+    fn push_operands_are_correlated_with_highlow_sites_not_opcode_sites() {
+        let labels = vec![Label { rva: 0x20508, value: "Metadata".into() }];
+        let mut code = vec![0x90u8; 40];
+        let pointer = 0x0090_0508u32.to_le_bytes();
+        for opcode in [7usize, 24] {
+            code[opcode] = 0x68;
+            code[opcode + 1..opcode + 5].copy_from_slice(&pointer);
+        }
+        let refs = scan_push_references(&code, 0x9000, 0x008E_0000, &labels).unwrap();
+        assert_eq!(refs.len(), 2);
+        // At 0x9008 the relocation is on the immediate DWORD. 0x9018 is
+        // the second opcode; that entry must not count as operand evidence.
+        let slots = std::collections::HashSet::from([0x9008u32, 0x9018]);
+        assert_eq!(push_operand_highlow_flags(&refs, &slots).unwrap(), vec![true, false]);
+        let extra = [PushReference { instruction_rva: u32::MAX, label_rva: 1 }];
+        assert!(push_operand_highlow_flags(&extra, &slots).is_err());
     }
 
     #[test]
