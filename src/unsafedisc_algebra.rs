@@ -119,7 +119,7 @@ mod tests {
     fn detect_both_modular_rotation_families() {
         let mut rotate_add = HashMap::new();
         let mut add_rotate = HashMap::new();
-        for x in [0, 1, 2, 3, 7, 0x8000_0000, 0x9876_5432, 0xFFFF_FFFF] {
+        for x in [0u32, 1, 2, 3, 7, 0x8000_0000, 0x9876_5432, 0xFFFF_FFFF] {
             rotate_add.insert(x, x.rotate_left(7).wrapping_add(0xA123_4567));
             add_rotate.insert(x, x.wrapping_add(0xA123_4567).rotate_left(7));
         }
