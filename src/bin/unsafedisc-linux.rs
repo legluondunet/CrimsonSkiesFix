@@ -1947,6 +1947,26 @@ fn synthetic_first_section_with_mask(flags:&[u32],mask:u32,required:u32)->Option
     flags.iter().position(|f| (*f&mask)==required)
 }
 
+// Actual PE32 directory RVAs; a zero-valued entry is not a section RVA.
+fn original_pe_directory_rvas(bytes:&[u8])->Result<[u32;16]> {
+    let nt=read_u32(bytes,0x3C)? as usize;
+    let optional_len=read_u16(bytes,nt+20)? as usize;
+    if optional_len<96+16*8 {return Err("PE32 optional header lacks 16 complete data directories".into());}
+    let start=nt.checked_add(24+96).ok_or("PE32 directory offset overflow")?;
+    let mut out=[0u32;16];
+    for (i,val) in out.iter_mut().enumerate() {
+        *val=read_u32(bytes,start.checked_add(i*8).ok_or("directory slot offset overflow")?)?;
+    }
+    Ok(out)
+}
+fn synthetic_section_excluding_directories(
+    sections:&[(u32,u32)],mask:u32,required:u32,directories:&[u32;16],
+)->Option<usize> {
+    sections.iter().position(|&(rva,flags)|
+        (flags&mask)==required && !directories.contains(&rva)
+    )
+}
+
 fn original_category_selector_relation(dll:&[u8],pe:&Pe32)->Result<()> {
     // 0xAA80, 0xAB10 and 0xABA0 enumerate actual section headers via
     // 0x18800, then register ranges in categories 6, 5 and 4.
@@ -1987,6 +2007,44 @@ fn original_category_selector_relation(dll:&[u8],pe:&Pe32)->Result<()> {
     }
     println!("  Category 4 -> selector 1; 5 -> selector 2; 6 -> selector 10 (verified caller PUSH/E8 pairs).");
     println!("  Categories 5 and 6 pass through an extra 0x187B0 exclusion filter; candidate != proven final selection.");
+    // The second filter is not an opaque heuristic. RVA 0x18770 reads
+    // 0x80 bytes (16 IMAGE_DATA_DIRECTORY entries), and 0x187B0 compares
+    // the section VirtualAddress to each directory.VirtualAddress.
+    for (site,bytes) in [
+        (0x18770u32,&[0x8B,0x54,0x24,0x04,0x81,0xEC,0x38,0x01,0x00,0x00][..]),
+        (0x18787,&[0xE8,0xB4,0x01,0x00,0x00][..]),
+        (0x18793,&[0xB9,0x20,0x00,0x00,0x00][..]),
+        (0x18798,&[0x8D,0xB4,0x24,0xCC,0x00,0x00,0x00][..]),
+        (0x187A2,&[0xF3,0xA5][..]),
+        (0x187D1,&[0x8D,0x4C,0x24,0x00,0x3B,0x11,0x74,0x12][..]),
+        (0x187DA,&[0x83,0xC1,0x08,0x83,0xF8,0x10,0x72,0xF3][..]),
+        (0x18533,&[0xE8,0x78,0x02,0x00,0x00][..]),
+        (0x18668,&[0xE8,0x43,0x01,0x00,0x00][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    for (site,target) in [(0x18787u32,0x18940u32),(0x187C0,0x18770),(0x18533,0x187B0),(0x18668,0x187B0)] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err("PE directory exclusion-helper CALL target mismatch".into());
+        }
+    }
+    let directory_rvas=original_pe_directory_rvas(dll)?;
+    if directory_rvas[5]!=0x27000 || directory_rvas[12]!=0x1E000 {
+        return Err("unexpected DLL base-reloc / IAT directory RVA".into());
+    }
+    let mapped:Vec<(u32,u32)>=pe.sections.iter().map(|sec|
+        (sec.virtual_address,sec.characteristics)
+    ).collect();
+    let data_idx=synthetic_section_excluding_directories(&mapped,0xC000_0040,0xC000_0040,&directory_rvas)
+        .ok_or("writable .data should survive PE directory exclusion")?;
+    if pe.sections[data_idx].name.split(|&c|c==0).next()!=Some(b".data".as_slice()) {
+        return Err("category 5 no longer chooses DLL .data".into());
+    }
+    if synthetic_section_excluding_directories(&mapped,0xC000_0060,0x4000_0040,&directory_rvas).is_some() {
+        return Err("original category 6 must skip IAT .rdata and relocation .reloc".into());
+    }
+    println!("  0x18770 copies 16 PE data-directory entries; 0x187B0 excludes sections whose RVA equals a directory RVA.");
+    println!("  Category 5 keeps .data; category 6 skips .rdata (IAT directory) and .reloc (base reloc directory).");
+    println!("  No section remains for category 6 of this verified original DLL; this does NOT imply category 6 is globally unused.");
+
     Ok(())
 }
 
@@ -5167,6 +5225,18 @@ mod tests {
                    (0x400,0x1000,0x7800));
         assert_eq!(synthetic_selector_fields(0x400,0x1000,0x8000,0x7800),
                    (0x400,0x1000,0x7800));
+    }
+
+    #[test]
+    fn synthetic_directory_exclusion_removes_iat_and_reloc_sections(){
+        let sections=[(0x1000,0x6000_0020),(0x1E000,0x4000_0040),
+                      (0x20000,0xC000_0040),(0x27000,0x4200_0040)];
+        let mut directories=[0u32;16];
+        directories[5]=0x27000;directories[12]=0x1E000;
+        assert_eq!(synthetic_section_excluding_directories(&sections,0xC000_0040,0xC000_0040,&directories),Some(2));
+        assert_eq!(synthetic_section_excluding_directories(&sections,0xC000_0060,0x4000_0040,&directories),None);
+        directories[12]=0;
+        assert_eq!(synthetic_section_excluding_directories(&sections,0xC000_0060,0x4000_0040,&directories),Some(1));
     }
 
     #[test]
