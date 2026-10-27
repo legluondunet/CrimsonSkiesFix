@@ -161,9 +161,9 @@ size (172,032), so this historical routine would *not* treat
 virtual-only \`.data\` bytes as file input.
 
 The native Rust \`inspect --checksum-research\` command now reports
-a separate **historical-extent-bounded page-local candidate**, using
+**two historical-extent-bounded branch candidates**, using
 only 2,102,461 backed bytes from \`.text\`, while retaining the two
-earlier full-raw values as explicit comparators. The bounded helper
+earlier full-raw values as explicit comparators. The relocation-aware bounded helper
 validates relocation windows over the whole backed section and then
 clips them to the effective bytes, including a partial final 4-KiB
 page and a HIGHLOW DWORD that may straddle that cutoff.
@@ -174,6 +174,36 @@ but the *precise original relocation/page walk* and both DLL
 modifiers remain unresolved. The bounded output is therefore still
 an **experimental candidate, not the recovered SafeDisc checksum**.
 No original game data or external binary is committed.
+
+### Both historical checksum branches implemented as candidate calculations
+
+Historical unSafeDisc 1.5.5 x86 code at `0x401D43..0x401D4E` is:
+
+```asm
+mov esi, 0x403CB0
+cmp dword ptr [esi-4], 4   ; [0x403CAC]
+je 0x401D82               ; relocation-aware branch
+; otherwise: ordinary consecutive 4-KiB pages
+```
+
+The simple branch is visible at `0x401D4E..0x401D77`: divide
+the historically selected section extent by `0x1000`, call the
+checksum byte mixer once for each 4-KiB page and once for the
+nonempty remainder. **It does not omit relocated DWORDs.**
+The other branch at `0x401D82` uses relocation metadata.
+
+The `--checksum-research` CLI now prints **two extent-bounded,
+historically branch-specific candidate values** for the user's exact
+original `.text` section: (a) simple pages including all raw backed
+code bytes up to `VirtualSize`, and (b) relocation-aware chunks omitting
+HIGHLOW DWORD bytes. Both start with accumulator zero.
+The independently implemented relocation walker still verifies (b).
+
+**The value of the historical runtime selector `[0x403CAC]`
+for the original Crimson Skies run is unknown.** The archived
+tool's on-disk DATA initial value cannot resolve this alone:
+the variable is used in a runtime-populated table. Neither
+candidate is asserted as the actual SafeDisc checksum or TEA key.
 
 ### Independent verification of relocation-aware page traversal
 
