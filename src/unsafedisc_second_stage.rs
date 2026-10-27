@@ -21,6 +21,7 @@ pub struct SecondStageAudit {
     pub differential_observations: usize,
     pub differential_rank: usize,
     pub differential_contradictions: usize,
+    pub distinct_mask_output_collisions: usize,
     pub distinct_masks_observed: usize,
 }
 
@@ -66,6 +67,16 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
         if cursor-begin<2 {continue;}
         report.multi_mask_inputs+=1;
         let (_,base_mask,base_output)=canonical[begin];
+        let mut outputs=HashMap::<u32,u32>::new();
+        for &(_,mask,output) in &canonical[begin..cursor] {
+            if let Some(&prior_mask)=outputs.get(&output) {
+                if prior_mask!=mask {
+                    report.distinct_mask_output_collisions+=1;
+                }
+            } else {
+                outputs.insert(output,mask);
+            }
+        }
         for &(_,mask,output) in &canonical[begin+1..cursor] {
             report.differential_observations+=1;
             let mut dx=mask ^ base_mask;
@@ -194,6 +205,32 @@ mod tests {
         let r=diagnose(&samples);
         assert_eq!(r.conflicting_canonical_pairs,1);
         assert_eq!(r.canonical_observations,2);
+    }
+
+    #[test]
+    fn same_source_distinct_mask_output_collision_rejects_f2_injectivity() {
+        // This extra necessary condition assumes only that F2 is
+        // injective; F1 remains entirely unrestricted.
+        let pairs=HashMap::from([
+            ((0,123),77), ((1,123),77), ((2,123),79)
+        ]);
+        let r=diagnose(&pairs);
+        assert_eq!(r.multi_mask_inputs,1);
+        assert_eq!(r.distinct_mask_output_collisions,1);
+        assert_eq!(r.differential_observations,2);
+    }
+
+    #[test]
+    fn an_affine_but_noninjective_f2_may_have_output_collisions() {
+        // Bit-affinity does NOT imply bijectivity. Keep these two
+        // independent necessary conditions separate.
+        let mut samples=HashMap::new();
+        for i in 0..8u32 {
+            samples.insert((i,1234), index_mask(i)&!0x0101_0101);
+        }
+        let r=diagnose(&samples);
+        assert_eq!(r.differential_contradictions,0);
+        assert!(r.distinct_mask_output_collisions>0);
     }
 
     #[test]
