@@ -330,7 +330,7 @@ fn print_dll_startup_calls(dll: &[u8]) -> Result<()> {
     println!("  TLS directory: {}", if dll_tls_metadata(dll, &pe)?.is_some() {
         "present (see --modifier-research for callback details)"
     } else { "absent" });
-    for va in [0x0090_519C, 0x0090_6C70] {
+    for va in [0x0090_519Cu32, 0x0090_6C70u32] {
         let rva = va.checked_sub(base).ok_or("startup data VA below preferred image base")?;
         if let Some(section) = dll_zero_filled_section(&pe, rva, 4) {
             let name = String::from_utf8_lossy(
