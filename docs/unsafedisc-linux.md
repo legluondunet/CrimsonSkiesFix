@@ -2280,3 +2280,20 @@ output contract still need to be traced. In particular, `0x189F0`
 returns a section-header pointer and `0x183C2` populates separate
 output arguments: those are not interchangeable with the writer's
 final writable memory pointer. No recovered plaintext is asserted.
+
+
+### New upstream prerequisite in the selector: PE-header initialization at 0x18940
+
+The original `.txt2` function `0x181E0`, before dispatching to selector 1,
+passes two stack scratch-buffer addresses plus its first pointer argument
+to `0x18940` (call at `0x181FF`). It then reads two 16-bit values from
+scratch (`0x18204..0x1821F`) and computes an address using a
+**40-byte stride** (`LEA ECX,[ECX+ECX*4]`, then `[EAX+ECX*8]` at
+`0x18226..0x18229`). This is consistent with computing a PE section-table
+address from header offsets and the IMAGE_SECTION_HEADER entry size.
+
+This new finding pinpoints `0x18940` and the caller-provided first
+pointer as the next elements to resolve before asserting the exact value
+written into the selected section descriptor or passing a plaintext
+comparison. There is no claim yet that its pointer is an on-disk ICD
+buffer, a loaded module base, or a mapped `.text` destination.
