@@ -1870,6 +1870,21 @@ fn synthetic_chunk_byte_model(input:&[u8], first:u8, second:u8)->Vec<u8> {
     buf
 }
 
+// Inverse of the provisional per-chunk recurrence, applied ONLY to
+// generated synthetic vectors. This cannot validate whether SafeDisc
+// actually supplies this recurrence with the presumed inputs/states.
+fn synthetic_chunk_byte_inverse(output:&[u8],first:u8,second:u8)->Vec<u8> {
+    let mut input=output.to_vec();
+    if input.is_empty(){return input;}
+    let mut state=output[0]^second;
+    input[0]=output[0]^first;
+    for i in 1..output.len() {
+        input[i]=output[i].wrapping_sub(state)^output[i-1];
+        state=state.wrapping_add(output[i]);
+    }
+    input
+}
+
 // These isolated comparators model exact unsigned x86 arithmetic. They are
 // only used with synthetic vectors, not to modify any protected binary.
 fn synthetic_probe_before_start(start:u32,probe:u32)->bool { probe < start }
@@ -5257,6 +5272,26 @@ mod tests {
         assert_eq!(actual.len(),src.len());
         assert_ne!(actual,src);
         assert_eq!(actual[0],0x53);
+    }
+
+    #[test]
+    fn synthetic_chunk_model_inverse_roundtrip_boundary_lengths(){
+        for len in [0usize,1,2,3,15,16,4095,4096,4097] {
+            let original:Vec<u8>=(0..len).map(|i|
+                ((i as u32).wrapping_mul(73).wrapping_add((i>>8) as u32)) as u8
+            ).collect();
+            let encoded=synthetic_chunk_byte_model(&original,0x43,0x15);
+            assert_eq!(encoded.len(),original.len());
+            let decoded=synthetic_chunk_byte_inverse(&encoded,0x43,0x15);
+            assert_eq!(decoded,original);
+        }
+        for first in [0u8,0x43,0xFF] {
+            for second in [0u8,0x15,0xFF] {
+                let source=[0u8,1,0xFF,0x80,0xAA,0x55];
+                let transformed=synthetic_chunk_byte_model(&source,first,second);
+                assert_eq!(synthetic_chunk_byte_inverse(&transformed,first,second),source);
+            }
+        }
     }
 
     #[test]
