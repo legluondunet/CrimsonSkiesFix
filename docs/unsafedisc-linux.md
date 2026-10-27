@@ -3113,3 +3113,69 @@ For native unSafeDisc work the practical implication is to prioritize
 the genuinely protected DLL .txt modifier code and game ICD transform,
 rather than treating the .txt2 self-modification route as if it had
 already produced a decrypted executable page.
+
+
+### Crimson 1.50.20 relocation-fragment boundaries change the second-layer mask (2026-10-27)
+
+**Important refinement to the earlier per-page adapter:** the exact
+historical unSafeDisc 1.5.5 x86 at `0x401D82..0x401EF5`
+uses relocation-aware traversal when runtime relocation-directory
+metadata selects branch 4. Its calls into `0x401F01` receive
+**individual spans of non-relocated bytes**, clipped to 4-KiB page
+limits. `0x401F01` calls `0x401F43`, which enables the
+`0x401F62` extra transformation for DLL size `0x21E00`
+(the owner's Crimson DLL).
+
+**At `0x401F62`, EBX (the per-DWORD index) is reset to zero
+for every individual call**, not just when a new 4-KiB page begins.
+Therefore the Crimson-specific relocation branch must consider
+*both* 4-KiB page boundaries and the HIGHLOW DWORD gaps inside
+those pages. A page-only word-index reset is a valid isolated
+comparison model but **does not represent the complete relocation
+fragment path** of the historical tool.
+
+The exact protected ICD section `.text` has:
+- RVA **0x1000**, effective extent **0x2014BD = 2,102,461 bytes**;
+- **61,743** full HIGHLOW relocations, covering **246,972** bytes
+  (including **36** HIGHLOW DWORDs crossing a 4-KiB page);
+- **48,149** non-relocated page-local fragments of **at least 4 bytes**;
+- **440,422** complete DWORDs across those fragments;
+- **93,801** non-relocated leftover bytes in less-than-4-byte
+  fragment tails (including whole runs shorter than one DWORD).
+
+Independent Python inspection of the exact hash-verified original PE
+relocation directory provides these counts and verifies that
+`440422 * 4 + 93801 + 246972 = 2102461`.
+This is **structural accounting of the second layer only**:
+the untouched relocation operands and short tails should not be
+confused with final unchanged bytes after later TEA, import and
+other processing.
+
+The research-only Rust function
+`pre_tea_relocation_fragments_with_modifiers` accepts explicit,
+strictly sorted, nonoverlapping section-relative HIGHLOW positions.
+It skips those four-byte operands, splits by each 4-KiB page,
+and resets the existing `pre_tea_dwords_with_modifiers`
+index separately at every remaining contiguous byte run.
+It uses **synthetic modifier callbacks only**, rejects malformed
+relocation geometry, leaves short fragments untouched, and does
+not emit any decrypted game file.
+`--key-research` now asserts the original geometry against
+those independently calculated counts before reporting the
+provisional key. Synthetic tests exercise an internal relocation
+gap, a crossing-page HIGHLOW DWORD, missing/overlapping positions
+and incomplete-DWORD tails.
+
+Caveat: not all historical unSafeDisc branches have been executed,
+and the two Crimson-specific modifier routines inside the
+high-entropy on-disk DLL `.txt` remain undecoded.
+This is a **verified control-flow and span-layout improvement**,
+not completion of the game-specific decoder or proof of the
+four-word TEA key.
+
+An independent public preservation project, [MW4Remastered
+SafeDisc15020SecondLayer](https://github.com/Icehellionx/MechWarrior-4-Remastered/blob/main/src/MW4Remastered.Core/Install/SafeDisc15020SecondLayer.cs),
+contains **different title-specific modifier profiles**. Their
+existence corroborates the need to identify the *Crimson* profile
+and not substitute another game's constants or assume one universal
+second-layer transform.
