@@ -1880,6 +1880,24 @@ fn synthetic_adjacent_ranges(a:(u32,u32,u32),b:(u32,u32,u32))->bool {
 
 // The index is a raw 32-bit caller argument in the original x86. This
 // synthetic guard states the legal geometry, NOT a runtime x86 bounds check.
+// Synthetic, isolated reproduction of the observed C350 unsigned 32-bit
+// comparisons. The caller's input validity constraints are not known.
+fn synthetic_extend_matching_range(
+    stored:&mut (u32,u32,u32), address:u32, size:u32, tag:u32,
+)->bool {
+    let start=stored.0;
+    let exclusive_end=start.wrapping_add(stored.1);
+    if start>address || address>=exclusive_end {return false;}
+    let requested_end=address.wrapping_add(size);
+    let last=requested_end.wrapping_sub(1);
+    if last<start || last>=exclusive_end {
+        if stored.2!=tag {return false;}
+        stored.1=requested_end.wrapping_sub(start);
+        return true;
+    }
+    stored.2==tag
+}
+
 fn synthetic_range_category_field(index:u32)->Option<u32> {
     if index<8 { Some(0x14+4*index) } else { None }
 }
@@ -1927,6 +1945,17 @@ fn original_range_sort_and_adjacency_proof(dll:&[u8],pe:&Pe32)->Result<()> {
         0x3B,0xD6,0x74,0x0A,0x8B,0x74,0x24,0x10,0x03,
         0xF2,0x3B,0xF1,0x75,0x05,0xB8,0x01,0x00,0x00,
         0x00,0x5E,0xC3])?;
+    // On a same-tag extension, C350 stores (address+size)-start,
+    // i.e. exclusive end minus original start; NOT (last_address-start).
+    for (site,bytes) in [
+        (0xC350u32,&[0x8B,0x44,0x24,0x08,0x56][..]),
+        (0xC35C,&[0x3B,0xC8,0x77,0x44][..]),
+        (0xC36E,&[0x03,0xC2,0x8D,0x50,0xFF][..]),
+        (0xC373,&[0x3B,0xCA,0x77,0x16][..]),
+        (0xC377,&[0x3B,0xD7,0x73,0x12][..]),
+        (0xC398,&[0x2B,0xC1,0x89,0x46,0x04][..]),
+        (0xC3A4,&[0x5F,0x66,0x33,0xC0,0x5E,0xC3][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
     // The record-versus-record variant is the merge-loop predicate.
     dll_expect_raw_x86(dll,pe,0xC4F0,&[
         0x56,0x8B,0x74,0x24,0x08,0x57,0x8B,0x7C,0x24,
@@ -1946,6 +1975,7 @@ fn original_range_sort_and_adjacency_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  Original 0xC3D0 is unsigned (probe < node.start), NOT start equality.");
     println!("  Original 0xC4B0/0xC4F0 test same-tag adjacency in either direction.");
     println!("  0xB9D0 merges neighboring range records through 0xC4F0 and 0xC310.");
+    println!("  0xC350 may extend a matching range by storing (address+size)-start in its length DWORD.");
     println!("  The eight list categories and any connection to protected ICD code remain unproven.");
     Ok(())
 }
@@ -4964,6 +4994,19 @@ mod tests {
         assert_eq!(synthetic_range_category_field(7),Some(0x30));
         assert_eq!(synthetic_range_category_field(8),None);
         assert_eq!(synthetic_range_category_field(u32::MAX),None);
+    }
+
+    #[test]
+    fn synthetic_c350_range_extension_uses_exclusive_end_and_matching_tag(){
+        let mut record=(100u32,10u32,3u32);
+        assert!(synthetic_extend_matching_range(&mut record,104,1,3));
+        assert_eq!(record,(100,10,3));
+        assert!(!synthetic_extend_matching_range(&mut record,105,10,4));
+        assert_eq!(record,(100,10,3));
+        assert!(synthetic_extend_matching_range(&mut record,105,10,3));
+        assert_eq!(record,(100,15,3)); // end-exclusive 115, not 114
+        assert!(!synthetic_extend_matching_range(&mut record,115,1,3));
+        assert!(!synthetic_extend_matching_range(&mut record,99,1,3));
     }
 
     #[test]
