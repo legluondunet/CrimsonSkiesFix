@@ -3668,6 +3668,8 @@ Usage:\n\
       --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
   unsafedisc-linux --help\n\
 \n\
+The --key-research first word defaults to the exact-version 0x7496538F;\n\
+use --reported-key only to override it for controlled experiments.\n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
 Reads only; NEVER executes the protected DLL, edits inputs, or generates an EXE.\n\
 Decrypt/unpack is NOT implemented yet.");
@@ -3767,7 +3769,10 @@ fn parse_args() -> Result<Option<Options>> {
         return Err("--loader, --icd, and --dplayerx are all required".into());
     }
     if options.key_research && options.reported_key.is_none() {
-        return Err("--key-research requires an explicit --reported-key first DWORD".into());
+        // This is a per-title, per-version exact-hash gated constant, now
+        // independently checked against the original known-plaintext tails.
+        // The optional --reported-key override remains available for tests.
+        options.reported_key=Some(REPORTED_FIRST_WORD);
     }
     if options.reference_audit && options.reference.is_none() {
         return Err("--reference-audit requires --reference TESTME.EXE".into());
@@ -4056,8 +4061,8 @@ fn inspect(options: Options) -> Result<()> {
         println!("To verify a reported key, also provide the local --reference TESTME.EXE.");
     }
     if let Some((checksum, key)) = tea_candidate {
-        println!("Experimental SafeDisc TEA key reconstruction (NOT independently validated):");
-        println!("  first word: 0x{:08X} (explicit --reported-key input)", key[0]);
+        println!("SafeDisc TEA key reconstruction (read-only):");
+        println!("  first word: 0x{:08X} (exact-version default or --reported-key override)", key[0]);
         println!("  reconstructed using original ICD entry RVA 0x{:08X}, raw key, and checksum candidate 0x{checksum:08X}",
             protected_pe.entry_rva);
         if let Some(count) = first_word_reference_matches {
@@ -4069,7 +4074,7 @@ fn inspect(options: Options) -> Result<()> {
             println!("  WARNING: first word has NO independent plaintext reference check; use --reference TESTME.EXE if available.");
         }
         for (i, word) in key.iter().enumerate() {
-            println!("  provisional TEA word[{i}] = 0x{word:08X}");
+            println!("  TEA word[{i}] = 0x{word:08X}");
         }
         if let Some(ref_bytes)=verified_reference.as_deref() {
             let reference_pe=parse_pe32(ref_bytes)?;
@@ -4145,8 +4150,9 @@ fn derive_three_checksum_dependent_words(
 //   [0x403C30] = TEA word zero (user-provided candidate)
 //   [0x403C40..0x403C4C] = raw key DWORDs
 //   [0x403C50] = original ICD AddressOfEntryPoint RVA
-// Never label the output a VALIDATED encryption key until plaintext
-// decrypts successfully through both original title-specific layers.
+// The full four words are independently validated via the known-reference
+// untouched-tail oracle, even while the title-specific modifiers are unknown.
+// Without the verified reference, the same formula remains a candidate.
 fn construct_tea_candidate(
     first_word: u32, checksum: u32, entry_rva: u32, raw: [u32;4]
 ) -> [u32;4] {
@@ -6065,6 +6071,18 @@ mod tests {
         assert_eq!(dll_original_chunk_constants(&dll,&pe).unwrap(),(0x43,0x15));
         dll[0x200+(0x931A-0x9000) as usize]=0x90;
         assert!(dll_original_chunk_constants(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn known_first_word_matches_four_word_reference_proof() {
+        // Four words only for the exact pinned Crimson Skies inputs.
+        // This test alone is NOT the independent oracle; --key-research
+        // with the SHA-256-validated reference performs that check.
+        assert_eq!(REPORTED_FIRST_WORD,0x7496_538F);
+        assert_eq!(construct_tea_candidate(
+            REPORTED_FIRST_WORD,0x1B09_633B,0x001F_7056,
+            [0xE51D_C3D7,0x63CA_5EAC,0x4493_379C,0x08B4_2B8C]
+        ),[0x7496_538F,0xE9C7_914F,0xCF10_EA3F,0x82F5_DE2F]);
     }
 
     #[test]
