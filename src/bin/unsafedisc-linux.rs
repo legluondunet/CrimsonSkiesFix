@@ -553,6 +553,39 @@ fn print_dll_exact_literal_context(
 // for future genuine SafeDisc decryption, NOT a decryption step.
 // Only the exact known-hash unwrapped original may be used as the
 // plaintext reference; no file is reconstructed or written.
+// Exact per-site import-index unrotation found in the *original*
+// historical unSafeDisc 1.5.5 x86 code (0x401869..0x4018D9).
+//
+// After identifying FF 15 and locating the old IAT table, the tool
+// computes shift=(instruction_OPERAND_site_RVA - .text_RVA - 2
+//                   + reported_first_word) modulo imported_count.
+// For the user's SHA-256 verified original Crimson Skies 1.0.2.0,
+// the two affected IAT tables are KERNEL32 (74 entries) and
+// USER32 (62 entries). The historical algorithm rotates the entry
+// index backwards by this shift. This is why no global old-VA -> new-VA
+// dictionary is possible. All values below are PE virtual ADDRESSES,
+// not file offsets or arbitrary guesses for unrelated executables.
+fn historical_155_unrotate_import_va(
+    site_rva: u32, original_va: u32, first_word: u32, text_rva: u32,
+) -> Option<u32> {
+    const IATS: [(u32,u32);2]=[
+        (0x00A1_FC7C,74),  // KERNEL32.dll, exact verified Crimson image
+        (0x00A2_039C,62),  // USER32.dll, exact verified Crimson image
+    ];
+    let local=site_rva.checked_sub(text_rva)?.checked_sub(2)?;
+    for (first,count) in IATS {
+        let last=first.checked_add(count.checked_mul(4)?)?;
+        if original_va>=first && original_va<last &&
+           (original_va-first)%4==0 {
+            let index=(original_va-first)/4;
+            let shift=local.wrapping_add(first_word)%count;
+            let restored=(index+count-shift)%count;
+            return first.checked_add(restored.checked_mul(4)?);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ReferenceTextAudit {
     relocation_words: usize,
@@ -562,6 +595,8 @@ struct ReferenceTextAudit {
     plain_bytes: usize,
     identical_plain_bytes: usize,
     import_pointer_mismatches: usize,
+    historically_restored_import_pointers: usize,
+    unresolved_import_pointers: usize,
     ambiguous_import_va_sources: usize,
     first_page_plain_equal: usize,
     first_page_plain_total: usize,
@@ -605,6 +640,13 @@ fn audit_reference_text_bytes(
                 import_start<=x && x<import_end &&
                 import_start<=y && y<import_end {
                 out.import_pointer_mismatches+=1;
+                let restored=historical_155_unrotate_import_va(
+                    source_rva,x,REPORTED_FIRST_WORD,text_rva);
+                if restored==Some(y) {
+                    out.historically_restored_import_pointers+=1;
+                } else {
+                    out.unresolved_import_pointers+=1;
+                }
                 import_sources.entry(x).or_default().insert(y);
             }
         }
@@ -665,6 +707,17 @@ fn print_reference_audit(
         audit.import_pointer_mismatches);
     println!("  Protected IAT VAs that map to multiple reference IAT VAs: {}",
         audit.ambiguous_import_va_sources);
+    println!("  Historic per-site 1.5.5 index unrotation matches against exact reference: {} / {}",
+        audit.historically_restored_import_pointers,audit.import_pointer_mismatches);
+    println!("  Import-address mismatches not explained by original algorithm: {}",
+        audit.unresolved_import_pointers);
+    if audit.relocation_words == 61_743
+        && audit.identical_relocation_words == 61_498
+        && (audit.import_pointer_mismatches != 245
+            || audit.historically_restored_import_pointers != 245
+            || audit.unresolved_import_pointers != 0) {
+        return Err("historical 1.5.5 import rotation does not reproduce all 245 verified Crimson IAT references".into());
+    }
     println!("  Treat IAT replacement as site-specific; NEVER infer a global VA map.");
     println!("  These results validate the reference relationship, not a recovered cipher or TEA key.");
     Ok(())
@@ -3237,6 +3290,37 @@ mod tests {
             assert!(!historical_155_section_selected(&section),
                 "historical original unSafeDisc must exclude {:?}",name);
             assert!(!historical_155_section_checksum_eligible(&section));
+        }
+    }
+
+    #[test]
+    fn historical_155_import_unrotation_matches_known_crimson_sites() {
+        // First and second KERNEL32 examples; exact original private
+        // ICD vs TESTME data, independently validated offline.
+        assert_eq!(historical_155_unrotate_import_va(
+            0x1294,0x00A1_FD78,REPORTED_FIRST_WORD,0x1000),
+            Some(0x00A1_FD9C));
+        assert_eq!(historical_155_unrotate_import_va(
+            0x12D4,0x00A1_FD50,REPORTED_FIRST_WORD,0x1000),
+            Some(0x00A1_FD9C));
+        // Two different USER32 sites, modulo 62.
+        assert_eq!(historical_155_unrotate_import_va(
+            0x48C5,0x00A2_0458,REPORTED_FIRST_WORD,0x1000),
+            Some(0x00A2_0430));
+        assert_eq!(historical_155_unrotate_import_va(
+            0x48E5,0x00A2_03C0,REPORTED_FIRST_WORD,0x1000),
+            Some(0x00A2_0410));
+        // Reject inputs which cannot belong to the two specific tables.
+        assert_eq!(historical_155_unrotate_import_va(
+            0x1294,0x00A1_0000,REPORTED_FIRST_WORD,0x1000),None);
+        for (first,count) in [(0x00A1_FC7Cu32,74u32),(0x00A2_039Cu32,62u32)] {
+            for index in 0..count {
+                let x=first+index*4;
+                let corrected=historical_155_unrotate_import_va(
+                    0x2000,x,REPORTED_FIRST_WORD,0x1000).unwrap();
+                assert!(corrected>=first && corrected<first+4*count);
+                assert_eq!((corrected-first)%4,0);
+            }
         }
     }
 
