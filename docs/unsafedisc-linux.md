@@ -2351,3 +2351,28 @@ base and the section-relative offset remain to be validated. This is a
 static argument/data-flow proof and not a runtime observation or decoded
 `.text` page. `inspect --modifier-research` now checks the actual FF15,
 store/load opcodes and binds the FF15 IAT slot to the named PE import.
+
+
+### Critical correction: memory writer targets the SafeDisc DLL module itself
+
+The missing `GetModuleHandleA` input can now be resolved from the **actual
+private original DLL bytes**: RVA `0x985C` pushes preferred VA `0x00900030`
+(data RVA `0x20030`) and calls the already-verified metadata string decoder
+`0xE25C` at RVA `0x9861`. Offline decoding of the exact file-backed bytes
+at `.data+0x30` yields **`dplayerx.dll`** (NUL terminated). Its returned
+pointer is passed to the imported `KERNEL32!GetModuleHandleA` at `0x986A`,
+and that module handle is stored into global RVA `0x259E4` at `0x9870`.
+
+**Therefore, when these calls succeed, the writer's descriptor +4 holds
+the loaded `dplayerx.dll` base, NOT `CRIMSON.ICD` or the preferred
+`0x00401000` ICD code address.** This supersedes the earlier working
+hypothesis that the particular `0x92B0 -> 0x9640` copy route directly
+writes decrypted game `.text`. The selected section and byte offset in
+this path must be examined as a **DLL self-modification/initialization**
+route first. Another path or later stage may still restore protected game
+code; no such stage is claimed here.
+
+The CLI now verifies the original metadata PUSH/CALL, decodes the exact
+`dplayerx.dll` argument from the verified local DLL and checks the
+`GetModuleHandleA` IAT binding. It does not execute the code, obtain a
+runtime handle, or generate game/DLL plaintext.
