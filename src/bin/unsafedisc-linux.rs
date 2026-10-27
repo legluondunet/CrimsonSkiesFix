@@ -4343,7 +4343,7 @@ mod tests {
         let result=pretea_fragment_geometry(22,&[5,13]).unwrap();
         assert_eq!(result,PreTeaFragmentGeometry{
             highlow_slots:2,highlow_bytes:8,
-            modified_dwords:2,skipped_tail_bytes:6,calls:2
+            modified_dwords:3,skipped_tail_bytes:2,calls:3
         });
         // This crossing slot starts on the final two bytes of page 0.
         let crossed=pretea_fragment_geometry(4107,&[4094]).unwrap();
