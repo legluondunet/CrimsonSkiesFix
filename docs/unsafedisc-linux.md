@@ -3537,3 +3537,66 @@ this session. Any contradiction is reported as a **warning**, not a
 fatal error, pending independent validation of the historical state
 semantics. The implementation does not alter game binaries or produce
 an unpacker.
+
+
+### Second-stage-only affine differential oracle (2026-10-28)
+
+The first two affine probes implicitly assumed that **both** unknown
+protected `dplayerx.dll` EAX functions were affine. This new, isolated
+experiment can reject a much weaker hypothesis: **only the second
+function `F2` is bit-affine**, while `F1` may be arbitrary/nonlinear.
+
+Historical source-word expression:
+
+```text
+y(x,m) = F2(F1(x) XOR m)
+m = (index << 24) | (index << 16) | (index << 8) | index
+```
+
+For a fixed masked input `x` observed at two different mask values
+`m` and `n`, if `F2(z) = L(z) XOR c` then:
+
+```text
+y(x,m) XOR y(x,n) = L(m XOR n)
+```
+
+Both the unknown `F1(x)` and constant `c` cancel. This is a
+*necessary condition* for F2 alone being GF(2)-affine and is
+independent of the nature of F1.
+
+The new `src/unsafedisc_second_stage.rs` experiment:
+
+- Canonicalizes samples by `(masked_input, mask(index))`, detects
+  conflicting output aliases and sorts consistently.
+- Groups distinct masks per masked input, builds one XOR-difference
+  relation against that input's first mask, and shares a single
+  32-feature GF(2) elimination basis across **all inputs**.
+- Reports only aggregate counts of inputs observed under more than
+  one mask, difference relations, mask-difference rank and dependent
+  contradictions. No input, output, fitted linear map or private code
+  bytes are emitted.
+- Has **seven synthetic tests**, including an arbitrarily nonlinear
+  F1 with affine F2, a demonstrably nonlinear F2, absent cross-mask
+  coverage, identical-mask aliases, conflicting aliases, ordering
+  stability, and exact mask-rank bounds.
+
+A fundamental limitation is quantified independently: the original
+mask values in the observed index range `0..=1006` have **GF(2)
+rank 10**, although they are 32-bit values and there are 572
+distinct values. As a result the previous joint 64-feature affine
+probe cannot exceed **42/64 rank** (32 source bits plus at most 10
+mask bits). Any recovered affine candidate would leave at least 22
+mask-related feature dimensions unconstrained by these observations.
+
+**Interpretation:** If no input recurs under two different masks,
+the F2-only test reports *inconclusive* and claims no information
+about F2. A nonzero dependent-contradiction count, after resolving
+any canonical alias conflicts and verifying actual original data,
+refutes the F2-bit-affine hypothesis for the observed historical
+expression. Zero contradictions only establishes sample consistency;
+it does not reconstruct F2 or F1 and cannot decrypt new words.
+
+The owner's exact original ICD/reference files are not accessible
+in this session; no measured retail results are claimed for this
+additional probe. All new code is read-only and restricted to the
+already gated `--key-research --reference TESTME.EXE` path.
