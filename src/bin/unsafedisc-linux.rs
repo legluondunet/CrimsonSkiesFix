@@ -331,6 +331,48 @@ fn checksum_pages_without_highlow(
     Ok(checksum)
 }
 
+// Alternative *research* hypothesis: carry the checksum across the whole
+// section, splitting ONLY around relocation DWORDs (not page boundaries).
+// It is deliberately distinct from the page-local checksum hypothesis.
+// Neither hypothesis includes the actual SafeDisc DLL modifier stage.
+#[allow(dead_code)]
+fn checksum_section_without_highlow(
+    bytes: &[u8], first_page_rva: u32, blocks: &[RelocBlock], previous: u32,
+) -> Result<u32> {
+    let ranges = relocation_windows(first_page_rva, bytes.len(), blocks)?;
+    let mut checksum = previous;
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        if cursor < start {
+            checksum = checksum_chunk(&bytes[cursor..start], checksum);
+        }
+        cursor = end;
+    }
+    if cursor < bytes.len() {
+        checksum = checksum_chunk(&bytes[cursor..], checksum);
+    }
+    Ok(checksum)
+}
+
+// Opt-in two-hypothesis comparison on the exact hash-verified protected ICD.
+// These numbers are NOT recovered SafeDisc checksums or TEA key words.
+fn print_checksum_research(
+    image: &[u8], section: &PeSection, blocks: &[RelocBlock],
+) -> Result<()> {
+    let stop = section.raw_offset.checked_add(section.raw_len)
+        .ok_or(".text raw range overflow")?;
+    let data = image.get(section.raw_offset..stop)
+        .ok_or(".text bytes outside verified PE file")?;
+    let page_local = checksum_pages_without_highlow(data, section.virtual_address, blocks, 0)?;
+    let section_wide = checksum_section_without_highlow(data, section.virtual_address, blocks, 0)?;
+    println!("Experimental .text byte-mixer hypotheses (NOT the SafeDisc key/checksum):");
+    println!("  page-local weight reset:    0x{page_local:08X}");
+    println!("  section-wide weight reset:  0x{section_wide:08X}");
+    println!("  initial accumulator: 0; both models exclude the same HIGHLOW DWORD bytes.");
+    println!("  PE section flags, real unSafeDisc traversal and DLL modifiers remain unverified.");
+    Ok(())
+}
+
 // Inspect only the geometry of checksum candidates. This does not compute
 // a checksum and makes no claims about the original tool's chunk ordering.
 fn print_text_relocation_layout(
@@ -444,13 +486,14 @@ struct Options {
     reference: Option<PathBuf>,
     reported_key: Option<u32>,
     layout: bool,
+    checksum_research: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -481,6 +524,11 @@ fn parse_args() -> Result<Option<Options>> {
         if key == "--layout" {
             if options.layout { return Err("repeated --layout argument".into()); }
             options.layout = true;
+            continue;
+        }
+        if key == "--checksum-research" {
+            if options.checksum_research { return Err("repeated --checksum-research argument".into()); }
+            options.checksum_research = true;
             continue;
         }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
@@ -536,6 +584,12 @@ fn inspect(options: Options) -> Result<()> {
             .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
             .cloned().collect();
         print_text_relocation_layout(text, &text_relocs)?;
+    }
+    if options.checksum_research {
+        let text_relocs: Vec<_> = relocs.iter()
+            .filter(|block| block.page_rva >= text_page_start && block.page_rva < text_page_end)
+            .cloned().collect();
+        print_checksum_research(&icd, text, &text_relocs)?;
     }
     let (raw_offset, raw) = locate_raw_key(&loader, dll.len())?;
     println!("Verified original Crimson Skies 1.0.2.0 files (SHA-256 + size).");
@@ -945,6 +999,30 @@ mod tests {
         assert_eq!(captured[2048], 0); // partial third page
         assert_eq!(&bytes[4096 * 2 + 4..], &[0x10, 0x20, 0x30]);
         assert!(bytes.iter().take(4096 * 2 + 4).all(|b| *b == 0));
+    }
+
+    #[test]
+    fn checksum_research_distinguishes_page_and_section_models() {
+        // Independently calculated Python expected vectors: three 4-KiB
+        // pages, one straddling HIGHLOW and another in the next page.
+        let mut bytes: Vec<u8> = (0..12288).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let blocks = [
+            RelocBlock { page_rva: 0x1000, highlow_offsets: vec![0xFFE] },
+            RelocBlock { page_rva: 0x2000, highlow_offsets: vec![0x021] },
+        ];
+        let local = checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap();
+        let whole = checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap();
+        assert_eq!(local, 0x6D73_525C);
+        assert_eq!(whole, 0x9C2B_674B);
+        assert_ne!(local, whole);
+        for &offset in &[0xFFEusize, 0xFFF, 0x1000, 0x1001, 0x1021, 0x1024] {
+            bytes[offset] ^= 0xA5;
+        }
+        assert_eq!(checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), local);
+        assert_eq!(checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), whole);
+        bytes[0x3500] ^= 1;
+        assert_ne!(checksum_pages_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), local);
+        assert_ne!(checksum_section_without_highlow(&bytes, 0x1000, &blocks, 0).unwrap(), whole);
     }
 
     #[test]
