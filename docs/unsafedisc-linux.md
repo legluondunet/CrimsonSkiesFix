@@ -3208,3 +3208,77 @@ original geometry counts; synthetic tests cover aligned/unaligned
 fragments as well as a HIGHLOW crossing a page boundary.
 This is further confirmation of **necessary input segmentation**,
 not a title-specific EAX modifier implementation.
+
+
+### Major breakthrough: all four TEA key words independently validated (2026-10-27)
+
+The previously *provisional* 128-bit SafeDisc TEA key, constructed from
+the original loader's raw key fields, the original 1.5.5
+relocation-aware checksum candidate, the real ICD entry RVA and
+the separately reported first word, is now verified against a
+**known-plaintext oracle that does not require either game-specific
+EAX modifier**.
+
+The exact four 32-bit words, in original little-endian TEA order:
+
+```text
+7496538F E9C7914F CF10EA3F 82F5DE2F
+```
+
+**Why this check bypasses the still-encrypted DLL modifier routines:**
+the historical second-layer loop `0x401F62` only touches complete
+4-byte DWORDs of each non-relocated fragment. Its final 1–3
+bytes (if present) are *not modified by that extra layer*.
+However, the TEA stage can touch those bytes, including its
+historical **overlapping last eight-byte block** on fragments with
+9–15 bytes remaining.
+
+Starting from the user-supplied SHA-256-verified unwrapped
+`TESTME.EXE` `.text` bytes, reverse the exact TEA *decrypt
+block call order*: encrypt the last stage's current block first,
+then its overlapping tail block, then earlier complete blocks
+in reverse. This produces the intermediate bytes that the
+second-layer transform **must** have supplied to TEA. Compare
+only the 1–3 trailing bytes known to have been unchanged by
+that second layer against original protected `CRIMSON.ICD`
+at matching offsets, skipping all 61,743 HIGHLOW DWORDs and
+respecting 4-KiB boundaries.
+
+Independent Python verification on these exact private
+originals produced:
+
+| Key variant | Full fragment tails identical | Individual trailing bytes identical |
+| --- | ---: | ---: |
+| Four recovered words above | **28,947 / 28,947** | **58,076 / 58,076** |
+| Last word's lowest bit toggled | 39 / 28,947 | 177 / 58,076 |
+
+The verified fragments span 9–4096 bytes and include the
+overlapping-TEA cases; short fragments under 8 bytes and
+divisible-by-four fragments are intentionally excluded from
+this oracle, since they do not give an independent unchanged
+post-second-layer tail. The 100% agreement across tens of
+thousands of independently checkable bytes, combined with the
+bit-flip negative control, **establishes the 128-bit key for
+this precise Crimson Skies 1.0.2.0 protected payload** and
+the TEA overlapping block ordering. This is a substantially
+stronger statement than an import XOR check on the first word.
+
+The read-only Rust inspector now implements
+`tea_encrypt_block`,
+`original_tea_reverse_fragment` and
+`validate_tea_key_by_unchanged_fragment_tails`.
+When the exact `--reference TESTME.EXE` and
+`--key-research --reported-key 0x7496538F` are supplied, it
+prints the oracle counts and refuses to label the four words
+validated unless all original fragments and bytes match.
+Without the reference, it still reports only a candidate.
+Synthetic tests verify the textbook TEA vector, the inverse
+of existing TEA decryption and overlapping-block order.
+
+**Unresolved and unchanged:** the two *Crimson-specific*
+`dplayerx.dll` EAX modifiers at `0x65BE` and `0x6621` are
+not decoded or reimplemented. The tool cannot yet derive
+the entire original plaintext from protected inputs alone and
+does not generate or modify an executable. The reference is
+read only, checked by exact SHA-256, and never embedded in
+the repository.
