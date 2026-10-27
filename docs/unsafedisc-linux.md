@@ -125,6 +125,56 @@ have no file data. File section flags do not, by themselves, establish
 whether unSafeDisc selected or excluded a section. No new checksum or
 TEA key is asserted by \`--sections\`.
 
+### Historical checksum selection and extent recovered (2026-10-27)
+
+A static, **non-executing** analysis of the publicly archived
+[unSafeDisc 1.5.5 variant](https://github.com/nckstwrt/SafeDiscLoader/tree/main/UnSafeDisc%20and%20SafeDisc2Cleaner)
+(Git blob \`825c467b6b403e1c85a5875ede5696dedfe17652\`)
+revealed concrete limits that the earlier two full-raw research
+models did not apply. This historical binary was modified by its
+archiver to load a compatibility \`version.dll\`; the core code
+positions below agree with the prior inspection of unSafeDisc 1.5.5.
+
+- \`0x401CDE..\`: reset the per-run checksum accumulator at
+  \`[0x60BCB0]\` to zero.
+- \`0x401D11..0x401D19\`: read PE section
+  \`IMAGE_SECTION_HEADER.Characteristics\` from offset \`+0x24\` and
+  save it to \`[0x60BCD0]\`.
+- \`0x401D1A..0x401D34\`: begin with
+  \`SizeOfRawData\` (\`+0x10\`), then cap by \`VirtualSize\` (\`+0x08\`)
+  when that size is nonzero and smaller.
+- \`0x401F01..\`: test \`[0x60BCD0] & 0x20\`. Only sections
+  marked \`IMAGE_SCN_CNT_CODE\` enter the checksum's byte mixer
+  at \`0x401F0D\`. The path at \`0x401F43\` conditionally calls the
+  still-unrecovered DLL modifiers (DLL size \`0x21E00\`).
+- \`0x401DCA..0x401EDE\`: process relocation boundaries and
+  4-KiB page increments. A faithful treatment of the complete
+  page/relocation boundary control flow remains to be confirmed.
+
+For the exact verified Crimson Skies 1.0.2.0 ICD, \`.text\` is
+the **only** section with bit \`0x20\`. Its
+\`SizeOfRawData = 2,105,344\`, but its
+\`VirtualSize = 2,102,461\`; this means the earlier models included
+**2,883 raw-padding bytes that the historical size gate would exclude**.
+The \`.data\` virtual size (4,215,252) is larger than its backed raw
+size (172,032), so this historical routine would *not* treat
+virtual-only \`.data\` bytes as file input.
+
+The native Rust \`inspect --checksum-research\` command now reports
+a separate **historical-extent-bounded page-local candidate**, using
+only 2,102,461 backed bytes from \`.text\`, while retaining the two
+earlier full-raw values as explicit comparators. The bounded helper
+validates relocation windows over the whole backed section and then
+clips them to the effective bytes, including a partial final 4-KiB
+page and a HIGHLOW DWORD that may straddle that cutoff.
+
+**Important:** the zero initial accumulator, CODE flag gate and
+VirtualSize limit are now supported by instruction-level evidence,
+but the *precise original relocation/page walk* and both DLL
+modifiers remain unresolved. The bounded output is therefore still
+an **experimental candidate, not the recovered SafeDisc checksum**.
+No original game data or external binary is committed.
+
 ### Observed Windows baseline (2026-10-27)
 
 The user ran the exact-hash-verified Crimson Skies 1.0.2.0 inputs on the
@@ -142,10 +192,13 @@ The input `.text` geometry was: 2,105,344 raw bytes, 514 full
 spans and 36 relocated DWORDs crossing page boundaries.
 
 These values are **reproducible observations of two different candidate
-programs**, not proof that either model matches the original unSafeDisc
-checksum. They are not a TEA key. In particular, `.text` alone
-does not establish which PE sections and section flags the original
-tool selects, or whether the DLL modifier changes the inputs or output.
+programs with the full raw `.text` section**, not proof that either model
+matches the original unSafeDisc checksum. They are not a TEA key.
+Subsequent historical disassembly identified a `0x20` CODE-section
+filter (only `.text` qualifies for this ICD) and a nonzero
+`VirtualSize` limit, so **neither older full-raw value is the
+historically extent-bounded result**. The DLL modifiers and
+the full page/relocation walk are still not verified.
 
 To inspect where the two models diverge, the latest
 `--checksum-research` mode also attributes weighted contributions
@@ -227,7 +280,7 @@ The older hypothesis of reading the four DWORDs directly after
 | Per-page relocation-skipping checksum helper | Implemented, synthetic only; rejects cross-page DWORDs |
 | Joined-page relocation-skipping checksum primitive | Implemented, synthetic only; handles straddling DWORDs, not the full SafeDisc traversal |
 | Optional `inspect --layout` geometry report | Implemented; reads verified original `.text` relocation metadata only, **no full checksum** |
-| Optional `inspect --checksum-research` report | Implemented; **two provisional `.text` mixer models**, strictly read-only and not a verified SafeDisc checksum |
+| Optional `inspect --checksum-research` report | Three research candidates: two historical **full-raw** comparators plus the **historically extent-bounded** `.text` page-local model; none asserted as a verified SafeDisc checksum |
 | Optional `inspect --sections` section header report | Implemented; raw PE32 flags and relocation starts, **no inference of original section selection** |
 | Page-oriented pre-TEA modifier adapter | Implemented with synthetic modifiers; resets word index every 4-KiB page |
 | Exact per-DWORD pre-TEA stage call sequence | Implemented with **synthetic callback functions**, not real DLL algorithms |
