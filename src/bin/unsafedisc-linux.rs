@@ -2159,8 +2159,9 @@ fn original_selector_exhaustion_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     println!("  0x18800 -> 0x181E0: every selector iteration clears all three output DWORDs first.");
     println!("  If the final call returns zero, selected extent [EBP-0x14] is also reset to zero.");
     println!("  0x9347 -> 0x93C5; on a set name-match flag, 0x9403/0x9407 skips all chunk copies when extent is zero.");
-    println!("  CONDITIONAL: on ordinary finite selector exhaustion, this specific 0x92B0 invocation performs no copy.");
-    println!("  This suggests an obfuscated/dead initialization path, not a demonstrated DLL .txt restoration.");
+    println!("  On NO .txt2 match, ordinary selector exhaustion clears extent and bypasses copies.");
+    println!("  On .txt2 match, 0x938C jumps to 0x93C5 BEFORE next selector call; nonzero current section extent is preserved.");
+    println!("  Valid section match reaches the 0x9403 chunk path; actual transformed plaintext remains unvalidated.");
     Ok(())
 }
 
@@ -2290,15 +2291,19 @@ fn original_txt2_section_name_proof(dll:&[u8],pe:&Pe32)->Result<()> {
         (0x936A,&[0x0F,0x80,0x0F,0,0,0][..]),
         (0x9370,&[0x77,0x0D][..]),
         (0x937F,&[0x7B,0x0B][..]),
-        (0x938C,&[0x80,0xEB,0x37][..]),
+        (0x938C,&[0xEB,0x37][..]),
     ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
     println!("  Comparator=0: TEST -> JE directly to 0x938E (cursor increment).");
     println!("  Comparator=1: TEST -> flag set -> 0x937A -> 0x936A -> 0x9370 -> 0x937F -> 0x938C.");
-    println!("  For comparator=1, ZF=SF=OF=CF=PF=0 from TEST 1 until 0x938C; both paths reach cursor advancement.");
+    if dll.get(executable_rva_to_file_offset(pe,0x938C,2)?..executable_rva_to_file_offset(pe,0x938C,2)?+2)!=Some(&[0xEB,0x37][..]) {
+        return Err("matched .txt2 conditional exit jump lost".into());
+    }
+    println!("  For comparator=1, flags from TEST 1 give 0x937F JNP -> 0x938C JMP 0x93C5: the MATCH bypasses cursor advance.");
+    println!("  For comparator=0, 0x935F JE -> 0x938E advances cursor; only MISMATCH follows the 0x9397..0x93C0 back-edge.");
     println!("  This is a local prefix proof only: subsequent opaque branches and overall loop exit are still unverified.");
 
 
-    println!("  Therefore the first CODE|EXEC match alone does NOT identify the section processed by the loop.");
+    println!("  Only an exact .txt2 name match exits scanning with the current selected section outputs intact.");
     println!("  This proves named-section comparison; it does NOT prove whether .txt2 is decoded, skipped or acts as a boundary.");
     Ok(())
 }
