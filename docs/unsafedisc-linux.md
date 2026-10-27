@@ -100,6 +100,39 @@ Optionally compare against your **locally obtained** and verified working
   --reported-key 0x7496538F
 ```
 
+### Observed Windows baseline (2026-10-27)
+
+The user ran the exact-hash-verified Crimson Skies 1.0.2.0 inputs on the
+native Windows x86_64 inspector. The two current **hypothesis values**
+were:
+
+| Model | Observed experimental value |
+| --- | --- |
+| 4-KiB page-local weight resets | `0x340E8945` |
+| Section-wide relocation-delimited chunks | `0xBA86F13A` |
+
+The input `.text` geometry was: 2,105,344 raw bytes, 514 full
+4-KiB pages, 61,743 HIGHLOW relocations, 246,972 excluded bytes,
+1,858,372 included bytes, 59,622 hypothetical nonempty page-local
+spans and 36 relocated DWORDs crossing page boundaries.
+
+These values are **reproducible observations of two different candidate
+programs**, not proof that either model matches the original unSafeDisc
+checksum. They are not a TEA key. In particular, `.text` alone
+does not establish which PE sections and section flags the original
+tool selects, or whether the DLL modifier changes the inputs or output.
+
+To inspect where the two models diverge, the latest
+`--checksum-research` mode also attributes weighted contributions
+to their originating 4-KiB pages. It prints the total number of pages
+with differing contributions and **at most eight** of the earliest
+differing page RVAs with each page's model contribution and cumulative
+difference. This trace is intentionally compact: no game-code bytes,
+memory dumps or decrypted content are printed. The sum of each model's
+page contributions must equal the value obtained by the original
+isolated model or inspection fails. Synthetic tests cover both totals
+and excluded-byte invariance.
+
 ### If `--reference TESTME.EXE` reports a SHA-256 mismatch
 
 The separately supplied Python widescreen resolution patcher modifies the
