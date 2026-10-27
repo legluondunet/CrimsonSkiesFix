@@ -561,6 +561,36 @@ the DLL never references `.txt`: runtime-computed address
 arithmetic, relative CALL/JMP and non-relocated pointers are
 not covered. This diagnostic does not resolve protected
 code, run SafeDisc, or change original input files.
+#### No executable-section relocation pointers into protected `.txt` (user-confirmed)
+
+The user ran `--xref-research` against their exact, SHA-256 verified
+Crimson Skies SafeDisc 1.50.20 DLL and obtained:
+
+```text
+33 PE base-relocation blocks; 1694 HIGHLOW entries; 16 ABSOLUTE padding entries.
+1198 HIGHLOW DWORDs in other file-backed executable sections.
+0 relocation-backed references into .txt from those executable sections.
+0 exact references to protected modifier RVAs 0x65BE and 0x6621.
+```
+
+**Important distinction:** no matching *relocation-backed pointers*
+from code is not evidence that `.txt` cannot be accessed or decrypted.
+Any RVA computed arithmetically, stored as a non-relocated offset,
+reached by relative control flow, or referenced via a pointer table
+in `.data` / `.rdata` would have been missed.
+
+The new `--xref-research` runs **both** the original executable-only
+analysis and a complementary analysis of **all other backed
+sections**, including `.data` and `.rdata` (but excluding
+protected `.txt` itself, whose on-disk bytes appear encoded).
+The CLI retains the old code-only totals, then adds total backed
+HIGHLOW source DWORDs, relocation-backed pointers into `.txt`
+from all sources, per-section first 24 entries, and exact modifier
+matches, always deriving addresses from the real PE ImageBase.
+
+Original DLL binary is not executed, loaded, or modified;
+the expanded counts have not yet been observed against the
+user's local DLL in this research step.
 ### Conditional four-DWORD TEA key reconstruction (experimental)
 
 A contemporary SafeDisc reverse-engineering essay by ArthaXerXès
