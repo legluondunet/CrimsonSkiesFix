@@ -4088,6 +4088,24 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("reconstructed TEA key FAILED exact original/reference tail oracle; no full-key validation".into());
             }
             println!("  CONFIRMED: the four TEA key words and overlapping block order match 58,076 independently checkable original bytes.");
+            let composite=inspect_original_modifier_reference_pairs(
+                &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
+            println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
+                composite.matching_tail_bytes,composite.checked_tail_bytes);
+            println!("  Composite EAX pair observations: {}; unique input/output DWORDs: {} / {}; contradictions: {} forward, {} reverse.",
+                composite.modifier_fragments,composite.distinct_inputs,
+                composite.distinct_outputs,composite.input_conflicts,composite.output_conflicts);
+            if composite!=(ModifierReferenceAudit{
+                total_fragments:59_622,modifier_fragments:48_149,
+                modified_dwords:440_422,
+                checked_tail_bytes:93_801,matching_tail_bytes:93_801,
+                distinct_inputs:31_799,distinct_outputs:31_799,
+                input_conflicts:0,output_conflicts:0,
+            }){
+                return Err("independent title-specific composite modifier observations differ from verified reference".into());
+            }
+            println!("  CONFIRMED: the first-DWORD composite modifier acts consistently and injectively on 31,799 observed inputs.");
+            println!("  These are observed pairs only; the two protected DLL functions are NOT yet reconstructed.");
             println!("  This validates TEA key material, NOT the missing title-specific EAX modifier implementation.");
         } else {
             println!("  Key is only provisional: provide --reference TESTME.EXE to independently validate 128 bits.");
@@ -4446,6 +4464,115 @@ fn validate_tea_key_by_unchanged_fragment_tails(
         }
     }
     Ok(out)
+}
+
+// Read-only known-plaintext characterization of the composite Crimson
+// SafeDisc extra layer, without executing or reimplementing either
+// protected EAX modifier. The first DWORD in every non-relocated fragment
+// has mask=0, so (protected_first_word -> inverse_TEА_first_word) is a
+// directly observed sample of second_modifier(first_modifier(input)).
+// Repeated inputs MUST map to identical outputs; for the observed data,
+// outputs are unique across distinct inputs as well. Never store or print
+// the user's actual word pairs outside local process memory.
+#[derive(Debug,Default,PartialEq,Eq)]
+struct ModifierReferenceAudit {
+    total_fragments:usize,
+    modifier_fragments:usize,
+    modified_dwords:usize,
+    checked_tail_bytes:usize,
+    matching_tail_bytes:usize,
+    distinct_inputs:usize,
+    distinct_outputs:usize,
+    input_conflicts:usize,
+    output_conflicts:usize,
+}
+fn insert_observed_composite_pair(
+    forward:&mut std::collections::HashMap<u32,u32>,
+    reverse:&mut std::collections::HashMap<u32,u32>,
+    source:u32,output:u32,
+)->(bool,bool){
+    let forward_conflict=forward.get(&source)
+        .is_some_and(|&prior|prior!=output);
+    let reverse_conflict=reverse.get(&output)
+        .is_some_and(|&prior|prior!=source);
+    if !forward_conflict && !reverse_conflict {
+        forward.insert(source,output);
+        reverse.insert(output,source);
+    }
+    (forward_conflict,reverse_conflict)
+}
+fn inspect_original_modifier_reference_pairs(
+    icd:&[u8], reference:&[u8],
+    original:&Pe32, decoded:&Pe32,
+    relocations:&[RelocBlock], key:[u32;4],
+)->Result<ModifierReferenceAudit> {
+    let protected=original.section(b".text")?;
+    let plain=decoded.section(b".text")?;
+    if protected.virtual_address!=plain.virtual_address ||
+       protected.virtual_size!=plain.virtual_size ||
+       protected.raw_offset!=plain.raw_offset ||
+       protected.raw_len!=plain.raw_len {
+        return Err("composite modifier audit: protected/plaintext section layout mismatch".into());
+    }
+    let extent=protected.virtual_size.min(protected.raw_len as u32) as usize;
+    let start=protected.raw_offset;
+    let end=start.checked_add(extent).ok_or("composite audit length overflow")?;
+    let encrypted=icd.get(start..end).ok_or("composite audit ICD .text out of bounds")?;
+    let plaintext=reference.get(start..end).ok_or("composite audit reference .text out of bounds")?;
+    let mut reserved=vec![false;extent];
+    let section_end=protected.virtual_address.checked_add(extent as u32)
+        .ok_or("composite audit virtual section overflow")?;
+    for block in relocations {
+        for &in_page in &block.highlow_offsets {
+            let slot=block.page_rva.checked_add(u32::from(in_page))
+                .ok_or("composite audit relocation RVA overflow")?;
+            if slot<protected.virtual_address || slot>=section_end {continue;}
+            let begin=(slot-protected.virtual_address) as usize;
+            let finish=begin.checked_add(4)
+                .ok_or("composite audit HIGHLOW extent overflow")?;
+            if finish>extent || reserved[begin..finish].contains(&true) {
+                return Err("invalid or overlapping composite audit HIGHLOW offset".into());
+            }
+            reserved[begin..finish].fill(true);
+        }
+    }
+    let mut audit=ModifierReferenceAudit::default();
+    let mut forward=std::collections::HashMap::<u32,u32>::new();
+    let mut reverse=std::collections::HashMap::<u32,u32>::new();
+    for (page_number,page) in reserved.chunks(4096).enumerate() {
+        let base=page_number.checked_mul(4096)
+            .ok_or("composite audit page number overflow")?;
+        let mut cursor=0usize;
+        while cursor<page.len() {
+            if page[cursor] {cursor+=1;continue;}
+            let begin=cursor;
+            while cursor<page.len() && !page[cursor] {cursor+=1;}
+            let absolute_start=base+begin;
+            let absolute_end=base+cursor;
+            let length=absolute_end-absolute_start;
+            audit.total_fragments+=1;
+            let inverse=original_tea_reverse_fragment(
+                &plaintext[absolute_start..absolute_end],key)?;
+            let leftover=length%4;
+            audit.checked_tail_bytes+=leftover;
+            for (&x,&y) in inverse[length-leftover..].iter()
+                .zip(&encrypted[absolute_end-leftover..absolute_end]) {
+                if x==y {audit.matching_tail_bytes+=1;}
+            }
+            if length<4 {continue;}
+            audit.modifier_fragments+=1;
+            audit.modified_dwords+=length/4;
+            let source=read_u32(encrypted,absolute_start)?;
+            let target=read_u32(&inverse,0)?;
+            let (fconf,rconf)=insert_observed_composite_pair(
+                &mut forward,&mut reverse,source,target);
+            audit.input_conflicts+=usize::from(fconf);
+            audit.output_conflicts+=usize::from(rconf);
+        }
+    }
+    audit.distinct_inputs=forward.len();
+    audit.distinct_outputs=reverse.len();
+    Ok(audit)
 }
 
 // Standard TEA reference routine, tested with synthetic vectors.
@@ -6071,6 +6198,21 @@ mod tests {
         assert_eq!(dll_original_chunk_constants(&dll,&pe).unwrap(),(0x43,0x15));
         dll[0x200+(0x931A-0x9000) as usize]=0x90;
         assert!(dll_original_chunk_constants(&dll,&pe).is_err());
+    }
+
+    #[test]
+    fn composite_eax_pair_audit_detects_nonfunctional_and_noninjective_samples() {
+        let mut f=std::collections::HashMap::new();
+        let mut r=std::collections::HashMap::new();
+        assert_eq!(insert_observed_composite_pair(&mut f,&mut r,1,101),(false,false));
+        assert_eq!(insert_observed_composite_pair(&mut f,&mut r,1,101),(false,false));
+        assert_eq!(insert_observed_composite_pair(&mut f,&mut r,2,202),(false,false));
+        assert_eq!(insert_observed_composite_pair(&mut f,&mut r,1,303),(true,false));
+        assert_eq!(insert_observed_composite_pair(&mut f,&mut r,3,202),(false,true));
+        assert_eq!(f.len(),2);
+        assert_eq!(r.len(),2);
+        assert_eq!(f.get(&1),Some(&101));
+        assert_eq!(r.get(&202),Some(&2));
     }
 
     #[test]
