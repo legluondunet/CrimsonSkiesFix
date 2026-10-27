@@ -1792,6 +1792,47 @@ fn section_highlow_start_count(section: &PeSection, relocs: &[RelocBlock]) -> us
     }).sum()
 }
 
+// Historical unSafeDisc v1.5.5 original retail release, 20,480-byte
+// unSafedisc.exe SHA-256 e484c9aa...f0f1eaa9f:
+//  0x402257..0x4022B0: include sections unless the FIRST FOUR
+//  literal header name bytes match one of these eight exclusions.
+//  0x401F01: the separate checksum byte mixer runs only if the
+//  selected section has IMAGE_SCN_CNT_CODE (0x20).
+//  0x401F43..0x401F5B: for DLL size 0x21E00 (138,752)
+//  bytes, its extra per-DWORD pre-TEA adapter is reached.
+// This is supported by STATIC x86 disassembly and matches the
+// authors' 1.5.4/1.5.5 notes about Crimson Skies .rdata/CRC.
+// No executable is loaded and no decryptor is run.
+fn historical_155_section_selected(sec: &PeSection) -> bool {
+    let prefix = &sec.name[..4];
+    ![
+        b".rsr",b".bss",b"BSS\0",b".tls",
+        b".ida",b".rda",b".eda",b".rel",
+    ].iter().any(|excluded| prefix == &excluded[..])
+}
+fn historical_155_section_checksum_eligible(sec: &PeSection) -> bool {
+    historical_155_section_selected(sec) && sec.characteristics & 0x20 != 0
+}
+fn print_historical_155_section_filter(pe: &Pe32) {
+    println!("Original unSafeDisc 1.5.5 section-name/CRC filter (STATIC original x86):");
+    println!("  Source: historic 2000 executable, SHA-256 e484c9aa...f0f1eaa9f.");
+    println!("  Filename filtering uses exactly four section-name bytes (code RVA 0x2257).");
+    println!("  Checksum selection additionally requires IMAGE_SCN_CNT_CODE=0x20 (code RVA 0x1F01).");
+    for sec in &pe.sections {
+        let name=String::from_utf8_lossy(sec.name.split(|&b|b==0).next().unwrap_or(&[]));
+        let included=historical_155_section_selected(sec);
+        let crc=historical_155_section_checksum_eligible(sec);
+        let backed=sec.raw_len.min(if sec.virtual_size == 0 {
+            sec.raw_len
+        } else {sec.virtual_size as usize});
+        println!("  {:8}: processing {}, CODE checksum {}, on-disk selected extent {} bytes, flags 0x{:08X}",
+            name,if included {"YES"} else {"no"},
+            if crc {"YES"} else {"no"},backed,sec.characteristics);
+    }
+    println!("  Selection is reproduced from the supplied original unSafeDisc assembly, not an executed trace.");
+    println!("  This research mode does NOT perform section decryption, DLL API calls or a final CRC.");
+}
+
 fn print_pe_section_headers(pe: &Pe32, relocs: &[RelocBlock]) {
     const CODE: u32 = 0x0000_0020;
     const INITIALIZED: u32 = 0x0000_0040;
@@ -1902,13 +1943,14 @@ struct Options {
     xref_research: bool,
     literal_research: bool,
     reference_audit: bool,
+    historical_selection: bool,
 }
 
 fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection]\n\
   unsafedisc-linux --help\n\
 \n\
 Scope: exact SHA-256 verified Crimson Skies 1.0.2.0 SafeDisc 1.50.20 files.\n\
@@ -1986,6 +2028,11 @@ fn parse_args() -> Result<Option<Options>> {
             options.reference_audit = true;
             continue;
         }
+        if key == "--historical-selection" {
+            if options.historical_selection { return Err("repeated --historical-selection argument".into()); }
+            options.historical_selection = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("missing value for {key}"))?;
         match key.as_str() {
             "--loader" if options.loader.is_none() => options.loader = Some(PathBuf::from(value)),
@@ -2030,6 +2077,9 @@ fn inspect(options: Options) -> Result<()> {
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
+    if options.historical_selection {
+        print_historical_155_section_filter(&protected_pe);
+    }
     let text = protected_pe.section(b".text")?;
     let text_page_start = text.virtual_address;
     let text_page_count = text.raw_len / 4096;
@@ -3162,6 +3212,32 @@ mod tests {
         assert_eq!(a.ambiguous_import_va_sources,1);
         assert_eq!(a.first_page_plain_total,52);
         assert_eq!(a.first_page_plain_equal,51);
+    }
+
+    #[test]
+    fn original_unsafedisc_155_section_name_exclusions_and_crc_code_bit() {
+        let mut section = PeSection {
+            name:*b".text\0\0\0", virtual_address:0x1000,
+            virtual_size:0x180, raw_offset:0x400,raw_len:0x200,
+            characteristics:0x6000_0020,
+        };
+        assert!(historical_155_section_selected(&section));
+        assert!(historical_155_section_checksum_eligible(&section));
+        section.name=*b".data\0\0\0";
+        section.characteristics=0xC000_0040;
+        assert!(historical_155_section_selected(&section));
+        assert!(!historical_155_section_checksum_eligible(&section));
+        for name in [
+            *b".rsrc\0\0\0",*b".bss\0\0\0",*b"BSS\0\0\0\0\0",
+            *b".tls\0\0\0\0",*b".idata\0\0",
+            *b".rdata\0\0",*b".edata\0\0",*b".reloc\0\0",
+        ] {
+            section.name=name;
+            section.characteristics=0x6000_0020;
+            assert!(!historical_155_section_selected(&section),
+                "historical original unSafeDisc must exclude {:?}",name);
+            assert!(!historical_155_section_checksum_eligible(&section));
+        }
     }
 
     #[test]
