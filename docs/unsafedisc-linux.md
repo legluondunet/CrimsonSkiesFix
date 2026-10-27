@@ -2402,3 +2402,27 @@ Its later helpers may initialize additional code/data sections, but
 `0x92B0` transformation have been verified**. The Rust inspector checks
 the original opcode windows and rel32 destinations. No proprietary
 source bytes or memory dumps are committed.
+
+
+### Eight auxiliary records: allocator and rollback confirmed (2026-10-27)
+
+Disassembly from the owner's exact SHA-256 verified `dplayerx.dll`
+shows that `0xB6D0` allocates a **temporary eight-DWORD array** on
+its stack and invokes `0xB640` once per slot, passing indices `0..7`.
+If every result is non-NULL, it copies eight DWORDs to the caller's
+record (`0xB6F7..0xB705`) and returns AX=1. If any call returns NULL,
+it instead calls `0xB770` on the temporary array (`0xB70C..0xB715`)
+and returns AX=0, without committing that pointer array.
+
+`0xB640` requests a `0xCC`-byte, 16-byte-aligned object through
+`0xB610` (`0xB642..0xB649`), then calls `0xB7C0` twice to construct
+two additional linked objects. It stores their pointers at offsets `0`
+and `+4`, and establishes reciprocal links at the second-level objects'
+offsets `+4` and `+8` (`0xB692..0xB69C`). Allocation failures take a
+cleanup path rather than returning a partial object. These are static
+function-level observations, **not** evidence that any of the eight
+objects contains decrypted `.txt` code.
+
+`inspect --modifier-research` now validates key original instruction
+sequences and direct CALL targets. The raw game binaries remain private;
+no DLL execution, unpacking, or protected plaintext emission is added.
