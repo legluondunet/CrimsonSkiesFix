@@ -948,6 +948,54 @@ fn dll_indirect_import_call(
     Ok((absolute_va, iat_rva))
 }
 
+// Static x86 path for DLL_PROCESS_ATTACH=1. The CMP at 0x9787
+// gives ZF=PF=1, CF=SF=OF=0. Only flag-preserving Jcc/JMP/NOPs
+// occur before the first reachable call. Overlapping unvisited
+// instructions are deliberately ignored. No DLL is executed.
+fn dll_attach_first_call_path(dll:&[u8],pe:&Pe32)->Result<Vec<u32>>{
+    let mut pc=0x9787u32;
+    let mut trace=Vec::new();
+    let mut seen=std::collections::HashSet::new();
+    let (zf,cf,pf,sf,of)=(true,false,true,false,false);
+    for _ in 0..32 {
+        if !seen.insert(pc) {return Err("attach branch cycle".into())}
+        trace.push(pc);
+        let at=executable_rva_to_file_offset(pe,pc,1)?;
+        let op=dll[at];
+        if pc==0x9787 {
+            if dll.get(at..at+4)!=Some(&[0x83,0x7D,0xFC,0x01][..]){
+                return Err("unexpected original attach reason compare".into())
+            }
+            pc+=4;
+        } else if op==0x90 {pc+=1;}
+        else if op==0xE8 {
+            if pc==0x97BE && dll_relative_call_target(dll,pe,pc)?==0xD62C {
+                return Ok(trace);
+            }
+            return Err("unexpected first reachable attach call".into());
+        } else if op==0x0F {
+            let start=executable_rva_to_file_offset(pe,pc,6)?;
+            if dll[start+1]!=0x8C {return Err("unsupported near attach Jcc".into())}
+            let rel=i32::from_le_bytes(dll[start+2..start+6].try_into().unwrap());
+            pc=if sf!=of {u32::try_from(i64::from(pc)+6+i64::from(rel))
+                .map_err(|_|"near attach branch overflow")?} else {pc+6};
+        } else if matches!(op,0xEB|0x70|0x71|0x74|0x76|0x77|0x7A|0x7B|0x7D){
+            let start=executable_rva_to_file_offset(pe,pc,2)?;
+            let taken=match op {
+                0xEB=>true,0x70=>of,0x71=>!of,
+                0x74=>zf,0x76=>cf||zf,0x77=>!cf&&!zf,
+                0x7A=>pf,0x7B=>!pf,0x7D=>sf==of,_=>unreachable!(),
+            };
+            pc=if taken {u32::try_from(i64::from(pc)+2+i64::from(dll[start+1] as i8))
+                .map_err(|_|"short attach branch overflow")?} else {pc+2};
+        } else {return Err(format!("unsupported reached attach opcode 0x{op:02X} at 0x{pc:08X}"))}
+        if !(0x9787..=0x97BE).contains(&pc) {
+            return Err(format!("attach path escapes bound at 0x{pc:08X}"));
+        }
+    }
+    Err("attach path exceeded 32 bounded instructions".into())
+}
+
 fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     const ATTACH_DIRECT_CALL_SITES: [u32; 4] = [
         0x97BE, 0x97EE, 0x9821, 0x9861,
@@ -960,6 +1008,11 @@ fn print_dll_attach_research(dll: &[u8]) -> Result<()> {
     let base = read_u32(dll, nt+24+28)?;
     let bindings = dll_import_bindings(dll, &pe)?;
     println!("Original SafeDisc DLL process-attach overlap research (STATIC ONLY):");
+    let path=dll_attach_first_call_path(dll,&pe)?;
+    println!("  Conditional PROCESS_ATTACH=1 path, preserving x86 CMP flags (ZF=PF=1, CF=SF=OF=0):");
+    println!("    reached RVAs: {}",path.iter().map(|rva|format!("0x{rva:X}")).collect::<Vec<_>>().join(" -> "));
+    println!("    First reached E8 CALL at RVA 0x97BE -> RVA 0xD62C (semantic flag proof, NOT runtime trace).");
+    println!("    Function 0xD62C is NOT yet demonstrated to decrypt .txt.");
     println!("  DLL preferred base: 0x{base:08X}; section and IAT RVAs are checked against its exact original PE.");
     println!("  RVA 0x9850: 2B FF 15 ... has distinct decode starts at 0x9850 and 0x9851.");
     println!("  The 0x9851 interpretation is an FF15 indirect CALL, not a proven runtime branch.");
@@ -3581,6 +3634,45 @@ mod tests {
             &image,&pe,0x1050,[0x8B,0x2D],0x008E0000).unwrap(),0x1E0AC);
         assert!(dll_absolute_import_load(
             &image,&pe,0x1050,[0x8B,0x3D],0x008E0000).is_err());
+    }
+
+    #[test]
+    fn attach_opaque_flag_predicates_prove_first_conditional_call() {
+        let mut dll=synthetic_pe();
+        dll.resize(0x7200,0);
+        let sec=0x178usize;
+        dll[sec..sec+8].copy_from_slice(b".text\0\0\0");
+        dll[sec+8..sec+12].copy_from_slice(&0x7000u32.to_le_bytes());
+        dll[sec+12..sec+16].copy_from_slice(&0x9000u32.to_le_bytes());
+        dll[sec+16..sec+20].copy_from_slice(&0x7000u32.to_le_bytes());
+        dll[sec+36..sec+40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        for (rva, bytes) in [
+            (0x9787u32,&[0x83u8,0x7D,0xFC,0x01][..]),
+            (0x978B,&[0x74,0x05]),(0x9792,&[0x76,0x04]),
+            (0x9794,&[0x90,0x90,0xEB,0x0E]),
+            (0x9798,&[0x74,0x07]),(0x97A1,&[0x76,0xF1]),
+            (0x97A6,&[0x7B,0x11]),(0x97A8,&[0x7A,0x0F]),
+            (0x97A9,&[0x0F,0x8C,0x0F,0,0,0]),
+            (0x97AF,&[0x90,0x90]),(0x97B1,&[0x77,0x0B]),
+            (0x97B3,&[0x7D,0x09]),(0x97B9,&[0x70,0xEE]),
+            (0x97BB,&[0x71,0xEC]),
+        ] {
+            let at=0x200+(rva-0x9000) as usize;
+            dll[at..at+bytes.len()].copy_from_slice(bytes);
+        }
+        let call=0x97BEu32;
+        let disp=(i64::from(0xD62Cu32)-i64::from(call+5)) as i32;
+        let offset=0x200+(call-0x9000) as usize;
+        dll[offset]=0xE8;
+        dll[offset+1..offset+5].copy_from_slice(&disp.to_le_bytes());
+        let pe=parse_pe32(&dll).unwrap();
+        assert_eq!(dll_attach_first_call_path(&dll,&pe).unwrap(),vec![
+            0x9787,0x978B,0x9792,0x9798,0x97A1,0x9794,0x9795,
+            0x9796,0x97A6,0x97A8,0x97B9,0x97BB,0x97A9,
+            0x97AF,0x97B0,0x97B1,0x97B3,0x97BE,
+        ]);
+        dll[0x200+(0x97B3-0x9000) as usize]=0xCC;
+        assert!(dll_attach_first_call_path(&dll,&pe).is_err());
     }
 
     #[test]
