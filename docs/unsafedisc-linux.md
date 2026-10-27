@@ -467,6 +467,27 @@ actual original KERNEL32 function identities. The
 new synthetic regression test rejects a mismatched
 absolute MOV opcode and validates its PE-base conversion.
 No Windows code is executed and no original files are written.
+### Original operating-system limitation: why native offline analysis matters
+
+The author's **original historical `history.txt`** says under
+**version 1.4** that the program no longer worked on
+Windows 2000 because the author could not load
+`dplayerx.dll` there. This is a **historical compatibility
+statement from v1.4**, not an independently observed
+test of version 1.5.5 on Windows 2000 or modern Windows.
+
+The owner's exact v1.5.5 executable still contains
+a segment-selector-guarded manual DLL entrypoint
+invocation at `0x402D76..0x402D9A`, consistent with
+that compatibility concern. The old tool loads
+the DLL with `LoadLibraryExA(..., 1)`, which normally
+does not perform Windows-loader DllMain initialization.
+
+This makes a fully native, **offline reconstruction of the
+cryptographic and relocation transformations** preferable
+to running the year-2000 unSafeDisc binary, executing
+its protected DLL or relying on a historically fragile
+Windows 9x/NT startup path.
 ## Build natively
 
 Requires a standard Rust toolchain on Linux; no third-party crates:
