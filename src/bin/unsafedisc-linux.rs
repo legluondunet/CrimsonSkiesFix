@@ -1941,6 +1941,55 @@ fn synthetic_selector_fields(raw:u32,rva:u32,vsize:u32,raw_size:u32)->(u32,u32,u
     (raw,rva,if vsize==0 {raw_size} else {vsize.min(raw_size)})
 }
 
+// Reproduce *only* the section-characteristics predicate as observed in
+// the selector. Its separate exclusion predicate (0x187B0) is not modeled.
+fn synthetic_first_section_with_mask(flags:&[u32],mask:u32,required:u32)->Option<usize>{
+    flags.iter().position(|f| (*f&mask)==required)
+}
+
+fn original_category_selector_relation(dll:&[u8],pe:&Pe32)->Result<()> {
+    // 0xAA80, 0xAB10 and 0xABA0 enumerate actual section headers via
+    // 0x18800, then register ranges in categories 6, 5 and 4.
+    for (selector_site,selector,selection_call,category_site,category,register_call) in [
+        (0xAA9Au32,10u8,0xAA9Du32,0xAAB3u32,6u8,0xAAB8u32),
+        (0xAB2A,2,0xAB2D,0xAB43,5,0xAB48),
+        (0xABBA,1,0xABBD,0xABD3,4,0xABD8),
+    ] {
+        dll_expect_raw_x86(dll,pe,selector_site,&[0x6A,selector])?;
+        dll_expect_raw_x86(dll,pe,category_site,&[0x6A,category])?;
+        if dll_relative_call_target(dll,pe,selection_call)?!=0x18800 ||
+           dll_relative_call_target(dll,pe,register_call)?!=0xA2A0 {
+            return Err("section-selector to category-list call mapping changed".into());
+        }
+    }
+    for (site,bytes) in [
+        (0x183C9u32,&[0x68,0x20,0,0,0x20,0x68,0x20,0,0,0x20][..]),
+        (0x18514,&[0x68,0x40,0,0,0xC0,0x68,0x40,0,0,0xC0][..]),
+        (0x18645,&[0x68,0x60,0,0,0xC0,0x68,0x40,0,0,0x40][..]),
+    ] {dll_expect_raw_x86(dll,pe,site,bytes)?;}
+    for (site,target) in [(0x183D4u32,0x189F0u32),(0x1851F,0x189F0),(0x18650,0x189F0)] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err("section-characteristics filtering function call changed".into());
+        }
+    }
+    let flags:Vec<u32>=pe.sections.iter().map(|section|section.characteristics).collect();
+    let cases=[(4u8,0x2000_0020u32,0x2000_0020u32,b".txt".as_slice()),
+               (5,0xC000_0040,0xC000_0040,b".data".as_slice()),
+               (6,0xC000_0060,0x4000_0040,b".rdata".as_slice())];
+    for (category,mask,required,expected_name) in cases {
+        let idx=synthetic_first_section_with_mask(&flags,mask,required)
+            .ok_or("no section matches original category's first-stage flags")?;
+        let section=&pe.sections[idx];
+        if section.name.split(|&b|b==0).next()!=Some(expected_name){
+            return Err("unexpected first section matching category's flags".into());
+        }
+        println!("  Category {category}: initial section-filter candidate {} (mask 0x{mask:08X}, required 0x{required:08X}).",String::from_utf8_lossy(expected_name));
+    }
+    println!("  Category 4 -> selector 1; 5 -> selector 2; 6 -> selector 10 (verified caller PUSH/E8 pairs).");
+    println!("  Categories 5 and 6 pass through an extra 0x187B0 exclusion filter; candidate != proven final selection.");
+    Ok(())
+}
+
 fn original_dll_self_section_proof(dll:&[u8],pe:&Pe32)->Result<()> {
     // A conditionally reached startup site initializes descriptor mode
     // to 0x67. The actual runtime reachability through opaque branches
@@ -2251,6 +2300,7 @@ fn print_dll_memory_patch_research(dll:&[u8],pe:&Pe32)->Result<()>{
     original_range_sort_and_adjacency_proof(dll,pe)?;
     original_category_dispatch_proof(dll,pe)?;
     original_dll_self_section_proof(dll,pe)?;
+    original_category_selector_relation(dll,pe)?;
     // The child list stores 12-byte range nodes rather than embedded code.
     // The first two words of each node represent start and length; the
     // third is a caller-supplied classification/tag value.
@@ -5117,6 +5167,17 @@ mod tests {
                    (0x400,0x1000,0x7800));
         assert_eq!(synthetic_selector_fields(0x400,0x1000,0x8000,0x7800),
                    (0x400,0x1000,0x7800));
+    }
+
+    #[test]
+    fn synthetic_category_section_filters_and_first_matches(){
+        let flags=[0x6000_0020u32,0x4000_0040,0xC000_0040,0x4200_0040];
+        assert_eq!(synthetic_first_section_with_mask(&flags,0x2000_0020,0x2000_0020),Some(0));
+        assert_eq!(synthetic_first_section_with_mask(&flags,0xC000_0040,0xC000_0040),Some(2));
+        assert_eq!(synthetic_first_section_with_mask(&flags,0xC000_0060,0x4000_0040),Some(1));
+        assert_eq!(synthetic_first_section_with_mask(&[],0x2000_0020,0x2000_0020),None);
+        // The match on a .reloc-like 0x42000040 is only a preliminary flag match.
+        assert_eq!(synthetic_first_section_with_mask(&[0x4200_0040],0xC000_0060,0x4000_0040),Some(0));
     }
 
     #[test]
