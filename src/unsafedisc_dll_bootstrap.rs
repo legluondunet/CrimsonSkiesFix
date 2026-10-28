@@ -222,6 +222,29 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
         dll_expect_raw_x86(dll,pe,site-4,setup)?;
         dll_expect_raw_x86(dll,pe,site+5,&[0x83,0xC4,0x08])?;
     }
+    // A clear-code caller at 0x9821 supplies original preferred
+    // VA 0x00900030 to .txt2 entry 0x1A20D. Decoding its original
+    // .data metadata identifies the same dplayerx.dll module name.
+    // The destination function's EBP+0xC is this second argument.
+    dll_expect_raw_x86(dll,pe,0x981A,
+        &[0x68,0x30,0x00,0x90,0x00,0x6A,0x00])?;
+    check_call(dll,pe,0x9821,0x1A20D)?;
+    dll_expect_raw_x86(dll,pe,0x9826,&[0x83,0xC4,0x08])?;
+    let source_label_va=read_u32(dll,super::executable_rva_to_file_offset(pe,0x981B,4)?)?;
+    let source_label_rva=source_label_va.checked_sub(base)
+        .ok_or_else(||"txt2 source module label VA below image base".to_string())?;
+    if source_label_rva!=0x20030 {
+        return Err("unexpected module-label pointer passed to .txt2 initializer".into());
+    }
+    let label_at=dll_backed_rva_offset(pe,source_label_rva,32)?;
+    let label_bytes=dll.get(label_at..label_at+32)
+        .ok_or_else(||"original DLL module label truncated".to_string())?;
+    let label=super::unsafedisc_strings::decode(label_bytes)
+        .ok_or_else(||"failed to decode original DLL module-name metadata".to_string())?.0;
+    if label!="dplayerx.dll" {
+        return Err("unexpected module name in original .txt2 initializer input".into());
+    }
+
     // The .txt2 caller at 1A299 obtains a module name from its
     // caller argument, decodes it with E25C, calls the very same
     // GetModuleHandleA IAT slot as the known DLL-global setup, and
@@ -435,6 +458,17 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_txt2_caller_source_is_the_same_dll_metadata_label() {
+        let preferred_base=0x008E_0000u32;
+        let pushed_absolute_va=0x0090_0030u32;
+        assert_eq!(pushed_absolute_va.checked_sub(preferred_base),Some(0x20030));
+        assert_eq!(0x981A+5+2,0x9821);
+        assert_eq!(0x9821+5,0x9826);
+        // The real encoded bytes are checked only inside audit_original
+        // after caller-provided DLL SHA-256 validation.
+    }
 
     #[test]
     fn txt2_caller_stage_order_is_name_decode_module_handle_mode_and_init() {
