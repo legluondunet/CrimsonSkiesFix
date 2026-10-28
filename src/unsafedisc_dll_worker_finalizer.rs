@@ -67,6 +67,19 @@ pub fn unsigned_worker_exit(cursor:u32,increment:u32,limit:u32)->bool {
     cursor.wrapping_add(increment)>=limit
 }
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum WorkerPreExitArm {
+    Direct,
+    NoopCallRetThenJge,
+}
+/// The exact original flag maze chooses the 197EF no-op CALL
+/// detour iff SF==OF. This is cross-checked against retail bytes
+/// for all 32 flag combinations during audit_original.
+pub fn expected_pre_exit_arm(flags:GatePredecessorFlags)->WorkerPreExitArm {
+    if flags.sf==flags.of {WorkerPreExitArm::NoopCallRetThenJge}
+    else {WorkerPreExitArm::Direct}
+}
+
 /// The original 197DD flag-only network joins at 197FA for every
 /// flag assignment. Some routes pass 197EF PUSH EDX, 197F0
 /// CALL 1965A (exact original bare RET), 197F5 POP EDX and
@@ -133,6 +146,12 @@ pub fn audit_original_worker_counter_exit(dll:&[u8],pe:&Pe32)->Result<()> {
             sf:bits&8!=0,of:bits&16!=0,
         };
         let path=trace_original_pre_exit(dll,pe,flags)?;
+        let observed=if path.contains(&0x197EF) {
+            WorkerPreExitArm::NoopCallRetThenJge
+        }else{WorkerPreExitArm::Direct};
+        if observed!=expected_pre_exit_arm(flags) {
+            return Err("original pre-exit JGE detour selection changed".into());
+        }
         min=min.min(path.len());max=max.max(path.len());
         unique.insert(path);
     }
@@ -262,20 +281,26 @@ mod tests {
     }
 
     #[test]
-    fn preexit_jge_is_forced_on_every_detour_reaching_197f6() {
+    fn preexit_detour_is_exactly_the_signed_greater_equal_arm() {
+        let mut via_trampoline=0;
+        let mut direct=0;
         for bits in 0u8..32 {
             let f=GatePredecessorFlags {
                 cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
                 sf:bits&8!=0,of:bits&16!=0,
             };
-            // Pure logical fact: on the detour the original JGE
-            // must be taken. Its opposite would jump to RET 197F8.
-            if f.sf!=f.of {
-                // This flag pattern must reach 197FA directly,
-                // without requiring a call to original code.
-                assert_ne!(f.sf,f.of);
+            match expected_pre_exit_arm(f) {
+                WorkerPreExitArm::NoopCallRetThenJge=>{
+                    assert_eq!(f.sf,f.of);
+                    via_trampoline+=1;
+                }
+                WorkerPreExitArm::Direct=>{
+                    assert_ne!(f.sf,f.of);
+                    direct+=1;
+                }
             }
         }
+        assert_eq!((via_trampoline,direct),(16,16));
     }
 
     #[test]
