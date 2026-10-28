@@ -7,8 +7,9 @@ on:
   pull_request:
     paths:
       - 'src/bin/unsafedisc-linux.rs'
-      - 'src/unsafedisc_strings.rs'
+      - 'src/unsafedisc_*.rs'
       - 'docs/unsafedisc-linux.md'
+      - 'docs/dll-state-references.md'
       - '.github/workflows/unsafedisc-linux.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
