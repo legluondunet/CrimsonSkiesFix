@@ -57,6 +57,97 @@ pub fn conditional_win9x_finalizer(
 }
 
 
+/// After original helper CALL 19965 at 1974A returns, ADD ESP,14h
+/// sets flags. The obfuscated source between 19752 and 1976F
+/// conditionally calls original 197F8, which is a bare RET.
+/// Exactly the CF=0,ZF=0 assignments can enter this no-op CALL;
+/// their following JA must be taken, so the fake premature RET
+/// at 1976D is not reached. No real original x86 is executed.
+pub fn trace_original_mixer_setup_detour(
+    dll:&[u8],pe:&Pe32,f:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    let mut pc=0x19752u32;
+    let mut trace=Vec::new();
+    for _ in 0..24 {
+        if pc==0x1976F {
+            trace.push(pc);
+            return Ok(trace);
+        }
+        if trace.contains(&pc) {
+            return Err(format!("mixer setup detour loops at 0x{pc:05X}"));
+        }
+        trace.push(pc);
+        pc=match pc {
+            0x19764 => 0x19765, // PUSH EDX preserves flags
+            0x19765 => 0x1976A, // CALL 197F8: bare RET
+            0x1976A => 0x1976B, // POP EDX preserves flags
+            0x1976B => {
+                if !f.cf && !f.zf {0x1976F}
+                else {return Err(
+                    "mixer setup no-op CALL reached a potentially premature RET".into())}
+            }
+            _ => original_eflags_step_in_range(
+                dll,pe,pc,f,0x19752,0x1976F
+            )?,
+        };
+    }
+    Err("original mixer setup detour did not converge in 24 steps".into())
+}
+
+pub fn audit_original_mixer_setup_detour(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x1974Au32,&[0xE8,0x16,0x02,0,0,0x83,0xC4,0x14][..]),
+        (0x19752,&[0x70,0x0B,0x77,0x07,0x87,0xFF][..]),
+        (0x1975D,&[0xEB,0x03][..]),
+        (0x19764,&[0x52][..]),
+        (0x19765,&[0xE8,0x8E,0x00,0,0][..]),
+        (0x1976A,&[0x5A,0x77,0x02,0xC3][..]),
+        (0x1976F,&[0x8B,0x4D,0x20,0x03,0x4D,0xF0][..]),
+        (0x197F8,&[0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (site,expected) in [
+        (0x1974Au32,0x19965u32),
+        (0x19765,0x197F8),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=expected {
+            return Err(format!(
+                "original mixer setup CALL target at 0x{site:05X} changed"
+            ));
+        }
+    }
+    let mut unique=std::collections::HashSet::new();
+    let mut shortest=usize::MAX;
+    let mut longest=0usize;
+    let mut detours=0usize;
+    for bits in 0u8..32 {
+        let f=GatePredecessorFlags {
+            cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+            sf:bits&8!=0,of:bits&16!=0,
+        };
+        let p=trace_original_mixer_setup_detour(dll,pe,f)?;
+        if p.first()!=Some(&0x19752) || p.last()!=Some(&0x1976F) {
+            return Err("mixer setup did not converge on 1976F".into());
+        }
+        let took_detour=p.contains(&0x19765);
+        if took_detour!=(!f.cf && !f.zf) {
+            return Err("original mixer setup no-op CALL flag guard changed".into());
+        }
+        if took_detour {detours+=1;}
+        shortest=shortest.min(p.len());
+        longest=longest.max(p.len());
+        unique.insert(p);
+    }
+    if unique.len()!=6 || shortest!=7 || longest!=10 || detours!=8 {
+        return Err(format!(
+            "mixer setup topology changed: {} paths, {shortest}..{longest}, {detours} detours",
+            unique.len()
+        ));
+    }
+    Ok(())
+}
+
 /// The original worker directly CALLs the byte mixer 19C78 from
 /// 19798. Its return is followed by ADD ESP,0x18 (which sets EFLAGS),
 /// then a bounded maze comprising ONLY flag-preserving original
@@ -291,6 +382,7 @@ pub fn trace_original_finalizer_maze(
 /// Audit original instruction boundaries and conditional caller
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_mixer_setup_detour(dll,pe)?;
     audit_original_mixer_to_counter_bridge(dll,pe)?;
     audit_original_worker_counter_exit(dll,pe)?;
     for (rva,expected) in [
@@ -365,6 +457,21 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn noop_mixer_setup_call_is_compatible_only_with_ja_flags() {
+        let mut safe_detour_cases=0;
+        for bits in 0u8..32 {
+            let flags=GatePredecessorFlags{
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            if !flags.cf && !flags.zf {safe_detour_cases+=1;}
+        }
+        assert_eq!(safe_detour_cases,8);
+        assert_eq!(0x19765u32+5+0x8E,0x197F8);
+        assert_eq!(0x1976Bu32+2+2,0x1976F);
+    }
+
     #[test]
     fn original_mixer_bridge_and_counter_use_distinct_instruction_boundaries() {
         assert_eq!(0x19798u32+5,0x1979D);
