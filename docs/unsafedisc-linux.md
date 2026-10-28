@@ -5248,3 +5248,43 @@ convention, or the branch reachability. In particular,
 
 No proprietary code is run or written, no recovered DLL
 bytes are committed, and no code decryption is asserted.
+
+
+### Conditional worker step split: low-16 PUSH and full-32 cursor advance (2026-10-28)
+
+The original worker's already verified x86 contains these
+three **distinct, instruction-aligned** operations:
+
+```text
+196F8  EDX = local[-0x14] - local[-0x0C] + 1 (mod 2^32)
+19701  local[-0x08] = EDX
+19728  MOV AX, WORD [EBP-0x08]; PUSH EAX
+197D4  EAX = local[-0x0C] + local[-0x08] (mod 2^32)
+197DA  local[-0x0C] = EAX
+```
+
+After the earlier original `196B6 AND EAX,FFFFh`
+and low16-nonzero test, EAX's high half is proven zero
+at `19728`; thus the **immediate PUSH instruction** uses
+the low 16 bits of local `[EBP-0x08]`. Separately,
+`197D4` reads and adds its entire 32-bit DWORD.
+
+If the local `[EBP-0x08]` is **not overwritten** by the
+intervening opaque instructions and the two helpers return,
+these two uses can differ. For example, an initial candidate
+step of `0x10000` yields a pushed DWORD zero at `19728`,
+but the conditional later cursor addition uses `0x10000`.
+This is a **conditional static model**, **not a demonstration
+that the original game ever requests a 65536-byte chunk or
+forwards the immediate pushed value unchanged to `19965`**.
+In particular `19965` and `19C78` may affect values
+through pointers, and the argument chain after `19728`
+remains incompletely reconstructed.
+
+The new `hypothetical_worker_step_progress` returns
+both values, the wrapping next cursor and whether the
+immediate push truncates. `audit_original_worker_step_local`
+asserts the three original opcode groups when given the
+already hash-verified user DLL. Two synthetic tests cover
+the 65536-byte cliff, low16-zero gate bypass, and 32-bit
+cursor wraparound. No protected code is executed.
