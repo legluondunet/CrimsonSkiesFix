@@ -148,6 +148,20 @@ The newly proved *archived* control path is:
 401FA4  JMP 401F67                    ; next index
 ```
 
+The **outer wrapper** at `401F56..401F61` uses
+`PUSHAD / POPAD / RET`; the **inner DWORD loop** at
+`401F62..401FA7` uses another independent
+`PUSHAD / POPAD / RET`. Provided the genuine opaque
+callees return normally, the stack is balanced and the
+original saves are not corrupted, the two wrappers restore
+the **caller's general-purpose registers** after their
+in-place buffer transformation. Importantly, `PUSHAD`
+and `POPAD` do **NOT** save EFLAGS, so no guarantee is
+made about the arithmetic flags after return. Outer
+register restoration does **not** make the internal
+ECX/EDX preservation hypothesis unnecessary: the code
+uses those registers **between** the two DLL calls.
+
 This establishes a previously less explicit **wrapper
 parameter transfer** (EBX buffer / EAX byte length) and
 the direct original **DLL-size-gated bridge** into the
