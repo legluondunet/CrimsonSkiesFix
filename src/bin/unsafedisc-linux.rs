@@ -19,6 +19,9 @@ mod unsafedisc_historical_155;
 
 #[path = "../unsafedisc_modifier_snapshot.rs"]
 mod unsafedisc_modifier_snapshot;
+
+#[path = "../unsafedisc_candidate_forward.rs"]
+mod unsafedisc_candidate_forward;
 #[path = "../unsafedisc_historical_155_list_plan.rs"]
 mod unsafedisc_historical_155_list_plan;
 #[path = "../unsafedisc_historical_155_reloc_builder.rs"]
@@ -5147,6 +5150,7 @@ fn inspect_original_modifier_reference_pairs(
     let encrypted=icd.get(start..end).ok_or("composite audit ICD .text out of bounds")?;
     let plaintext=reference.get(start..end).ok_or("composite audit reference .text out of bounds")?;
     let mut reserved=vec![false;extent];
+    let mut relocation_slots=Vec::new();
     let section_end=protected.virtual_address.checked_add(extent as u32)
         .ok_or("composite audit virtual section overflow")?;
     for block in relocations {
@@ -5161,6 +5165,7 @@ fn inspect_original_modifier_reference_pairs(
                 return Err("invalid or overlapping composite audit HIGHLOW offset".into());
             }
             reserved[begin..finish].fill(true);
+            relocation_slots.push(begin);
         }
     }
     let mut audit=ModifierReferenceAudit::default();
@@ -5228,6 +5233,17 @@ fn inspect_original_modifier_reference_pairs(
             captured_matches,captured_mismatches,audit.modified_dwords);
         if captured_matches+captured_mismatches!=audit.modified_dwords || captured_mismatches!=0 {
             return Err("Win98 captured F1/F2 does not fully explain protected/reference extra-layer observations; refusing any decrypt claim".into());
+        }
+        let modifiers=captured.ok_or("snapshot unexpectedly missing")?;
+        let forward=unsafedisc_candidate_forward::compare_text(
+            encrypted,plaintext,&relocation_slots,key,modifiers)?;
+        println!("  Full forward F1/F2 -> overlapping TEA reference audit: {} / {} equal non-HIGHLOW bytes; {} mismatches; {} HIGHLOW bytes excluded.",
+            forward.matching_bytes,forward.checked_bytes,
+            forward.differing_bytes,forward.excluded_relocation_bytes);
+        if forward.fragments!=48_149 || forward.complete_words!=440_422 ||
+           forward.excluded_relocation_bytes!=246_972 ||
+           forward.checked_bytes!=1_855_489 || forward.differing_bytes!=0 {
+            return Err("Win98 full forward candidate does not exactly recover reference non-HIGHLOW code; no unpacking may be enabled".into());
         }
     }
     audit.distinct_inputs=forward.len();
