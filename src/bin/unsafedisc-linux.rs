@@ -35,6 +35,9 @@ mod unsafedisc_dll_memory_io;
 #[path = "../unsafedisc_dll_write_pipeline.rs"]
 mod unsafedisc_dll_write_pipeline;
 
+#[path = "../unsafedisc_dll_byte_mix.rs"]
+mod unsafedisc_dll_byte_mix;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2824,6 +2827,10 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
+    unsafedisc_dll_byte_mix::audit_original(dll,&pe)?;
+    println!("  Conditional original .txt2 byte mixer: 0x19798 -> 0x19C78, XOR buffer byte with 4 bytes of 32-bit state at preferred VA 0x00905010 and second-buffer byte.");
+    println!("    The byte result is added to global state mod 2^32; source/destination byte pointers advance; guarded parity-detour returns to 0x19D85.");
+    println!("    This is instruction-backed LOCAL BYTE ARITHMETIC, not a reconstructed 195DF loop or any verified decrypted .txt page.");
     let verified_pipeline_calls=unsafedisc_dll_write_pipeline::audit_original(dll,&pe)?;
     println!("  Original readable .txt2 dual-read / local-helper / write chain: {verified_pipeline_calls} proven direct CALL targets (including A310 category-4 region checks).");
     println!("    A810 at 0x19327 -> buffer A, A810 at 0x19348 -> buffer B, processing helper 0x195DF at 0x1940B, AA00 at 0x19448 -> buffer A.");
