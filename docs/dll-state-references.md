@@ -817,6 +817,42 @@ it never runs the DLL. The independent offline Python verifier also
 checks these exact opcode groups and their original targets.
 
 
+### Verified mixer setup: second no-op RET trampoline
+
+Immediately before the `0x19798 -> 0x19C78` mixer call, another
+original helper is called at **`0x1974A -> 0x19965`**.
+If it returns normally, the caller adjusts its stack by 20 bytes
+at `0x1974F` (`ADD ESP,0x14`, modifying flags). All **32**
+possible resulting combinations of `CF/ZF/PF/SF/OF` enter a short
+flag-only network from **`0x19752`** that converges at **`0x1976F`**.
+The independently checked original-image topology has **six
+distinct paths of 7–10 instruction boundaries**.
+
+Eight of the 32 flag assignments (precisely `CF=0,ZF=0`) take
+`0x19764 PUSH EDX; 0x19765 CALL 0x197F8`, where the original
+instruction at **`0x197F8`** is a single-byte **`RET`**.
+The matching `0x1976A POP EDX; 0x1976B JA 0x1976F`
+is then guaranteed to take `JA`, because this detour is selected
+only when `CF=0,ZF=0`; the apparent early `RET` at `0x1976D`
+cannot be reached through this detour.
+
+On the other 24 flag configurations, the original branch maze
+bypasses the no-op call and reaches `0x1976F` directly.
+The original data preparation at `0x1976F..0x19797` then constructs
+the arguments for the byte mixer call at `0x19798`.
+
+`audit_original_mixer_setup_detour` and its exhaustive flag walk
+were integrated into the existing SHA-gated `unsafedisc-linux`
+research inspector. `verify_worker_finalizer.py` reproduces the
+actual original-byte checks and the 32-case traversal without
+running any DLL code.
+
+**Limitations:** the conditional source-level chain begins on
+return from original helper `0x19965`, whose own behavior and
+reachability are not established by this check. The no-op
+call is verified as a bare-RET trampoline, not a legitimate
+separate function that is known to execute in the running game.
+
 ### New bridge: original byte mixer directly precedes worker counter update
 
 The SHA-256-pinned original file contains an unambiguous **`E8 rel32`
