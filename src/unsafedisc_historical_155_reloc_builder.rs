@@ -79,7 +79,7 @@ pub fn audit_155_reloc_cutpoint_builder(
     }
     for (from,to) in [
         (0x40235Eu32,0x402366u32),
-        (0x402387,0x40238E),
+        (0x402389,0x40238E),
         (0x40238C,0x402365),
         (0x40239A,0x4023CA),
         (0x4023B0,0x4023C6),
