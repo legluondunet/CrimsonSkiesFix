@@ -928,13 +928,13 @@ without its write, and the caller adds zero.
 
 The complete provenance and both original flag-only regions
 are checked by `src/unsafedisc_dll_worker_finalizer.rs` under the
-SHA-gated `inspect --modifier-research` option. **Five new synthetic
+SHA-gated `inspect --modifier-research` option. **Seven new synthetic
 Rust unit tests** check upper AX masking, state wrapping, matching
 versus differing interrupt outputs and exclusion of non-Win9x
 outer platforms. A self-contained external **Python standard-library
 offline verifier** (`verify_worker_finalizer.py`) independently
-confirmed all 11 original opcode windows, three rel32 call targets,
-four branch destinations, both 32-flag convergence counts and
+confirmed all 17 original opcode windows, four rel32 call targets,
+branch destinations, all three 32-flag convergence counts and
 the arithmetic on the supplied retail DLL; a one-byte tamper
 test correctly failed the pinned SHA-256 gate.
 
