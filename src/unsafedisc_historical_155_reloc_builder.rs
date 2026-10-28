@@ -226,6 +226,10 @@ pub struct HistoricalRelocWordProfile {
     pub nonzero_type_zero_words:usize,
     pub odd_word_blocks:usize,
     pub empty_word_blocks:usize,
+    /// Exact-zero WORDs followed by a nonzero WORD in the SAME block.
+    /// Historical 401E31..401E52 can leave its block at that zero
+    /// although a modern HIGHLOW-only walker still sees later entries.
+    pub nonterminal_zero_padding_words:usize,
 }
 
 pub fn historical_155_reloc_word_profile(
@@ -253,13 +257,21 @@ pub fn historical_155_reloc_word_profile(
         let words=(len-8)/2;
         if words==0 {out.empty_word_blocks+=1;}
         if words%2!=0 {out.odd_word_blocks+=1;}
+        let mut pending_zeros=0usize;
         for entry in block[8..].chunks_exact(2){
             let word=u16::from_le_bytes([entry[0],entry[1]]);
             match word>>12 {
-                0 if word==0 => out.zero_padding_words+=1,
+                0 if word==0 => {
+                    out.zero_padding_words+=1;
+                    pending_zeros+=1;
+                },
                 0 => out.nonzero_type_zero_words+=1,
                 3 => out.highlow_words+=1,
                 _ => return Err("unknown historical PE relocation type".into()),
+            }
+            if word!=0 {
+                out.nonterminal_zero_padding_words+=pending_zeros;
+                pending_zeros=0;
             }
         }
         out.blocks+=1;
@@ -289,7 +301,7 @@ mod relocation_word_profile_tests {
             HistoricalRelocWordProfile{
                 blocks:2,highlow_words:3,zero_padding_words:3,
                 nonzero_type_zero_words:1,odd_word_blocks:1,
-                empty_word_blocks:0,
+                empty_word_blocks:0,nonterminal_zero_padding_words:2,
             });
     }
 
@@ -329,6 +341,11 @@ pub fn necessary_highlow_only_candidate_preflight(
             "HIGHLOW-only key hypothesis cannot ignore {} nonzero ABSOLUTE words",
             profile.nonzero_type_zero_words));
     }
+    if profile.nonterminal_zero_padding_words!=0 {
+        return Err(format!(
+            "HIGHLOW-only key hypothesis cannot ignore {} zero padding WORDs before subsequent relocations",
+            profile.nonterminal_zero_padding_words));
+    }
     if profile.odd_word_blocks!=0 || profile.empty_word_blocks!=0 {
         return Err(format!(
             "HIGHLOW-only key hypothesis cannot safely model {} odd and {} empty historical relocation blocks",
@@ -344,7 +361,7 @@ mod candidate_preflight_tests {
         HistoricalRelocWordProfile{
             blocks:2,highlow_words:3,zero_padding_words:1,
             nonzero_type_zero_words:0,odd_word_blocks:0,
-            empty_word_blocks:0,
+            empty_word_blocks:0,nonterminal_zero_padding_words:0,
         }
     }
     #[test]
@@ -392,5 +409,53 @@ mod candidate_preflight_tests {
         assert_eq!(p.odd_word_blocks,0);
         assert_eq!(p.highlow_words,1);
         assert!(necessary_highlow_only_candidate_preflight(p,1,1).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod nonterminal_padding_tests {
+    use super::*;
+
+    fn synthetic_directory(entries:&[u16])->Vec<u8> {
+        let mut data=vec![0u8;8];
+        data[0..4].copy_from_slice(&0x1000u32.to_le_bytes());
+        data[4..8].copy_from_slice(&(8u32+(entries.len() as u32)*2).to_le_bytes());
+        for &w in entries {data.extend_from_slice(&w.to_le_bytes());}
+        data
+    }
+    #[test]
+    fn trailing_zero_padding_is_allowed_by_necessary_preflight(){
+        let p=historical_155_reloc_word_profile(
+            &synthetic_directory(&[0x3000,0x3010,0,0])
+        ).unwrap();
+        assert_eq!(p.nonterminal_zero_padding_words,0);
+        assert_eq!(p.zero_padding_words,2);
+        necessary_highlow_only_candidate_preflight(p,2,2).unwrap();
+    }
+    #[test]
+    fn early_zero_is_not_interchangeable_with_highlow_only_traversal(){
+        for entries in [
+            vec![0,0x3010,0x3020,0],
+            vec![0x3000,0,0x3010,0],
+            vec![0x3000,0,0,0x3010],
+        ] {
+            let p=historical_155_reloc_word_profile(
+                &synthetic_directory(&entries)).unwrap();
+            assert!(p.nonterminal_zero_padding_words>0);
+            let err=necessary_highlow_only_candidate_preflight(
+                p,p.highlow_words,p.zero_padding_words
+            ).unwrap_err();
+            assert!(err.contains("zero padding WORDs before subsequent"));
+        }
+    }
+    #[test]
+    fn all_zero_block_is_counted_but_has_no_nonterminal_padding(){
+        let p=historical_155_reloc_word_profile(
+            &synthetic_directory(&[0,0])
+        ).unwrap();
+        assert_eq!(p.zero_padding_words,2);
+        assert_eq!(p.nonterminal_zero_padding_words,0);
+        assert!(necessary_highlow_only_candidate_preflight(p,0,2).is_err());
     }
 }
