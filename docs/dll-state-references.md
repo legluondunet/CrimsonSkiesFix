@@ -817,6 +817,40 @@ it never runs the DLL. The independent offline Python verifier also
 checks these exact opcode groups and their original targets.
 
 
+### New bridge: original byte mixer directly precedes worker counter update
+
+The SHA-256-pinned original file contains an unambiguous **`E8 rel32`
+CALL at RVA `0x19798` with target `0x19C78`**, the independently
+audited byte-mixer routine. If it **returns normally**, the original
+`ADD ESP,0x18` at `0x1979D` adjusts the call arguments, then the
+obfuscated flag-only network beginning at `0x197A0` leads to the
+already verified `0x197D4` cursor update.
+
+All **32** possible assignments to `CF/ZF/PF/SF/OF` immediately after
+the `ADD ESP,0x18` are independently covered. The exact original
+executable-byte walk yields **24 distinct paths of 12–23 instruction
+boundaries**, all converging at **`0x197D4`**; the union comprises
+24 original source instruction boundaries. Every reached original
+instruction is a Jcc, JMP, NOP or register self-MOV/XCHG;
+none modifies the flags, accesses external state or calls an API.
+The use of all 32 assignments avoids guessing the flags produced
+by the preceding `ADD ESP,0x18`.
+
+`audit_original_mixer_to_counter_bridge` checks the genuine original
+rel32 mixer-call target, the stack adjustment, five additional opcode
+windows and all 32 real-code static branch traces. The independent
+Python standard-library `verify_worker_finalizer.py` reproduces
+the original-image check without invoking the DLL.
+
+**Limitations:** this is conditional on entering the mixer CALL at
+`0x19798` and its return. No full executable traversal from the
+DLL entrypoint or shared worker entry `0x18F81` to `0x19798`
+is yet established; no mixer output byte or decoder-state value
+is inferred. The mixer may modify the global state in other ways
+as separately documented, and the number of loop iterations
+remains unknown. This path alone does not establish the total
+state delta at the next mixer invocation.
+
 ### Stronger worker-exit precondition: unsigned sum and no-op RET trampoline
 
 A newly audited **earlier** source block at `0x197D4..0x197DD` computes:
