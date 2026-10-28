@@ -162,6 +162,25 @@ rejection and DLL-size/wrapper-register behavior. The
 original binary remains private; its machine code is
 never executed or copied to the repository.
 
+### Fail-closed synthetic composition and CI gates (2026-10-28)
+
+A separate `hypothetical_155_one_word` helper composes **toy,
+caller-supplied modifier functions** with the historical mask and
+register values. It refuses to return a word if the synthetic first
+modifier has not explicitly preserved ECX, EDX, EBX, ESI and EDI.
+The test shows the known algebraic expression in the preserving
+case and verifies failure for clobbered mask, target or pointer.
+It is intentionally **not** an implementation of the real protected
+`0x65BE`/`0x6621` routines and does not predict retail plaintext.
+
+The workflow now smoke-checks on both Linux and Windows that
+`inspect-historical --unsafedisc` rejects a missing historical
+executable, rather than accidentally falling back to a game
+inspection or silently accepting it. The real historical executable
+is never embedded in CI. Full historical-source verification
+requires running the standalone command against the owner's
+private **original, exact-SHA-256** unSafeDisc 1.5.5.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
