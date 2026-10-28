@@ -486,9 +486,118 @@ pub fn win9x_34f_conditional_trace(entry_zf:bool,add_result_zf:bool)->Vec<u32> {
     path
 }
 
+
+/// CMP [EBP+8],0 at 1D26A guards the conditional Win9x block.
+/// Zero pointers take the original 1D2FC MOV AX,1 + JMP epilogue.
+/// Nonzero pointers fall into a flag-preserving obfuscated join
+/// which reaches the ADD 0x34F block without changing the pointer.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum Win9xPointerGate {NullPointerReturn,Add34f}
+
+pub fn win9x_pointer_gate(pointer:u32)->Win9xPointerGate {
+    if pointer==0 {Win9xPointerGate::NullPointerReturn}
+    else {Win9xPointerGate::Add34f}
+}
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct Win9xGuardFlags {
+    pub cf:bool, pub zf:bool, pub pf:bool, pub sf:bool, pub of:bool,
+}
+
+/// Source-level conditional trace, beginning only at 1D274 (after
+/// a nonzero pointer succeeded the guard at 1D26A). The original
+/// instructions between branches are Jcc, NOP, register self-XCHG
+/// or register self-MOV and do not mutate these EFLAGS. The output
+/// is a vector of original instruction-boundary RVAs, not a real
+/// runtime execution trace.
+pub fn win9x_nonnull_gate_trace(f:Win9xGuardFlags)->Result<Vec<u32>> {
+    let mut pc=0x1D274u32;
+    let mut trace=Vec::new();
+    for _ in 0..28 {
+        trace.push(pc);
+        if pc==0x1D2A4 {return Ok(trace);}
+        pc=match pc {
+            0x1D274 => if !f.pf {0x1D287} else {0x1D276},
+            0x1D276 => if f.pf {0x1D287} else {
+                return Err("1D274 JNP/JP flags inconsistent".into())
+            },
+            0x1D287 => if f.of {0x1D277} else {0x1D289},
+            0x1D289 => if !f.of {0x1D277} else {
+                return Err("1D287 JO/JNO flags inconsistent".into())
+            },
+            0x1D277 => if f.sf!=f.of {0x1D28C} else {0x1D27D},
+            0x1D27D => 0x1D27E, // NOP
+            0x1D27E => 0x1D27F, // NOP
+            0x1D27F => if !f.cf && !f.zf {0x1D28C} else {0x1D281},
+            0x1D281 => if f.sf==f.of {0x1D28C} else {
+                return Err("1D277 JL/JGE flags inconsistent".into())
+            },
+            0x1D28C => if f.sf!=f.of {0x1D29F} else {0x1D28E},
+            0x1D28E => if f.sf==f.of {0x1D29F} else {
+                return Err("1D28C JL/JGE flags inconsistent".into())
+            },
+            0x1D29F => if !f.zf && f.sf==f.of {0x1D28F} else {0x1D2A1},
+            0x1D2A1 => if f.zf || f.sf!=f.of {0x1D28F} else {
+                return Err("1D29F JG/JLE flags inconsistent".into())
+            },
+            0x1D28F => if !f.zf {0x1D2A4} else {0x1D295},
+            0x1D295 => 0x1D297, // MOV EDX,EDX, EFLAGS unchanged
+            0x1D297 => if f.zf {0x1D2A4} else {
+                return Err("1D28F JNE/JE flags inconsistent".into())
+            },
+            _ => return Err(format!(
+                "unrecognized original 1D274 guard instruction 0x{pc:05X}"
+            )),
+        }
+    }
+    Err("1D274 guard trace did not converge in 28 steps".into())
+}
+
+/// Verify the exact original pointer guard, obfuscated path, and null
+/// return. This does NOT establish that 1C7F0 reaches 1D26A from
+/// its public entry.
+pub fn audit_win9x_pointer_guard_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (at,bytes) in [
+        (0x1D26Au32,&[0x83,0x7D,0x08,0x00][..]), // CMP [EBP+8],0
+        (0x1D26E,&[0x0F,0x84,0x88,0,0,0][..]), // JE 1D2FC
+        (0x1D274,&[0x7B,0x11,0x7A,0x0F][..]), // JNP/JP
+        (0x1D277,&[0x0F,0x8C,0x0F,0,0,0][..]), // JL
+        (0x1D27D,&[0x90,0x90][..]), // NOP NOP
+        (0x1D27F,&[0x77,0x0B,0x7D,0x09][..]), // JA/JGE
+        (0x1D287,&[0x70,0xEE,0x71,0xEC][..]), // JO/JNO
+        (0x1D28C,&[0x7C,0x11,0x7D,0x0F][..]), // JL/JGE
+        (0x1D29F,&[0x7F,0xEE,0x7E,0xEC][..]), // JG/JLE
+        (0x1D2FC,&[0x66,0xB8,0x01,0x00,0xE9,0x23,0x01,0,0][..]),
+        (0x1D428,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,at,bytes)?;
+    }
+    for (start,length,displacement,expected) in [
+        (0x1D26Ei64,6i64,0x88i64,0x1D2FCi64),
+        (0x1D274,2,0x11,0x1D287),
+        (0x1D276,2,0x0F,0x1D287),
+        (0x1D287,2,-18,0x1D277),
+        (0x1D289,2,-20,0x1D277),
+        (0x1D277,6,0x0F,0x1D28C),
+        (0x1D27F,2,0x0B,0x1D28C),
+        (0x1D281,2,0x09,0x1D28C),
+        (0x1D28C,2,0x11,0x1D29F),
+        (0x1D28E,2,0x0F,0x1D29F),
+        (0x1D29F,2,-18,0x1D28F),
+        (0x1D2A1,2,-20,0x1D28F),
+        (0x1D300,5,0x123,0x1D428),
+    ] {
+        if start+length+displacement!=expected {
+            return Err("original Win9x guard Jcc/JMP destination changed".into());
+        }
+    }
+    Ok(())
+}
+
 /// Byte-anchored original-disassembly audit, without loading the DLL
 /// or inferring reachability of the conditional 1D28F block.
 pub fn audit_conditional_win9x_state_add(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_win9x_pointer_guard_original(dll,pe)?;
     if dll_relative_call_target(dll,pe,0x1AA9E)?!=0x1C7F0 {
         return Err("original 1A9B6 Windows-9x helper call changed".into());
     }
@@ -875,6 +984,36 @@ mod tests {
             assert_eq!(after & !0xFF,0);
         }
         assert_ne!(version_query_failure_state(0x1234_5678).0,0);
+    }
+
+    #[test]
+    fn win9x_pointer_guard_exits_on_null_and_selects_local_add_for_nonnull() {
+        assert_eq!(win9x_pointer_gate(0),Win9xPointerGate::NullPointerReturn);
+        for value in [1,0x80,0x8000_0000,u32::MAX] {
+            assert_eq!(win9x_pointer_gate(value),Win9xPointerGate::Add34f);
+        }
+    }
+
+    #[test]
+    fn all_32_x86_flag_patterns_join_conditional_win9x_add_from_1d274() {
+        let mut distinct=std::collections::HashSet::new();
+        let mut min=usize::MAX;
+        let mut max=0usize;
+        for bits in 0u8..32 {
+            let flags=Win9xGuardFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let trace=win9x_nonnull_gate_trace(flags).unwrap();
+            assert_eq!(trace.first(),Some(&0x1D274));
+            assert_eq!(trace.last(),Some(&0x1D2A4));
+            assert!(!trace.contains(&0x1D2FC));
+            distinct.insert(trace.clone());
+            min=min.min(trace.len());
+            max=max.max(trace.len());
+        }
+        assert_eq!(distinct.len(),20);
+        assert_eq!((min,max),(8,17));
     }
 
     #[test]
