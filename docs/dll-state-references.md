@@ -252,23 +252,23 @@ it does not recover the four platform-specific helper bodies.
 ### Newly identified USER32 keyboard gate and adjacent INT 68h (2026-10-28)
 
 A **separate, short, file-backed original .txt2 routine** begins at
-RVA \`0x1D42F\` (the last 104 bytes of executable virtual .txt2).
+RVA `0x1D42F` (the last 104 bytes of executable virtual .txt2).
 Its complete seven-comparison predicate has been checked against the
-exact SHA-256-matched \`dplayerx.dll\`:
+exact SHA-256-matched `dplayerx.dll`:
 
-1. \`PUSH 0; CALL [0x008FE110]\` invokes the genuine PE import
-   \`USER32.dll!GetKeyboardType(0)\`, then compares \`EAX\` against **7**.
-2. Only if equal, \`PUSH 1; CALL [0x008FE110]\` invokes
-   \`GetKeyboardType(1)\` and compares its value against **0x0D01
+1. `PUSH 0; CALL [0x008FE110]` invokes the genuine PE import
+   `USER32.dll!GetKeyboardType(0)`, then compares `EAX` against **7**.
+2. Only if equal, `PUSH 1; CALL [0x008FE110]` invokes
+   `GetKeyboardType(1)` and compares its value against **0x0D01
    through 0x0D07**, inclusive, one exact equality at a time.
-3. It returns \`AX=1\` precisely when both checks match, otherwise
-   \`AX=0\`. It has no other identified outgoing helper call.
+3. It returns `AX=1` precisely when both checks match, otherwise
+   `AX=0`. It has no other identified outgoing helper call.
 
-A file-backed original \`E8 rel32\` at **0x1CD46** targets exactly
-\`0x1D42F\`. The immediately following site at \`0x1CD4B\` masks the
-result with \`0xFFFF\`, tests it and uses \`JNE\` to skip past a
-literal **\`INT 0x68\`** when nonzero. The neighboring zero-result path
-loads **AX=0x4300** immediately before \`INT 0x68\` at \`0x1CD5B\`,
+A file-backed original `E8 rel32` at **0x1CD46** targets exactly
+`0x1D42F`. The immediately following site at `0x1CD4B` masks the
+result with `0xFFFF`, tests it and uses `JNE` to skip past a
+literal **`INT 0x68`** when nonzero. The neighboring zero-result path
+loads **AX=0x4300** immediately before `INT 0x68` at `0x1CD5B`,
 then compares the returned EAX to 0x4300. The enclosing
 `0x1C7F0` routine also contains a verified zero initialization of its
 **stack-local** DWORD `[EBP-0x98]` at RVA `0x1C7FC`. In the
@@ -288,19 +288,23 @@ the process entrypoint. Rust checks both original branch encodings,
 their targets and all four SF/OF combinations.
 
 This is **static, source-byte evidence only**. It would be misleading
-to claim that the \`1CD46\` callsite or interrupt executes during real
+to claim that the `1CD46` callsite or interrupt executes during real
 Crimson Skies startup. Overlapping instructions and opaque control
-flow prevent establishing that from adjacency alone. The purpose of
-the interrupt and its behavior on particular Windows/Wine versions
-are **unknown**, as is any relationship to SafeDisc's EAX modifiers.
+flow prevent establishing runtime execution from adjacency alone.
+Later source-level analysis in this document *does* prove a path
+from the Windows-9x helper entry to the keyboard call. Historical
+SafeDisc research identifies the INT 68h / AX=4300h sequence as
+an **anti-SoftICE debugger probe** (see historical-source section).
+Its real behavior on present-day Windows/Wine and any effect on
+the protected EAX modifiers remain **unverified**.
 In particular this does *not* prove that Japanese keyboards are
 required, or that an INT 68h instruction explains a game crash.
 
-\`src/unsafedisc_dll_keyboard_probe.rs\` checks original opcodes,
+`src/unsafedisc_dll_keyboard_probe.rs` checks original opcodes,
 all seven branch displacements, the rel32 call target, both real
-\`USER32!GetKeyboardType\` imports and the neighboring conditional
+`USER32!GetKeyboardType` imports and the neighboring conditional
 branch. It includes pure synthetic tests over the keyboard type and
-subtype domain, and runs under \`inspect --modifier-research\`.
+subtype domain, and runs under `inspect --modifier-research`.
 An independent local Python check against the verified original DLL
 returned PASS without executing any original code.
 
@@ -308,137 +312,137 @@ returned PASS without executing any original code.
 ### Exhaustive conditional predecessor from 0x1CD16 (2026-10-28)
 
 A new independent **static** source-level walk of the
-\`0x1CD16..0x1CD46\` predecessor was performed on the exact
-SHA-256-verified, file-backed original \`dplayerx.dll\` bytes.
-It starts at the **instruction boundary** \`0x1CD16\`, which is
-earlier than the previously established \`0x1CD31\` local join.
+`0x1CD16..0x1CD46` predecessor was performed on the exact
+SHA-256-verified, file-backed original `dplayerx.dll` bytes.
+It starts at the **instruction boundary** `0x1CD16`, which is
+earlier than the previously established `0x1CD31` local join.
 
 The original, byte-anchored complementary x86 branches are:
 
 | Original branch sites | Flag predicates | Converged target |
 | --- | --- | --- |
-| \`1CD16 JBE\` / \`1CD18 JA\` | \`CF || ZF\` / \`!CF && !ZF\` | \`1CD29\` |
-| \`1CD29 JS\` / \`1CD2B JNS\` | \`SF\` / \`!SF\` | \`1CD19\` |
-| \`1CD19 JNP\` / \`1CD23 JA\`, \`1CD25 JP\` | The PF=1 fallthrough contains only \`MOV EDX,EDX\` and two NOPs | \`1CD2E\` |
-| \`1CD2E JNP\` / \`1CD30 JP\` | \`!PF\` / \`PF\` | \`1CD41\` |
-| \`1CD41 JO\` / \`1CD43 JNO\` | \`OF\` / \`!OF\` | \`1CD31\` |
-| \`1CD31 JL\` / \`1CD39 JGE\` | \`SF != OF\` / \`SF == OF\` | \`1CD46\` |
+| `1CD16 JBE` / `1CD18 JA` | `CF || ZF` / `!CF && !ZF` | `1CD29` |
+| `1CD29 JS` / `1CD2B JNS` | `SF` / `!SF` | `1CD19` |
+| `1CD19 JNP` / `1CD23 JA`, `1CD25 JP` | The PF=1 fallthrough contains only `MOV EDX,EDX` and two NOPs | `1CD2E` |
+| `1CD2E JNP` / `1CD30 JP` | `!PF` / `PF` | `1CD41` |
+| `1CD41 JO` / `1CD43 JNO` | `OF` / `!OF` | `1CD31` |
+| `1CD31 JL` / `1CD39 JGE` | `SF != OF` / `SF == OF` | `1CD46` |
 
 Because intervening instructions on **these proven paths** are only
 non-flag-changing self-MOVs and NOPs, every combination of the five
-relevant EFLAGS bits (\`CF\`, \`ZF\`, \`PF\`, \`SF\`, \`OF\`) is covered.
+relevant EFLAGS bits (`CF`, `ZF`, `PF`, `SF`, `OF`) is covered.
 The independent 32-case check yielded **16 distinct paths of 8–18
 visited instruction boundaries**, each arriving at the known
-\`CALL 0x1D42F\` at \`0x1CD46\`. The Rust function
-\`trace_gate_predecessor\` implements this bounded, fail-closed
+`CALL 0x1D42F` at `0x1CD46`. The Rust function
+`trace_gate_predecessor` implements this bounded, fail-closed
 **conditional branch model** and regression-tests all 32 combinations;
-\`audit_gate_predecessor_original\` validates the original instruction
+`audit_gate_predecessor_original` validates the original instruction
 bytes and relative branch targets against the SHA-pinned local DLL.
 
 This is a *local reachability proof from 0x1CD16 only*.
-It does **not** prove a path from \`DllMain\` or platform-specific helper
-entry \`0x1C7F0\` to \`0x1CD16\`. It does not execute x86 or any
+It does **not** prove a path from `DllMain` or platform-specific helper
+entry `0x1C7F0` to `0x1CD16`. It does not execute x86 or any
 Windows API and does not reveal the actual values of the processor
 flags or the global state at the game's startup. The wider
-\`0x1C7F0\` body remains partially opaque.
+`0x1C7F0` body remains partially opaque.
 
 
 ### Conditional direct DWORD mutation inside the Win9x helper (2026-10-28)
 
 A newly audited **separate** block of the original, file-backed
-\`dplayerx.dll\` executable section begins at **RVA \`0x1D28F\`**,
+`dplayerx.dll` executable section begins at **RVA `0x1D28F`**,
 inside the code span attributed to the successful Windows-9x platform
-helper **\`0x1C7F0\`**, which is the independently verified target of
-\`0x1AA9E\` in \`0x1A9B6\`.
+helper **`0x1C7F0`**, which is the independently verified target of
+`0x1AA9E` in `0x1A9B6`.
 
 Two complementary original conditional branches establish a **local**
-convergence: \`0x1D28F JNE 0x1D2A4\`, or on ZF=1 the intervening
-flag-preserving \`MOV EDX,EDX\` and \`0x1D297 JE 0x1D2A4\`.
-The code at \`0x1D2A4..0x1D2B3\` then does:
+convergence: `0x1D28F JNE 0x1D2A4`, or on ZF=1 the intervening
+flag-preserving `MOV EDX,EDX` and `0x1D297 JE 0x1D2A4`.
+The code at `0x1D2A4..0x1D2B3` then does:
 
-\`\`\`asm
+```asm
 1D2A4  MOV ECX, [EBP+8]
 1D2A7  MOV EDX, [ECX]
 1D2A9  ADD EDX, 0x34F
 1D2AF  MOV EAX, [EBP+8]
 1D2B2  MOV [EAX], EDX
-\`\`\`
+```
 
-The original \`JNE\` at \`0x1D2B4\` and \`JE\` at \`0x1D2B6\`
-also converge at \`0x1D2C7\`; the ordinary MOV instructions between
+The original `JNE` at `0x1D2B4` and `JE` at `0x1D2B6`
+also converge at `0x1D2C7`; the ordinary MOV instructions between
 ADD and these branches do not alter ZF. Thus **if execution enters
 0x1D28F** with a valid writable pointer argument, the conditional
 local effect on that pointed-to DWORD is exactly
-**\`value = (value + 0x34F) mod 2^32\`** and the store occurs once
+**`value = (value + 0x34F) mod 2^32`** and the store occurs once
 before joining the next block.
 
 The recovered rule is deliberately isolated as
-\`conditional_win9x_34f_step\` in
-\`src/unsafedisc_dll_state_provenance.rs\`. Synthetic tests cover
+`conditional_win9x_34f_step` in
+`src/unsafedisc_dll_state_provenance.rs`. Synthetic tests cover
 32-bit wraparound and both entry/exit ZF conditions; a dedicated
 original-byte audit validates the recorded original instructions and four
 original Jcc displacement targets on the exact SHA-256-pinned
 private DLL, without executing Windows code.
 
-**Limitations:** no path from the entry of \`0x1C7F0\` to the
-\`0x1D28F\` block has been verified. The Windows-9x helper may contain
-other pointer-mediated mutations, and \`GetVersionExA\` success does
+**Limitations:** no path from the entry of `0x1C7F0` to the
+`0x1D28F` block has been verified. The Windows-9x helper may contain
+other pointer-mediated mutations, and `GetVersionExA` success does
 not by itself prove that this branch executes. The rule does not
-identify the input state or the *final* state passed to \`0x19C78\`,
-and neither protected EAX modifier at \`0x65BE\` / \`0x6621\` is
+identify the input state or the *final* state passed to `0x19C78`,
+and neither protected EAX modifier at `0x65BE` / `0x6621` is
 recovered. The user-owned original DLL is never committed.
 
 
 ### Stronger Win9x DWORD pointer guard (2026-10-28)
 
 A second exact-original static trace now begins **earlier**, at
-\`0x1D26A\`. Here the code compares the argument **pointer itself**
-(\`CMP DWORD [EBP+8],0\`) against zero:
+`0x1D26A`. Here the code compares the argument **pointer itself**
+(`CMP DWORD [EBP+8],0`) against zero:
 
-- **Null argument pointer:** the original \`JE 0x1D2FC\` skips all
-  dereferences and the \`0x34F\` addition, sets \`AX=1\`, and jumps
-  from \`0x1D300\` to the verified function epilogue \`0x1D428\`.
-- **Non-null argument pointer:** fallthrough at \`0x1D274\` enters
-  complementary \`JNP/JP\`, \`JO/JNO\`, \`JL/JA/JGE\`, \`JL/JGE\`,
-  \`JG/JLE\` and finally \`JNE/JE\` sequences. In the audited
+- **Null argument pointer:** the original `JE 0x1D2FC` skips all
+  dereferences and the `0x34F` addition, sets `AX=1`, and jumps
+  from `0x1D300` to the verified function epilogue `0x1D428`.
+- **Non-null argument pointer:** fallthrough at `0x1D274` enters
+  complementary `JNP/JP`, `JO/JNO`, `JL/JA/JGE`, `JL/JGE`,
+  `JG/JLE` and finally `JNE/JE` sequences. In the audited
   source-level paths, no intervening instruction modifies the EFLAGS
   used for a branch. All **32** possible combinations of
-  CF/ZF/PF/SF/OF therefore reach **\`0x1D2A4\`**.
+  CF/ZF/PF/SF/OF therefore reach **`0x1D2A4`**.
   An independent original-image check counted **20 distinct paths**
-  of **8–17 instruction boundaries**, starting at \`0x1D274\`.
+  of **8–17 instruction boundaries**, starting at `0x1D274`.
 
 The resulting *local* rule is:
 
-\`\`\`text
+```text
 IF execution enters original RVA 0x1D26A:
   IF argument_pointer == NULL:
     return with AX=1 (no DWORD dereference)
   ELSE:
     *(u32*)argument_pointer += 0x34F (wrapping 32 bits)
     continue at RVA 0x1D2C7
-\`\`\`
+```
 
-The Rust \`win9x_pointer_gate\` and
-\`win9x_nonnull_gate_trace\` models, original-byte assertion
-\`audit_win9x_pointer_guard_original\`, and two synthetic regression
+The Rust `win9x_pointer_gate` and
+`win9x_nonnull_gate_trace` models, original-byte assertion
+`audit_win9x_pointer_guard_original`, and two synthetic regression
 tests document precisely this constrained flow. No memory access is
 performed by the model.
 
 This considerably strengthens the **local null-vs-nonnull guard**
 and state effect. It does **not** prove a path from entry of
-\`0x1C7F0\` to \`0x1D26A\`, or show whether other branches modify the
+`0x1C7F0` to `0x1D26A`, or show whether other branches modify the
 pointed-to DWORD before/after it.
 
 
 ### Verified Win9x HELPER ENTRY to keyboard gate (2026-10-28)
 
 **Stronger than the earlier local 1CD16 proof:** the user-provided,
-SHA-256-pinned retail \`dplayerx.dll\` was extracted and inspected
+SHA-256-pinned retail `dplayerx.dll` was extracted and inspected
 read-only. An independent Python static x86 branch walker begins at
-RVA **\`0x1C806\`**, immediately after the original entry prologue of
-the \`0x1C7F0\` Windows-9x helper:
+RVA **`0x1C806`**, immediately after the original entry prologue of
+the `0x1C7F0` Windows-9x helper:
 
-\`\`\`asm
+```asm
 1C7F0  PUSH EBP
 1C7F1  MOV EBP,ESP
 1C7F3  SUB ESP,0x9C
@@ -447,19 +451,19 @@ the \`0x1C7F0\` Windows-9x helper:
 1C7FB  PUSH EDI
 1C7FC  MOV DWORD [EBP-0x98],0
 1C806  JL 1C819       ; start of obfuscated flag-only network
-\`\`\`
+```
 
-Although \`SUB ESP,0x9C\` modifies arithmetic flags, the analysis
+Although `SUB ESP,0x9C` modifies arithmetic flags, the analysis
 requires **no assumption whatsoever** about their values: it
-enumerates every possible \`CF,ZF,PF,SF,OF\` assignment at \`0x1C806\`.
+enumerates every possible `CF,ZF,PF,SF,OF` assignment at `0x1C806`.
 
 All **32/32** assignments traverse exclusively safe, recognized
 instruction forms before reaching the existing and independently
-verified \`CALL 0x1D42F\` at RVA **\`0x1CD46\`**:
+verified `CALL 0x1D42F` at RVA **`0x1CD46`**:
 
-- \`Jcc rel8\` and \`Jcc rel32\` with their *actual original*
+- `Jcc rel8` and `Jcc rel32` with their *actual original*
   signed displacements and x86 condition-code meanings;
-- \`JMP rel8/rel32\`, ordinary NOPs, and register **self-MOV/
+- `JMP rel8/rel32`, ordinary NOPs, and register **self-MOV/
   self-XCHG** (the exact original paths contain no JMP);
 - no original memory read, memory write, API call, arithmetic
   flag modification, opaque instruction or cycle was encountered
@@ -467,17 +471,17 @@ verified \`CALL 0x1D42F\` at RVA **\`0x1CD46\`**:
 
 There are exactly **32 distinct static routes**, with **210–395
 visited instruction boundaries** each, terminating at the same
-\`0x1CD46\` callsite. The union covers **464 distinct, original
+`0x1CD46` callsite. The union covers **464 distinct, original
 instruction boundaries** across the obfuscated block.
 
 Rust now independently recomputes these results in
-\`audit_win9x_entry_to_keyboard_gate\`, by reading the original
+`audit_win9x_entry_to_keyboard_gate`, by reading the original
 file-backed executable bytes and failing closed on *any* unexpected
 opcode, out-of-bounds target, loop, or changed topology. It checks
 the actual 1C7F0 prologue and all 32 flag combinations. The pure
-\`branch_from_eflags\` test checks all 16 x86 Jcc conditions in
+`branch_from_eflags` test checks all 16 x86 Jcc conditions in
 complementary pairs for all 32 flag assignments. The original-image
-audit runs under \`inspect --modifier-research\`, where the existing
+audit runs under `inspect --modifier-research`, where the existing
 original-file SHA-256 gate must already have passed.
 
 **Conclusion:** *if* a caller enters the **original helper 0x1C7F0**
@@ -488,91 +492,91 @@ initialization is itself a write). In contrast, **DLL entrypoint
 reachability to 0x1C7F0** remains a separate question, as do the
 behavior of imported Windows APIs, potential INT 68h semantics,
 and a complete path from the gate to the subsequent pointer-state
-addition at \`0x1D26A\`. The protected \`0x65BE\` and \`0x6621\`
-EAX modifiers are still not recovered, and no \`unpack\` operation
+addition at `0x1D26A`. The protected `0x65BE` and `0x6621`
+EAX modifiers are still not recovered, and no `unpack` operation
 has been enabled.
 
 
 ### Keyboard-accepted helper path reaches GetVersionExA (2026-10-28)
 
 A further read-only original-image analysis follows the **accepted**
-keyboard test (the **conditional** \`AX=1\` result of \`CALL 0x1D42F\`),
-not the path taking the unresolved \`INT 0x68\`:
+keyboard test (the **conditional** `AX=1` result of `CALL 0x1D42F`),
+not the path taking the unresolved `INT 0x68`:
 
-1. \`1CD4B AND EAX,FFFFh; 1CD50 TEST EAX,EAX; 1CD52 JNE\` enters
-   \`0x1CD7B\`. All 32 five-flag assignments through the subsequent
-   *flag-preserving* source-level maze end at **\`0x1CE3B\`**
+1. `1CD4B AND EAX,FFFFh; 1CD50 TEST EAX,EAX; 1CD52 JNE` enters
+   `0x1CD7B`. All 32 five-flag assignments through the subsequent
+   *flag-preserving* source-level maze end at **`0x1CE3B`**
    (**32 distinct paths of 30–58 instruction boundaries**).
-   The actual flags from \`TEST EAX,EAX\` with return AX=1 are a
+   The actual flags from `TEST EAX,EAX` with return AX=1 are a
    *single* subset of those 32 checked assignments.
 2. Two ordinary, original stack-local stores set
-   \`[EBP-0x9C]=0x4300\` at \`0x1CE3B\` and
-   \`[EBP-0x98]=0\` at \`0x1CE45\`. Both preserve EFLAGS.
-   From **\`0x1CE4F\`**, all 32 assignments reach **\`0x1CFFF\`**
+   `[EBP-0x9C]=0x4300` at `0x1CE3B` and
+   `[EBP-0x98]=0` at `0x1CE45`. Both preserve EFLAGS.
+   From **`0x1CE4F`**, all 32 assignments reach **`0x1CFFF`**
    (**32 distinct paths, 68–125 instruction boundaries**).
-3. The original \`0x1CFFF\` instruction sets local
-   \`OSVERSIONINFOA.dwOSVersionInfoSize\` at
-   \`[EBP-0x94]=0x94\`. From \`0x1D009\`, all 32 flag
-   assignments converge at \`0x1D051\` (**32 distinct paths,
+3. The original `0x1CFFF` instruction sets local
+   `OSVERSIONINFOA.dwOSVersionInfoSize` at
+   `[EBP-0x94]=0x94`. From `0x1D009`, all 32 flag
+   assignments converge at `0x1D051` (**32 distinct paths,
    12–25 instruction boundaries**).
-4. The verified original instructions at \`0x1D051\`,
-   \`0x1D057\` and \`0x1D058\` load the address of the
-   \`OSVERSIONINFOA\` stack local, push it and invoke the genuine
-   **\`KERNEL32.dll!GetVersionExA\`**, imported through IAT
-   RVA **\`0x1E058\`** (\`FF 15 58 E0 8F 00\`).
-   The subsequent \`TEST EAX,EAX; JE 0x1D19D\` distinguishes
+4. The verified original instructions at `0x1D051`,
+   `0x1D057` and `0x1D058` load the address of the
+   `OSVERSIONINFOA` stack local, push it and invoke the genuine
+   **`KERNEL32.dll!GetVersionExA`**, imported through IAT
+   RVA **`0x1E058`** (`FF 15 58 E0 8F 00`).
+   The subsequent `TEST EAX,EAX; JE 0x1D19D` distinguishes
    API failure from success. No API return value is guessed.
 
 All six stage-boundary instructions are anchored by exact original
-bytes. \`trace_original_flag_segment\` and
-\`audit_win9x_gate_success_to_version_api\` are fail-closed
+bytes. `trace_original_flag_segment` and
+`audit_win9x_gate_success_to_version_api` are fail-closed
 Rust source-level readers in the same inspector module. They reject
 unexpected opcodes, loops, out-of-range jumps and mismatched path
 statistics; this audit runs **only after** retail-file SHA-256 and
 PE geometry verification. No Windows function is executed.
 
-**Consequence:** for an entry into helper \`0x1C7F0\` and a
-successful \`GetKeyboardType\` predicate, the code **must reach its
+**Consequence:** for an entry into helper `0x1C7F0` and a
+successful `GetKeyboardType` predicate, the code **must reach its
 own GetVersionExA call** without passing through the adjacent
-\`INT 0x68\`. This *conditional* chain is distinct from the earlier
-\`GetVersionExA\` call in \`0x1A9B6\` which selected the platform
+`INT 0x68`. This *conditional* chain is distinct from the earlier
+`GetVersionExA` call in `0x1A9B6` which selected the platform
 helper in the first place. Effects of the nested version query
-and the resulting path to \`0x1D26A\` still require research.
-In particular, **no unconditional \`+0x34F\` state effect is
+and the resulting path to `0x1D26A` still require research.
+In particular, **no unconditional `+0x34F` state effect is
 asserted** for this helper.
 
 
 ### Conditional GetVersionExA -> pointer increment now linked (2026-10-28)
 
-The nested version-query branch inside helper \`0x1C7F0\` was
+The nested version-query branch inside helper `0x1C7F0` was
 followed farther. This is the first *bounded, source-backed local
 chain* from the helper's entry and an accepted keyboard check
-to the already proven \`+0x34F\` pointer-store block, under precisely
+to the already proven `+0x34F` pointer-store block, under precisely
 identified **additional API conditions**:
 
 1. The helper-entry-to-keyboard gate and the gate-accepted-to-
-   \`GetVersionExA\` paths described above are taken.
-2. The nested **\`KERNEL32!GetVersionExA\` at \`0x1D058\`**
-   **succeeds** (\`EAX!=0\`). Its failure \`JE\` at \`0x1D060\`
-   enters \`0x1D19D\` directly, bypassing the forthcoming local
-   \`0x0F\` assignment.
+   `GetVersionExA` paths described above are taken.
+2. The nested **`KERNEL32!GetVersionExA` at `0x1D058`**
+   **succeeds** (`EAX!=0`). Its failure `JE` at `0x1D060`
+   enters `0x1D19D` directly, bypassing the forthcoming local
+   `0x0F` assignment.
 3. On success, an additional flag-preserving maze from
-   \`0x1D066\` reaches \`0x1D0C6\` where the **actual original
-   instruction compares \`OSVERSIONINFOA.dwPlatformId\` at
-   \`[EBP-0x84]\` with \`1\`**. A matching platform \`1\` uses
-   \`JE 0x1D19D\`; any **other** reported platform continues.
-4. The non-\`1\` path from \`0x1D0D3\` converges on an actual,
-   unambiguous \`MOV DWORD [EBP-0x98],0x0F\` at \`0x1D133\`.
+   `0x1D066` reaches `0x1D0C6` where the **actual original
+   instruction compares `OSVERSIONINFOA.dwPlatformId` at
+   `[EBP-0x84]` with `1`**. A matching platform `1` uses
+   `JE 0x1D19D`; any **other** reported platform continues.
+4. The non-`1` path from `0x1D0D3` converges on an actual,
+   unambiguous `MOV DWORD [EBP-0x98],0x0F` at `0x1D133`.
    This is the **stack-local** flag, NOT the decoder state.
-   The next control-flow network reaches \`0x1D19D\`, which
+   The next control-flow network reaches `0x1D19D`, which
    compares the same local flag with zero. With the known
-   value **15**, its \`JBE 0x1D305\` is **not taken**;
-   the fallthrough starts at \`0x1D1AA\`.
+   value **15**, its `JBE 0x1D305` is **not taken**;
+   the fallthrough starts at `0x1D1AA`.
 5. The final fully explored flag-only network joins the existing
-   **pointer-null check at \`0x1D26A\`**. If the actual
+   **pointer-null check at `0x1D26A`**. If the actual
    **argument pointer is nonnull**, the already verified
-   \`0x1D2A4..0x1D2B3\` instructions then perform
-   \`*pointer = (*pointer + 0x34F) mod 2^32\`.
+   `0x1D2A4..0x1D2B3` instructions then perform
+   `*pointer = (*pointer + 0x34F) mod 2^32`.
    If the pointer is NULL the original code returns without
    dereferencing it.
 
@@ -581,75 +585,75 @@ unconditional *local* convergence from each named start:
 
 | Conditional flag-only segment | Distinct paths | Instruction boundaries |
 | --- | ---: | ---: |
-| \`1D066 -> 1D0C6\` | 16 | 15–33 |
-| \`1D0D3 -> 1D133\` | 32 | 16–28 |
-| \`1D13D -> 1D19D\` | 16 | 15–27 |
-| \`1D1AA -> 1D26A\` | 32 | 31–60 |
+| `1D066 -> 1D0C6` | 16 | 15–33 |
+| `1D0D3 -> 1D133` | 32 | 16–28 |
+| `1D13D -> 1D19D` | 16 | 15–27 |
+| `1D1AA -> 1D26A` | 32 | 31–60 |
 
-\`audit_win9x_nested_version_to_pointer_guard\` verifies these
+`audit_win9x_nested_version_to_pointer_guard` verifies these
 segments with original executable bytes, the pointer and local
 flag CMP/MOV instructions, and the four outer Jcc displacements;
-\`accepted_keyboard_nested_version_to_guard\` is a **pure
+`accepted_keyboard_nested_version_to_guard` is a **pure
 synthetic branch model** with regression tests.
 
-**Precisely scoped result:** the local \`+0x34F\` operation is
+**Precisely scoped result:** the local `+0x34F` operation is
 reached when all of these hold:
-\`helper 0x1C7F0 entered\` AND
-\`keyboard predicate accepted\` AND
-\`nested GetVersionExA returned success\` AND
-\`nested dwPlatformId != 1\` AND
-\`passed DWORD pointer != NULL\`.
+`helper 0x1C7F0 entered` AND
+`keyboard predicate accepted` AND
+`nested GetVersionExA returned success` AND
+`nested dwPlatformId != 1` AND
+`passed DWORD pointer != NULL`.
 
 There are **other, unresolved paths**, including the
-keyboard-rejected \`INT 0x68\` route; the conditional proof
+keyboard-rejected `INT 0x68` route; the conditional proof
 must not be misread as an exclusive or universal rule.
-In particular, the **outer** \`GetVersionExA\` in \`0x1A9B6\`
-chooses helper \`0x1C7F0\` on a reported platform \`1\`.
+In particular, the **outer** `GetVersionExA` in `0x1A9B6`
+chooses helper `0x1C7F0` on a reported platform `1`.
 The inner and outer API results would ordinarily be expected
 to agree on a stable operating system; this analysis does not
 assert that the inner report is different, or that this
 conditional addition actually occurs during normal gameplay.
 
-The DLL entrypoint path to \`0x1A9B6\`, exact 32-bit state at
-the byte mixer \`0x19C78\`, and protected EAX modifier
-routines \`0x65BE\`/\`0x6621\` are **not** recovered.
+The DLL entrypoint path to `0x1A9B6`, exact 32-bit state at
+the byte mixer `0x19C78`, and protected EAX modifier
+routines `0x65BE`/`0x6621` are **not** recovered.
 
 
 ### Keyboard-rejected INT 68h path: conditional state-gate truth table (2026-10-28)
 
 The original **keyboard-rejected** path has now been composed with
 the previously audited nested version query and pointer-null guard.
-This adds a second conditional route to the isolated \`+0x34F\`
+This adds a second conditional route to the isolated `+0x34F`
 DWORD mutation; the interrupt's behavior is **not** assumed or
 emulated.
 
-- At \`0x1C7FC\`, the helper initializes the **stack-local**
-  \`[EBP-0x98]\` to zero.
-- If \`GetKeyboardType\` predicate fails, \`0x1CD52 JNE\`
-  is not taken, so the file-backed original \`PUSHA\`, \`XOR EAX,EAX\`,
-  \`MOV AX,0x4300\`, \`INT 0x68\` at \`0x1CD5B\` are reached.
+- At `0x1C7FC`, the helper initializes the **stack-local**
+  `[EBP-0x98]` to zero.
+- If `GetKeyboardType` predicate fails, `0x1CD52 JNE`
+  is not taken, so the file-backed original `PUSHA`, `XOR EAX,EAX`,
+  `MOV AX,0x4300`, `INT 0x68` at `0x1CD5B` are reached.
 - **Assuming only that INT 68h returns normally** and the original
-  stack/frame remains usable, \`0x1CD5D\` saves the resulting full
-  EAX to the local \`[EBP-0x9C]\`. The original
-  \`CMP EAX,0x00004300\` at \`0x1CD63\` / \`JE\` at \`0x1CD68\`
-  preserve \`[EBP-0x98]=0\` if **full EAX equals 0x4300**,
-  or set \`[EBP-0x98]=1\` at \`0x1CD6A..0x1CD74\` otherwise.
+  stack/frame remains usable, `0x1CD5D` saves the resulting full
+  EAX to the local `[EBP-0x9C]`. The original
+  `CMP EAX,0x00004300` at `0x1CD63` / `JE` at `0x1CD68`
+  preserve `[EBP-0x98]=0` if **full EAX equals 0x4300**,
+  or set `[EBP-0x98]=1` at `0x1CD6A..0x1CD74` otherwise.
   The comparison is **32-bit**, not merely AX (an EAX such as
-  \`0xFFFF4300\` is treated as different).
-- \`POPA; JMP 0x1CE4F\` at \`0x1CD75..0x1CD7A\` bypasses the
-  keyboard-accepted-only writes at \`0x1CE3B\` and \`0x1CE45\`,
+  `0xFFFF4300` is treated as different).
+- `POPA; JMP 0x1CE4F` at `0x1CD75..0x1CD7A` bypasses the
+  keyboard-accepted-only writes at `0x1CE3B` and `0x1CE45`,
   **so the one/zero interrupt flag is not overwritten there**.
-  The already audited \`1CE4F -> 1CFFF -> 1D051\` flag-only networks
-  reach the nested \`KERNEL32!GetVersionExA\` at \`0x1D058\`.
-- If this nested API succeeds with \`dwPlatformId != 1\`,
-  the original \`1D133\` stack-local store **overwrites**
-  \`[EBP-0x98]\` with **15**. Otherwise (failure or platform 1),
+  The already audited `1CE4F -> 1CFFF -> 1D051` flag-only networks
+  reach the nested `KERNEL32!GetVersionExA` at `0x1D058`.
+- If this nested API succeeds with `dwPlatformId != 1`,
+  the original `1D133` stack-local store **overwrites**
+  `[EBP-0x98]` with **15**. Otherwise (failure or platform 1),
   the interrupt-derived 0 or 1 remains unchanged.
-- Original \`CMP [EBP-0x98],0; JBE 1D305\` at \`0x1D19D\`
+- Original `CMP [EBP-0x98],0; JBE 1D305` at `0x1D19D`
   bypasses the pointer test for zero, and routes nonzero values
-  through the already verified flag-only path to \`0x1D26A\`.
+  through the already verified flag-only path to `0x1D26A`.
   Only a **nonnull, usable pointer** can then produce
-  \`*ptr = (*ptr + 0x34F) mod 2^32\`.
+  `*ptr = (*ptr + 0x34F) mod 2^32`.
 
 The complete conditional local matrix (assuming normal INT return
 on the rejected route and a valid original stack frame) is:
@@ -663,62 +667,62 @@ on the rejected route and a valid original stack frame) is:
 | Rejected | Any returned EAX | Success, platform != 1 | 15 | Reached |
 
 This is implemented as an explicit **conditional-source model**
-\`conditional_nested_pointer_route\` in
-\`src/unsafedisc_dll_keyboard_probe.rs\`, with distinct
-\`KeyboardResult\` and \`NestedVersionResult\` enums. It deliberately
-does **not** define a \`RejectedInterruptNeverReturned\` path because
+`conditional_nested_pointer_route` in
+`src/unsafedisc_dll_keyboard_probe.rs`, with distinct
+`KeyboardResult` and `NestedVersionResult` enums. It deliberately
+does **not** define a `RejectedInterruptNeverReturned` path because
 that has no reachable post-interrupt program counter: no assertion
 about success, failure, trapping, exception handling, drivers or
 Wine behavior is made. Four synthetic regression tests cover the
 return-value/OS-version combinations; original instruction checks
-for \`PUSHA/POPA\`, local writes, 32-bit comparison, and all local
+for `PUSHA/POPA`, local writes, 32-bit comparison, and all local
 branch targets are SHA-pinned.
 
-**Important:** the separate outer \`GetVersionExA\` in helper
-\`0x1A9B6\` selects \`0x1C7F0\` only for a Windows-9x platform report.
+**Important:** the separate outer `GetVersionExA` in helper
+`0x1A9B6` selects `0x1C7F0` only for a Windows-9x platform report.
 The new conditional route shows that a matching **inner** platform
-1 is *not itself sufficient* to rule out the isolated \`+0x34F\`
+1 is *not itself sufficient* to rule out the isolated `+0x34F`
 addition: it may also be reached via the keyboard-rejected
 INT-return comparison. **Whether that interruption ever returns
 normally on a target system is not established.** Actual entry
-state at \`0x19C78\` and the two protected EAX modifiers remain
+state at `0x19C78` and the two protected EAX modifiers remain
 unknown. This does not enable unpacking or run any protected bytes.
 
 
 ### Both conditional Win9x helper returns now separated (2026-10-28)
 
 Two **additional** original-image 32-flag static walks through the
-late portion of helper \`0x1C7F0\` distinguish the *low 16-bit return
+late portion of helper `0x1C7F0` distinguish the *low 16-bit return
 value* from whether the passed state DWORD was actually updated.
 
-**If \`[EBP-0x98] == 0\` at \`0x1D19D\`:**
-the original \`JBE 0x1D305\` bypasses the pointer check and takes an
-obfuscated EFLAGS-only path to **\`0x1D425\`**, which contains
-\`66 33 C0\` (**\`XOR AX,AX\`**) and then the verified epilogue
-\`0x1D428\`. For **all 32 flag combinations**, this route
+**If `[EBP-0x98] == 0` at `0x1D19D`:**
+the original `JBE 0x1D305` bypasses the pointer check and takes an
+obfuscated EFLAGS-only path to **`0x1D425`**, which contains
+`66 33 C0` (**`XOR AX,AX`**) and then the verified epilogue
+`0x1D428`. For **all 32 flag combinations**, this route
 converges with **32 distinct paths of 44–77 instruction boundaries**.
 It sets **AX=0**, and does not access the argument DWORD in this
 audited suffix.
 
-**If \`[EBP-0x98] > 0\` at \`0x1D19D\`:**
+**If `[EBP-0x98] > 0` at `0x1D19D`:**
 the original flag-only network reaches the pointer-null guard
-\`0x1D26A\`. A NULL pointer branches to **\`0x1D2FC\`**, which
-contains \`66 B8 01 00\` (**\`MOV AX,1\`**) and jumps directly
-to the same \`0x1D428\` epilogue: **AX=1, but no DWORD write**.
+`0x1D26A`. A NULL pointer branches to **`0x1D2FC`**, which
+contains `66 B8 01 00` (**`MOV AX,1`**) and jumps directly
+to the same `0x1D428` epilogue: **AX=1, but no DWORD write**.
 
 A usable nonnull pointer instead reaches the original single
-\`+0x34F\` DWORD store at \`0x1D2B2\` and the complementary
-\`JNE/JE\` pair at \`0x1D2B4/0x1D2B6\`. From \`0x1D2C7\`
-all 32 flag combinations reach \`0x1D2FC\` with **16 distinct
+`+0x34F` DWORD store at `0x1D2B2` and the complementary
+`JNE/JE` pair at `0x1D2B4/0x1D2B6`. From `0x1D2C7`
+all 32 flag combinations reach `0x1D2FC` with **16 distinct
 routes of 10–21 instruction boundaries**. Some valid original
-branches temporarily jump backward as far as **\`0x1D2B7\`**
+branches temporarily jump backward as far as **`0x1D2B7`**
 before converging; the bounded Rust interpreter permits only this
 explicitly audited back-edge range while still refusing loops,
 memory operations and unexpected instructions. Result:
 **AX=1 and the passed DWORD was incremented exactly once**.
 
 A combined pure conditional Rust model
-\`conditional_win9x_outcome\` distinguishes these three cases:
+`conditional_win9x_outcome` distinguishes these three cases:
 
 | Local flag | Argument pointer | Original return AX | DWORD write |
 | --- | --- | ---: | --- |
@@ -734,10 +738,41 @@ INT 68h**. These are not measured; neither actual pointer validity,
 full DLL startup reachability, global state at mixer entry, nor
 decryption is claimed.
 
-Original-byte checks now cover the \`MOV AX,1\`, \`XOR AX,AX\`,
+Original-byte checks now cover the `MOV AX,1`, `XOR AX,AX`,
 shared function epilogue, both flag-only suffixes, and the earlier
 interrupt / platform conditions. A standalone offline verifier,
-\`verify_rejected_keyboard_int68.py\` (distributed separately,
+`verify_rejected_keyboard_int68.py` (distributed separately,
 **not** part of the proprietary DLL), compares 15 original opcode
 groups and both 32-flag suffix topologies against a user-supplied
-SHA-256-pinned retail \`dplayerx.dll\`. No protected code is run.
+SHA-256-pinned retail `dplayerx.dll`. No protected code is run.
+
+### Historical identification: anti-SoftICE INT 68h (2026-10-28)
+
+The purpose of this old Windows-9x sequence is no longer a mere
+unexplained interrupt. Two independently published historical
+reverse-engineering descriptions agree that SafeDisc used the
+`AH=0x43; INT 0x68` pattern for **SoftICE debugger detection**:
+
+- The publisher's [No Starch Press excerpt of *Crackproof Your Software*,
+  chapter 7, p. 97](https://nostarch.com/download/crackproof_excerpts.pdf)
+  explicitly identifies INT 68h as a Windows-9x SoftICE probe and
+  describes a return in AX of `0xF386` when the debugger is present.
+- [Black Check's 1999 SafeDisc analysis of *Midtown Madness*](https://www.gbppr.net/fravia/blackche.htm)
+  reproduces a remarkably close instruction sequence:
+  zero EAX, load AX=`0x4300`, invoke INT 68h, save EAX at
+  `[EBP-0x9C]`, and compare **EAX** with `0x4300`. That author
+  reports an expected normal/no-debugger EAX of `0x4300`, and a
+  differing EAX with SoftICE or particular debugging countermeasures.
+
+The independently hash-verified *Crimson Skies* original `dplayerx.dll`
+contains **the same specific opcode pattern** around RVA `0x1CD55`
+through `0x1CD68`, including the **full 32-bit EAX comparison**.
+This strongly supports identifying the source intent as an
+**anti-debugging/SoftICE check inherited from historical SafeDisc**.
+The check's result is combined with a local pointer-state gate as
+proven above. This contextual interpretation **does not mean** the
+interrupt is safely callable or returns the documented value under
+modern Windows, Wine, NTVDM or non-9x execution; no such
+runtime experiment has been performed. It also does not by itself
+show that an inconsistent decoder key or a Crimson Skies startup
+crash actually results.
