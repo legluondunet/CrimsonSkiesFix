@@ -2841,7 +2841,9 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    NEW original Win9x helper entry proof: starting at 0x1C806 immediately after the 1C7F0 prologue, all 32 EFLAGS assignments reach CALL 0x1CD46 via 32 unique paths (210..395 instruction boundaries).");
     println!("    Only Jcc/JMP, NOP and register self-MOV/XCHG are reached before this call. Proves local helper-entry -> keyboard-gate reachability; does NOT prove full DLL startup path or later DWORD mutations.");
     println!("    Conditional keyboard PASS (AX=1) skips INT 0x68, then all 32 flags reach stack-local init at 1CE3B (30..58 steps), OSVERSIONINFOA size init 1CFFF (68..125), and LEA at 1D051 (12..25).");
-    println!("    Original 1D058 FF15 imports KERNEL32!GetVersionExA at IAT 1E058; API behavior and later 1D26A state-add reachability remain UNKNOWN.");
+    println!("    Original 1D058 FF15 imports KERNEL32!GetVersionExA at IAT 1E058; its return and platform ID are runtime-dependent.");
+    println!("    Conditional nested Win9x query SUCCESS with dwPlatformId != 1 -> original stack-local 0x0F at 1D133 -> 1D19D -> pointer guard 1D26A.");
+    println!("    All four intervening flag-only networks converge for 32/32 flags; only a nonnull passed pointer causes original DWORD +0x34F. Outer vs inner Windows platform reports must not be assumed inconsistent.");
     println!("    This is STATIC x86 source evidence only: entrypoint reachability, Windows interrupt semantics, and any relation to a real compatibility failure remain UNKNOWN.");
     // Relocation-backed references are a bounded address-level audit, not
     // a disassembly or a proof that all aliases to the state are covered.
