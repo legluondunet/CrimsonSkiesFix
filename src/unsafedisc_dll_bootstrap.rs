@@ -32,6 +32,47 @@ pub struct BootstrapStep {
     pub matching_section:Option<String>,
 }
 
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct SectionWalk {
+    pub category:u8,
+    pub selector:u8,
+    pub matching_first_stage:usize,
+    pub skipped_directory_starts:usize,
+    pub selected_section:Option<String>,
+}
+
+/// Static characteristics filter and optional PE-directory-start
+/// exclusion for the final three A140 section-registration iterators.
+/// This does not execute a helper or infer that an A2A0 call succeeds.
+pub fn select_section(
+    selector:u8,sections:&[(String,u32,u32)],
+    directory_starts:&[u32],
+)->SectionWalk {
+    let (mask,required,skip_starts,category)=match selector {
+        1 => (0x2000_0020u32,0x2000_0020u32,false,4u8),
+        2 => (0xC000_0040,0xC000_0040,true,5),
+        10 => (0xC000_0060,0x4000_0040,true,6),
+        _ => return SectionWalk{
+            category:0,selector,matching_first_stage:0,
+            skipped_directory_starts:0,selected_section:None
+        }
+    };
+    let mut out=SectionWalk{
+        category,selector,matching_first_stage:0,
+        skipped_directory_starts:0,selected_section:None
+    };
+    for (name,va,flags) in sections {
+        if flags & mask != required {continue;}
+        out.matching_first_stage+=1;
+        if skip_starts && directory_starts.contains(va) {
+            out.skipped_directory_starts+=1;
+            continue;
+        }
+        if out.selected_section.is_none(){out.selected_section=Some(name.clone());}
+    }
+    out
+}
+
 #[derive(Debug,Clone,Copy)]
 struct Route {
     a140_call:u32,
@@ -231,6 +272,51 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
         });
     }
 
+    // Three *additional* A140 iterators execute after these five
+    // directory-specific helpers. They select section classes, not
+    // arbitrary decrypted pointers. Confirm their exact call chain,
+    // literal selector immediates, and registry category constants.
+    for (call,target,selector_site,selector,category_site,category) in [
+        (0xA1D4u32,0xAB80u32,0xABBAu32,1u8,0xABD3u32,4u8),
+        (0xA1DD,0xAAF0,0xAB2A,2,0xAB43,5),
+        (0xA1E6,0xAA60,0xAA9A,10,0xAAB3,6)
+    ] {
+        check_call(dll,pe,call,target)?;
+        dll_expect_raw_x86(dll,pe,selector_site,&[0x6A,selector])?;
+        dll_expect_raw_x86(dll,pe,category_site,&[0x6A,category])?;
+    }
+    for (call,target) in [
+        (0xABBDu32,0x18800u32),
+        (0xAB2D,0x18800),
+        (0xAA9D,0x18800),
+        (0xABD8,0xA2A0),
+        (0xAB48,0xA2A0),
+        (0xAAB8,0xA2A0),
+    ] {check_call(dll,pe,call,target)?;}
+    // The preceding phase of the inspector checks the original
+    // IMAGE_SECTION_HEADER masks and directory-start rejection
+    // instructions in the protected DLL selector paths.
+    let secs:Vec<(String,u32,u32)>=pe.sections.iter().map(|sec|{
+        let name=String::from_utf8_lossy(sec.name.split(|&b|b==0).next().unwrap_or(&[])).to_string();
+        (name,sec.virtual_address,sec.characteristics)
+    }).collect();
+    let directory_starts:Vec<u32>=(0..16usize).map(|i|read_u32(dll,nt+0x78+i*8))
+        .collect::<Result<_>>()?;
+    let expected_walks=[
+        SectionWalk{category:4,selector:1,matching_first_stage:3,
+            skipped_directory_starts:0,selected_section:Some(".txt".into())},
+        SectionWalk{category:5,selector:2,matching_first_stage:1,
+            skipped_directory_starts:0,selected_section:Some(".data".into())},
+        SectionWalk{category:6,selector:10,matching_first_stage:2,
+            skipped_directory_starts:2,selected_section:None},
+    ];
+    for expected in &expected_walks {
+        let actual=select_section(expected.selector,&secs,&directory_starts);
+        if &actual!=expected {
+            return Err(format!("pinned DLL selector {} category {} section-class lookup changed",
+                expected.selector,expected.category));
+        }
+    }
     let expected=[
         (1u8,11u8,12usize,0x1E000u32,0x11Cu32,13usize,DirectoryField::Size,0u32,None),
         (1,6,1,0x1ED14,0x3C,2,DirectoryField::Size,0,None),
@@ -322,6 +408,39 @@ mod tests {
         assert_eq!(containing_section(0x100A,&sections),None);
         let fallback=vec![(".r".to_string(),0x1000,0,512)];
         assert_eq!(containing_section(0x11FF,&fallback),Some(".r"));
+    }
+
+    #[test]
+    fn final_three_iterators_preserve_category_order_and_directory_exclusions() {
+        let sections=vec![
+            (".txt".into(),0x1000,0x6000_0020),
+            (".text".into(),0x9000,0x6000_0020),
+            (".txt2".into(),0x18000,0x6000_0020),
+            (".rdata".into(),0x1E000,0x4000_0040),
+            (".data".into(),0x20000,0xC000_0040),
+            (".reloc".into(),0x27000,0x4200_0040),
+        ];
+        let starts=[0x1F350,0x1ED14,0x1E000,0x27000];
+        let code=select_section(1,&sections,&starts);
+        assert_eq!(code.selected_section.as_deref(),Some(".txt"));
+        assert_eq!(code.matching_first_stage,3);
+        let writable=select_section(2,&sections,&starts);
+        assert_eq!(writable.selected_section.as_deref(),Some(".data"));
+        let readonly=select_section(10,&sections,&starts);
+        assert_eq!(readonly.matching_first_stage,2);
+        assert_eq!(readonly.skipped_directory_starts,2);
+        assert_eq!(readonly.selected_section,None);
+    }
+
+    #[test]
+    fn earlier_ineligible_section_does_not_prevent_later_eligible_selection() {
+        let sections=vec![
+            (".rdata".into(),0x1E000,0x4000_0040),
+            (".custom".into(),0x22000,0x4000_0040),
+        ];
+        let out=select_section(10,&sections,&[0x1E000]);
+        assert_eq!(out.skipped_directory_starts,1);
+        assert_eq!(out.selected_section.as_deref(),Some(".custom"));
     }
 
     #[test]
