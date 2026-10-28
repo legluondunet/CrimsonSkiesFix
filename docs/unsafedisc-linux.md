@@ -5090,3 +5090,42 @@ These functions use **synthetic buffers only**. Neither the length,
 loop reachability, starting state, actual output, nor absence of
 intervening state updates for the retail `19C78` call has been
 established. This is **not** a recovered SafeDisc code decryptor.
+
+
+### Worker 196DB/196F8/19728/1976F: conditional arithmetic and partial-register hazard (2026-10-28)
+
+A new synthesis of the **already exact-original-byte-verified**
+instruction runs surrounding the worker's `A310` gate establishes
+four distinct local operations **when those sites execute**:
+
+- `196DB`: local `[EBP-0x10] = [EBP-0x0C] - [EBP+0x1C]`
+  with original 32-bit wrapping arithmetic.
+- `196F8`: local `[EBP-0x08] = [EBP-0x14] - [EBP-0x0C] + 1`,
+  also wrapping. The `+1` makes the mathematical *candidate*
+  extent inclusive, but the local inputs are not proven valid
+  nonwrapping addresses.
+- `19728`: original bytes `66 8B 45 F8 50` mean **`MOV AX,
+  WORD [EBP-0x08]; PUSH EAX`**. This loads just the lower 16
+  bits, **preserving EAX's prior high 16 bits**, then pushes
+  the entire DWORD. It would be incorrect to model this instruction
+  as `MOVZX EAX, WORD [...]` without additional evidence of
+  previous EAX state. The x86 source assertion already existed,
+  but its mixed-width consequence was not separately modeled.
+- `1976F`: `ECX = [EBP+0x20] + [EBP-0x10]` with 32-bit
+  wrapping arithmetic. The downstream use of this ECX has not
+  been independently reconstructed here.
+
+Added `hypothetical_worker_locals`,
+`hypothetical_19728_push_eax`, and a deliberately distinct
+safe-analysis-only predicate for nonempty ordered, at-most-16-bit
+contiguous steps. Three synthetic Rust tests cover exact
+nonwrapping vectors, modulo-`2^32` overflow, zero-length candidate
+steps, the **65,536-byte length cliff**, and upper-word preservation
+across several bit patterns.
+
+These functions **do not establish** that the original worker
+actually executes every block, that intermediate locals are never
+overwritten, or that the `19728` DWORD is forwarded unchanged into
+`19965` or `19C78`. They prevent accidental substitution of
+idealized lengths or a zero-extending load in future static models.
+No private executable is run or modified.
