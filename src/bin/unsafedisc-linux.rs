@@ -50,6 +50,8 @@ mod unsafedisc_dll_write_pipeline;
 
 #[path = "../unsafedisc_dll_byte_mix.rs"]
 mod unsafedisc_dll_byte_mix;
+#[path = "../unsafedisc_dll_byte_mix_solver.rs"]
+mod unsafedisc_dll_byte_mix_solver;
 
 #[path = "../unsafedisc_dll_state_provenance.rs"]
 mod unsafedisc_dll_state_provenance;
