@@ -138,3 +138,47 @@ pointer. The state may differ before either call, and neither
 successful Windows-specific path has been reconstructed. These
 findings do not establish a particular Windows platform failure or
 fully determine the `0x19C78` entry state.
+
+### Successful GetVersionExA dispatch in 1A77F (original DLL)
+
+A deliberately **bounded, static x86 branch interpreter**, restricted to
+the verified original instruction bytes, followed the
+\`TEST EAX,EAX\` at RVA \`0x1A7B6\` under the condition that
+\`GetVersionExA\` returned nonzero. The apparently looping
+\`1A7BE -> 1A7D1 -> 1A7C1 -> 1A7C9 -> 1A7D6\` overlapping-instruction
+detour is finite with the documented x86 TEST flags (ZF=0, CF=0);
+\`JBE\` is not taken and \`JA\` is taken. The code then compares the
+OSVERSIONINFOA platform field \`[EBP-0x84]\` with 1 and 2.
+
+Five original-DLL inputs were independently walked:
+
+| Successful API, \`dwPlatformId\` | Conditional destination |
+| --- | --- |
+| \`0\` | \`0x1A854\` low-byte mask |
+| \`1\` (VER_PLATFORM_WIN32_WINDOWS) | \`0x1BEEE\` helper |
+| \`2\` (VER_PLATFORM_WIN32_NT) | \`0x1AE3F\` helper |
+| \`3\` | \`0x1A854\` low-byte mask |
+| \`0xFFFFFFFF\` | \`0x1A854\` low-byte mask |
+
+The \`0x1A7F3\` and \`0x1A828\` direct calls forward the original
+\`[EBP+8]\` state-pointer argument. At each helper, a separate
+original-byte check finds an actual imported
+\`KERNEL32!GetModuleHandleA\` call through **IAT RVA 0x1E098**
+(\`0x1AEC3\` in NT helper \`0x1AE3F\`;
+\`0x1BF52\` in Windows-9x helper \`0x1BEEE\`).
+This proves a common imported dependency but **not** a common
+algorithm or runtime success of that API.
+
+The new \`version_success_dispatch\` Rust helper is a small classifier
+of *dispatch destinations only*: it does not run either helper or
+predict the output for Windows-9x/NT, and it does not assert that
+\`GetVersionExA\` can be substituted with an arbitrary platform ID on
+real Windows. Static full-branch original-byte and import-name checks
+are attached to \`inspect --modifier-research\`. The two synthetic
+unit tests cover routing and prevent treating either helper as a
+known low-byte transform.
+
+**Next unresolved point:** inspect the pointer writes and return
+conditions in \`0x1AE3F\` and \`0x1BEEE\` (or establish that they do not
+write) before concluding the successful OS-probe effect on the global
+state. \`0x1A9B6\`'s success path is separately unresolved.
