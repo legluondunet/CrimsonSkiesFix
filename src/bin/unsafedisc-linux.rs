@@ -5190,11 +5190,22 @@ fn inspect_historical_155_cli() -> Result<()> {
         match unsafedisc_historical_155::inspect_155_pointer_list_disk_state(
             data_bytes,data_sec.virtual_address,base
         ) {
-            Ok(state)=>println!(
-                "  On-disk selected-section list: global 0x{:08X}, initial pointer 0x{:08X}, {} complete backed pointer slots, {} leading zero DWORDs. NO runtime-zeroing claim.",
-                state.pointer_global_va,state.initial_pointer_list_va,
-                state.capacity_words_in_backed_data,state.leading_zero_words
-            ),
+            Ok(state)=>{
+                println!(
+                    "  On-disk selected-section list: global 0x{:08X}, initial pointer 0x{:08X}, {} complete backed pointer slots, {} leading zero DWORDs. NO runtime-zeroing claim.",
+                    state.pointer_global_va,state.initial_pointer_list_va,
+                    state.capacity_words_in_backed_data,state.leading_zero_words
+                );
+                if state.leading_zero_words==0 {
+                    println!("  No zero terminator is evidenced at the on-disk list start. Runtime state remains unverified.");
+                } else {
+                    println!(
+                        "  Hypothetical unchanged-snapshot maximum: {} selected pointers while retaining one pre-existing zero terminator. NOT runtime capacity.",
+                        unsafedisc_historical_155_list_plan::hypothetical_zero_terminated_capacity(
+                            state.leading_zero_words)
+                    );
+                }
+            },
             Err(reason)=>println!(
                 "  On-disk pointer-list state is UNCONFIRMED for this original binary: {reason}"
             ),
