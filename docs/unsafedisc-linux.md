@@ -4747,3 +4747,95 @@ an AA00 write sharing the *first read's*
 descriptor/offset/size/buffer **stack slots**.
 Runtime reachability and actual returned data
 remain to be established.
+
+
+### Instruction-backed four-state-byte XOR mixer inside .txt2:0x19C78 (2026-10-28)
+
+A second original instruction trace follows one deeper
+subcall in the `195DF` pipeline:
+
+```text
+.txt2:1940B -> 195DF
+                 -> 19798 CALL 19C78   [conditional path]
+```
+
+Inside the **readable original** `.txt2` function
+`19C78`, an instruction-aligned run from RVA
+`19D45` through `19DF6` performs a specific
+**in-place single-byte XOR transformation**.
+
+- Destination pointer: `[EBP+0x14]`.
+- Other input byte pointer: `[EBP+0x1C]`.
+- Mutable global **DWORD** state preferred VA:
+  `0x00905010` (image RVA **`0x25010`**).
+- The code XORs the destination byte with all
+  **four separate bytes of this one 32-bit state**
+  (low, next, third and high), then XORs the
+  result with the byte under the other input pointer.
+- It **adds the resulting byte as an unsigned
+  8-bit value to the 32-bit state**, wrapping
+  modulo `2^32`, and increments the destination
+  and other-input pointers by one.
+
+For this **individual contiguous instruction
+sequence only**, with `a=destination byte`,
+`b=other input byte`, and `s=pre-step state`:
+
+```text
+k = (s & 255) XOR ((s >> 8) & 255)
+    XOR ((s >> 16) & 255) XOR ((s >> 24) & 255)
+out_byte = a XOR b XOR k
+next_state = (s + out_byte) mod 2^32
+```
+
+This is **not** a complete model of `19C78`
+or its caller `195DF`: there are additional
+opaque branches, potential state updates and
+loop-control operations before and after this
+instruction window. In particular **the correct
+initial value of state at each invocation,
+the actual in-memory descriptor and selection
+of the encrypted `.txt` section are still
+unproved**. Treat this as an exact *conditional
+byte primitive*, not a working loader/decryptor.
+
+The original obfuscation at `19D78` permits a
+local conditional convergence proof:
+
+- If the previous XOR clears parity, `JNP +0x0B`
+  jumps from `19D78` straight to `19D85`.
+- Otherwise `PUSH EDX; CALL 19CE0` (where
+  the exact byte at `19CE0` is a one-byte
+  `RET`), then `POP EDX; JP +2`
+  jumps to **the same RVA `19D85`**.
+  PUSH/CALL/RET/POP preserve EFLAGS.
+
+The disassembly around `19D85` therefore does
+not depend on a speculative unconditional
+jump through a decoy RET. The code then reads
+the other state bytes, XORs the second buffer
+and commits the updated global DWORD.
+
+The new separate `src/unsafedisc_dll_byte_mix.rs`
+verifies **37 original instruction fragments**,
+both original E8 destinations and the one-byte
+RET target, and exposes `conditional_byte_step`
+for **synthetic only** vector testing. Five Rust
+tests cover fixed independently calculated output
+vectors, all 256 byte-parity cases, sensitivity
+to each state byte, separate-buffer influence,
+and 32-bit state overflow. Nothing invokes the
+original DLL function or exports any decrypted
+source memory.
+
+**Research significance:** this is a concrete
+stateful nonlinear-by-iteration byte operation
+directly downstream of the earlier `195DF`
+page/category tracking. It supplies a stronger
+hypothesis for the *local processing algorithm*
+than treating the block as an unknown black box.
+The next requirement is to reconstruct its
+initialization and complete loop, and verify
+the actual protected-code address/buffer contents
+before making any claim of restored functions
+at `0x65BE/0x6621`.
