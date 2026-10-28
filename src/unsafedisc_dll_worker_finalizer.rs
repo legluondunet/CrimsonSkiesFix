@@ -57,6 +57,97 @@ pub fn conditional_win9x_finalizer(
 }
 
 
+/// Original 196AE calls an opaque helper A310. The caller checks
+/// the returned low 16 bits ONLY: AND EAX,FFFFh; TEST; JE 19819.
+/// A zero result bypasses this iteration's mixer entry, while a
+/// nonzero result continues via the following source-level mazes.
+/// No claim is made about A310's behavior or the actual return value.
+pub fn worker_setup_skips_mixer(eax_from_helper:u32)->bool {
+    eax_from_helper & 0xFFFF == 0
+}
+
+/// Conditional flag-only networks after the A310 helper's nonzero
+/// masked return. Three distinct original byte sequences converge
+/// before the stack-local state preparation and 19965 call.
+/// No side effect is emulated; these original Jcc/JMP/self-MOV/NOP
+/// sites are read as data, without running any protected code.
+pub fn trace_original_worker_setup_segment(
+    dll:&[u8],pe:&Pe32,start:u32,end:u32,f:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    if !matches!((start,end),
+        (0x196C3,0x196DB)|(0x196E4,0x196F8)|(0x19704,0x19728))
+    {
+        return Err("unsupported original worker-to-mixer segment".into());
+    }
+    let mut pc=start;
+    let mut trace=Vec::new();
+    for _ in 0..48 {
+        if pc==end {
+            trace.push(pc);
+            return Ok(trace);
+        }
+        if trace.contains(&pc) {
+            return Err(format!("worker-to-mixer setup loops at 0x{pc:05X}"));
+        }
+        trace.push(pc);
+        pc=original_eflags_step_in_range(dll,pe,pc,f,start,end)?;
+    }
+    Err("original worker-to-mixer stage exceeded 48 instructions".into())
+}
+
+/// Pinned original-image verification of the conditional A310
+/// return gate and three original flag-only setup mazes.
+pub fn audit_original_worker_mixer_predecessor(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x196B3u32,&[0x83,0xC4,0x14,0x25,0xFF,0xFF,0,0,0x85,0xC0][..]),
+        (0x196BD,&[0x0F,0x84,0x56,0x01,0,0][..]), // JE 19819
+        (0x196C3,&[0x7B,0x11,0x7A,0x0F][..]),
+        (0x196DB,&[0x8B,0x4D,0xF4,0x2B,0x4D,0x1C,0x89,0x4D,0xF0][..]),
+        (0x196E4,&[0x7B,0x07][..]),
+        (0x196F8,&[0x8B,0x55,0xEC,0x2B,0x55,0xF4,0x83,0xC2,0x01,
+                    0x89,0x55,0xF8][..]),
+        (0x19704,&[0x73,0x0B,0x74,0x07][..]),
+        (0x19728,&[0x66,0x8B,0x45,0xF8,0x50][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if dll_relative_call_target(dll,pe,0x196AE)?!=0xA310 {
+        return Err("original 196AE worker setup helper CALL target changed".into());
+    }
+    if 0x196BDu32+6+0x156!=0x19819 {
+        return Err("original worker low16-zero JE branch target changed".into());
+    }
+    for (start,end,want_paths,want_min,want_max) in [
+        (0x196C3u32,0x196DBu32,8usize,4usize,7usize),
+        (0x196E4,0x196F8,3,7,11),
+        (0x19704,0x19728,4,10,18),
+    ] {
+        let mut unique=std::collections::HashSet::new();
+        let mut min=usize::MAX;
+        let mut max=0usize;
+        for bits in 0u8..32 {
+            let flags=GatePredecessorFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let p=trace_original_worker_setup_segment(
+                dll,pe,start,end,flags
+            )?;
+            min=min.min(p.len());
+            max=max.max(p.len());
+            unique.insert(p);
+        }
+        if unique.len()!=want_paths || min!=want_min || max!=want_max {
+            return Err(format!(
+                "original worker-mixer segment 0x{start:05X}..0x{end:05X} changed: \
+                 {} distinct paths, {min}..{max} boundaries",
+                unique.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// After original helper CALL 19965 at 1974A returns, ADD ESP,14h
 /// sets flags. The obfuscated source between 19752 and 1976F
 /// conditionally calls original 197F8, which is a bare RET.
@@ -382,6 +473,7 @@ pub fn trace_original_finalizer_maze(
 /// Audit original instruction boundaries and conditional caller
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_worker_mixer_predecessor(dll,pe)?;
     audit_original_mixer_setup_detour(dll,pe)?;
     audit_original_mixer_to_counter_bridge(dll,pe)?;
     audit_original_worker_counter_exit(dll,pe)?;
@@ -457,6 +549,16 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opaque_setup_helper_checks_only_low16_before_mixer() {
+        for result in [0u32,0x10000,0xFFFF_0000] {
+            assert!(worker_setup_skips_mixer(result));
+        }
+        for result in [1u32,0xFFFF,0x10001,u32::MAX] {
+            assert!(!worker_setup_skips_mixer(result));
+        }
+    }
+
     #[test]
     fn noop_mixer_setup_call_is_compatible_only_with_ja_flags() {
         let mut safe_detour_cases=0;
