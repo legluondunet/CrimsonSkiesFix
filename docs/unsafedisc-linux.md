@@ -4679,3 +4679,71 @@ the game or invoke any Windows API.
 subcalls with corrected x86 instruction boundaries,
 then establish the descriptor mode and actual
 memory region on the calling path.
+
+
+### 195DF consults the registered executable-code category through A310 (2026-10-28)
+
+A more selective x86 trace of the original `.txt2`
+processing helper at `0x195DF` identifies a concrete
+call from RVA **`0x196AE -> 0xA310`**. Its
+immediately preceding argument setup includes the
+**literal category ID `4`** at `0x196A0:
+PUSH 4`. This is the same category selected by
+A140's code+execute section iterator
+(`0xAB80 -> A2A0`), giving a meaningful
+connection between the previously recovered
+dual-read/write chain and the registered executable
+code regions.
+
+The helper `A310` is itself readable original DLL
+`.text`. The relevant verified original operations:
+
+- `0xA310..0xA339`: reject absent range pointers,
+  reject empty or reversed intervals and call
+  `0xB5D0` for the module record.
+- `0xA350..0xA361`: read start/end values and,
+  if a nonzero start is precisely 4-KiB aligned,
+  **decrement the comparison start by one**.
+  This is a specific page-boundary adjustment, not
+  arbitrary 32-bit address guessing.
+- `0xA362..0xA378`: compare to record fields
+  **`+0x34` and `+0x38`**, then inspect whether
+  the adjusted start falls in the same 4-KiB page
+  as the old registered start.
+- `0xA394 -> 0xC0D0`, `0xA3A2 -> 0xC0C0`
+  and `0xA3C8 -> 0xBFB0`: call range/list
+  helpers under branch conditions.
+- `0xA3DD/0xA3E0`: update registered
+  **start/end fields `+0x34/+0x38`** when
+  the conditions require it.
+- `0xA3F2 -> 0xBED0`: process the supplied
+  interval against the registry's category
+  list at record field **`+0x14`**.
+
+The exact original direct E8 targets for all six
+calls (including `195DF -> A310`) and original
+opcode patterns for argument setup, record lookup,
+page-boundary tests and field writes are now
+verified by `src/unsafedisc_dll_write_pipeline.rs`
+under the original DLL SHA-256 gate. Two new
+synthetic tests cover the original literal category
+and 4-KiB boundary adjustment.
+
+**What this proves:** on this visible path, the
+previously unknown `195DF` helper **consults
+and may update code-category page-range tracking**.
+This makes it worth tracing `0xBED0/0xBFB0`
+and the rest of the `195DF` implementation,
+but does **not** prove that A310 itself decrypts
+code, that the source descriptor is for the
+original DLL `.txt`, or that an encrypted EAX
+function has been reconstructed. No protected
+code is executed or emitted.
+
+The stage is a static candidate pipeline:
+two same-descriptor A810 reads, a helper that
+consults executable-code region records, and
+an AA00 write sharing the *first read's*
+descriptor/offset/size/buffer **stack slots**.
+Runtime reachability and actual returned data
+remain to be established.
