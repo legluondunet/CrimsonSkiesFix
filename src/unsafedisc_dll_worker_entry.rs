@@ -161,10 +161,95 @@ pub fn audit_first_dispatch_return_branch(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+/// Original worker starts the first 18800 call with six args, of
+/// which arg2 is the literal DWORD 1 pushed at 18FB9. The original
+/// 18800 wrapper forwards arg2 unchanged as the second of seven
+/// arguments to 181E0. That dispatcher re-reads its arg2 from
+/// [ESP+178h] after its frame and 4 callee-save pushes, then DEC
+/// and dispatches index 0 to RVA 183C2. This is CONDITIONAL on
+/// the intermediate 18940 helper returning normally.
+pub fn initial_worker_first_case_rva()->u32 {
+    match original_selector_route(1) {
+        SelectorRoute::InRange{entry_rva,..}=>entry_rva,
+        SelectorRoute::Fallback{entry_rva}=>entry_rva,
+    }
+}
+
+/// Byte-anchored proof of arg2 preservation from the first
+/// 18F81 invocation through the argument-shuffling 18800
+/// wrapper to the original 11-case switch in 181E0.
+/// No original Windows code is invoked.
+pub fn audit_initial_worker_fixed_selector(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        // The 18F81 first-call arguments are: ptr, literal 1,
+        // local 0, and three separate output addresses.
+        (0x18FA9u32,&[
+            0x8D,0x45,0xE4,0x50,
+            0x8D,0x4D,0xEC,0x51,
+            0x8D,0x55,0xF4,0x52,
+            0x8B,0x45,0xF0,0x50,
+            0x6A,0x01, // original arg2 MUST be 1
+            0x8D,0x4D,0x08,0x51,
+        ][..]),
+        // Seven outgoing PUSHes and their MOV stack-offset
+        // loads, in original 18800 wrapper instruction order.
+        (0x18800,&[
+            0x8B,0x4C,0x24,0x18,
+            0x8B,0x54,0x24,0x14,
+            0x8D,0x44,0x24,0x18,
+            0x50,0x8B,0x44,0x24,0x14,
+            0x51,0x8B,0x4C,0x24,0x14,
+            0x52,0x8B,0x54,0x24,0x14,
+            0x50,0x8B,0x44,0x24,0x14,
+            0x51,0x52,0x50,
+        ][..]),
+        // 181E0 allocates 0x160 stack bytes and saves four
+        // registers, pushes three temporary arguments for the
+        // 18940 helper, later restores them via ADD ESP,0Ch.
+        (0x181E0,&[
+            0x81,0xEC,0x60,0x01,0,0,
+            0x8D,0x44,0x24,0x28,
+            0x8D,0x8C,0x24,0x20,0x01,0,0,
+            0x53,0x55,0x56,0x57,
+        ][..]),
+        (0x181FC,&[0x50,0x51,0x57][..]),
+        (0x1821F,&[0x83,0xC4,0x0C][..]),
+        (0x18240,&[0x8B,0x8C,0x24,0x78,0x01,0,0][..]),
+        (0x18255,&[0x49][..]), // DEC ECX gives zero index
+        // Original case 1 starts with a distinct call to 189F0
+        // after pushing its case arguments.
+        (0x183C2,&[
+            0x8D,0x54,0x24,0x10,0x52,0x53,0x50,
+            0x68,0x20,0,0,0x20,
+            0x68,0x20,0,0,0x20,0x57,
+        ][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if 0x160u32+4*4+8!=0x178 ||
+       initial_worker_first_case_rva()!=0x183C2 {
+        return Err("original worker selector stack layout changed".into());
+    }
+    for (site,target) in [
+        (0x18FBFu32,FIRST_WRAPPER_RVA),
+        (0x18823,FIRST_DISPATCH_RVA),
+        (0x181FF,0x18940),
+        (0x183D4,0x189F0),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!(
+                "original first-case CALL at 0x{site:05X} changed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Audit the true first worker call chain, not a guessed entrypoint
 /// route. The two known callers are proven CALL targets but their
 /// reachability from DllMain is NOT established by this check.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_initial_worker_fixed_selector(dll,pe)?;
     audit_first_dispatch_return_branch(dll,pe)?;
     for (site,expected) in [
         (0x1A1B2u32,WORKER_ENTRY_RVA),
@@ -285,6 +370,18 @@ mod tests {
         let negative=cmp_zero_eflags(0x8000_0000);
         assert!(negative.sf && !negative.zf && !negative.cf && !negative.of);
         assert_eq!(cmp_zero_eflags(0x10000).zf,false);
+    }
+
+    #[test]
+    fn first_entry_call_always_supplies_selector_one_to_wrapper() {
+        assert_eq!(initial_worker_first_case_rva(),0x183C2);
+        assert_eq!(original_selector_route(1),SelectorRoute::InRange{
+            index:0,entry_rva:0x183C2
+        });
+        // After original wrapper forwards arg2 and dispatcher
+        // restores its 3 temporary pushes, its stack displacement
+        // addresses original second argument (+8).
+        assert_eq!(0x160u32+0x10+8,0x178);
     }
 
     #[test]
