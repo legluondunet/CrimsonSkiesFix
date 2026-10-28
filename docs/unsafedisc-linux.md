@@ -5200,3 +5200,51 @@ and `first_case_advance_offset` x86 models unchanged.
 Together these findings define three distinct matters to address in
 any native port: complete-record bounds, successful reads, and
 unambiguous matching semantics. No private record data is reconstructed.
+
+
+### Bounded section-header scanner and original worker helper cleanup widths (2026-10-28)
+
+The original **first worker switch case** calls `189F0`,
+which performs a fixed-stride `0x28`-byte scan whose
+tested DWORD at `+0x24` is the
+`IMAGE_SECTION_HEADER.Characteristics` offset.
+The original routine's byte-checked branch/return behavior
+had three pitfalls: (1) it can request a whole record with
+only `offset < limit`, (2) it compares the local buffer after
+`A810` without testing AX, and (3) returning EAX=0 conflates
+a hypothetical match at zero with not-found.
+
+Added `checked_section_header_scan` as a **native-port-only,
+synthetic/caller-owned** helper. It walks fixed 40-byte records,
+enforces a complete, nonwrapping window within the supplied
+byte slice, requires a caller-selected nonzero maximum record
+count, reads the little-endian characteristics at `+0x24`,
+and returns `Result<Option<u32>>` so a real offset-zero
+match remains distinct from `None`. Three unit tests verify
+multiple synthetic characteristics/masks, a nonzero starting
+offset, exact-end records, partial tails, missing records,
+and iteration caps. The original failure behavior remains
+modeled separately; this is **not a claim that SafeDisc used
+these safety checks**, nor does it read any retail game data.
+
+Separately, the exact-existing original E8/ADD-ESP byte
+assertions support two **net caller stack-cleanup** observations:
+
+| Original caller | Known target | Immediately following opcode | Stack reclaimed |
+| --- | --- | --- | --- |
+| `1974A` | `19965` | `1974F: ADD ESP,14h` | **20 bytes** |
+| `19798` | `19C78` | `1979D: ADD ESP,18h` | **24 bytes** |
+
+The new `audit_original_worker_call_cleanups` checks the
+call target, exact immediate cleanup opcode and intervening
+instruction-address adjacency on the **already SHA-gated**
+owner-supplied original DLL. A synthetic test checks the
+two records. These byte totals are **consistent with**
+five and six 4-byte push-sized arguments, respectively,
+but net caller cleanup does *not* by itself prove the
+actual argument count, their identity, callee calling
+convention, or the branch reachability. In particular,
+`19965` internals remain untraced in this revision.
+
+No proprietary code is run or written, no recovered DLL
+bytes are committed, and no code decryption is asserted.
