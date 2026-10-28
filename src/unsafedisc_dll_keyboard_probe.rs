@@ -14,6 +14,145 @@ pub const GATE_RVA:u32=0x1D42F;
 pub const CALLSITE_RVA:u32=0x1CD46;
 
 
+/// EFLAGS-only branch evaluation for the exact x86 Jcc conditions.
+/// The original Win9x helper's prologue SUB ESP,0x9C changes flags,
+/// but these five values do not need to be inferred: the caller
+/// exhaustively enumerates ALL 32 possible combinations.
+pub fn branch_from_eflags(condition:u8,f:GatePredecessorFlags)->Result<bool> {
+    Ok(match condition {
+        0 => f.of,
+        1 => !f.of,
+        2 => f.cf,
+        3 => !f.cf,
+        4 => f.zf,
+        5 => !f.zf,
+        6 => f.cf || f.zf,
+        7 => !f.cf && !f.zf,
+        8 => f.sf,
+        9 => !f.sf,
+        10 => f.pf,
+        11 => !f.pf,
+        12 => f.sf != f.of,
+        13 => f.sf == f.of,
+        14 => f.zf || f.sf != f.of,
+        15 => !f.zf && f.sf == f.of,
+        _ => return Err(format!("not an original x86 Jcc condition: {condition}")),
+    })
+}
+
+/// Decode a single safe instruction from the SHA-pinned ORIGINAL DLL
+/// at a known instruction boundary. Only x86 Jcc rel8/rel32, JMP
+/// rel8/rel32, NOP and register SELF-MOV/SELF-XCHG are recognized.
+/// Any flag mutation, memory access, call or unfamiliar opcode fails
+/// closed. This is STATIC flow analysis, NEVER native DLL execution.
+pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->Result<u32> {
+    let idx=super::dll_backed_rva_offset(pe,pc,1)?;
+    let opcode=dll[idx];
+    let (size,displacement)=if (0x70..=0x7F).contains(&opcode) {
+        let off=super::dll_backed_rva_offset(pe,pc,2)?;
+        let delta=if branch_from_eflags(opcode & 15,f)? {
+            dll[off+1] as i8 as i64
+        } else {0};
+        (2i64,delta)
+    } else if opcode==0x0F {
+        let off=super::dll_backed_rva_offset(pe,pc,6)?;
+        let second=dll[off+1];
+        if !(0x80..=0x8F).contains(&second) {
+            return Err(format!("non-Jcc 0F opcode at 0x{pc:05X}"));
+        }
+        let delta=if branch_from_eflags(second & 15,f)? {
+            i32::from_le_bytes(dll[off+2..off+6].try_into()
+                .map_err(|_|"truncated Jcc rel32")?) as i64
+        }else{0};
+        (6,delta)
+    } else if opcode==0xEB {
+        let off=super::dll_backed_rva_offset(pe,pc,2)?;
+        (2,dll[off+1] as i8 as i64)
+    } else if opcode==0xE9 {
+        let off=super::dll_backed_rva_offset(pe,pc,5)?;
+        (5,i32::from_le_bytes(dll[off+1..off+5].try_into()
+            .map_err(|_|"truncated JMP rel32")?) as i64)
+    } else if opcode==0x90 {
+        (1,0)
+    } else if matches!(opcode,0x8B|0x89|0x87) {
+        let off=super::dll_backed_rva_offset(pe,pc,2)?;
+        let modrm=dll[off+1];
+        if modrm>>6!=3 || ((modrm>>3)&7)!=(modrm&7) {
+            return Err(format!("non-self MOV/XCHG at 0x{pc:05X}"));
+        }
+        (2,0)
+    } else {
+        return Err(format!("unexpected active instruction at 0x{pc:05X}, opcode 0x{opcode:02X}"));
+    };
+    let next=i64::from(pc)+size+displacement;
+    let next=u32::try_from(next)
+        .map_err(|_|format!("x86 branch outside 32-bit RVA at 0x{pc:05X}"))?;
+    if !(0x1C806..=CALLSITE_RVA).contains(&next) {
+        return Err(format!("Win9x branch exits vetted block: 0x{pc:05X} -> 0x{next:05X}"));
+    }
+    Ok(next)
+}
+
+/// Starting after the original 1C7F0 prologue, prove that the
+/// keyboard gate at 1CD46 is reached using ONLY control flow and
+/// flag-preserving instructions. All 32 EFLAGS assignments are checked
+/// by audit_original; no API calls or protected x86 code are executed.
+pub fn trace_original_win9x_entry_to_gate(
+    dll:&[u8],pe:&Pe32,f:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    let mut pc=0x1C806u32;
+    let mut trace=Vec::new();
+    for _ in 0..512 {
+        if pc==CALLSITE_RVA {
+            trace.push(pc);
+            return Ok(trace);
+        }
+        if trace.contains(&pc) {
+            return Err(format!("Win9x EFLAGS-only path loops at 0x{pc:05X}"));
+        }
+        trace.push(pc);
+        pc=original_eflags_step(dll,pe,pc,f)?;
+    }
+    Err("Win9x entry path did not converge within 512 instruction boundaries".into())
+}
+
+/// Strong SHA-pinned local reachability result: the first side-effecting
+/// instruction after helper prologue, on *every* flag assignment, is
+/// its known keyboard helper CALL. Checks original function prologue
+/// before the bounded symbolic walk, including the stack-local init.
+pub fn audit_win9x_entry_to_keyboard_gate(dll:&[u8],pe:&Pe32)->Result<()> {
+    dll_expect_raw_x86(dll,pe,0x1C7F0,&[
+        0x55,0x8B,0xEC,0x81,0xEC,0x9C,0,0,0,0x53,0x56,0x57,
+        0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0,
+    ])?;
+    dll_expect_raw_x86(dll,pe,0x1C806,&[0x7C,0x11,0x7D,0x0F])?;
+    let mut paths=std::collections::HashSet::new();
+    let mut min=usize::MAX;
+    let mut max=0usize;
+    for mask in 0u8..32 {
+        let flags=GatePredecessorFlags {
+            cf:mask&1!=0,zf:mask&2!=0,pf:mask&4!=0,
+            sf:mask&8!=0,of:mask&16!=0,
+        };
+        let path=trace_original_win9x_entry_to_gate(dll,pe,flags)?;
+        if path.first()!=Some(&0x1C806) || path.last()!=Some(&CALLSITE_RVA) {
+            return Err("Win9x entry does not converge on keyboard helper".into());
+        }
+        min=min.min(path.len());max=max.max(path.len());
+        paths.insert(path);
+    }
+    // Counts independently calculated by a separate read-only
+    // Python walker against the exact retail DLL, not by x86 execution.
+    if paths.len()!=32 || min!=210 || max!=395 {
+        return Err(format!(
+            "Win9x original keyboard predecessor topology changed: \
+             {} paths of {min}..{max} boundaries",paths.len()
+        ));
+    }
+    Ok(())
+}
+
+
 /// Only the x86 flags read by the eight pairs of complementary
 /// Jcc instructions between 1CD16 and the keyboard-gate CALL.
 /// This is a bounded, synthetic static control-flow model, not
@@ -156,6 +295,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_win9x_entry_to_keyboard_gate(dll,pe)?;
     audit_gate_predecessor_original(dll,pe)?;
     for (site,bytes) in [
         (0x1D42Fu32,&[0x55,0x8B,0xEC,0x51,0x6A,0x00][..]),
@@ -275,6 +415,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn all_sixteen_x86_jcc_conditions_cover_complementary_flag_pairs() {
+        for mask in 0u8..32 {
+            let f=GatePredecessorFlags {
+                cf:mask&1!=0,zf:mask&2!=0,pf:mask&4!=0,
+                sf:mask&8!=0,of:mask&16!=0,
+            };
+            for even in (0u8..16).step_by(2) {
+                assert_ne!(
+                    branch_from_eflags(even,f).unwrap(),
+                    branch_from_eflags(even+1,f).unwrap()
+                );
+            }
+        }
+        assert!(branch_from_eflags(16,GatePredecessorFlags {
+            cf:false,zf:false,pf:false,sf:false,of:false,
+        }).is_err());
     }
 
     #[test]
