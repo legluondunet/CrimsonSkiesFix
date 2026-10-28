@@ -222,6 +222,25 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
         dll_expect_raw_x86(dll,pe,site-4,setup)?;
         dll_expect_raw_x86(dll,pe,site+5,&[0x83,0xC4,0x08])?;
     }
+    // The .txt2 caller at 1A299 obtains a module name from its
+    // caller argument, decodes it with E25C, calls the very same
+    // GetModuleHandleA IAT slot as the known DLL-global setup, and
+    // sets descriptor mode 0x67 before invoking A140. We still do
+    // NOT know which name is passed along this reached/opaque path.
+    for (site,opcodes) in [
+        (0x1A243u32,&[0x8B,0x45,0x0C,0x50][..]), // caller argument
+        (0x1A24F,&[0x50][..]),                   // decoded-name pointer
+        (0x1A256,&[0x89,0x45,0xF8][..]),       // save module handle
+        (0x1A259,&[0x6A,0x67][..]),            // descriptor mode
+        (0x1A25B,&[0x8D,0x4D,0xF4,0x51][..]), // descriptor address
+    ] { dll_expect_raw_x86(dll,pe,site,opcodes)?; }
+    check_call(dll,pe,0x1A247,0xE25C)?;
+    check_call(dll,pe,0x1A25F,0xA550)?;
+    let (_,name_import)=super::dll_indirect_import_call(dll,pe,0x1A250,base)?;
+    let (_,known_import)=super::dll_indirect_import_call(dll,pe,0x986A,base)?;
+    if name_import!=known_import {
+        return Err("txt2 caller does not use the verified DLL-global GetModuleHandleA import".into());
+    }
     check_call(dll,pe,0x989F,0x7212)?;
     // A140 has one conditional early-exit at the B540 record result.
     // After that branch, its five directory handlers and three
@@ -416,6 +435,19 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn txt2_caller_stage_order_is_name_decode_module_handle_mode_and_init() {
+        let stages=[
+            (0x1A243u32,"caller-supplied name"),
+            (0x1A247,"E25C label decoder"),
+            (0x1A250,"GetModuleHandleA import"),
+            (0x1A259,"mode 0x67"),
+            (0x1A25F,"A550 descriptor preparation"),
+            (0x1A299,"A140 registration"),
+        ];
+        assert!(stages.windows(2).all(|pair|pair[0].0<pair[1].0));
+    }
 
     #[test]
     fn known_a140_sources_include_two_other_readable_code_callers() {
