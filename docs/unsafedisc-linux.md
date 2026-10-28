@@ -5129,3 +5129,39 @@ overwritten, or that the `19728` DWORD is forwarded unchanged into
 `19965` or `19C78`. They prevent accidental substitution of
 idealized lengths or a zero-extending load in future static models.
 No private executable is run or modified.
+
+
+### First worker case 189F0: unchecked A810 result and zero-offset sentinel alias (2026-10-28)
+
+The genuine, SHA-256-pinned original byte assertions already
+establish that `189F0` scans `0x28`-byte records, calling `A810`
+at `18A15`. Its very next instruction at `18A1A` is
+`MOV EDX,[EDI+0x24]`; the following `AND/CMP/JE` uses that
+value **without testing the A810 return AX**. Therefore, **if**
+the read fails, the source-level comparison still proceeds with
+whatever bytes occupy that local buffer. We do **not** know the
+buffer contents on an actual failure and do not assert a false
+match occurs in the retail game.
+
+The matched path at `18A3A` returns `EAX=ESI`, the matching
+unsigned offset; the no-match path at `18A33` returns `EAX=0`.
+Hence a **hypothetical match at offset zero** and no match have
+identical DWORD return values. This does not prove that zero is a
+valid starting record offset in the original real descriptor.
+
+Added **three synthetic tests** and independent safe-analysis
+helpers in `src/unsafedisc_dll_worker_entry.rs`:
+
+- `first_case_original_ignores_read_status` models the status-
+  independent original DWORD comparison without inventing buffer
+  content.
+- `first_case_checked_record` demonstrates a fail-closed future
+  native policy: require nonzero read AX and an exactly `0x28`-
+  byte buffer before testing little-endian DWORD at `+0x24`.
+- `first_case_return_dword` documents the original zero-sentinel
+  alias independently of a real scan's initial offset.
+
+These observations strengthen requirements for a robust port. They
+are **not** a recovered game-specific plaintext record, an observed
+failed Win32 memory read, or proof of `18F81` reaching its mixer.
+All real original code remains non-executed.
