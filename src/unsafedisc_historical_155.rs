@@ -102,8 +102,8 @@ pub fn original_complete_dwords_and_tail(byte_length:u32)->(u32,u32){
 
 /// Bounded minimal x86 branch decoder for verified historical sites.
 /// Unlike constant arithmetic assertions, this reads the actual input
-/// displacement bytes. It deliberately accepts only Jcc rel8/JMP rel8
-/// or CALL rel32 rather than attempting general disassembly.
+/// displacement bytes. It deliberately accepts Jcc rel8, JMP rel8,
+/// CALL rel32 and JMP rel32, not arbitrary x86 disassembly.
 pub fn historical_155_branch_target(
     code:&[u8],code_va:u32,instruction_va:u32
 )->Result<u32,String> {
@@ -117,7 +117,7 @@ pub fn historical_155_branch_target(
                 .ok_or("historical rel8 branch truncated")?;
             (2i64,i64::from(d as i8))
         }
-        0xE8 => {
+        0xE8 | 0xE9 => {
             let end=start.checked_add(5)
                 .ok_or("historical rel32 branch offset overflow")?;
             let four=code.get(start+1..end)
@@ -474,10 +474,15 @@ pub fn audit_155_section_iterator(
     ])?;
     // CMP DWORD [ESI-4],4 (relocation-aware mode) / JE 401D82.
     expect(0x401D48,&[0x83,0x7E,0xFC,0x04,0x74,0x34])?;
-    // Once the simple traversal completes, JMP 401D05
-    // re-enters at POPAD then obtains the next 40-byte section ptr.
+    // The standard walker returns to 401D05 after its final chunk.
+    // The relocation walker performs POPAD at 401EDD then makes a
+    // near JMP to 401D79, where POP ESI and a scratch-pointer store
+    // precede the same section-iterator POPAD at 401D05.
     expect(0x401D77,&[0xEB,0x8C])?;
-    expect(0x401D80,&[0xEB,0x83])?;
+    expect(0x401D79,&[
+        0x5E,0x89,0x35,0xCC,0xBC,0x60,0,0xEB,0x83
+    ])?;
+    expect(0x401EDD,&[0x61,0xE9,0x96,0xFE,0xFF,0xFF])?;
     let targets=[
         (0x401D03u32,0x401D06u32), // first entry skips POPAD
         (0x401D0D,0x401D11), // nonzero section pointer
@@ -485,7 +490,8 @@ pub fn audit_155_section_iterator(
         (0x401D2F,0x401D34), // virtual_size==0
         (0x401D4C,0x401D82), // relocation-aware path
         (0x401D77,0x401D05), // simple path after remainder
-        (0x401D80,0x401D05), // simple path finalization
+        (0x401D80,0x401D05), // section iteration restoration
+        (0x401EDE,0x401D79), // relocation walker -> POP ESI -> POPAD
     ];
     for (src,want) in targets {
         let got=historical_155_branch_target(code,base,src)?;
@@ -612,6 +618,10 @@ mod tests {
             &code,0x1000,0x1004).unwrap(),0x1004);
         assert_eq!(historical_155_branch_target(
             &code,0x1000,0x1009).unwrap(),0x1008);
+        // E9 rel32 must decode negative, not just E8 CALL rel32.
+        assert_eq!(historical_155_branch_target(
+            &[0xE9,0xFB,0xFF,0xFF,0xFF],0x3000,0x3000
+        ).unwrap(),0x3000);
         assert!(historical_155_branch_target(
             &code[..1],0x1000,0x1000).is_err());
         assert!(historical_155_branch_target(
@@ -694,7 +704,8 @@ mod tests {
                 0x89,0x35,0xB4,0xBC,0x60,0]),
             (0x401D48,&[0x83,0x7E,0xFC,0x04,0x74,0x34]),
             (0x401D77,&[0xEB,0x8C]),
-            (0x401D80,&[0xEB,0x83]),
+            (0x401D79,&[0x5E,0x89,0x35,0xCC,0xBC,0x60,0,0xEB,0x83]),
+            (0x401EDD,&[0x61,0xE9,0x96,0xFE,0xFF,0xFF]),
         ];
         for &(va,bytes) in windows{
             let i=(va-0x401000) as usize;
