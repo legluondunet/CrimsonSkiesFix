@@ -1655,6 +1655,53 @@ This does not assert that other callers of BED0 use index 4.
   low AX is that of the last invoked stage. In particular,
   a zero result is *not* proof of no memory modification.
 
+The original **`0xBDD0`** failure branch is more specific than
+a generic error: after setting its local EBP to zero, the original
+`0xBE52..0xBE5E` executes `MOV EDX,[EBX]; DEC EDX;
+MOV [EDI],EDX` and returns with **AX=0**. In its BED0
+call, EDI is the selected slot's pointer, and EBX addresses
+another working DWORD; thus **a failed BDD0 can write
+`selected_pointee = (third_arg_value - 1) mod 2^32`**.
+This store requires a usable pointer, which is a runtime
+assumption, and is deliberately **not** elided from the
+source-level model.
+
+
+#### C550: exact unsigned range predicate inside BDD0
+
+The original `0xBDD0` and its `0xBE60` list-search helper
+both invoke the independent **`0xC550`** predicate. Its
+source code is directly readable in `.text`. Given an
+original pair `(start,length)` and query `(low,high)`,
+the real unsigned x86 branches implement:
+
+```text
+if start < low:
+    return low < ((start + length) & 0xFFFFFFFF)
+if start <= high:
+    return true
+if start > low:
+    return false
+return low < ((start + length) & 0xFFFFFFFF)
+```
+
+Thus it tests a form of **unsigned interval intersection**
+but is *not* a safe general range validator. It uses
+**wrapping 32-bit arithmetic**; notably a zero-length
+range can satisfy the second branch, and a range wrapping
+past `0xFFFFFFFF` may be reported as non-overlapping.
+
+The Rust function `original_c550_range_predicate` is a
+pure exact-control model. Its original-byte audit checks
+the `0xC550` opcode sequence, four conditional
+displacements and both original callsites
+`0xBE11 -> C550`, `0xBE7D -> C550`.
+Two synthetic tests cover boundaries, truncation and
+wrapping. The independent Python script
+`verify_bed0_pipeline.py` now verifies **13 opcode windows,
+13 relative call targets and 12 branch destinations**
+on the exact retail DLL and rejects a changed one-byte copy.
+
 The original **`0xBDD0`** success branch eventually sets its
 return AX to one, updates two local pointer operands and records
 the selected node. Its failure path at **`0xBE52`** sets
