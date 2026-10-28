@@ -2839,6 +2839,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
     unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
     unsafedisc_dll_worker_finalizer::audit_original(dll,&pe)?;
+    println!("  Original worker non-exit branch: CALL 196AE -> opaque helper A310; AND EAX,FFFFh / TEST / JE 19819: low16 zero skips current mixer preparation.");
+    println!("    Nonzero low16 continues through three 32/32 EFLAGS-only networks: 196C3->196DB (8 paths), 196E4->196F8 (3 paths), 19704->19728 (4 paths).");
     println!("  Original worker mixer setup: CALL 1974A -> 19965; if it returns, the 19752 branch network joins 1976F for all 32 flags (6 paths, 7..10 steps).");
     println!("    Exactly 8/32 cases pass via 19765 CALL to a bare RET at 197F8; the following JA 1976B must be taken, avoiding the apparent early RET. No original CALL is executed by this tool.");
     println!("  Original worker CALL at 19798 -> byte mixer 19C78. If it returns, ADD ESP,0x18 at 1979D updates flags; all 32 flag assignments from 197A0 reach counter update 197D4 (24 unique paths, 12..23 instructions).");
