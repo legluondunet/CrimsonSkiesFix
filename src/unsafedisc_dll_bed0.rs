@@ -73,11 +73,65 @@ pub fn conditional_original_worker_bed0_trace(
     ).expect("4 is always a valid fixed original selector")
 }
 
+/// Exact original C550 unsigned range predicate used by BDD0
+/// (and the node scan inside BE60). It is a *predicate*, not a
+/// bounds-safe range abstraction: length is not validated and
+/// addition is 32-bit wrapping, as in the original x86.
+pub fn original_c550_range_predicate(
+    range_start:u32,range_len:u32,query_low:u32,query_high:u32,
+)->bool {
+    if range_start<query_low {
+        return query_low<range_start.wrapping_add(range_len);
+    }
+    if range_start<=query_high {
+        return true;
+    }
+    if range_start>query_low {
+        return false;
+    }
+    query_low<range_start.wrapping_add(range_len)
+}
+
+/// The original at RVA C550 contains this exact standalone,
+/// side-effect-free unsigned x86 range test. BDD0 uses it
+/// to decide whether a candidate node can participate in
+/// further transformations. Other helper outcomes are unknown.
+pub fn audit_original_c550_predicate(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (at,bytes) in [
+        (0xC550u32,&[
+            0x8B,0x54,0x24,0x08,0x56,0x8B,0x74,0x24,0x08,
+            0x33,0xC0,0x8B,0x0E,0x3B,0xCA,0x72,0x0A,
+            0x3B,0x4C,0x24,0x10,0x76,0x0D,
+            0x3B,0xCA,0x77,0x0E,
+            0x8B,0x76,0x04,0x03,0xF1,0x3B,0xD6,0x73,0x05,
+            0xB8,0x01,0,0,0,0x5E,0xC3
+        ][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,at,bytes)?;
+    }
+    for (site,len,delta,target) in [
+        (0xC55Fu32,2i32,0x0Ai32,0xC56Bu32),
+        (0xC565,2,0x0D,0xC574),
+        (0xC569,2,0x0E,0xC579),
+        (0xC572,2,0x05,0xC579),
+    ] {
+        if (site as i64)+(len as i64)+(delta as i64)!=(target as i64) {
+            return Err("original C550 unsigned range conditional changed".into());
+        }
+    }
+    if dll_relative_call_target(dll,pe,0xBE11)?!=0xC550 ||
+       dll_relative_call_target(dll,pe,0xBE7D)?!=0xC550 {
+        return Err("original BDD0 / BE60 C550 range CALL target changed".into());
+    }
+    Ok(())
+}
+
 /// Validate exact original instruction bytes (on the SHA-pinned
 /// original user DLL only), direct relative calls, and jump
 /// targets. The x86 control effects described here are
 /// source-level facts, never simulated as an x86 CPU.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_c550_predicate(dll,pe)?;
     for (site,expected) in [
         (0x1969Fu32,&[
             0x50,0x6A,0x04,0x8D,0x4D,0xEC,0x51,
@@ -187,6 +241,25 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_c550_unsigned_range_intersection_and_end_boundary() {
+        assert!(original_c550_range_predicate(10,5,12,20));
+        assert!(original_c550_range_predicate(10,5,10,10));
+        assert!(original_c550_range_predicate(10,5,0,20));
+        assert!(!original_c550_range_predicate(10,5,15,20));
+        assert!(!original_c550_range_predicate(10,5,0,9));
+        assert!(!original_c550_range_predicate(10,0,10,9));
+    }
+
+    #[test]
+    fn c550_keeps_x86_wraparound_without_assuming_safe_intervals() {
+        // The original unsigned predicate has no 64-bit wrap repair.
+        assert!(!original_c550_range_predicate(
+            0xFFFF_FFF0,0x20,0xFFFF_FFF8,u32::MAX));
+        assert!(original_c550_range_predicate(10,0,0,20));
+        assert!(!original_c550_range_predicate(0,0,1,2));
+    }
 
     #[test]
     fn original_worker_index_four_checks_other_seven_slots() {
