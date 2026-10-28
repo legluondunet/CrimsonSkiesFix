@@ -6323,3 +6323,35 @@ The author's owner-provided archive crimson_skies_executables(3).7z
 is listed as a Project/Library item but is not authorized for
 raw-byte materialization in this runtime. No exact original
 ICD relocation hazard sites are reported without reading that file.
+
+
+### NEW historical mode-4 equivalence hazard: HIGHLOW offset zero (2026-10-28)
+
+The original unSafeDisc 1.5.5 code has a subtle split:
+at 0x4023A7 the relocation cutpoint builder tests an entire
+16-bit source relocation WORD for zero, so HIGHLOW (type 3)
+at the beginning of a 4KiB page is nonzero WORD 0x3000 and
+generates its expected boundaries. Later 0x401DFF masks both
+type nibbles with 0x0FFF0FFF; the exact same relocation becomes
+masked offset 0x0000. The original consumer then tests this
+masked offset for zero at 0x401E14 and contains a separate
+zero-next-WORD branch at 0x401E35. These are not equivalent
+to assuming every HIGHLOW entry behaves like an ordinary
+nonzero offset. This is independently anchored x86 behavior,
+not a claim that it occurs in the retail ICD without reading it.
+
+The SHA-gated original ICD metadata profile now counts
+HIGHLOW-at-page-start WORDs separately from exact-zero
+ABSOLUTE padding. The bounded site locator identifies page
+RVA and source WORD index, with no decrypted or protected
+game bytes emitted. The necessary HIGHLOW-only key
+derivation preflight now refuses this newly ambiguous case;
+two new synthetic profile tests and one locator test cover
+0x3000 vs 0x0000, and an ordinary 0x3001 negative control.
+
+IMPORTANT: this does NOT invalidate the independent
+known-plaintext validation of the existing 128-bit TEA key.
+It identifies a failure mode in an attempted byte-for-byte
+reconstruction of the historical checksum and pre-TEA
+modifier fragment schedule. The real protected
+dplayerx.dll EAX modifier functions still need recovery.
