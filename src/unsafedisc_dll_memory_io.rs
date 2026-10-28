@@ -148,6 +148,24 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<ApiSlot>> {
         return Err("unexpected SafeDisc DLL image base for encoded API references".into());
     }
 
+    // Check the original imported function identity, not merely that
+    // the DLL makes FF15 calls at these addresses.
+    let original_imports=super::dll_import_bindings(dll,pe)?;
+    for (site,expected_slot,expected_symbol) in [
+        (0xA90Cu32,0x1E050u32,"LoadLibraryA"),
+        (0xA9D2,0x1E010,"GetProcAddress"),
+    ] {
+        let (_,iat_slot)=super::dll_indirect_import_call(dll,pe,site,image_base)?;
+        if iat_slot!=expected_slot {
+            return Err(format!("original A870 imported DLL loader/resolver slot mismatch at 0x{site:05X}"));
+        }
+        let actual=original_imports.iter().find(|item|item.iat_rva==iat_slot)
+            .ok_or_else(||"missing real PE import for A870 API resolver".to_string())?;
+        if !actual.library.eq_ignore_ascii_case("KERNEL32.dll") || actual.symbol!=expected_symbol {
+            return Err(format!("A870 imported API name mismatch at original RVA 0x{site:05X}"));
+        }
+    }
+
     let all=[
         ("Kernel32.dll",0x204B8u32,0u32),
         ("ReadProcessMemory",0x204C8,0x24AE0),
