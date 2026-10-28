@@ -6325,33 +6325,41 @@ raw-byte materialization in this runtime. No exact original
 ICD relocation hazard sites are reported without reading that file.
 
 
-### NEW historical mode-4 equivalence hazard: HIGHLOW offset zero (2026-10-28)
+### Historical mode-4 page-start HIGHLOW: expected zero-offset special case (2026-10-28)
 
-The original unSafeDisc 1.5.5 code has a subtle split:
-at 0x4023A7 the relocation cutpoint builder tests an entire
-16-bit source relocation WORD for zero, so HIGHLOW (type 3)
-at the beginning of a 4KiB page is nonzero WORD 0x3000 and
-generates its expected boundaries. Later 0x401DFF masks both
-type nibbles with 0x0FFF0FFF; the exact same relocation becomes
-masked offset 0x0000. The original consumer then tests this
-masked offset for zero at 0x401E14 and contains a separate
-zero-next-WORD branch at 0x401E35. These are not equivalent
-to assuming every HIGHLOW entry behaves like an ordinary
-nonzero offset. This is independently anchored x86 behavior,
-not a claim that it occurs in the retail ICD without reading it.
+The original x86 does not treat a HIGHLOW source word 0x3000 as
+exact-zero padding in its cutpoint builder: 4023A7 tests the
+whole 16-bit WORD, so 0x3000 is retained, whereas 0x0000
+padding is skipped. Later 401DFF applies 0x0FFF0FFF,
+making both masked offsets zero for the consumer.
 
-The SHA-gated original ICD metadata profile now counts
-HIGHLOW-at-page-start WORDs separately from exact-zero
-ABSOLUTE padding. The bounded site locator identifies page
-RVA and source WORD index, with no decrypted or protected
-game bytes emitted. The necessary HIGHLOW-only key
-derivation preflight now refuses this newly ambiguous case;
-two new synthetic profile tests and one locator test cover
-0x3000 vs 0x0000, and an ordinary 0x3001 negative control.
+Crucial refinement from tracing 401E11..401E28: when this
+masked offset zero is the FIRST relocation in a page block,
+401E14 TEST EAX,EAX followed by 401E16 JE 401E28
+deliberately bypasses the nonexistent initial gap; 401E28
+then adds 4, excluding the real page-start relocated DWORD.
+Thus a valid FIRST-entry HIGHLOW at offset zero is NOT,
+by itself, a mismatch with HIGHLOW-only checksum geometry.
 
-IMPORTANT: this does NOT invalidate the independent
-known-plaintext validation of the existing 128-bit TEA key.
-It identifies a failure mode in an attempted byte-for-byte
-reconstruction of the historical checksum and pre-TEA
-modifier fragment schedule. The real protected
-dplayerx.dll EAX modifier functions still need recovery.
+The independent metadata profile counts all source HIGHLOW
+offset-zero WORDs and separately counts those NOT at
+entry index zero. The native necessary preflight accepts
+0x3000 as the first relocation entry when other conditions
+pass. It rejects noninitial 0x3000 values, where the
+first-offset control path cannot be assumed, along with
+actual exact-zero padding preceding later nonzero WORDs,
+nonzero ABSOLUTE entries, odd and empty blocks and
+all-zero nonempty blocks.
+
+The bounded locator returns locations for noninitial
+0x3000 and other genuine hazards without copying game
+ciphertext. Three new regression tests distinguish an
+initial valid 0x3000, a noninitial suspicious one and
+an ordinary 0x3001; earlier padding tests now use
+0x3001 instead of accidentally conflating these cases.
+
+This clarification does NOT invalidate the independently
+verified 128-bit TEA key. The main unsolved task remains
+decoding the title-specific dplayerx.dll EAX modifier
+functions 0x65BE and 0x6621 and verifying their effects
+on the original pre-TEA encrypted fragments.
