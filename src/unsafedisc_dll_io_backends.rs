@@ -314,10 +314,16 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     }
     // Indirect through the three dynamically populated slots:
     // source is 0xA870's original A3 global pointers, not an IAT.
+    let data=pe.section(b".data")?;
     for (slot,loaded_name) in DYNAMIC_API_SLOTS {
-        if slot<base || slot>=base+0x26C80 ||
-           !EXPECTED_API_NAMES.contains(&loaded_name) {
-            return Err("original dynamic IO API pointer identity changed".into());
+        let rva=slot.checked_sub(base)
+            .ok_or("original dynamic IO pointer below image base")?;
+        let relative=rva.checked_sub(data.virtual_address)
+            .ok_or("original dynamic IO pointer before .data")?;
+        if !EXPECTED_API_NAMES.contains(&loaded_name) ||
+           relative<data.raw_len as u32 ||
+           relative.checked_add(4).is_none_or(|end|end>data.virtual_size) {
+            return Err("original dynamic IO pointer not in zero-filled .data".into());
         }
     }
     Ok(())
@@ -373,6 +379,15 @@ mod tests {
         assert!(decode_original_api_name(b"Kernel32.dll").is_err());
         assert!(decode_original_api_name(b"\0").is_err());
         assert!(decode_original_api_name(b"X\0Y").is_err());
+    }
+    #[test]
+    fn dynamic_api_slots_are_distinct_and_contiguous_virtual_dwords() {
+        assert_eq!(DYNAMIC_API_SLOTS[0],(0x00904AE0,"ReadProcessMemory"));
+        assert_eq!(DYNAMIC_API_SLOTS[1],(0x00904ADC,"WriteProcessMemory"));
+        assert_eq!(DYNAMIC_API_SLOTS[2],(0x00904AD8,"VirtualProtect"));
+        for pair in DYNAMIC_API_SLOTS.windows(2) {
+            assert_eq!(pair[0].0-pair[1].0,4);
+        }
     }
     #[test]
     fn original_io_backend_is_selected_by_type_value() {
