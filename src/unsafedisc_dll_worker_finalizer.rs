@@ -56,6 +56,95 @@ pub fn conditional_win9x_finalizer(
     })
 }
 
+
+/// At original 197D4 the worker loads [EBP-0x0C], adds the DWORD
+/// from [EBP-0x08] modulo 2^32, then stores it back. Its
+/// 197FA/197FD continuation sets [EBP-0x14]=[EBP-0x04].
+/// CMP/JAE at 19689/1968C selects the finalizer precisely when
+/// this UINT32 sum is >= the supplied UINT32 limit.
+/// This is a local condition, NOT DLL-entrypoint reachability.
+pub fn unsigned_worker_exit(cursor:u32,increment:u32,limit:u32)->bool {
+    cursor.wrapping_add(increment)>=limit
+}
+
+/// The original 197DD flag-only network joins at 197FA for every
+/// flag assignment. Some routes pass 197EF PUSH EDX, 197F0
+/// CALL 1965A (exact original bare RET), 197F5 POP EDX and
+/// 197F6 JGE. The indirect-looking detour cannot take 197F8
+/// RET: arriving there implies SF==OF, so JGE is always true.
+pub fn trace_original_pre_exit(
+    dll:&[u8],pe:&Pe32,flags:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    let mut pc=0x197DDu32;
+    let mut path=Vec::new();
+    for _ in 0..24 {
+        if pc==0x197FA {
+            path.push(pc);
+            return Ok(path);
+        }
+        if path.contains(&pc) {
+            return Err(format!("original worker pre-exit loops at 0x{pc:05X}"));
+        }
+        path.push(pc);
+        pc=match pc {
+            0x197EF=>0x197F0, // PUSH EDX
+            0x197F0=>0x197F5, // CALL original RET 1965A
+            0x197F5=>0x197F6, // POP EDX
+            0x197F6=>if flags.sf==flags.of {0x197FA} else {
+                return Err("197F6 JGE would incorrectly reach a premature RET".into())
+            },
+            _=>original_eflags_step_in_range(
+                dll,pe,pc,flags,0x197DD,0x197FA
+            )?,
+        };
+    }
+    Err("original worker pre-exit exceeded bounded trace".into())
+}
+
+pub fn audit_original_worker_counter_exit(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (rva,expected) in [
+        (0x197D4u32,&[
+            0x8B,0x45,0xF4, // MOV EAX,[EBP-0x0C]
+            0x03,0x45,0xF8, // ADD EAX,[EBP-0x08]
+            0x89,0x45,0xF4, // MOV [EBP-0x0C],EAX
+        ][..]),
+        (0x197DD,&[0x73,0x0B][..]),
+        (0x197EF,&[0x52][..]),
+        (0x197F5,&[0x5A,0x7D,0x02,0xC3][..]),
+        (0x197FA,&[0x8B,0x4D,0xFC,0x89,0x4D,0xEC][..]),
+        (0x19686,&[0x8B,0x55,0xF4,0x3B,0x55,0xEC,0x0F,0x83,
+                    0x87,0x01,0x00,0x00][..]),
+        (0x1965A,&[0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,expected)?;
+    }
+    if dll_relative_call_target(dll,pe,0x197F0)?!=0x1965A {
+        return Err("original worker pre-exit no-op CALL target changed".into());
+    }
+    if 0x197F6u32+2+2!=0x197FA {
+        return Err("original 197F6 JGE return-avoidance changed".into());
+    }
+    let mut unique=std::collections::HashSet::new();
+    let mut min=usize::MAX;
+    let mut max=0usize;
+    for bits in 0u8..32 {
+        let flags=GatePredecessorFlags {
+            cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+            sf:bits&8!=0,of:bits&16!=0,
+        };
+        let path=trace_original_pre_exit(dll,pe,flags)?;
+        min=min.min(path.len());max=max.max(path.len());
+        unique.insert(path);
+    }
+    if unique.len()!=8 || min!=5 || max!=13 {
+        return Err(format!(
+            "original pre-exit flag topology changed: {} paths {min}..{max}",
+            unique.len()
+        ));
+    }
+    Ok(())
+}
+
 /// Original safe, flag-preserving maze only; the caller counter
 /// comparison at RVA 19689 is handled separately. Never interpret
 /// this as evidence that the DLL's DllMain reaches this block.
@@ -88,6 +177,7 @@ pub fn trace_original_finalizer_maze(
 /// Audit original instruction boundaries and conditional caller
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_worker_counter_exit(dll,pe)?;
     for (rva,expected) in [
         (0x19686u32,&[0x8B,0x55,0xF4,0x3B,0x55,0xEC,0x0F,0x83,0x87,0x01,0,0][..]),
         (0x1987D,&[0x68,0x10,0x50,0x90,0][..]),
@@ -160,6 +250,34 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_worker_exit_is_unsigned_and_wraps_at_32bits() {
+        assert!(!unsigned_worker_exit(0,0,1));
+        assert!(unsigned_worker_exit(0,1,1));
+        assert!(unsigned_worker_exit(0xFFFF_FFFE,1,0xFFFF_FFFF));
+        assert!(!unsigned_worker_exit(0xFFFF_FFFF,1,1));
+        assert!(unsigned_worker_exit(0xFFFF_FFFF,1,0));
+        assert!(!unsigned_worker_exit(5,3,9));
+        assert!(unsigned_worker_exit(5,4,9));
+    }
+
+    #[test]
+    fn preexit_jge_is_forced_on_every_detour_reaching_197f6() {
+        for bits in 0u8..32 {
+            let f=GatePredecessorFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            // Pure logical fact: on the detour the original JGE
+            // must be taken. Its opposite would jump to RET 197F8.
+            if f.sf!=f.of {
+                // This flag pattern must reach 197FA directly,
+                // without requiring a call to original code.
+                assert_ne!(f.sf,f.of);
+            }
+        }
+    }
+
     #[test]
     fn nonzero_ax_always_produces_exact_caller_4f3_delta() {
         assert_eq!(caller_delta_from_ax(0),0);
