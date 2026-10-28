@@ -523,6 +523,53 @@ pub fn historical_155_selected_section_indices(
     Ok(selected)
 }
 
+/// Examine only STATIC on-disk DATA bytes for the selected-section
+/// pointer list used by 402262 MOV EDI,[403957]. The public modified
+/// archive contains 0x403C90 in that global, and its initial list
+/// slots are zero. This is a disk-state finding, not proof of runtime
+/// zeroing, safe repeated calls, or the owner's original file content.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalPointerListDiskState {
+    pub pointer_global_va:u32,
+    pub initial_pointer_list_va:u32,
+    pub capacity_words_in_backed_data:usize,
+    pub leading_zero_words:usize,
+}
+pub fn inspect_155_pointer_list_disk_state(
+    backed_data:&[u8],data_rva:u32,image_base:u32,
+)->Result<HistoricalPointerListDiskState,String>{
+    let data_va=image_base.checked_add(data_rva)
+        .ok_or("historical DATA image-base overflow")?;
+    let at=0x403957u32.checked_sub(data_va)
+        .ok_or("historical pointer-list global precedes DATA")? as usize;
+    let end=at.checked_add(4)
+        .ok_or("pointer-list global slot overflow")?;
+    let bytes=backed_data.get(at..end)
+        .ok_or("historical pointer-list global not file-backed")?;
+    let target=u32::from_le_bytes(bytes.try_into()
+        .map_err(|_|"historical pointer-list global size mismatch")?);
+    let relative=target.checked_sub(data_va)
+        .ok_or("historical pointer-list points before DATA")? as usize;
+    if relative%4!=0 || relative>=backed_data.len(){
+        return Err("historical pointer-list is unaligned or not file-backed".into());
+    }
+    let capacity_words=(backed_data.len()-relative)/4;
+    if capacity_words==0 {
+        return Err("historical pointer-list has no complete DWORD".into());
+    }
+    let mut zeros=0usize;
+    for word in backed_data[relative..].chunks_exact(4) {
+        if word!=[0u8;4]{break;}
+        zeros+=1;
+    }
+    Ok(HistoricalPointerListDiskState{
+        pointer_global_va:0x403957,
+        initial_pointer_list_va:target,
+        capacity_words_in_backed_data:capacity_words,
+        leading_zero_words:zeros,
+    })
+}
+
 /// The archived x86 iterator has a compact PUSHAD/POPAD
 /// trampoline: first entry jumps past POPAD; every completed section
 /// jumps BACK to POPAD before reading the next pointer. The input to
@@ -895,6 +942,37 @@ mod tests {
         assert!(audit_155_section_list_builder(&code,0x400000,0x1000).is_err());
         assert!(audit_155_section_list_builder(&code[..0x500],0x400000,0x1000).is_err());
         assert!(audit_155_section_list_builder(&code,0x400001,0x1000).is_err());
+    }
+
+    #[test]
+    fn public_style_pointer_list_backing_can_have_zero_terminators(){
+        // Synthetic DATA section 0x403000..0x403D00 with an in-file
+        // pointer global and allocated zeroed list beginning 403C90.
+        let mut data=vec![0u8;0xD00];
+        let global=(0x403957-0x403000) as usize;
+        data[global..global+4].copy_from_slice(&0x403C90u32.to_le_bytes());
+        let first=inspect_155_pointer_list_disk_state(
+            &data,0x3000,0x400000).unwrap();
+        assert_eq!(first.pointer_global_va,0x403957);
+        assert_eq!(first.initial_pointer_list_va,0x403C90);
+        assert_eq!(first.capacity_words_in_backed_data,28);
+        assert_eq!(first.leading_zero_words,28);
+        // No guaranteed runtime terminator: a stale entry on disk
+        // demonstrably ends the initial run of zeros.
+        let slot=0xC90+7*4;
+        data[slot..slot+4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        assert_eq!(inspect_155_pointer_list_disk_state(
+            &data,0x3000,0x400000).unwrap().leading_zero_words,7);
+        data[global..global+4].copy_from_slice(&0x403C91u32.to_le_bytes());
+        assert!(inspect_155_pointer_list_disk_state(
+            &data,0x3000,0x400000).is_err());
+        data[global..global+4].copy_from_slice(&0x404000u32.to_le_bytes());
+        assert!(inspect_155_pointer_list_disk_state(
+            &data,0x3000,0x400000).is_err());
+        assert!(inspect_155_pointer_list_disk_state(
+            &data[..0x200],0x3000,0x400000).is_err());
+        assert!(inspect_155_pointer_list_disk_state(
+            &data,0x3000,u32::MAX).is_err());
     }
 
     #[test]
