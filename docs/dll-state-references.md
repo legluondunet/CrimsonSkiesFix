@@ -1613,3 +1613,83 @@ active map contents, page-cache contents, runtime page-boundary
 behavior and BED0's outcome are not established. This is a
 factual partial reconstruction of a former opaque helper,
 not a complete or safe process-memory reader.
+
+
+### BED0 eight-stage worker engine: selected index 4, seven followups (2026-10-28)
+
+**New original-file-backed finding.** The earlier analysis of `0xA310`
+stopped at its call to `0xBED0`. The actual `0xBED0` implementation is
+in the readable original `.text` of `dplayerx.dll`, and its bounded
+control flow can now be described without executing any game code.
+
+The known worker call at **RVA `0x196AE`** supplies five arguments to
+`0xA310`, including **`PUSH 0x04` at `0x196A0`**. On the previously
+identified valid-pointer, in-range, mapped-record path, `0xA310`
+forwards this fourth argument unchanged to `0xBED0` in the
+straight-line sequence **`0xA3E3..0xA3F6`**. In the `0xBED0` frame,
+**`MOV EBX,[ESP+0x38]`** reads that original fourth argument.
+Thus the **specific already known worker path uses index 4**.
+This does not assert that other callers of BED0 use index 4.
+
+#### Actual original stage sequence
+
+- `0xBED0` makes a **local copy of eight DWORD slots** using
+  `MOV ECX,8; REP MOVSD` at `0xBEEC..0xBEFD`. Its later
+  original accesses to the local slots are 4-byte-spaced.
+- It selects the DWORD at stack index `EBX` and invokes
+  **`CALL 0xBDD0` at `0xBF0F`**. If that helper returns
+  **low AX zero**, the source jumps directly to output writeback
+  at **`0xBF4E`**; if **selector equals 3**, it also skips
+  further stages regardless of nonzero first AX.
+- Otherwise it loops over **indices `0..7`**, skipping the
+  selected index, and invokes **`CALL 0xBCA0` at `0xBF38`**
+  for each other index. It stops immediately on the first
+  BCA0 result with **AX zero** or after exhausting eight indices.
+- Therefore, on the known worker's selector **4**, the ordered
+  BCA0 sequence is **`0, 1, 2, 3, 5, 6, 7`** if all
+  preceding BCA0 calls return nonzero. This is a maximum
+  of **seven** follow-up calls, not eight.
+- The common BED0 epilogue at **`0xBF4E..0xBF66`**
+  **unconditionally writes two working DWORDs through output
+  pointers**, even if a stage returned AX=0. The returned
+  low AX is that of the last invoked stage. In particular,
+  a zero result is *not* proof of no memory modification.
+
+The original **`0xBDD0`** success branch eventually sets its
+return AX to one, updates two local pointer operands and records
+the selected node. Its failure path at **`0xBE52`** sets
+AX to zero but **also writes** a decremented pointer/cursor
+value before returning. The secondary **`0xBCA0`** has a
+separate, conditionally successful writeback branch at
+`0xBCFA..0xBD09`; it invokes the still partially unresolved
+`0xBD10`, `0xBC00` and `0xBD50` helpers. Actual stage
+success and output DWORD values remain undetermined.
+
+#### Verified code and limitations
+
+The new read-only Rust module
+`src/unsafedisc_dll_bed0.rs` checks **12 exact original opcode
+windows, 12 original relative call targets and eight Jcc
+displacements** against the SHA-256-pinned DLL, then models
+the conditional 8-stage dispatch using explicitly supplied
+hypothetical helper AX values. Six synthetic unit tests
+cover stage ordering, selected-slot skipping, early failure,
+the special selector 3, nonzero AX values and a deliberate
+rejection of out-of-range selectors. The original code does
+not safely validate that selector before using it as a stack
+index, so the synthetic model intentionally refuses values
+outside `0..7` instead of claiming them safe.
+
+An **independent** standard-library Python audit
+`verify_bed0_pipeline.py` independently checked the same
+original-byte sites and conditional stage order against the
+exact retail DLL. Its SHA-256 check also correctly rejected
+a deliberately modified one-byte copy. **No original bytecode,
+process memory or Windows API was executed.**
+
+Remaining unknowns include the actual values of the eight
+working DWORDs, the results and side effects of BDD0 and BCA0
+and their deeper `C*` helpers, runtime reachability of this
+worker path, and the decoder state at the byte mixer.
+These findings **do not** recover the SafeDisc TEA EAX
+modifiers or enable `unpack`.
