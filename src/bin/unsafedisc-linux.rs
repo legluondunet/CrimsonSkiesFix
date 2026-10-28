@@ -4562,6 +4562,12 @@ fn inspect(options: Options) -> Result<()> {
             println!("  F2-only affine differential test: {} shared inputs spanning different masks, {} relations, rank {}/32, {} contradictions.",
                 second_stage.multi_mask_inputs,second_stage.differential_observations,
                 second_stage.differential_rank,second_stage.differential_contradictions);
+            println!("  F2-only conditional injective-affine rank check: observed mask-delta rank {}, output-delta rank {}, rank deficit {}. A deficit rules out a bijective affine second modifier IF the observed composite semantics and input/output samples are correct.",
+                second_stage.differential_rank,second_stage.output_differential_rank,
+                second_stage.injective_affine_rank_deficit);
+            if second_stage.differential_contradictions!=0 {
+                println!("  NOTE: contradictions already rule out the affine-F2 hypothesis; the conditional injectivity rank check is not independently interpretable.");
+            }
             println!("  F2-only canonicalization: {} observations, {} conflicts, {} distinct observed masks.",
                 second_stage.canonical_observations,second_stage.conflicting_canonical_pairs,
                 second_stage.distinct_masks_observed);
