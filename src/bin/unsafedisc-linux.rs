@@ -4276,8 +4276,8 @@ fn inspect(options: Options) -> Result<()> {
             return Err("independent historical and PE relocation WORD profile disagree".into());
         }
         println!("Original ICD historical relocation WORD audit (read-only, no DLL execution):");
-        println!("  {} PE relocation blocks; {} HIGHLOW WORDs; {} zero ABSOLUTE words; {} nonzero type-0 ABSOLUTE words; {} odd-sized WORD blocks; {} empty-entry blocks; {} zero padding WORDs preceding further entries; {} all-zero nonempty relocation blocks.",
-            historic.blocks,historic.highlow_words,
+        println!("  {} PE relocation blocks; {} HIGHLOW WORDs ({} at page offset zero, masked to zero by original consumer); {} zero ABSOLUTE words; {} nonzero type-0 ABSOLUTE words; {} odd-sized WORD blocks; {} empty-entry blocks; {} zero padding WORDs preceding further entries; {} all-zero nonempty relocation blocks.",
+            historic.blocks,historic.highlow_words,historic.highlow_page_start_words,
             historic.zero_padding_words,historic.nonzero_type_zero_words,
             historic.odd_word_blocks,historic.empty_word_blocks,
             historic.nonterminal_zero_padding_words,historic.zero_only_blocks);
@@ -4314,6 +4314,9 @@ fn inspect(options: Options) -> Result<()> {
             }
             if historic.nonterminal_zero_padding_words>0 {
                 println!("  WARNING: zero padding before later relocation WORDs can terminate the historical per-block consumer before modern HIGHLOW parsing does; key-candidate equivalence is NOT established.");
+            }
+            if historic.highlow_page_start_words>0 {
+                println!("  WARNING: HIGHLOW at offset 0 retains nonzero type bits in the builder but is masked to zero in historical relocation consumer; native HIGHLOW-only fragments are NOT proven equivalent.");
             }
             if historic.zero_only_blocks>0 {
                 println!("  WARNING: an all-zero relocation block may affect historical 401E14 offset-zero handling; it is not safely equivalent to an empty HIGHLOW block.");
