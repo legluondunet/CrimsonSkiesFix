@@ -300,6 +300,87 @@ branch displacements, missing section bytes and wrong
 image base. The exact-original `inspect-historical` CLI
 now reports this distinction after SHA-256 verification.
 
+### Historical 1.5.5 per-section POPAD iterator and exact extent (2026-10-28)
+
+Further direct examination of the **public archived, modified**
+18,944-byte 1.5.5 executable identifies an unusual but important
+control-flow structure in the archived CODE window
+`0x401CFD..0x401D4E`:
+
+```asm
+401CFD  MOV EDI,[403957]      ; cursor into array of section HEADER POINTERS
+401D03  JMP 401D06           ; FIRST entry bypasses POPAD
+401D05  POPAD                ; AFTER each processed section only
+401D06  MOV ESI,[EDI]        ; next header pointer
+401D08  ADD EDI,4            ; FOUR bytes per pointer, not a PE header
+401D0B  OR ESI,ESI
+401D0D  JNZ 401D11           ; non-null next section pointer
+401D0F  POPAD                ; restore outer saved general registers
+401D10  RET                  ; end of selected section list
+401D11  MOV EAX,[ESI+24h]    ; IMAGE_SECTION_HEADER.Characteristics
+401D14  MOV [60BCD0],EAX
+401D19  PUSHAD               ; save iterator state for section work
+401D1A  MOV EAX,[ESI+10h]    ; SizeOfRawData
+401D1D  MOV EDI,[ESI+0Ch]    ; VirtualAddress
+401D26  CMP EAX,[ESI+08h]    ; VirtualSize
+401D29  JBE 401D34
+401D2B  CMP DWORD [ESI+08h],0
+401D2F  JE 401D34
+401D31  MOV EAX,[ESI+08h]    ; cap to positive VirtualSize
+401D34  MOV ESI,[ESI+14h]    ; PointerToRawData
+401D37  ADD ESI,[403B0F]    ; backed input mapping base
+401D3D  MOV [60BCB4],ESI
+401D48  CMP DWORD [ESI-4],4 ; relocation mode selector
+401D4C  JE 401D82           ; relocation-aware walker
+```
+
+The selected header list consists of **4-byte pointers to
+40-byte PE section records**, not a contiguous list of 4-byte
+section records. The zero-terminated list ends at
+`401D0F POPAD; 401D10 RET`. Earlier outer setup saves
+registers, and the per-section `PUSHAD` at `401D19` is
+balanced by the common `POPAD` at `401D05` on normal
+section completion. The initial `JMP` at `401D03`
+intentionally skips that POPAD; returning to it on the
+first entry would instead restore a frame not yet saved.
+The normal loop-back jumps `401D77` and `401D80`
+both target `401D05`. This is an analysis of **static x86
+structure and nominal control flow**, not a dynamic trace or
+a claim about every error path.
+
+The size calculation is precisely:
+
+```text
+effective file extent = SizeOfRawData
+if VirtualSize != 0 and VirtualSize < SizeOfRawData:
+    effective file extent = VirtualSize
+```
+
+The data-processing extent is independent of the
+`IMAGE_SCN_CNT_CODE` checksum flag. The raw file pointer
+comes from section-header field `+0x14`, adjusted by a
+historical input-mapping base in global `[403B0F]`.
+This does **not** imply the pointer is safe on a modern
+OS; the Rust port uses bounded *file offsets*, not the
+historical raw process memory pointers.
+
+The new `audit_155_section_iterator` checks byte-exact
+opcode windows and **seven actual branch displacements**,
+including the initial vs returning POPAD paths, the two
+section-size cap branches, and relocation-mode dispatch.
+The separate synthetic native helper
+`historical_155_section_window` validates a complete
+40-byte PE record and its chosen effective file range,
+distinguishes CODE-checksummable and non-CODE data sections,
+and rejects truncated/overflowing backing ranges. Tests
+cover opcode mutations, changed branches, size variations,
+data-only processing and malformed file ranges. The
+`inspect-historical` CLI runs the code audit only after
+the **original owner-executable SHA-256 gate**. As in the
+earlier stages, the private owner's original **has not been
+rechecked in this session**, and the archived variant is
+not byte-identical to that original.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
