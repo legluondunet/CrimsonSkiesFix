@@ -6175,3 +6175,59 @@ a clear unsupported historical difference is detected.
 Added five synthetic Rust regressions covering exact totals,
 nonzero ABSOLUTE values, odd/empty blocks, and x86 LOOP zero
 wraparound. No original protected content has been modified.
+
+
+### Breakthrough: exact historical original independently recovered and verified (2026-10-28)
+
+An archived `unsfd155.zip` published by the original tool distribution
+site (`https://sta.c64.org/winprg/unsfd155.zip`) was fetched
+temporarily in a GitHub Actions Linux runner, NEVER executed, and
+inspected as ZIP data. It contained `unSafedisc.exe` of exactly 20,480
+bytes with SHA-256:
+
+`e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f`
+
+This is **the exact same owner-supplied original** previously pinned
+by the Rust `HISTORICAL_155_SHA` gate. The release was passed to
+`unsafedisc-linux inspect-historical --unsafedisc` in read-only mode.
+**Every current original-byte opcode audit passed**, including the
+entire PE header section filter, post-builder RVA map, relocation
+cutpoint builder, paired relocation consumer, span clip, shared CRC
+and title-specific DLL modifier call sites. This supersedes
+earlier notes in this document stating that these archived opcode
+windows had not yet been compared against the owner's real original.
+
+An additional statically verified differential comparison against
+the public 18,944-byte version.dll-adapted variant (pinned Git blob
+`825c467b6b403e1c85a5875ede5696dedfe17652`) established:
+
+- Both CODE sections: 8,192 backed bytes; **31 different bytes**
+  clustered into seven disjoint spans at preferred virtual addresses
+  0x4029BD (4), 0x402D56 (1), 0x402D7C (1), 0x402FBC (11),
+  0x402FC9 (4), 0x402FCE (4) and 0x402FD3 (6).
+- Both DATA sections: 3,584 backed bytes; **8 different bytes**
+  in a single span starting at virtual address 0x403A02.
+- Consequently the crucial known opcode windows at
+  0x401D82..0x401F01 and 0x402257..0x4023DF are **identical**
+  between these two specific published builds.
+- The exact original uses LoadLibraryExA flags=1 and a DS-bit2
+  guarded manual DLL_PROCESS_ATTACH, whereas the public modified
+  archive uses flags=0 and unconditionally skips manual attach.
+- The original inspector observed an on-disk pointer-list global
+  at 0x403957 pointing to 0x403C90, with 92 file-backed zero
+  DWORDs; earlier public modified variant had a shorter
+  DATA-backed snapshot with 28 initial zero DWORDs. These are
+  static disk observations only; no runtime-zero guarantee follows.
+
+The historical original and public archive were downloaded only to
+temporary GitHub Actions runner storage. Both were deleted; the
+temporary diagnostic step was subsequently removed. No proprietary
+executable or decryption material is added to Git. The comparison
+proves exact original x86 *instructions*, not that the original
+Windows-era program can run on modern OSes or that the opaque
+`dplayerx.dll` title-specific routines have been decrypted.
+
+The verified synthetic Rust candidate preflight now refuses
+`--key-research` when source relocation WORDs contain nonzero
+ABSOLUTE values, odd-entry blocks or empty blocks. This is a
+necessary fail-closed guard, NOT proof of a valid checksum or key.

@@ -8,7 +8,8 @@ use crate::unsafedisc_historical_155::historical_155_branch_target;
 
 /// Source: exact SHA-pinned PUBLIC compatibility variant, 18,944 bytes,
 /// Git blob 825c467b6b403e1c85a5875ede5696dedfe17652.
-/// The owner's distinct 20,480-byte original requires fresh comparison.
+/// These opcode windows also passed the independent exact SHA-256-gated
+/// original 20,480-byte tool audit in GitHub Actions on 2026-10-28.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct HistoricalRelocConsumerAudit {
     pub paired_word_mask: u32,

@@ -60,7 +60,9 @@ const ARCHIVED_RELOC_WINDOWS: &[(u32,&[u8])] = &[
 
 /// The exact public archival x86 bytes came from the PINNED 18,944-byte
 /// compatibility variant (Git blob 825c467b6b403e1c85a5875ede5696dedfe17652).
-/// The owner's 20,480-byte original has not been freshly compared.
+/// The owner's exact 20,480-byte original was independently audited via
+/// SHA-256-gated inspect-historical in GitHub Actions on 2026-10-28.
+/// No original binary is embedded in source or test fixtures.
 pub fn audit_155_reloc_cutpoint_builder(
     code:&[u8],image_base:u32,code_rva:u32
 )->Result<HistoricalRelocCutpointAudit,String>{

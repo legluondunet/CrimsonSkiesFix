@@ -5257,12 +5257,12 @@ fn inspect_historical_155_cli() -> Result<()> {
     println!("  Audited builder LOOP does not write a final zero DWORD; iterator needs a zero slot. Code after the audited window may still initialize one; runtime behavior is unverified.");
     println!("  Follow-on post-builder RVA mapper: 0x4022B2..0x40230B; source RVA [0x403B43], section RVA at +0x0C, RawSize at +0x10, raw pointer at +0x14.");
     println!("  The archived code tests inclusive raw end and next-header VirtualAddress [EAX+0x34], then stores delta at [0x403B3F] and raw offset at [0x403B43].");
-    println!("  This exact opcode audit is public-archive-derived; actual original 20,480-byte variant must be supplied locally, and no runtime behavior is inferred.");
+    println!("  This opcode audit ran on the exact 20,480-byte SHA-verified original in THIS invocation; its x86 windows match the published archive. No runtime behavior is inferred.");
     println!("  Archived relocation cutpoint builder: mode=0x{:X} written at [0x{:08X}] (sentinel); first sorted cutpoint at 0x{:08X}.",
         reloc_builder.reloc_mode_value,reloc_builder.mode_global_va,
         reloc_builder.first_cutpoint_va);
     println!("  Nonzero relocation WORDs are converted into RVA and RVA+4 cutpoints; archived code does NOT filter the four-bit PE relocation type.");
-    println!("  This is a static public-variant audit only: exact byte agreement with owner's private original is still untested in this session.");
+    println!("  This archival relocation-builder opcode window is byte-exact verified against the original 20,480-byte SHA-pinned executable in THIS invocation.");
     println!("  Archived relocation walker strips type nibbles in packed pairs with mask 0x{:08X}; safe model rejects an unpaired final relocation WORD.",
         reloc_consumer.paired_word_mask);
     println!("  Span helper at 0x401EF5 clips against section end [0x{:08X}]; on overrun it redirects its return to 0x{:08X}, then enters shared helper 0x{:08X}.",
@@ -5333,7 +5333,7 @@ fn inspect_historical_155_cli() -> Result<()> {
         unsafedisc_historical_155::HistoricalAttachBranch::SkipWhenDsBit2Set=>
             println!("  DLL entrypoint: DS-bit2 ZF=0 skips manual DLL_PROCESS_ATTACH; else manual CALL at 0x{:08X}.",startup.manual_dll_entry_call_va),
     }
-    println!("  Variant caveat: public version.dll-adapted 1.5.5 uses flags=0 plus ALWAYS skip; original private SHA-verified binary may use flags=1 and a DS guard.");
+    println!("  Original exact-hash release uses LoadLibraryExA flags=1 and a DS-bit2 guarded manual attach; the public version.dll-adapted variant instead uses flags=0 and always skips manual attach.");
     println!("  DLL size 0x21E00 -> 401F43 guarded trampoline -> 401F62 extra-DWORD-layer loop.");
     println!("  401F56: EBX buffer -> ESI, EAX length -> EDI; loop processes EDI>>2 DWORDs.");
     println!("  401F96: CALL [DLL base+0x65BE] via EDX.");

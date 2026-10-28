@@ -196,7 +196,8 @@ const ARCHIVED_155_POST_BUILDER: &[u8] = &[
 /// Audit the archived PE RVA -> raw address mapper starting at
 /// historical 0x4022B2, after the original 40-byte section-name
 /// filter. No executable is ever run or mapped as program code.
-/// The 20,480-byte owner-original variant requires separate validation.
+/// Independently SHA-verified against the owner's exact original 20,480-byte
+/// tool in a read-only GitHub Actions audit on 2026-10-28.
 pub fn audit_155_post_builder_rva_mapper(
     code: &[u8], image_base: u32, code_rva: u32,
 ) -> Result<(), String> {
