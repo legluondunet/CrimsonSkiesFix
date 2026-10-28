@@ -68,10 +68,104 @@ pub fn trace_worker_entry_to_first_call_setup(
     Err("original 18F81 entry maze exceeds 24 instructions".into())
 }
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum FirstDispatchResultRoute {
+    ZeroBypass {target_rva:u32},
+    NonzeroNextHelper {target_rva:u32},
+}
+
+/// Original 18FCA CMP DWORD [EBP-0x10],0; 18FCE JE 19022.
+/// The original branch tests the entire DWORD returned from 18800,
+/// not its low 16 bits (unlike the later 196AE A310 check).
+pub fn first_dispatch_return_route(eax:u32)->FirstDispatchResultRoute {
+    if eax==0 {
+        FirstDispatchResultRoute::ZeroBypass{target_rva:0x19022}
+    } else {
+        FirstDispatchResultRoute::NonzeroNextHelper{target_rva:0x18B00}
+    }
+}
+
+/// EFLAGS from original CMP DWORD,equivalent to 0. This is a
+/// mathematical 32-bit CMP model, never DLL or OS code execution.
+/// CMP does not borrow or overflow when subtracting zero.
+pub fn cmp_zero_eflags(value:u32)->GatePredecessorFlags {
+    GatePredecessorFlags {
+        cf:false,zf:value==0,
+        pf:(value as u8).count_ones()%2==0,
+        sf:value&0x8000_0000!=0,
+        of:false,
+    }
+}
+
+/// For an actually NONZERO result from 18800, source-only static
+/// network 18FD0..18FF0 converges on argument setup for the next
+/// known CALL at 18FFC -> 18B00. Two routes depend on the sign bit;
+/// no assumption about what result the previous helper actually
+/// returns is made.
+pub fn trace_first_dispatch_nonzero_continuation(
+    dll:&[u8],pe:&Pe32,eax:u32
+)->Result<Vec<u32>> {
+    if eax==0 {
+        return Err("zero result takes bypass path 19022".into());
+    }
+    let flags=cmp_zero_eflags(eax);
+    let mut pc=0x18FD0u32;
+    let mut route=Vec::new();
+    for _ in 0..24 {
+        if pc==0x18FF0 {
+            route.push(pc);
+            return Ok(route);
+        }
+        if route.contains(&pc) {
+            return Err(format!("18FD0 dispatch continuation loops at 0x{pc:05X}"));
+        }
+        route.push(pc);
+        pc=original_eflags_step_in_range(
+            dll,pe,pc,flags,0x18FD0,0x18FF0
+        )?;
+    }
+    Err("first worker result continuation did not converge".into())
+}
+
+pub fn audit_first_dispatch_return_branch(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x18FC7u32,&[0x89,0x45,0xF0,0x83,0x7D,0xF0,0x00,0x74,0x52][..]),
+        (0x18FD0,&[0x7C,0x0A,0x90,0x90,0x77,0x04][..]),
+        (0x18FDA,&[0xEB,0x08,0x87,0xF6,0x90,0x7C,0xF1][..]),
+        (0x18FE4,&[0xEB,0x07,0x8B,0xC9,0x70,0x06,0x90,0x71,0x03][..]),
+        (0x18FED,&[0xEB,0xF7][..]),
+        (0x18FF0,&[0x8B,0x55,0x18,0x52,0x8B,0x45,0xF0,0x50,
+                    0x8D,0x4D,0x08,0x51][..]),
+        (0x19022,&[0xC7,0x45,0xF0,0,0,0,0][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if 0x18FCEu32+2+0x52!=0x19022 ||
+       dll_relative_call_target(dll,pe,0x18FFC)?!=0x18B00 {
+        return Err("first worker return-value branch or next CALL changed".into());
+    }
+    // CMP x,0 fixes CF=OF=0; PF cannot affect the active graph.
+    // Test both signs and parities, including signed-MSB edge
+    // cases. Count every original instruction boundary.
+    for (value,want_len) in [
+        (1u32,12usize),(0x7FFF_FFFF,12),
+        (0x8000_0000,15),(u32::MAX,15),
+    ] {
+        let trace=trace_first_dispatch_nonzero_continuation(dll,pe,value)?;
+        if trace.first()!=Some(&0x18FD0) ||
+           trace.last()!=Some(&0x18FF0) ||
+           trace.len()!=want_len {
+            return Err("first worker nonzero result path changed".into());
+        }
+    }
+    Ok(())
+}
+
 /// Audit the true first worker call chain, not a guessed entrypoint
 /// route. The two known callers are proven CALL targets but their
 /// reachability from DllMain is NOT established by this check.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_first_dispatch_return_branch(dll,pe)?;
     for (site,expected) in [
         (0x1A1B2u32,WORKER_ENTRY_RVA),
         (0x1A39C,WORKER_ENTRY_RVA),
@@ -171,6 +265,28 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_result_comparison_uses_full_dword_not_just_low_word() {
+        assert_eq!(first_dispatch_return_route(0),
+            FirstDispatchResultRoute::ZeroBypass{target_rva:0x19022});
+        for word in [1,0x10000,0xFFFF_0000,0x8000_0000,u32::MAX] {
+            assert_eq!(first_dispatch_return_route(word),
+                FirstDispatchResultRoute::NonzeroNextHelper{target_rva:0x18B00});
+        }
+    }
+
+    #[test]
+    fn cmp_zero_flags_have_correct_sign_parity_and_no_borrow() {
+        let zero=cmp_zero_eflags(0);
+        assert!(zero.zf && zero.pf);
+        assert!(!zero.cf && !zero.of && !zero.sf);
+        let positive=cmp_zero_eflags(1);
+        assert!(!positive.zf && !positive.pf && !positive.sf);
+        let negative=cmp_zero_eflags(0x8000_0000);
+        assert!(negative.sf && !negative.zf && !negative.cf && !negative.of);
+        assert_eq!(cmp_zero_eflags(0x10000).zf,false);
+    }
+
     #[test]
     fn selector_is_one_based_and_never_indexes_out_of_bounds() {
         for case in 1u32..=11 {
