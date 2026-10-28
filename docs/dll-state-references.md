@@ -817,6 +817,47 @@ it never runs the DLL. The independent offline Python verifier also
 checks these exact opcode groups and their original targets.
 
 
+### Earlier branch into mixer preparation: opaque A310 low-16 result
+
+The original worker loop's non-exit path at **`0x19692`** prepares
+arguments for a **direct `CALL 0xA310` at `0x196AE`**. The helper's
+implementation is **not** recovered as part of this research.
+If it returns normally, the worker performs
+`ADD ESP,0x14; AND EAX,0xFFFF; TEST EAX,EAX; JE 0x19819`
+at **`0x196B3..0x196C2`**. Thus precisely the *low 16 bits* of
+the helper's returned EAX decide whether the worker skips
+its current mixer path (zero) or continues (nonzero). A high-only
+result such as `0x00010000` still counts as **zero** here.
+
+On the nonzero result, three independently audited control-flow
+networks lead through original stack-local computations and
+ultimately into the later mixer setup:
+
+| Original flag-only segment | Distinct paths for 32 EFLAGS | Length |
+| --- | ---: | ---: |
+| `0x196C3 -> 0x196DB` | 8 | 4–7 |
+| `0x196E4 -> 0x196F8` | 3 | 7–11 |
+| `0x19704 -> 0x19728` | 4 | 10–18 |
+
+All 32 assignments converge at each target, regardless of
+flags left by intervening CMP/SUB/ADD instructions. The data
+preparation thereafter reaches the **`CALL 0x19965` at `0x1974A`**;
+the next section describes its conditional continuation to the
+**`CALL 0x19C78` at `0x19798`**.
+
+The original SHA-pinned bytes and exact relative call/branch
+targets are checked by `audit_original_worker_mixer_predecessor`.
+The pure `worker_setup_skips_mixer` model is regression-tested
+against low-16-bit boundary values, and an independently edited
+offline Python verifier confirms the three 32-flag graphs.
+
+**Limitations:** there is no proof that `0xA310` returns nonzero
+on a real game invocation, or even that the DLL initializer
+executes this worker iteration. The zero-result branch
+also enters `0x19819`, whose subsequent finalizer behavior
+is conditional. The call to the original mixer is never
+executed by this research tooling.
+
 ### Verified mixer setup: second no-op RET trampoline
 
 Immediately before the `0x19798 -> 0x19C78` mixer call, another
