@@ -2883,11 +2883,15 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Original 181E0 dispatcher: generic selector 1..11 maps to 11 individually relocated HIGHLOW VAs at 18680; out-of-range -> 184EB (also case 4).");
     println!("    INITIAL worker call selector is now proven: 18FB9 PUSH literal 1 -> 18800 forwards arg2 -> 181E0 [ESP+0x178] reads 1, DEC -> case index 0 -> target 183C2 -> CALL 189F0. This requires original 18940 to return normally.");
     println!("    First original case 183C2 invokes 189F0, a 0x28-byte record scanner. It calls A810, checks (record DWORD at +0x24 & mask) == expected, and returns matched offset or zero.");
+    println!("    189F0 does NOT check A810 AX before comparing buffer +0x24, and checks offset<limit without guaranteeing an entire 0x28-byte record remains; neither a failed read nor a partial tail is asserted to occur in retail gameplay.");
+    println!("    189F0 returns offset 0 on a hypothetical match at zero AND on no match: static return-value sentinel collision, not an observed initial scan offset.");
     println!("    Original A810 in .text: source type [arg+8]==0x64 -> AX=0; otherwise WORD [0x00904AE4]!=1 triggers A870 init test; when ready, type 0x65 -> backend A560, other types -> A620.");
     println!("    Real record contents, backend effects and actual first-dispatch result remain UNKNOWN; no original backend is run.");
     println!("    The first wrapper's full-DWORD EAX return test at 18FCA bypasses to 19022 on ZERO; on NONZERO the sign-dependent maze reaches 18FFC CALL 18B00, with 12 or 15 instruction boundaries.");
     println!("  Original worker non-exit branch: CALL 196AE -> opaque helper A310; AND EAX,FFFFh / TEST / JE 19819: low16 zero skips current mixer preparation.");
     println!("    Nonzero low16 continues through three 32/32 EFLAGS-only networks: 196C3->196DB (8 paths), 196E4->196F8 (3 paths), 19704->19728 (4 paths).");
+    println!("    On this nonzero A310 branch, AND EAX,FFFF at 196B6 clears the high word; the intervening proven opaque paths and ECX/EDX arithmetic preserve it, so 19728 MOV AX,[EBP-8]; PUSH EAX actually pushes [EBP-8]&FFFF (never stale high EAX on this path).");
+    println!("    196F8 computes a 32-bit wrapping candidate step [EBP-14]-[EBP-0C]+1, but the immediate 19728 push uses only its low16; candidate length 65536 would push zero. No claim that later 19965/19C78 observes that exact value.");
     println!("  Original worker mixer setup: CALL 1974A -> 19965; if it returns, the 19752 branch network joins 1976F for all 32 flags (6 paths, 7..10 steps).");
     println!("    Exactly 8/32 cases pass via 19765 CALL to a bare RET at 197F8; the following JA 1976B must be taken, avoiding the apparent early RET. No original CALL is executed by this tool.");
     println!("  Original worker CALL at 19798 -> byte mixer 19C78. If it returns, ADD ESP,0x18 at 1979D updates flags; all 32 flag assignments from 197A0 reach counter update 197D4 (24 unique paths, 12..23 instructions).");
