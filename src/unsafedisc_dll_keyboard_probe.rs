@@ -119,7 +119,11 @@ pub fn trace_original_flag_segment(
             return Err(format!("Win9x flag-only segment loops at 0x{pc:05X}"));
         }
         path.push(pc);
-        pc=original_eflags_step_in_range(dll,pe,pc,f,start,target)?;
+        // The original tail segment starting at 1D2C7 has backward
+        // obfuscated Jcc edges into 1D2B7. These are finite,
+        // flag-preserving branches (not necessarily cycles).
+        let allowed_min=if start==0x1D2C7 {0x1D2B7} else {start};
+        pc=original_eflags_step_in_range(dll,pe,pc,f,allowed_min,target)?;
     }
     Err("Win9x flag-only segment did not converge within 512 boundaries".into())
 }
