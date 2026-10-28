@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(bed0.returned_ax,0);
         assert!(bed0.output_dwords_written);
         assert!(bed0.secondary_indices.is_empty());
-        assert!(super::unsafedisc_dll_worker_finalizer::
+        assert!(crate::unsafedisc_dll_worker_finalizer::
             worker_setup_skips_mixer(u32::from(bed0.returned_ax)));
         // This composition cannot establish actual startup
         // reachability, pointer validity or any mixer input state.
