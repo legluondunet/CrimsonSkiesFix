@@ -38,6 +38,9 @@ mod unsafedisc_dll_write_pipeline;
 #[path = "../unsafedisc_dll_byte_mix.rs"]
 mod unsafedisc_dll_byte_mix;
 
+#[path = "../unsafedisc_dll_state_provenance.rs"]
+mod unsafedisc_dll_state_provenance;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2827,6 +2830,11 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
+    unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
+    println!("  Original global mixer state: preferred VA 0x00905010, RVA 0x25010, .data virtual zero-fill before initial runtime writes.");
+    println!("    Seven verified direct x86 writes: conditional +0x4F3, twice +argument_low16, +output_byte, +stack_local, and two explicit resets.");
+    println!("    A77F called with state pointer from .txt2 0x19A4D and 0x19E30, uses KERNEL32!GetVersionExA and branches on OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
+    println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
     unsafedisc_dll_byte_mix::audit_original(dll,&pe)?;
     println!("  Conditional original .txt2 byte mixer: 0x19798 -> 0x19C78, XOR buffer byte with 4 bytes of 32-bit state at preferred VA 0x00905010 and second-buffer byte.");
     println!("    The byte result is added to global state mod 2^32; source/destination byte pointers advance; guarded parity-detour returns to 0x19D85.");
