@@ -222,6 +222,36 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
         dll_expect_raw_x86(dll,pe,site-4,setup)?;
         dll_expect_raw_x86(dll,pe,site+5,&[0x83,0xC4,0x08])?;
     }
+    // The other .txt2 A140 call at 0x1A137 is prepared by a
+    // different module-descriptor path. Its first field derives
+    // from KERNEL32!GetCurrentProcess (process pseudo-handle), while
+    // the second is KERNEL32!GetModuleHandleA(NULL), the executable
+    // module handle. Mode 0x67 is set with A550.
+    for (site,opcodes) in [
+        (0x1A0D4u32,&[0x89,0x45,0xF4][..]),
+        (0x1A0F7,&[0x6A,0x00][..]),
+        (0x1A0FF,&[0x89,0x45,0xF8][..]),
+        (0x1A116,&[0x6A,0x67][..]),
+        (0x1A118,&[0x8D,0x45,0xF4,0x50][..]),
+        (0x1A121,&[0x83,0xC4,0x08][..]),
+    ] { dll_expect_raw_x86(dll,pe,site,opcodes)?; }
+    check_call(dll,pe,0x1A11C,0xA550)?;
+    let imports=super::dll_import_bindings(dll,pe)?;
+    for (call_rva,expected_slot,expected_name) in [
+        (0x1A0CEu32,0x1E004u32,"GetCurrentProcess"),
+        (0x1A0F9,0x1E098,"GetModuleHandleA"),
+    ] {
+        let (_,iat_slot)=super::dll_indirect_import_call(dll,pe,call_rva,base)?;
+        if iat_slot!=expected_slot {
+            return Err(format!("original .txt2 process-descriptor IAT operand mismatch at 0x{call_rva:05X}"));
+        }
+        let binding=imports.iter().find(|entry| entry.iat_rva==iat_slot)
+            .ok_or_else(||"txt2 process-descriptor import is absent from original PE".to_string())?;
+        if binding.symbol!=expected_name || !binding.library.eq_ignore_ascii_case("KERNEL32.dll") {
+            return Err(format!("original .txt2 process-descriptor Windows API mismatch at 0x{call_rva:05X}"));
+        }
+    }
+
     // A clear-code caller at 0x9821 supplies original preferred
     // VA 0x00900030 to .txt2 entry 0x1A20D. Decoding its original
     // .data metadata identifies the same dplayerx.dll module name.
@@ -458,6 +488,21 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_descriptor_initializer_has_distinct_api_roles() {
+        // GetCurrentProcess supplies a *pseudo-handle*; only the
+        // GetModuleHandleA(NULL) result is a module base. They are
+        // not interchangeable even though both fit in DWORDs.
+        let calls=[
+            (0x1A0CEu32,0x1E004u32,"GetCurrentProcess"),
+            (0x1A0F9,0x1E098,"GetModuleHandleA"),
+        ];
+        assert_ne!(calls[0].1,calls[1].1);
+        assert!(calls[0].0<calls[1].0);
+        assert_eq!(0x1A116+2,0x1A118);
+        assert_eq!(0x1A11C+5,0x1A121);
+    }
 
     #[test]
     fn direct_txt2_caller_source_is_the_same_dll_metadata_label() {
