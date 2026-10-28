@@ -66,6 +66,51 @@ pub fn worker_setup_skips_mixer(eax_from_helper:u32)->bool {
     eax_from_helper & 0xFFFF == 0
 }
 
+/// Hypothetical arithmetic at three original instruction runs on
+/// a path that has passed A310's nonzero-low16 gate:
+/// 196DB: local[-0x10] = local[-0x0C] - argument[+0x1C]
+/// 196F8: local[-0x08] = local[-0x14] - local[-0x0C] + 1
+/// 1976F: ECX = argument[+0x20] + local[-0x10]
+/// Only modulo-2^32 arithmetic is modeled. In particular a negative
+/// mathematical span is NOT silently reinterpreted as a safe range.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct ConditionalWorkerLocals {
+    pub offset_at_196db:u32,
+    pub step_at_196f8:u32,
+    pub address_sum_at_1976f:u32,
+}
+
+pub fn hypothetical_worker_locals(
+    cursor:u32, end_like:u32, argument_1c:u32, argument_20:u32,
+)->ConditionalWorkerLocals {
+    let offset_at_196db=cursor.wrapping_sub(argument_1c);
+    let step_at_196f8=end_like.wrapping_sub(cursor).wrapping_add(1);
+    let address_sum_at_1976f=argument_20.wrapping_add(offset_at_196db);
+    ConditionalWorkerLocals {
+        offset_at_196db,step_at_196f8,address_sum_at_1976f,
+    }
+}
+
+/// At 19728 the ORIGINAL instruction is 66 8B 45 F8 (MOV AX,
+/// WORD [EBP-8]), followed immediately by 50 (PUSH EAX).
+/// A 16-bit MOV updates only AX. It does not clear EAX[31:16].
+/// This is the immediate PUSH operand model, NOT a claim that a
+/// later helper receives an unmodified value or that EAX's upper
+/// word is unknown for every actual reachable call.
+pub fn hypothetical_19728_push_eax(eax_before:u32,local_step:u32)->u32 {
+    (eax_before & 0xFFFF_0000) | (local_step & 0xFFFF)
+}
+
+/// A separate safe-analysis predicate, never an assertion that
+/// SafeDisc applied these checks at runtime. The original x86 can
+/// produce zero steps, wrapped counters and low16 truncations.
+pub fn hypothetical_step_is_contiguous_and_word_sized(
+    cursor:u32,end_like:u32,
+)->bool {
+    end_like>=cursor &&
+    u64::from(end_like)-u64::from(cursor)+1<=u64::from(u16::MAX)
+}
+
 /// Conditional flag-only networks after the A310 helper's nonzero
 /// masked return. Three distinct original byte sequences converge
 /// before the stack-local state preparation and 19965 call.
@@ -549,6 +594,51 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_local_arithmetic_has_unsigned_wrap_and_inclusive_count() {
+        let v=hypothetical_worker_locals(0x1010,0x101F,0x1000,0x2000);
+        assert_eq!(v,ConditionalWorkerLocals{
+            offset_at_196db:0x10,step_at_196f8:0x10,
+            address_sum_at_1976f:0x2010,
+        });
+        assert_eq!(hypothetical_worker_locals(5,4,10,20).step_at_196f8,0);
+        assert_eq!(hypothetical_worker_locals(
+            0xFFFF_FFFE,0xFFFF_FFFF,0,0).step_at_196f8,2);
+        assert_eq!(hypothetical_worker_locals(
+            u32::MAX,0,0,0).step_at_196f8,2);
+        // Difference+one wraps, it is not a validated linear interval.
+        assert_eq!(hypothetical_worker_locals(1,0,0,0).step_at_196f8,0);
+    }
+
+    #[test]
+    fn mov_ax_then_push_eax_does_not_zero_upper_sixteen_bits() {
+        let step=0x0001_0000u32;
+        assert_eq!(hypothetical_19728_push_eax(0xDEAD_BEEF,step),0xDEAD_0000);
+        assert_eq!(hypothetical_19728_push_eax(0x1234_0000,0x5678_ABCD),
+                   0x1234_ABCD);
+        assert_ne!(hypothetical_19728_push_eax(0xABCD_0000,step),
+                   hypothetical_19728_push_eax(0x1234_0000,step));
+        for high in [0,1,0x8000,0xFFFF] {
+            for low in [0,1,0x8000,0xFFFF] {
+                let eax=(high<<16)|0x4321;
+                let pushed=hypothetical_19728_push_eax(eax,low);
+                assert_eq!(pushed>>16,high);
+                assert_eq!(pushed & 0xFFFF,low);
+            }
+        }
+    }
+
+    #[test]
+    fn word_sized_safety_model_is_not_original_chunk_control() {
+        assert!(hypothetical_step_is_contiguous_and_word_sized(0,0));
+        assert!(hypothetical_step_is_contiguous_and_word_sized(1,0xFFFF));
+        assert!(!hypothetical_step_is_contiguous_and_word_sized(0,0xFFFF));
+        assert!(!hypothetical_step_is_contiguous_and_word_sized(7,6));
+        assert!(hypothetical_step_is_contiguous_and_word_sized(u32::MAX,u32::MAX));
+        assert_eq!(hypothetical_worker_locals(0,0xFFFF,0,0).step_at_196f8,65536);
+        // No assertion that SafeDisc actually enforces this guard.
+    }
+
     #[test]
     fn opaque_setup_helper_checks_only_low16_before_mixer() {
         for result in [0u32,0x10000,0xFFFF_0000] {
