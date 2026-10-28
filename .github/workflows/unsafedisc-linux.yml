@@ -79,6 +79,55 @@ jobs:
           else
             echo "No exact SHA-pinned 20480-byte tool in historical archive."
           fi
+          if test -f "${RUNNER_TEMP}/verified_unsafedisc155.exe"; then
+            public="${RUNNER_TEMP}/unsafedisc155_public.exe"
+            if curl --fail --location --silent --show-error --retry 2 \
+              "https://raw.githubusercontent.com/nckstwrt/SafeDiscLoader/4d1dc33e6e63a4ddca77bbcfa44a7ff98180e064/UnSafeDisc%20and%20SafeDisc2Cleaner/unSafedisc155_version.exe" \
+              --output "$public" &&
+               test "$(stat -c%s "$public")" = 18944 &&
+               test "$(git hash-object "$public")" = 825c467b6b403e1c85a5875ede5696dedfe17652; then
+              python3 - "${RUNNER_TEMP}/verified_unsafedisc155.exe" "$public" <<'PY'
+          import itertools,struct,sys
+          def pe_sections(path):
+              data=open(path,"rb").read()
+              pe=struct.unpack_from("<I",data,0x3c)[0]
+              count=struct.unpack_from("<H",data,pe+6)[0]
+              opt=struct.unpack_from("<H",data,pe+20)[0]
+              hdr=pe+24+opt
+              result={}
+              for i in range(count):
+                  at=hdr+i*40
+                  name=data[at:at+8].split(b"\x00",1)[0].decode("ascii","replace")
+                  raw_size=struct.unpack_from("<I",data,at+16)[0]
+                  rva=struct.unpack_from("<I",data,at+12)[0]
+                  off=struct.unpack_from("<I",data,at+20)[0]
+                  result[name]=(rva,data[off:off+raw_size])
+              return result
+          x=pe_sections(sys.argv[1]);y=pe_sections(sys.argv[2])
+          for name in ("CODE","DATA"):
+              if name not in x or name not in y:
+                  print("PE missing section",name)
+                  continue
+              rva,original=x[name];other_rva,public=y[name]
+              print("COMPARE",name,"RVAs",hex(rva),hex(other_rva),
+                    "lengths",len(original),len(public))
+              n=min(len(original),len(public))
+              diffs=[i for i in range(n) if original[i]!=public[i]]
+              spans=[]
+              for k,group in itertools.groupby(enumerate(diffs),lambda t:t[1]-t[0]):
+                  chunk=[v for _,v in group]
+                  spans.append((chunk[0],chunk[-1]+1))
+              print("CHANGED-BYTES",len(diffs),"DIFFERENT-SPANS",len(spans))
+              for start,end in spans[:80]:
+                  print("DIFF",name,"RVA",hex(rva+start),
+                        "VA",hex(0x400000+rva+start),"length",end-start)
+              if len(spans)>80:print("MORE-DIFF-SPANS",len(spans)-80)
+          PY
+            else
+              echo "Pinned public comparison binary inaccessible or wrong hash."
+            fi
+            rm -f -- "$public"
+          fi
           rm -f -- "$zipfile" "${RUNNER_TEMP}/verified_unsafedisc155.exe"
       - name: Upload experimental Linux executable
         uses: actions/upload-artifact@v4
