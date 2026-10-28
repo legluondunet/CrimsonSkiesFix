@@ -302,6 +302,34 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
     }).collect();
     let directory_starts:Vec<u32>=(0..16usize).map(|i|read_u32(dll,nt+0x78+i*8))
         .collect::<Result<_>>()?;
+    // A2A0 is a category/region bookkeeping dispatcher. Its three
+    // direct fallbacks B850/B880/B8E0 invoke list and range operations.
+    // We verify only the reached instruction-level calls, not the
+    // absence of an unknown decoder elsewhere in the call tree.
+    for (call,target) in [
+        (0xA2D3u32,0xB850u32),
+        (0xA2E4,0xB880),
+        (0xA2F5,0xB8E0),
+        (0xB865,0xBAD0),
+        (0xB8A1,0xBC40),
+        (0xB8B4,0xC2F0),
+        (0xB8BE,0xB9D0),
+        (0xB8F6,0xBC00),
+        (0xB90F,0xB7C0),
+        (0xB919,0xB940),
+        (0xC2A7,0xB610),
+    ] {check_call(dll,pe,call,target)?;}
+    // C2A0 initializes a 3-DWORD range/list node. The sibling C2F0
+    // adjusts a two-DWORD range start/extent descriptor (not a game
+    // buffer write). This is a statement about these opcodes only.
+    dll_expect_raw_x86(dll,pe,0xC2A0,&[0x6A,0x0C,0x68,0xCB,0,0,0])?;
+    dll_expect_raw_x86(dll,pe,0xC2BB,&[0x89,0x08])?;
+    dll_expect_raw_x86(dll,pe,0xC2C1,&[0x89,0x50,0x04])?;
+    dll_expect_raw_x86(dll,pe,0xC2C4,&[0x89,0x48,0x08])?;
+    dll_expect_raw_x86(dll,pe,0xC2F8,&[0x3B,0x08])?;
+    dll_expect_raw_x86(dll,pe,0xC2FC,&[0x89,0x08])?;
+    dll_expect_raw_x86(dll,pe,0xC305,&[0x03,0xD1])?;
+    dll_expect_raw_x86(dll,pe,0xC307,&[0x89,0x50,0x04])?;
     let expected_walks=[
         SectionWalk{category:4,selector:1,matching_first_stage:3,
             skipped_directory_starts:0,selected_section:Some(".txt".into())},
@@ -441,6 +469,34 @@ mod tests {
         let out=select_section(10,&sections,&[0x1E000]);
         assert_eq!(out.skipped_directory_starts,1);
         assert_eq!(out.selected_section.as_deref(),Some(".custom"));
+    }
+
+    // The original C2F0 range accumulator uses unsigned comparison
+    // and wrapping DWORD addition, not byte writes. This model is
+    // deliberately limited to those two operations.
+    fn original_range_update(start:u32,extent:u32,candidate:u32,extra:u32)->(u32,u32) {
+        (start.min(candidate),extent.wrapping_add(extra))
+    }
+
+    #[test]
+    fn original_c2f0_metadata_range_update_synthetic_vectors() {
+        assert_eq!(original_range_update(0x2000,0x100,0x1000,0x80),(0x1000,0x180));
+        assert_eq!(original_range_update(0x2000,0x100,0x3000,0x80),(0x2000,0x180));
+        assert_eq!(original_range_update(4,0xFFFF_FFFF,2,2),(2,1));
+    }
+
+    #[test]
+    fn category_registry_edges_are_separate_from_source_byte_decryption() {
+        // Category selection records metadata; the selected .txt
+        // section is still on-disk ciphertext at this stage.
+        let sections=vec![
+            (".txt".into(),0x1000,0x6000_0020),
+            (".data".into(),0x20000,0xC000_0040),
+        ];
+        let s=select_section(1,&sections,&[]);
+        assert_eq!(s.category,4);
+        assert_eq!(s.selected_section.as_deref(),Some(".txt"));
+        assert_eq!(original_range_update(0x1000,0x200,0x1000,0x80),(0x1000,0x280));
     }
 
     #[test]
