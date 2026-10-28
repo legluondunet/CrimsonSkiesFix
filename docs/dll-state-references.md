@@ -613,3 +613,73 @@ conditional addition actually occurs during normal gameplay.
 The DLL entrypoint path to \`0x1A9B6\`, exact 32-bit state at
 the byte mixer \`0x19C78\`, and protected EAX modifier
 routines \`0x65BE\`/\`0x6621\` are **not** recovered.
+
+
+### Keyboard-rejected INT 68h path: conditional state-gate truth table (2026-10-28)
+
+The original **keyboard-rejected** path has now been composed with
+the previously audited nested version query and pointer-null guard.
+This adds a second conditional route to the isolated \`+0x34F\`
+DWORD mutation; the interrupt's behavior is **not** assumed or
+emulated.
+
+- At \`0x1C7FC\`, the helper initializes the **stack-local**
+  \`[EBP-0x98]\` to zero.
+- If \`GetKeyboardType\` predicate fails, \`0x1CD52 JNE\`
+  is not taken, so the file-backed original \`PUSHA\`, \`XOR EAX,EAX\`,
+  \`MOV AX,0x4300\`, \`INT 0x68\` at \`0x1CD5B\` are reached.
+- **Assuming only that INT 68h returns normally** and the original
+  stack/frame remains usable, \`0x1CD5D\` saves the resulting full
+  EAX to the local \`[EBP-0x9C]\`. The original
+  \`CMP EAX,0x00004300\` at \`0x1CD63\` / \`JE\` at \`0x1CD68\`
+  preserve \`[EBP-0x98]=0\` if **full EAX equals 0x4300**,
+  or set \`[EBP-0x98]=1\` at \`0x1CD6A..0x1CD74\` otherwise.
+  The comparison is **32-bit**, not merely AX (an EAX such as
+  \`0xFFFF4300\` is treated as different).
+- \`POPA; JMP 0x1CE4F\` at \`0x1CD75..0x1CD7A\` bypasses the
+  keyboard-accepted-only writes at \`0x1CE3B\` and \`0x1CE45\`,
+  **so the one/zero interrupt flag is not overwritten there**.
+  The already audited \`1CE4F -> 1CFFF -> 1D051\` flag-only networks
+  reach the nested \`KERNEL32!GetVersionExA\` at \`0x1D058\`.
+- If this nested API succeeds with \`dwPlatformId != 1\`,
+  the original \`1D133\` stack-local store **overwrites**
+  \`[EBP-0x98]\` with **15**. Otherwise (failure or platform 1),
+  the interrupt-derived 0 or 1 remains unchanged.
+- Original \`CMP [EBP-0x98],0; JBE 1D305\` at \`0x1D19D\`
+  bypasses the pointer test for zero, and routes nonzero values
+  through the already verified flag-only path to \`0x1D26A\`.
+  Only a **nonnull, usable pointer** can then produce
+  \`*ptr = (*ptr + 0x34F) mod 2^32\`.
+
+The complete conditional local matrix (assuming normal INT return
+on the rejected route and a valid original stack frame) is:
+
+| Keyboard check | Returned EAX from INT 68h | Nested GetVersionExA | Local flag at 1D19D | Pointer guard |
+| --- | --- | --- | ---: | --- |
+| Accepted | Not invoked | Failed or platform 1 | 0 | Bypassed |
+| Accepted | Not invoked | Success, platform != 1 | 15 | Reached |
+| Rejected | Exactly 0x4300 | Failed or platform 1 | 0 | Bypassed |
+| Rejected | Different from 0x4300 | Failed or platform 1 | 1 | Reached |
+| Rejected | Any returned EAX | Success, platform != 1 | 15 | Reached |
+
+This is implemented as an explicit **conditional-source model**
+\`conditional_nested_pointer_route\` in
+\`src/unsafedisc_dll_keyboard_probe.rs\`, with distinct
+\`KeyboardResult\` and \`NestedVersionResult\` enums. It deliberately
+does **not** define a \`RejectedInterruptNeverReturned\` path because
+that has no reachable post-interrupt program counter: no assertion
+about success, failure, trapping, exception handling, drivers or
+Wine behavior is made. Four synthetic regression tests cover the
+return-value/OS-version combinations; original instruction checks
+for \`PUSHA/POPA\`, local writes, 32-bit comparison, and all local
+branch targets are SHA-pinned.
+
+**Important:** the separate outer \`GetVersionExA\` in helper
+\`0x1A9B6\` selects \`0x1C7F0\` only for a Windows-9x platform report.
+The new conditional route shows that a matching **inner** platform
+1 is *not itself sufficient* to rule out the isolated \`+0x34F\`
+addition: it may also be reached via the keyboard-rejected
+INT-return comparison. **Whether that interruption ever returns
+normally on a target system is not established.** Actual entry
+state at \`0x19C78\` and the two protected EAX modifiers remain
+unknown. This does not enable unpacking or run any protected bytes.
