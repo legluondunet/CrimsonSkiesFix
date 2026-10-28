@@ -47,6 +47,16 @@ pub fn same_range_and_buffer(a:&DescriptorIoCall,b:&DescriptorIoCall)->bool {
 /// algorithm and actual side effects are still unresolved.
 pub const TRANSFORM_RVA:u32=0x195DF;
 pub const TRANSFORM_CALL_RVA:u32=0x1940B;
+pub const CODE_REGION_CATEGORY:u32=4;
+pub const CATEGORY_CHECK_CALL_RVA:u32=0x196AE;
+pub const CATEGORY_CHECK_RVA:u32=0xA310;
+
+/// A310 adjusts a nonzero 4-KiB-page-aligned start by one before
+/// comparing it to a record's page-boundary markers. This is only
+/// a local arithmetic operation, not a model of the entire A310.
+pub fn adjusted_range_start(start:u32)->u32 {
+    if start!=0 && start&0xFFF==0 {start-1} else {start}
+}
 
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<usize> {
     for (site,dest) in [
@@ -58,6 +68,50 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<usize> {
         if dll_relative_call_target(dll,pe,site)?!=dest {
             return Err(format!("original .txt2 read-transform-write CALL mismatch at RVA 0x{site:05X}"));
         }
+    }
+    // 195DF is not just an unclassified byte mixer: it calls A310
+    // with literal category 4 (the original code-section category).
+    // The callee looks up a module record and compares the request
+    // with its recorded page limits at +0x34/+0x38, then invokes
+    // additional original range-management helpers. The actual
+    // effect and return values of those helpers remain unproven.
+    for (site,dest) in [
+        (CATEGORY_CHECK_CALL_RVA,CATEGORY_CHECK_RVA),
+        (0xA33Eu32,0xB5D0u32),
+        (0xA394,0xC0D0),
+        (0xA3A2,0xC0C0),
+        (0xA3C8,0xBFB0),
+        (0xA3F2,0xBED0),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=dest {
+            return Err(format!("original 195DF/A310 code-range helper CALL mismatch at 0x{site:05X}"));
+        }
+    }
+    for (site,bytes) in [
+        (0x19692u32,&[0x8B,0x45,0x24][..]),
+        (0x19695,&[0x25,0xFF,0xFF,0x00,0x00][..]),
+        (0x196A0,&[0x6A,0x04][..]),
+        (0x196A2,&[0x8D,0x4D,0xEC,0x51][..]),
+        (0x196A6,&[0x8D,0x55,0xF4,0x52][..]),
+        (0x196AA,&[0x8D,0x45,0x08,0x50][..]),
+        (0x196B3,&[0x83,0xC4,0x14][..]),
+        (0x196B6,&[0x25,0xFF,0xFF,0x00,0x00][..]),
+        (0x196BB,&[0x85,0xC0][..]),
+        (0xA314,&[0x8B,0x7C,0x24,0x18][..]),
+        (0xA318,&[0x85,0xFF][..]),
+        (0xA320,&[0x8B,0x6C,0x24,0x1C][..]),
+        (0xA324,&[0x85,0xED][..]),
+        (0xA32C,&[0x8B,0x07,0x8B,0x4D,0x00,0x3B,0xC1][..]),
+        (0xA355,&[0x85,0xFF,0x74,0x09][..]),
+        (0xA359,&[0xF7,0xC7,0xFF,0x0F,0x00,0x00][..]),
+        (0xA361,&[0x4F][..]),
+        (0xA362,&[0x8B,0x46,0x34][..]),
+        (0xA369,&[0x3B,0x5E,0x38][..]),
+        (0xA3DD,&[0x89,0x7E,0x34][..]),
+        (0xA3E0,&[0x89,0x5E,0x38][..]),
+        (0xA3ED,&[0x83,0xC6,0x14][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
     }
     // Recover both reads' four push operands from the actually reached
     // x86 instruction boundaries. All lengths and offsets are locals:
@@ -101,7 +155,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<usize> {
        same_range_and_buffer(&READ_OTHER,&WRITE_CURRENT) {
         return Err("original .txt2 read/write local-slot model is internally inconsistent".into());
     }
-    Ok(4)
+    Ok(10) // four pipeline E8 targets + six code-region/range helper E8 targets
 }
 
 #[cfg(test)]
@@ -127,6 +181,22 @@ mod tests {
         assert!(READ_OTHER.call_rva<TRANSFORM_CALL_RVA);
         assert!(TRANSFORM_CALL_RVA<WRITE_CURRENT.call_rva);
     }
+    #[test]
+    fn original_mixer_uses_code_section_category() {
+        assert_eq!(CODE_REGION_CATEGORY,4);
+        assert_eq!(CATEGORY_CHECK_CALL_RVA,0x196AE);
+        assert_eq!(CATEGORY_CHECK_RVA,0xA310);
+        assert!(TRANSFORM_CALL_RVA<CATEGORY_CHECK_CALL_RVA);
+    }
+    #[test]
+    fn original_a310_page_boundary_adjustment_is_bounded() {
+        assert_eq!(adjusted_range_start(0),0);
+        assert_eq!(adjusted_range_start(0x1000),0x0FFF);
+        assert_eq!(adjusted_range_start(0x1001),0x1001);
+        assert_eq!(adjusted_range_start(0xFFFF_F000),0xFFFF_EFFF);
+        assert_eq!(adjusted_range_start(u32::MAX),u32::MAX);
+    }
+
     #[test]
     fn unrelated_stack_offsets_do_not_qualify_as_same_read_write_range(){
         let mut wrong=WRITE_CURRENT;
