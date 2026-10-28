@@ -14,6 +14,9 @@ mod unsafedisc_algebra;
 #[path = "../unsafedisc_indexed_affine.rs"]
 mod unsafedisc_indexed_affine;
 
+#[path = "../unsafedisc_historical_155.rs"]
+mod unsafedisc_historical_155;
+
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
 
@@ -4173,6 +4176,13 @@ fn inspect(options: Options) -> Result<()> {
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
     if options.historical_selection {
         print_historical_155_section_filter(&protected_pe);
+        let (word_count,tail_count)=
+            unsafedisc_historical_155::original_complete_dwords_and_tail(4095);
+        println!("  Historical 1.5.5 modifier inner loop: full DWORDs only (example: 4095 bytes => {word_count} words, {tail_count} untouched by THIS layer).");
+        println!("  Original 401F96 CALL EDX uses DLL base + 0x65BE; 401F9A ADD EDX,0x63 and 401F9D CALL EDX reuse EDX after first modifier.");
+        println!("  Original 401F98 XOR EAX,ECX reuses ECX as the index mask after first modifier; both ECX and EDX are caller-saved on Win32 x86.");
+        println!("  Thus the usual F2(F1(input XOR mask) XOR mask) model and second RVA 0x6621 are conditional on the FIRST modifier preserving ECX and EDX (and EBX/ESI/EDI for loop progress).");
+        println!("  Source: publicly archived version.dll-adapted unSafeDisc 1.5.5, core CODE at 0x401F62..0x401FA7; private original executable was NOT rechecked here.");
     }
     if options.key_research {audit_original_pretea_fragments(&protected_pe,&relocs)?;}
     let text = protected_pe.section(b".text")?;
