@@ -4882,13 +4882,23 @@ memory graph, nor that every listed writer executes
 between entry and the byte-step loop. The complete
 runtime order and any indirect writes are unresolved.
 
-**Two original callers invoke another helper with a
-pointer to the state:**
+**Three original caller sites pass a pointer to
+the same global state to two different helpers:**
 
 ```text
+.txt2:1987D PUSH 0x00905010; 19882 CALL 1A9B6
 .txt2:19A48 PUSH 0x00905010; 19A4D CALL 1A77F
 .txt2:19E2B PUSH 0x00905010; 19E30 CALL 1A77F
 ```
+
+The earlier `1A9B6` helper also prepares a
+`0x94`-byte OSVERSIONINFOA structure at
+`0x1A9EA` and calls the **same actual imported
+`KERNEL32!GetVersionExA`** at `0x1AA2F`.
+The two OS-dependent subroutines are distinct,
+so neither their outputs nor their effects on
+the state should be assumed equal. Their runtime
+branch reachability is not established.
 
 The separately disassembled original `.txt2:0x1A77F`
 code prepares a `0x94`-byte **OSVERSIONINFOA** structure
@@ -4916,7 +4926,7 @@ version-derived key.
 The new `src/unsafedisc_dll_state_provenance.rs`
 module verifies the original `.data` virtual/raw
 geometry, all seven exact state-writer sequences,
-both actual E8 calls to 1A77F, OSVERSIONINFOA
+all three pointer-passing E8 calls into 1A9B6/1A77F, OSVERSIONINFOA
 setup, GetVersionExA symbol/IAT identity,
 and the original platform-specific E8 destinations
 **only on the pinned original DLL**. Six synthetic
