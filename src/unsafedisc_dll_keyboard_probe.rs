@@ -17,9 +17,12 @@ pub const CALLSITE_RVA:u32=0x1CD46;
 /// If 1CD31 is entered, JL is taken when SF!=OF; otherwise the
 /// fallthrough has only two NOPs and complementary JGE at 1CD39
 /// takes the same callsite. No flags are changed between the Jccs.
-pub fn conditional_predecessor_target(sf:bool,of:bool)->u32 {
-    if sf!=of {CALLSITE_RVA}
-    else {CALLSITE_RVA}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum PredecessorArm { SignedLess, SignedGreaterEqual }
+
+pub fn conditional_predecessor_arm(sf:bool,of:bool)->PredecessorArm {
+    if sf!=of {PredecessorArm::SignedLess}
+    else {PredecessorArm::SignedGreaterEqual}
 }
 
 /// Original helper 1D42F returns AX=1 only if GetKeyboardType(0)
@@ -135,10 +138,13 @@ mod tests {
     fn complementary_signed_condition_codes_join_at_original_callsite() {
         for sf in [false,true] {
             for of in [false,true] {
-                assert_eq!(conditional_predecessor_target(sf,of),CALLSITE_RVA);
-                let jl=sf!=of;
-                let jge=sf==of;
-                assert_ne!(jl,jge);
+                let arm=conditional_predecessor_arm(sf,of);
+                assert_eq!(arm,if sf!=of {
+                    PredecessorArm::SignedLess
+                }else{
+                    PredecessorArm::SignedGreaterEqual
+                });
+                assert_ne!(sf!=of,sf==of);
             }
         }
     }
