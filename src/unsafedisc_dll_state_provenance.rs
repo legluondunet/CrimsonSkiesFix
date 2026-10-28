@@ -460,9 +460,70 @@ pub fn audit_secondary_fallback_all_flags(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+
+/// Within the original 1C7F0 Windows-9x-platform helper's file-backed
+/// code span, the instructions at 1D2A4..1D2B4 read DWORD *[EBP+8],
+/// ADD 0x34F modulo 2^32, then store it through the *same pointer*.
+/// This is only the conditional LOCAL transition if execution enters
+/// at 1D28F with a valid, writable pointer. The full 1C7F0 path and
+/// its final state are NOT recovered.
+pub fn conditional_win9x_34f_step(old:u32)->u32 {
+    old.wrapping_add(0x34F)
+}
+
+/// Two original complementary source pairs surround the state store:
+/// 1D28F JNE / 1D297 JE (before ADD), 1D2B4 JNE /
+/// 1D2B6 JE (after ADD). The intervening self-MOV, ordinary MOV
+/// and memory store do not change ZF; only ADD updates flags.
+pub fn win9x_34f_conditional_trace(entry_zf:bool,add_result_zf:bool)->Vec<u32> {
+    let mut path=vec![0x1D28F];
+    if entry_zf {
+        path.extend_from_slice(&[0x1D295,0x1D297]);
+    }
+    path.extend_from_slice(&[0x1D2A4,0x1D2A7,0x1D2A9,0x1D2AF,0x1D2B2,0x1D2B4]);
+    if add_result_zf {path.push(0x1D2B6);}
+    path.push(0x1D2C7);
+    path
+}
+
+/// Byte-anchored original-disassembly audit, without loading the DLL
+/// or inferring reachability of the conditional 1D28F block.
+pub fn audit_conditional_win9x_state_add(dll:&[u8],pe:&Pe32)->Result<()> {
+    if dll_relative_call_target(dll,pe,0x1AA9E)?!=0x1C7F0 {
+        return Err("original 1A9B6 Windows-9x helper call changed".into());
+    }
+    for (rva,bytes) in [
+        (0x1AA9Au32,&[0x8B,0x4D,0x08,0x51][..]), // forward passed DWORD pointer
+        (0x1D28F,&[0x0F,0x85,0x0F,0,0,0][..]), // JNE 1D2A4
+        (0x1D295,&[0x8B,0xD2,0x74,0x0B][..]), // self-MOV then JE
+        (0x1D2A4,&[
+            0x8B,0x4D,0x08,         // MOV ECX,[EBP+8]
+            0x8B,0x11,              // MOV EDX,[ECX]
+            0x81,0xC2,0x4F,0x03,0,0,// ADD EDX,0x34F
+            0x8B,0x45,0x08,         // MOV EAX,[EBP+8]
+            0x89,0x10,              // MOV [EAX],EDX
+        ][..]),
+        (0x1D2B4,&[0x75,0x11,0x74,0x0F][..]), // JNE / JE same target
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,bytes)?;
+    }
+    for (source,length,delta,target) in [
+        (0x1D28Fu32,6u32,0x0Fu32,0x1D2A4u32),
+        (0x1D297,2,0x0B,0x1D2A4),
+        (0x1D2B4,2,0x11,0x1D2C7),
+        (0x1D2B6,2,0x0F,0x1D2C7),
+    ] {
+        if source+length+delta!=target {
+            return Err("original 1D28F state-add branch changed".into());
+        }
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_conditional_win9x_state_add(dll,pe)?;
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
     if base!=0x008E_0000 || base+STATE_RVA!=STATE_PREFERRED_VA {
@@ -814,6 +875,32 @@ mod tests {
             assert_eq!(after & !0xFF,0);
         }
         assert_ne!(version_query_failure_state(0x1234_5678).0,0);
+    }
+
+    #[test]
+    fn conditional_win9x_add34f_is_wrapping_and_retains_pointer_semantics() {
+        for (before,after) in [
+            (0u32,0x34Fu32),(1,0x350),(0xFFFF_FF00,0x24F),
+            (0xFFFF_FCB1,0),(u32::MAX,0x34E),
+            (0x1234_5678,0x1234_59C7),
+        ] {
+            assert_eq!(conditional_win9x_34f_step(before),after);
+        }
+    }
+
+    #[test]
+    fn conditional_original_add34f_branches_rejoin_for_both_zf_values() {
+        for entry_zf in [false,true] {
+            for result_zf in [false,true] {
+                let trace=win9x_34f_conditional_trace(entry_zf,result_zf);
+                assert_eq!(trace.first(),Some(&0x1D28F));
+                assert_eq!(trace.last(),Some(&0x1D2C7));
+                assert_eq!(trace.iter().filter(|&&pc|pc==0x1D2A9).count(),1);
+                assert_eq!(trace.iter().filter(|&&pc|pc==0x1D2B2).count(),1);
+                assert_eq!(trace.contains(&0x1D295),entry_zf);
+                assert_eq!(trace.contains(&0x1D2B6),result_zf);
+            }
+        }
     }
 
     #[test]
