@@ -478,6 +478,32 @@ does not assume the old program safely appends an explicit
 NULL sentinel; a matching zero-terminator store has
 **not yet been established**.
 
+**Further independent public-archive DATA observation:** the 18,944-byte
+variant's on-disk global at `0x403957` contains the little-endian
+VA **`0x403C90`**, pointing into its DATA section
+(virtual base `0x403000`, raw section offset `0x2600`). Starting
+at `0x403C90`, the available 92 on-disk DWORD slots
+through the DATA raw end `0x403E00` are **all initially
+zero**. This is consistent with the selected-section
+pointer list using the first still-null DWORD as its
+terminator, despite the builder not explicitly writing
+one. It does **not** establish that these slots are
+zero at runtime, that subsequent invocations are safe,
+that 92 slots suffice for every conceivable PE, or
+that the owner's unmodified original has an identical
+backing location.
+
+Added `inspect_155_pointer_list_disk_state` to report
+the disk pointer and contiguous zero-word count without
+executing the historic EXE. In `inspect-historical` this
+is an **advisory** check after the exact-original SHA-256
+gate: a differing original DATA layout is reported as
+unconfirmed rather than invalidating separate, audited
+machine-code observations. A synthetic test covers
+all-zero backing, a stale pointer, bad alignment and
+out-of-range mappings.
+
+
 The `inspect-historical` command verifies this x86
 builder only on the owner's exact hash-approved original.
 Separately, `inspect --historical-selection` reads the
