@@ -4022,3 +4022,50 @@ elsewhere in memory. A later or indirect step must
 still account for the unreadable on-disk modifier RVAs
 `0x65BE` and `0x6621`. We do not claim that
 the whole `A2A0` tree has been proven decryption-free.
+
+
+### Native original-file verification of the completed bootstrap audit (2026-10-28)
+
+The exact, SHA-256-matched owner-supplied retail
+`CRIMSON.EXE`, `CRIMSON.ICD`, `dplayerx.dll`,
+and known plaintext `testme.exe` were inspected with
+the **actual native Linux `unsafedisc-linux` executable**
+downloaded from GitHub Actions research CI. The
+read-only binary at the updated research branch head
+passed both of the following genuine-file invocations,
+returning **exit status zero**:
+
+```bash
+./unsafedisc-linux inspect --loader CRIMSON.EXE \
+  --icd CRIMSON.ICD --dplayerx dplayerx.dll --modifier-research
+
+./unsafedisc-linux inspect --loader CRIMSON.EXE \
+  --icd CRIMSON.ICD --dplayerx dplayerx.dll \
+  --reference testme.exe --key-research
+```
+
+The `--modifier-research` run passed all actual protected
+DLL static opcode/call/section-layout checks, including:
+
+- The five PE directory source-copy and zero-size guard
+  results: directory sources `12, 1, 2, 0, 9`, only
+  `12, 1, 0` with nonzero extents.
+- The three final ordered selector/category pairs:
+  `(1,4)->.txt`, `(2,5)->.data`, `(10,6)->none`.
+- The `A2A0` range registry call tree and the exact
+  `C2A0` 12-byte allocator and `C2F0` range
+  arithmetic opcodes.
+
+The `--key-research` invocation separately passed all
+existing **four original/reference EAX aggregate signatures**,
+including the conditional F1 XOR forest, the F2-only
+mask-differential counterexample, and the independent TEA
+fragment-tail oracle. No protected DLL code was executed;
+the native inspector only **read** the private originals
+from a local scratch directory. No original file or
+recovered DWORD sample was uploaded as a GitHub artifact.
+
+This closes the previous gap between GitHub's
+**synthetic-only CI** and original-file Rust assertions.
+It does **not** imply a working SafeDisc decoder or
+known plaintext at the two protected EAX RVAs.
