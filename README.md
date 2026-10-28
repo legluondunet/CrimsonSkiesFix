@@ -28,6 +28,22 @@ unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \
   --dplayerx dplayerx.dll --reference TESTME.EXE --key-research
 ```
 
+A **standalone historical-executable disassembly audit** is also
+available, without any Crimson Skies game files:
+
+```bash
+unsafedisc-linux inspect-historical --unsafedisc ./unSafedisc.exe
+```
+
+It accepts only the original **20,480-byte** unSafeDisc 1.5.5
+(SHA-256 verified), checks the original x86 modifier-call chain and
+distinguishes its actual `LoadLibraryExA` startup flags and conditional
+manual DLL-entrypoint branch from the **modified public archival variant**
+(which uses loader flags `0` and an unconditional bypass).
+It never executes the legacy Windows program or DLL.
+The original historical executable must be supplied locally and
+is not distributed here.
+
 The exact-version first key word defaults to `0x7496538F`; use
 `--reported-key` only to override it for controlled experiments.
 **This is a validated key and diagnostic framework, not a working
