@@ -173,6 +173,34 @@ mod tests {
     }
 
     #[test]
+    fn exact_count_contains_every_state_from_no_carry_special_case(){
+        // Two mathematically INDEPENDENT solvers on identical,
+        // generated synthetic observations. Every zero-carry state
+        // must also be accepted by the exact carry-aware solver.
+        let outputs=[3u8,5,1,4];
+        let (destination,secondary)=generate(0x1234_5610,&outputs);
+        let restricted=
+            super::super::unsafedisc_dll_byte_mix::hypothetical_no_carry_initial_states(
+                &destination,&secondary,&outputs).unwrap();
+        let exact=hypothetical_exact_mixer_initial_states(
+            &destination,&secondary,&outputs,0).unwrap();
+        assert!(!restricted.candidates.is_empty());
+        assert!(exact.compatible_initial_states>=
+            restricted.equivalent_full_initial_states);
+        assert!(exact.example_initial_states.is_empty());
+    }
+
+    #[test]
+    fn identical_zero_increment_observations_cannot_create_information(){
+        let single=hypothetical_exact_mixer_initial_states(&[0],&[7],&[0],0)
+            .unwrap();
+        let repeated=hypothetical_exact_mixer_initial_states(
+            &[0,0,0],&[7,7,7],&[0,0,0],0).unwrap();
+        assert_eq!(single.compatible_initial_states,1u64<<24);
+        assert_eq!(repeated.compatible_initial_states,1u64<<24);
+    }
+
+    #[test]
     fn limits_are_enforced_and_zero_example_count_preserves_full_result(){
         assert!(hypothetical_exact_mixer_initial_states(&[],&[],&[],1).is_err());
         assert!(hypothetical_exact_mixer_initial_states(&[1],&[],&[1],1).is_err());
