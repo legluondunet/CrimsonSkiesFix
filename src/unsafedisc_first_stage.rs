@@ -25,6 +25,8 @@ pub struct FirstStageAudit {
     pub augmented_rank: usize,
     pub repeated_input_delta_classes: usize,
     pub contradictory_input_delta_classes: usize,
+    pub rotate_then_add_lsb_candidates: usize,
+    pub add_then_rotate_lsb_candidates: usize,
 }
 
 fn add_rank(mut x:u64,basis:&mut [u64;64])->bool {
@@ -120,6 +122,7 @@ pub fn diagnose(pairs:&HashMap<(u32,u32),u32>)->FirstStageAudit{
     let mut repeated=HashSet::<u32>::new();
     let mut conflicting=HashSet::<u32>::new();
     let mut graph=XorGraph::default();
+    let mut relations=Vec::<(u32,u32)>::new();
     while i<by_output.len(){
         let begin=i;
         let y=by_output[i].0;
@@ -131,6 +134,7 @@ pub fn diagnose(pairs:&HashMap<(u32,u32),u32>)->FirstStageAudit{
             let dx=x^x0;
             let dm=m^m0;
             audit.xor_relations+=1;
+            relations.push((dx,dm));
             if add_rank(u64::from(dx),&mut linear_basis) {audit.affine_input_rank+=1;}
             if add_rank((u64::from(dx)<<32)|u64::from(dm),
                         &mut augmented_basis) {audit.augmented_rank+=1;}
@@ -143,6 +147,24 @@ pub fn diagnose(pairs:&HashMap<(u32,u32),u32>)->FirstStageAudit{
     }
     audit.repeated_input_delta_classes=repeated.len();
     audit.contradictory_input_delta_classes=conflicting.len();
+    if !relations.is_empty() {
+        // Only necessary conditions, but independent of unknown
+        // additive offset k. For F1(x)=rotl(x,r)+k, the lowest
+        // output XOR bit equals the lowest rotl input XOR bit:
+        // carries cannot affect bit zero. For rotl(x+k,r),
+        // output bit r corresponds to input bit zero.
+        for rotate in 0..32u32 {
+            let source_bit=(32-rotate)%32;
+            if relations.iter().all(|&(dx,dm)|
+                    (dm&1)==((dx>>source_bit)&1)) {
+                audit.rotate_then_add_lsb_candidates+=1;
+            }
+            if relations.iter().all(|&(dx,dm)|
+                    ((dm>>rotate)&1)==(dx&1)) {
+                audit.add_then_rotate_lsb_candidates+=1;
+            }
+        }
+    }
     let (vertices,components,biggest)=graph.summarize();
     audit.graph_vertices=vertices;
     audit.graph_components=components;
@@ -228,6 +250,25 @@ mod tests {
         let mut b=HashMap::new();
         for &(key,value) in entries.iter().rev(){b.insert(key,value);}
         assert_eq!(diagnose(&a),diagnose(&b));
+    }
+
+    #[test]
+    fn known_identity_first_stage_passes_both_lsb_necessary_families(){
+        let samples=HashMap::from([
+            ((0,0u32),10u32),((1,0x0101_0101),10),
+            ((0,3),20),((2,3^0x0202_0202),20),
+        ]);
+        let report=diagnose(&samples);
+        assert!(report.rotate_then_add_lsb_candidates>=1);
+        assert!(report.add_then_rotate_lsb_candidates>=1);
+    }
+
+    #[test]
+    fn no_edges_do_not_vacuously_establish_any_rotation_family(){
+        let samples=HashMap::from([((0,101),11),((1,102),12)]);
+        let report=diagnose(&samples);
+        assert_eq!(report.rotate_then_add_lsb_candidates,0);
+        assert_eq!(report.add_then_rotate_lsb_candidates,0);
     }
 
     #[test]
