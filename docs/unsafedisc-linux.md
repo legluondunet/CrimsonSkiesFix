@@ -10,6 +10,94 @@ extracts SafeDisc-specific key material and optionally validates a reported
 It **does not** modify or reconstruct a game executable, run a Windows DLL,
 interact with `secdrv`, load Wine, or decrypt the protected ICD.
 
+## Current historical unSafeDisc 1.5.5 decompilation status (2026-10-28)
+
+**Evidence hierarchy:** This document contains evolving research notes.
+The **later known-plaintext verification** below supersedes early
+sections that still describe the four TEA words as tentative.
+For **Crimson Skies PC 1.0.2.0**, the independently validated
+four-word TEA key is `7496538F E9C7914F CF10EA3F 82F5DE2F`.
+It passed 58,076/58,076 independently testable protected
+fragment-tail bytes, with a one-bit wrong-key negative control.
+Subsequent offline analysis independently matched **93,801/93,801**
+tail bytes across all relevant fragment shapes.
+
+**What remains:** The historical program's extra pre-TEA
+DWORD layer still depends on two encrypted, title-specific
+`dplayerx.dll` functions, conventionally labeled RVA
+`0x65BE` and `0x6621`. We have not recovered their
+actual algorithms, the complete protected `.txt` plaintext,
+or a standalone working native unpacker.
+
+### Direct disassembly of the historical modifier loop
+
+The GitHub-archived **version.dll-adapted public variant**
+`nckstwrt/SafeDiscLoader` / `unSafedisc155_version.exe`
+(Git blob `825c467b6b403e1c85a5875ede5696dedfe17652`)
+contains this x86 CODE section window at `0x401F62..0x401FA7`.
+The archived 18,944-byte file is **not identical** to the
+owner's original 20,480-byte `unSafedisc.exe`
+(SHA-256 `e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f`).
+Earlier independent original-file work already reported the
+same main historical address layout; **no fresh byte-for-byte
+comparison to the owner's binary was possible in this session**.
+
+Equivalent C-style pseudocode, derived from the archived
+variant's actual instruction sequence:
+
+```c
+/* ESI = input/output pointer; EDI = byte length.
+   DLL_BASE = value read from the historical DLL-base global.
+   Modifier_1 and Modifier_2 are still UNKNOWN. */
+for (uint32_t i = 0; i < (length >> 2); ++i) {
+    uint32_t m = (i << 24) | (i << 16) | (i << 8) | i;
+    eax = *(uint32_t *)cursor ^ m;
+    edx = dll_base + 0x65BE;
+    eax = call_indirect(edx, eax);  /* opaque first DLL helper */
+    eax ^= ecx;                     /* uses ECX left by helper */
+    edx += 0x63;                    /* uses EDX left by helper */
+    eax = call_indirect(edx, eax);  /* opaque second DLL helper */
+    *(uint32_t *)cursor = eax;
+    cursor += 4;
+}
+/* final 0..3 bytes are not modified by this extra layer */
+```
+
+**Important x86-register dependency:** The original caller
+does not reload `ECX` (the index mask) or `EDX` (the
+indirect-call target) after the first helper returns.
+Under the common symbolic assumption that helper 1 preserves
+them, the expression simplifies to
+
+```text
+F2(F1(source DWORD XOR mask(i)) XOR mask(i))
+```
+
+and the second call address is `DLL_BASE + 0x6621`.
+But **ECX and EDX are caller-saved registers in the x86
+Windows calling convention**; their preservation by encrypted
+helper 1 cannot simply be inferred from that convention.
+The loop also reuses `EBX` (index), `ESI` (cursor) and
+`EDI` (byte length) across the calls. These registers
+are normally callee-saved under conventional Win32 x86
+calling conventions, but no conventional ABI can be
+assumed for unreadable proprietary code.
+
+The new Rust `src/unsafedisc_historical_155.rs` symbolically
+models the first-call register state, both indirect target
+addresses, mask propagation and full-word/tail split. It
+**never executes either helper**. Six synthetic tests check
+the preserved-register case, independently clobbered ECX/EDX
+and EBX/ESI/EDI cases, x86 wraparound, 1,024 index-mask
+equivalences, and exact whole-DWORD loop geometry.
+`inspect --historical-selection` reports the conditional
+register contracts explicitly.
+
+This narrows the reverse-engineering task: recover each
+modifier's actual register effects and EAX transformation
+from decoded `dplayerx.dll`, before claiming an exact
+whole-section portable decryption stage.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
