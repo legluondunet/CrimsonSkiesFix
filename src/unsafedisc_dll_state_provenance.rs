@@ -15,6 +15,18 @@ use super::{
 pub const STATE_PREFERRED_VA:u32=0x0090_5010;
 pub const STATE_RVA:u32=0x0002_5010;
 
+/// Two different .txt2 descriptor-initializer paths refer to the
+/// SAME worker entrypoint at 0x18F81. The DLL-name caller has two
+/// explicit state-reset instructions in source order around that
+/// worker call. This is NOT a proof that its opaque jumps necessarily
+/// execute both stores or that this is the only caller of the worker.
+pub const PROCESS_WORKER_CALL:u32=0x1A1B2;
+pub const DLL_WORKER_CALL:u32=0x1A39C;
+pub const COMMON_WORKER_RVA:u32=0x18F81;
+pub const DLL_PRE_WORKER_RESET:u32=0x1A360;
+pub const DLL_POST_WORKER_RESET:u32=0x1A3C0;
+
+
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum StateOperation {
     ConditionalAdd4f3,
@@ -117,6 +129,25 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         dll_expect_raw_x86(dll,pe,at,bytes)?;
     }
 
+    // The two initializer paths call the same worker, and the
+    // DLL-specific path contains a state-reset / worker / state-reset
+    // ordering in its original file-backed code. Record only
+    // instruction/call-site provenance; opaque control-flow
+    // reachability is not yet established.
+    for site in [PROCESS_WORKER_CALL,DLL_WORKER_CALL] {
+        if dll_relative_call_target(dll,pe,site)?!=COMMON_WORKER_RVA {
+            return Err(format!("shared 18F81 worker E8 target changed at 0x{site:05X}"));
+        }
+        dll_expect_raw_x86(dll,pe,site+5,&[0x83,0xC4,0x18])?;
+    }
+    dll_expect_raw_x86(dll,pe,0x1A38B,&[0x8B,0x55,0xF4,0x89,0x11])?;
+    dll_expect_raw_x86(dll,pe,0x1A390,&[0x8B,0x45,0xF8,0x89,0x41,0x04])?;
+    dll_expect_raw_x86(dll,pe,0x1A396,&[0x8B,0x55,0xFC,0x89,0x51,0x08])?;
+    dll_expect_raw_x86(dll,pe,0x1A3CA,&[0x8D,0x45,0xF4,0x50])?;
+    if dll_relative_call_target(dll,pe,0x1A3CE)?!=0xA200 {
+        return Err("post-worker A200 module cleanup CALL changed".into());
+    }
+
     // Two site-specific direct calls pass POINTERS to the same global
     // state to 1A77F. 1A77F may modify it; these are not ordinary
     // local DWORD assignments and must not be included in the
@@ -205,6 +236,21 @@ mod tests {
                    .filter(|w|w.operation==StateOperation::AddArgumentLow16).count(),2);
         assert!(VERIFIED_DIRECT_WRITES.windows(2).all(|p|
             p[0].instruction_rva<p[1].instruction_rva));
+    }
+
+    #[test]
+    fn two_separate_origins_share_one_worker_entrypoint() {
+        assert_ne!(PROCESS_WORKER_CALL,DLL_WORKER_CALL);
+        assert_eq!(COMMON_WORKER_RVA,0x18F81);
+        assert!(PROCESS_WORKER_CALL<DLL_WORKER_CALL);
+    }
+
+    #[test]
+    fn dll_reset_worker_reset_have_static_address_order_only() {
+        assert!(DLL_PRE_WORKER_RESET<DLL_WORKER_CALL);
+        assert!(DLL_WORKER_CALL<DLL_POST_WORKER_RESET);
+        // Source-order adjacency does NOT imply execution of either
+        // store in the presence of opaque x86 branches.
     }
 
     #[test]
