@@ -4886,22 +4886,22 @@ runtime order and any indirect writes are unresolved.
 pointer to the state:**
 
 ```text
-.txt2:19A48 PUSH 0x00905010; 19A4D CALL A77F
-.txt2:19E2B PUSH 0x00905010; 19E30 CALL A77F
+.txt2:19A48 PUSH 0x00905010; 19A4D CALL 1A77F
+.txt2:19E2B PUSH 0x00905010; 19E30 CALL 1A77F
 ```
 
-The separately disassembled original `.text:0xA77F`
+The separately disassembled original `.txt2:0x1A77F`
 code prepares a `0x94`-byte **OSVERSIONINFOA** structure
 at `[EBP-0x94]`, passes it to the **actual imported**
 `KERNEL32!GetVersionExA` via IAT RVA `0x1E058`,
 and checks the API's success result.
-At RVA `0xA80B` it compares the DWORD at
+At RVA `0x1A80B` it compares the DWORD at
 `[EBP-0x84]` against `2`. The relative offset
 `0x94-0x84=0x10` identifies **OSVERSIONINFOA.dwPlatformId**,
 and `2` is Win32 `VER_PLATFORM_WIN32_NT`.
-The NT subpath calls original helper `0xAE3F` at
-`0xA828` and the other-platform path calls
-`0xBEEE` at `0xA7F3`. A failed `GetVersionExA`
+The NT subpath calls original helper `0x1AE3F` at
+`0x1A828` and the other-platform path calls
+`0x1BEEE` at `0x1A7F3`. A failed `GetVersionExA`
 call follows a third path and must not be
 treated as either of these successful branches.
 
@@ -4916,7 +4916,7 @@ version-derived key.
 The new `src/unsafedisc_dll_state_provenance.rs`
 module verifies the original `.data` virtual/raw
 geometry, all seven exact state-writer sequences,
-both actual E8 calls to A77F, OSVERSIONINFOA
+both actual E8 calls to 1A77F, OSVERSIONINFOA
 setup, GetVersionExA symbol/IAT identity,
 and the original platform-specific E8 destinations
 **only on the pinned original DLL**. Six synthetic
