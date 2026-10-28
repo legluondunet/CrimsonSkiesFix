@@ -91,6 +91,47 @@ pub fn get_version_path(api_success:bool,platform_id:u32)->WindowsVersionPath {
     else {WindowsVersionPath::OtherPlatform}
 }
 
+/// Proven original lexical sites near 19965, NOT a proven function CFG.
+pub const NEAR_WORKER_SETUP_ENTRY:u32=0x19965;
+pub const NEAR_SETUP_VERSION_CALL:u32=0x19A4D;
+pub const NEAR_SETUP_STATE_ADD:u32=0x19A8B;
+
+/// Conditional composition ONLY if the 1A77F Windows-version query
+/// fails and the 19A8B low-16 addition later runs without intervening
+/// state mutations. This does not establish actual 19965 reachability.
+pub fn hypothetical_near_setup_failure_then_add(
+    initial:u32,argument:u32
+)->u32 {
+    let (masked,_ax)=version_query_failure_state(initial);
+    increment_low16(masked,argument)
+}
+
+/// Individual exact-original opcode audit of the two nearby state
+/// references and the original 1974A call into 19965. Address
+/// proximity does not prove a same-function reachable call chain.
+pub fn audit_near_worker_setup_sites(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    if !(0x1974A<NEAR_WORKER_SETUP_ENTRY &&
+         NEAR_WORKER_SETUP_ENTRY<NEAR_SETUP_VERSION_CALL &&
+         NEAR_SETUP_VERSION_CALL<NEAR_SETUP_STATE_ADD &&
+         NEAR_SETUP_STATE_ADD<0x19C78) {
+        return Err("original worker setup site order changed".into());
+    }
+    if dll_relative_call_target(dll,pe,0x1974A)?!=NEAR_WORKER_SETUP_ENTRY ||
+       dll_relative_call_target(dll,pe,NEAR_SETUP_VERSION_CALL)?!=0x1A77F {
+        return Err("original 19965 neighborhood CALL target changed".into());
+    }
+    dll_expect_raw_x86(dll,pe,0x19A48,&[0x68,0x10,0x50,0x90,0])?;
+    dll_expect_raw_x86(dll,pe,0x19A7B,
+        &[0x8B,0x45,0x18,0x25,0xFF,0xFF,0,0])?;
+    dll_expect_raw_x86(dll,pe,0x19A83,
+        &[0x8B,0x0D,0x10,0x50,0x90,0,0x03,0xC8])?;
+    dll_expect_raw_x86(dll,pe,NEAR_SETUP_STATE_ADD,
+        &[0x89,0x0D,0x10,0x50,0x90,0])?;
+    Ok(())
+}
+
 /// The x86 sequence reached from the original GetVersionExA-failure
 /// JE at 1A7B8 follows a flag-preserving MOV/NOP detour, a JE at
 /// 1A846 and a JMP at 1A849 into 1A854. There it loads the passed
@@ -632,6 +673,7 @@ pub fn audit_conditional_win9x_state_add(dll:&[u8],pe:&Pe32)->Result<()> {
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_near_worker_setup_sites(dll,pe)?;
     audit_conditional_win9x_state_add(dll,pe)?;
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
@@ -853,6 +895,29 @@ pub fn scan_original_state_relocations(
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn potential_19965_neighborhood_preserves_source_order_not_reachability() {
+        assert!(NEAR_WORKER_SETUP_ENTRY<NEAR_SETUP_VERSION_CALL);
+        assert!(NEAR_SETUP_VERSION_CALL<NEAR_SETUP_STATE_ADD);
+        assert_eq!(NEAR_SETUP_STATE_ADD,0x19A8B);
+        // No assertion that these addresses form a reachable CFG path.
+    }
+
+    #[test]
+    fn conditional_failed_version_then_low16_add_is_not_universal_state() {
+        for (initial,arg,expected) in [
+            (0u32,0u32,0u32),
+            (0x1234_5678,0x100,0x178),
+            (0xFFFF_FFFF,1,0x100),
+            (0xDEAD_BEEF,0xABCD_1122,0x1211),
+        ] {
+            assert_eq!(hypothetical_near_setup_failure_then_add(
+                initial,arg),expected);
+        }
+        assert_ne!(hypothetical_near_setup_failure_then_add(
+            0x1234_5678,0x100),increment_low16(0x1234_5678,0x100));
+    }
 
     #[test]
     fn relocation_state_scan_ignores_nonrelocated_decoys_and_is_deterministic() {
