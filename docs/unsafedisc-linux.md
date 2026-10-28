@@ -5062,3 +5062,31 @@ The synthetic cross-module regression tests this composition,
 including the selected-pointer side effect and the zero-AX gate.
 It **does not** claim a real `BE52` event, actual selected-pointer
 validity, DLL entrypoint reachability or recovered protected plaintext.
+
+
+### Reversible running-sum invariant for the conditional byte primitive (2026-10-28)
+
+The already verified *single-byte* operation at original `19D45..19DF6`
+adds its resulting unsigned byte to global state `0x00905010`.
+For a sequence of such steps with **no intervening other state
+writes**, elementary modular arithmetic gives:
+
+```text
+s_(i+1) = (s_i + out_i) mod 2^32
+s_final = (s_initial + sum(out_i)) mod 2^32
+s_initial = (s_final - sum(out_i)) mod 2^32
+```
+
+This is a potentially useful **back-solving invariant** if a future
+validated trace supplies both an actual final state and all resulting
+bytes in that same uninterrupted sequence. It does not eliminate
+the XOR dependence of each `out_i` on the current state.
+
+Added `hypothetical_consecutive_steps` and
+`hypothetical_initial_state` to the read-only byte-mixer module, with
+three tests covering fixed independent buffers, chain splitting,
+32-bit wraparound, reconstruction, empty input and mismatched sizes.
+These functions use **synthetic buffers only**. Neither the length,
+loop reachability, starting state, actual output, nor absence of
+intervening state updates for the retail `19C78` call has been
+established. This is **not** a recovered SafeDisc code decryptor.
