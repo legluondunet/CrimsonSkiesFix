@@ -6278,3 +6278,48 @@ continues to require independent evidence.
 IMPORTANT: these additions do NOT recover a key or the game's
 encrypted machine code. The original retail ICD has not been
 freshly read from this session to establish the ordering counts.
+
+
+### Original ICD relocation hazard site locator (2026-10-28)
+
+Extended the exact-SHA-gated, read-only original CRIMSON.ICD inspector
+with src/unsafedisc_historical_155_reloc_hazards.rs. The verified
+relocation directory is parsed twice, independently: first by the
+already-tested structural/profile checker, then by a bounded
+hazard locator returning at most 12 metadata-only sites.
+
+Every reported site includes the IMAGE_BASE_RELOCATION page RVA,
+the raw directory block offset and, for individual WORD hazards,
+the zero-based entry index and raw relocation WORD (not game code).
+The full directory is still validated when the output cap is zero.
+Five classes are differentiated: nonzero type-0 ABSOLUTE word;
+exact-zero padding followed later in the same block by nonzero
+entries; an odd 16-bit entry count; a block with zero entries;
+and a nonempty block made entirely of zeros.
+
+This diagnostic is printed with the existing --historical-selection,
+--checksum-research or --key-research options after all original
+EXE/ICD/DLL hashes and PE layouts have been validated.
+The locator cannot establish actual historical branch execution,
+recover modifier transformations or verify all checksum fragments.
+Four new synthetic tests cover precise positions, pagination,
+output caps with full validation and harmless trailing padding.
+
+Original unSafeDisc 1.5.5 was itself specifically released to fix
+a crc_with_reloc regression arising in work on Crimson Skies.
+Historical release notes say the fix was tested on Crimson Skies
+and Unreal Tournament. Public contemporaneous reference:
+https://www.gbppr.net/cracking/codomain/unp.htm
+
+IMPORTANT: the four TEA key DWORDs have ALREADY been independently
+validated using the known-plaintext reference and fragmented tail
+bytes in earlier work. The hazard locator does NOT invalidate this
+known key; instead, it identifies obstacles to reproducing the
+original historical checksum derivation and pre-TEA DWORD layer.
+The title-specific protected dplayerx.dll modifier functions
+at 0x65BE and 0x6621 remain the primary missing cryptographic step.
+
+The author's owner-provided archive crimson_skies_executables(3).7z
+is listed as a Project/Library item but is not authorized for
+raw-byte materialization in this runtime. No exact original
+ICD relocation hazard sites are reported without reading that file.
