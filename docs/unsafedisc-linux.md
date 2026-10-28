@@ -4929,11 +4929,13 @@ geometry, all seven exact state-writer sequences,
 all three pointer-passing E8 calls into 1A9B6/1A77F, OSVERSIONINFOA
 setup, GetVersionExA symbol/IAT identity,
 and the original platform-specific E8 destinations
-**only on the pinned original DLL**. Six synthetic
-Rust tests check PE zero-fill bounds, conditional
+**only on the pinned original DLL**. Nine synthetic
+Rust tests cover PE zero-fill bounds, conditional
 `0x4F3` increments, two low-16 argument updates,
-write-site uniqueness, platform selection and
-OSVERSIONINFOA layout. The CLI reports only
+write-site uniqueness, platform selection,
+OSVERSIONINFOA layout, both shared-worker callers,
+reset/call source ordering and the three state-pointer
+helper callsites. The CLI reports only
 aggregate opcode provenance and the distinction
 between image-mapped initial state and runtime
 state. It does not execute a Windows API,
