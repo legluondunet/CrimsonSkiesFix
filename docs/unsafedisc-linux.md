@@ -4069,3 +4069,80 @@ This closes the previous gap between GitHub's
 **synthetic-only CI** and original-file Rust assertions.
 It does **not** imply a working SafeDisc decoder or
 known plaintext at the two protected EAX RVAs.
+
+
+### B850/B880/B8E0 form a range-record and linked-list subsystem (2026-10-28)
+
+Deeper **local read-only x86 disassembly** of the exact original
+`dplayerx.dll` now distinguishes the A2A0 category-dispatcher's
+three handlers from the memory *byte-transforming* routines.
+The three functions form a **range-record / linked-list
+management path**. The following original E8 call edges were
+independently confirmed by recalculating signed rel32
+destinations from the original pinned DLL:
+
+| Call at RVA | Callee RVA | Observed role |
+| --- | --- | --- |
+| `B865` | `BAD0` | Search existing range/list record |
+| `B8A1` | `BC40` | Find a compatible neighboring record |
+| `B8B4` | `C2F0` | Adjust start and accumulated length |
+| `B8BE` | `B9D0` | Update record/list position |
+| `B8F6` | `BC00` | Search for a candidate record |
+| `B90F` | `B7C0` | Allocate and initialize a range record |
+| `B919` | `B940` | Link the record into a list |
+| `BAF5` | `C3D0` | Compare a candidate against a record start |
+| `BB08` | `C350` | Check range containment and category |
+| `BB29` | `B9D0` | Update an existing list entry |
+| `BC5E` | `C4B0` | Check same-category adjacency |
+| `BC6F` | `C3D0` | Order range records |
+| `BC12` | `C3D0` | Order range records |
+| `B7C8` | `B610` | Allocate **0x0C-byte** record |
+| `B7F3` | `C2A0` | Initialize new record's range data |
+| `B964` | `B980` | Post-insertion linked-list check |
+| `B9E6` | `C4F0` | Test candidate interval adjacency |
+| `B9FC` | `C530` | Compare interval endpoints |
+| `BA12` | `C310` | Expand a recorded interval's span |
+| `BA1F` | `BA90` | Update linked-list relationships |
+
+Additional original **opcode** evidence:
+
+- `B850` stores a successful `BAD0` result in record
+  field `+8` (`B871: MOV [ESI+8],EAX`).
+- `B880` stores a selected/merged record in `[EDI+8]`
+  (`B8C6`); `B8E0` updates `[EBX+8]` (`B924`).
+- `C2F0` lowers the start DWORD if needed and **adds**
+  a length to DWORD `+4`. This is a mathematical
+  interval operation, not a bytewise code transform.
+- `C4B0` first checks category DWORD `+8`, then
+  tests whether interval endpoints **touch** in either
+  order. Distinct category identifiers are not merged.
+- `B940` updates a four-pointer predecessor/successor
+  chain using explicit writes to node fields `+4`
+  and `+8`.
+- `B7C0` requests a 12-byte allocation and initializes
+  range-record links via `C2A0`.
+
+The newly isolated `src/unsafedisc_dll_ranges.rs` checks
+**20 exact original E8 targets** and **15 original instruction
+patterns**; every one was also separately rechecked locally
+against the user's SHA-256-pinned DLL. It provides **five
+synthetic Rust tests**: unique bounded call sites, contiguous
+range joining in both directions, rejection of overlap/category
+mismatch, handling empty/overflowed synthetic ranges, and
+coverage of the three categories' helper calls.
+
+The synthetic arithmetic helper **rejects overflow** for safety,
+even though original 32-bit x86 ADD instructions are wrapping;
+it is *not* claimed as an instruction-accurate full emulator.
+This still leaves potential side effects inside allocator/list
+helpers and unknown runtime branches. Nonetheless, the
+identified core of this subsystem is **range classification
+and linked-list bookkeeping**, not a recovered executable
+`.txt` decoder.
+
+**Research priority moves downstream:** determine where the
+registered memory regions are later consumed by the actual
+byte transformer / code-restoration path. In particular,
+the fact that `B850`, `B880`, and `B8E0` are
+invoked from A2A0 does **not** establish that any of
+them decrypts modifier RVAs `0x65BE` or `0x6621`.
