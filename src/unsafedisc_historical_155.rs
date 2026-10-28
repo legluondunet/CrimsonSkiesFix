@@ -901,7 +901,7 @@ mod tests {
     fn historical_bounded_section_filter_keeps_order_and_four_byte_aliases(){
         let names=[
             b".text\0\0\0",b".rsrc\0\0\0",b".data\0\0\0",
-            b".idata\0\0",b".reloc\0\0",b".bss\0\0\0",
+            b".idata\0\0",b".reloc\0\0",b".bss\0\0\0\0",
             b"ABCDE123",b"BSS\0NAME",b".rdata\0\0",
             b".rsrtest",b".edata\0\0",b".tls\0\0\0\0",
         ];
