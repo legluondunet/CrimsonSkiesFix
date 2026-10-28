@@ -49,14 +49,20 @@ The exact-version first key word defaults to `0x7496538F`; use
 **This is a validated key and diagnostic framework, not a working
 unpacker.** A Windows 98 passive memory capture yielded two EAX-only
 modifier routines (F1 and F2), now interpreted by a strict read-only
-Rust decoder. Their agreement with the **440,422** exact
-original/reference DWORD observations has not yet been established.
+Rust decoder. **440,422 / 440,422** exact original/reference modifier DWORDs
+have now been checked successfully on the owner's verified files,
+alongside **1,855,489 / 1,855,489** .text bytes and
+**168,072 / 168,072** .data bytes after full forward F1/F2 and TEA.
 See [Win98 passive modifier research](docs/win98-passive-modifiers.md)
 for SHA-gated `inspect-snapshot` and the optional
 `inspect --key-research --modifier-snapshot` cross-check.
 
-**It does not yet decrypt or reconstruct `CRIMSON.ICD`, and it does not
-modify the existing `crimson-patcher` functionality.** See the
+**The native Rust CLI still does not emit a decrypted `CRIMSON.ICD` or
+modify the existing `crimson-patcher` functionality.** A separate,
+SHA-gated Python candidate-reconstruction prototype has reproduced
+2,580,419 of 2,580,480 historical plaintext-reference bytes, but
+its output is **not yet runtime-validated** and it has not been
+merged into the Rust patcher. See the
 [portage guide](docs/unsafedisc-linux.md) for build instructions,
 examples and current limitations. The separate
 [DLL state-pointer relocation audit](docs/dll-state-references.md) documents
