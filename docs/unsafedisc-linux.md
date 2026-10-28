@@ -5006,3 +5006,39 @@ Two synthetic regression tests check the
 distinct static caller origins and reset/worker/
 reset address ordering. No Windows process
 or proprietary code is executed.
+
+
+### C550 legacy unsigned predicate versus safe interval geometry (2026-10-28)
+
+The exact-original RVA `C550` predicate is intentionally **not**
+a safe, conventional interval-intersection primitive. It uses unsigned
+32-bit comparisons and `start + length` with x86 wrapping semantics,
+and it has no nonzero-length or ordered-query validation. The separately
+verified original `C430`/`C450` clipping helpers also do not, by
+themselves, establish a valid intersection.
+
+To make this distinction executable and guard future unpacking work
+against unsafe assumptions, `src/unsafedisc_dll_bed0.rs` now contains
+a **synthetic-only** `checked_contiguous_intersection` model. It
+rejects zero-length candidates, reversed inclusive bounds and wrapped
+candidate ends. For valid contiguous 32-bit intervals, it computes the
+intersection with a **64-bit exclusive endpoint**, preserving the
+legitimate last byte at address `0xFFFFFFFF`.
+
+Counterexamples deliberately checked by unit tests:
+
+- `C550(10, 0, 0, 20)` returns true although the candidate is empty.
+- `C550(0, 10, 9, 3)` returns true although the requested low bound
+  exceeds the high bound.
+- `C550(0xFFFFFFF0, 0x20, 0xFFFFFFF8, 0xFFFFFFFF)` returns false
+  because the candidate's 32-bit end wraps; the synthetic checked
+  helper rejects this malformed contiguous interval instead.
+- A candidate `[0xFFFFFFFF, 0xFFFFFFFF]` with length one is a
+  perfectly valid boundary case under the 64-bit endpoint model.
+
+The new exhaustive small-domain regression compares both independent
+models **only on nonempty, ordered, nonwrapping geometry**; they must
+agree there. This improves our static analysis and fail-closed design,
+not our knowledge of actual memory buffers or encrypted code. No
+protected bytes are dumped or modified; the original DLL remains
+non-executable input data. The native CLI's behavior is unchanged.
