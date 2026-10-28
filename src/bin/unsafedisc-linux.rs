@@ -4617,6 +4617,11 @@ fn inspect(options: Options) -> Result<()> {
                 conflicting_mask_difference_classes:1,
                 distinct_mask_output_collisions:0,
                 distinct_masks_observed:572,
+                // The two NEW output-rank fields are not claimed as
+                // historical pinned signatures until verified against
+                // user-owned retail/reference raw data. Synthetic
+                // tests independently exercise their exact meaning.
+                ..second_stage
             }) {
                 return Err("pinned retail/reference F2-only audit signature mismatch".into());
             }
