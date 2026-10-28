@@ -815,3 +815,90 @@ original ADD/store. `conditional_original_state_route` is a pure
 model requiring explicit hypothetical outer/inner OS observations;
 it never runs the DLL. The independent offline Python verifier also
 checks these exact opcode groups and their original targets.
+
+
+### Worker finalizer and conditional combined state delta (2026-10-28)
+
+An independent, **exact SHA-256 pinned**, read-only inspection of the
+original `dplayerx.dll` now extends the original state-pointer chain
+backward through an unsigned counter comparison and forward through
+the caller's **direct state update** after helper return.
+
+1. The original flag-preserving maze starting at RVA **`0x19800`**
+   always returns to **`0x19686`**, for all 32 possible assignments
+   to `CF/ZF/PF/SF/OF`: **5 distinct paths, 8–12 instruction
+   boundaries**. `0x19686 MOV EDX,[EBP-0x0C]` followed by
+   `0x19689 CMP EDX,[EBP-0x14]` and `0x1968C JAE 0x19819`
+   is a **runtime conditional, unsigned local counter comparison**.
+   It is NOT asserted always to succeed; on the opposite branch
+   the worker continues processing unmodeled code.
+2. **Given that JAE is taken**, all 32 EFLAGS assignments from
+   `0x19819` converge at the original `PUSH 0x00905010`
+   at **`0x1987D`**: **16 distinct paths, 31–41 instruction
+   boundaries**. Original `CALL 0x1A9B6` at **`0x19882`**
+   then receives the actual global decoder-state address.
+3. On the successful outer Win9x dispatch, `0x1A9B6` forwards
+   the same pointer to `0x1C7F0`. The original wrapper also
+   preserves the helper's AX result: `MOV WORD [EBP-0x98],AX`
+   at **`0x1AAA6`**, then `MOV AX,[EBP-0x98]` at
+   **`0x1AABA`** and `JMP 0x1AB77` to its epilogue.
+   Its obfuscated detour via `CALL 0x1AB75` targets a bare
+   `RET`; with the previous `JNE` not taken, the following
+   `JE` must jump to the AX reload. This avoids assuming
+   that the helper's AX result survives an unknown wrapper.
+4. The original caller immediately executes the contiguous,
+   byte-verified instruction sequence **`0x19887..0x198A5`**:
+
+```asm
+ADD ESP,4
+AND EAX,0xFFFF
+NEG EAX
+SBB EAX,EAX
+AND EAX,0x4F3
+MOV EDX,[0x00905010]
+ADD EDX,EAX
+MOV [0x00905010],EDX
+```
+
+   This produces exactly **`+0` when AX==0** and
+   **`+0x4F3` when AX!=0**, with 32-bit wrapping.
+   The upper 16 bits of the actual helper EAX do not matter,
+   because the caller first masks them out.
+
+**Consequence in the narrow, conditional, already audited Win9x path:**
+if both outer and nested OS reports are platform `1`, the keyboard
+predicate rejects and the historical `INT 68h` **returns normally
+with full EAX different from `0x4300`**, the helper modifies the
+actual state by `+0x34F`, then returns AX=1. The original caller
+subsequently adds `+0x4F3`. Hence **the net change across
+this modeled helper/caller pair is `+0x842` modulo `2^32`**.
+Conversely, under the same hypothetical conditions with an
+INT return equal to `0x4300`, the helper returns AX=0
+without its write, and the caller adds zero.
+
+| Hypothetical helper conditions (outer Win9x) | Helper writes | AX | Caller delta | Net delta |
+| --- | ---: | ---: | ---: | ---: |
+| Keyboard rejected, normal INT return EAX == 0x4300, nested platform 1 | No | 0 | 0 | 0 |
+| Keyboard rejected, normal INT return EAX != 0x4300, nested platform 1 | +0x34F | 1 | +0x4F3 | **+0x842** |
+| Keyboard accepted, nested platform 1 | No | 0 | 0 | 0 |
+| Keyboard accepted, nested platform != 1 | +0x34F | 1 | +0x4F3 | **+0x842** |
+
+The complete provenance and both original flag-only regions
+are checked by `src/unsafedisc_dll_worker_finalizer.rs` under the
+SHA-gated `inspect --modifier-research` option. **Five new synthetic
+Rust unit tests** check upper AX masking, state wrapping, matching
+versus differing interrupt outputs and exclusion of non-Win9x
+outer platforms. A self-contained external **Python standard-library
+offline verifier** (`verify_worker_finalizer.py`) independently
+confirmed all 11 original opcode windows, three rel32 call targets,
+four branch destinations, both 32-flag convergence counts and
+the arithmetic on the supplied retail DLL; a one-byte tamper
+test correctly failed the pinned SHA-256 gate.
+
+**Still not proven:** a DllMain-to-`0x19800` route; whether the
+unsigned counter JAE is taken during startup; actual runtime
+`INT 68h` behavior; the full set of global-state mutations
+before the `0x19C78` byte mixer; and the protected EAX
+modifiers at `0x65BE` / `0x6621`. This is not an unpacker,
+an assertion of corrupt state under Wine, or a reason to
+patch out the anti-debug code before obtaining evidence.
