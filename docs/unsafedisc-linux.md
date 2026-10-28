@@ -6144,3 +6144,34 @@ claimed here. If it is nonzero, existing HIGHLOW-only checksum
 research remains a hypothesis, not an assertion of historical
 byte-for-byte traversal. All original inputs stay on the user's
 machine; no decrypted file or real protected modifier is produced.
+
+
+### HIGHLOW-only key candidate: necessary original-word preflight (2026-10-28)
+
+The original-retail `--key-research` path previously used only HIGHLOW
+relocation offsets for its checksum candidate. A new read-only
+preflight now refuses to evaluate that key candidate if the
+SHA-verified original ICD contains any NONZERO type-0 ABSOLUTE
+relocation WORD, any odd-entry relocation block, an empty-entry
+block, or independently inconsistent raw relocation totals.
+
+The archived unSafeDisc 1.5.5 relocation builder at 4023A7
+inspects the full WORD for zero, not the relocation type nibble.
+Its LOOP at 4023C6 has no pre-loop zero-count guard: with ECX=0
+the first body would read an entry and the counter would wrap
+through 2^32 iterations. The newer safe native cutpoint preview
+therefore explicitly rejects empty-entry relocation blocks.
+The separate historical consumer also reads two words per DWORD
+and does not safely handle odd-entry source lengths.
+
+The new checks are intentionally NECESSARY, NOT SUFFICIENT:
+if no nonzero ABSOLUTE, odd or empty blocks exist, that still
+does not establish equivalence of sorted cutpoints, zero-padding
+handling, checksum initialization, title-specific modifier
+functions, or a genuine TEA key. `--checksum-research` retains its
+explicit hypothesis status; `--key-research` fails closed when
+a clear unsupported historical difference is detected.
+
+Added five synthetic Rust regressions covering exact totals,
+nonzero ABSOLUTE values, odd/empty blocks, and x86 LOOP zero
+wraparound. No original protected content has been modified.
