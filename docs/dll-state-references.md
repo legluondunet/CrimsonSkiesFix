@@ -109,3 +109,32 @@ The exact original opcode groups, conditional branch targets and
 preservation of flags were verified without running the DLL on Linux.
 The two Windows-dependent success branches and pointer-mediated
 modifications elsewhere still require independent analysis.
+
+### Second GetVersionExA helper: a different failure path
+
+The second original call at `0x1AA2F` belongs to helper `0x1A9B6`.
+Original `TEST EAX,EAX` at `0x1AA35` branches to `0x1AB34`
+when the API returns zero. Starting from the resulting x86 TEST flags
+(ZF=1, PF=1, CF=0), the static branch trace is:
+
+```text
+1AA37 -> 1AB34 -> 1AB36 -> 1AB38 -> 1AB48 -> 1AB55
+       -> 1AB4A -> 1AB53 -> 1AB58 -> 1AB61 -> 1AB5A
+       -> 1AB5C -> 1AB5E -> 1AB5F -> 1AB64 -> 1AB68 -> 1AB77
+```
+
+This route consists of flag-preserving branches, NOPs and self-MOVs,
+then `MOV AX,1` and the function epilogue. It does **not** read or
+write the passed state DWORD after the failed API call, unlike the
+`0x1A77F` helper's low-byte-masking fallback. A separate bounded
+Python static branch check was performed against the SHA-256-verified
+retail DLL; the exact opcode and jump assertions also live in Rust
+and are exercised by `--modifier-research`.
+
+**Conditional distinction:** for failure of `GetVersionExA`,
+`0x1A77F` transforms the passed DWORD to `value & 0xFF`, while
+`0x1A9B6` returns `AX=1` without updating it through the passed
+pointer. The state may differ before either call, and neither
+successful Windows-specific path has been reconstructed. These
+findings do not establish a particular Windows platform failure or
+fully determine the `0x19C78` entry state.
