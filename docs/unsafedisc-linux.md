@@ -6435,3 +6435,64 @@ fields to their known exact values; the new output-rank indicators
 are tested independently with transparent synthetic fixtures.
 Only a fresh read-only run on the matching original files can
 establish their empirical values.
+
+
+### Native inverse research for original dplayerx.dll byte mixer 19C78 (2026-10-28)
+
+New bounded, synthetic-only research functions operate on the
+**byte-mixer primitive already verified by original x86 opcodes**
+at 0x19D45..0x19DF6. Its conditional local recurrence is:
+
+    byte_out[i] = dst[i] XOR src[i] XOR XOR_4_BYTES(state[i])
+    state[i+1] = state[i] + byte_out[i]   (mod 2^32)
+
+The actual upstream 19C78 loop entry, dynamic Windows startup
+state, two input buffers and protected plaintext are NOT known.
+The new functionality does NOT claim that these operations execute
+consecutively in the real DLL. It also does not touch the distinct
+opaque protected EAX modifiers at 0x65BE and 0x6621.
+
+1. `hypothetical_no_carry_initial_states` (in
+   `src/unsafedisc_dll_byte_mix.rs`) solves a restricted family:
+   no carry from the low state byte to byte 1 during the
+   observation window. For an assumed initial low byte L and
+   known cumulative outputs P_i, the byte XOR condition is
+   `dst[i] XOR src[i] XOR out[i] = (L + P_i) XOR upper_three_xor`.
+   The returned low-byte/high-XOR candidates are exact **within
+   the no-carry restriction**, but each pair leaves 2^16 distinct
+   full initial states (any two upper bytes fix the third by XOR).
+   An empty set only rules out this no-carry subset; actual runtime
+   may carry and still generate the observations.
+
+2. `hypothetical_exact_mixer_initial_states` (in new
+   `src/unsafedisc_dll_byte_mix_solver.rs`) removes the no-carry
+   restriction, while still assuming the isolated recurrence
+   and KNOWN synthetic source/output buffers. It partitions all
+   65,536 low-half candidates by their carry vector
+   `(low16 + prefix_i) >> 16`. For each distinct carry vector,
+   it uses a lookup over 65,536 upper-half candidates to match
+   the two-byte XOR signature of `(high16 + carry_i) mod 2^16`.
+   This is a deterministic exact meet-in-the-middle count of all
+   compatible initial 32-bit states: **no full 2^32 enumeration**.
+   It handles carries across the low byte, the 16-bit midpoint
+   and modular high-half wrap. The solver caps inputs at 1..12
+   observed bytes and returns at most 64 example states.
+
+   A single observed byte leaves exactly 2^24 (16,777,216)
+   possible initial states. Thus even a correct output byte is
+   very far from a unique original DLL state or decrypted key.
+
+Five synthetic tests cover no-carry membership and huge
+non-uniqueness, genuine carry paths, incorrect observations and
+bounds. Five additional exact-solver tests check the 2^24
+single-byte count, a carry from low byte, a carry from low16
+to high16, inconsistent observations and length/example caps.
+
+**Required to apply this to actual encrypted `.txt`:** verify
+that the original 19C78 loop visits the same byte recurrence
+consecutively; independently obtain the two input byte buffers
+and enough output/plaintext bytes; establish the surrounding
+state mutations (GetVersionExA, other helpers, and resets); and
+then compare candidate-state effects to real known plaintext.
+These dependencies are not presently met. No original private
+DLL/ICD has been accessed as raw bytes in this session.
