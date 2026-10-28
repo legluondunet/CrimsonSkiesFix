@@ -4890,7 +4890,7 @@ pointer to the state:**
 .txt2:19E2B PUSH 0x00905010; 19E30 CALL A77F
 ```
 
-The separately disassembled original `.txt2:0xA77F`
+The separately disassembled original `.text:0xA77F`
 code prepares a `0x94`-byte **OSVERSIONINFOA** structure
 at `[EBP-0x94]`, passes it to the **actual imported**
 `KERNEL32!GetVersionExA` via IAT RVA `0x1E058`,
