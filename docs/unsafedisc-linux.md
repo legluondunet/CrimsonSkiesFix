@@ -4937,3 +4937,60 @@ descriptor. In the meantime, `conditional_byte_step`
 remains a proven *local arithmetic primitive*
 with an **unknown input state**, not a complete
 SafeDisc code-restoration algorithm.
+
+
+### Two .txt2 module descriptors share worker 18F81; DLL path brackets it with two zero-state stores (2026-10-28)
+
+Further exact original x86 callsite analysis connects the
+previously traced process-main-module and `dplayerx.dll`
+initializers to **the same readable worker**:
+
+| Source path | CALL RVA | Destination | Immediately following cleanup |
+| --- | --- | --- | --- |
+| Process/main-image descriptor | `0x1A1B2` | `0x18F81` | `ADD ESP,0x18` |
+| Explicit `dplayerx.dll` descriptor | `0x1A39C` | `0x18F81` | `ADD ESP,0x18` |
+
+The DLL-specific caller prepares a three-DWORD
+descriptor in caller-owned stack memory at
+`0x1A38B..0x1A39B` before calling `18F81`,
+then later calls the module cleanup helper
+`0xA200` at `0x1A3CE`. **In original
+instruction-address order**, its code has:
+
+```text
+1A360    MOV DWORD PTR [00905010h], 0
+1A38B    Prepare descriptor by value in local stack space
+1A39C    CALL 18F81
+1A3C0    MOV DWORD PTR [00905010h], 0
+1A3CE    CALL A200  ; module cleanup
+```
+
+The first descriptor initializer at `1A1B2`
+also calls `18F81`, but the exact pair of
+reset stores above belongs to the **other
+DLL-specific caller**. Therefore a single
+constant global-state assumption for *all*
+callers would be unsound.
+
+**Crucial boundary:** the protected DLL's
+obfuscated x86 includes conditional branches,
+opaque detours and possible early returns
+between the displayed instruction addresses.
+This table proves that the **specific static
+call and reset instructions exist**, and shows
+their address order. It does *not* demonstrate
+that the first reset is necessarily executed
+before the worker, that the worker always runs,
+that the second reset always follows, or that
+the inner byte mixer runs with initial state
+zero. Those properties need a validated
+control-flow reachability proof.
+
+The Rust state-provenance audit verifies both
+worker `E8 rel32` targets, both matching
+`ADD ESP,0x18` cleanups, the exact descriptor
+copy instructions and `0x1A3CE -> A200`.
+Two synthetic regression tests check the
+distinct static caller origins and reset/worker/
+reset address ordering. No Windows process
+or proprietary code is executed.
