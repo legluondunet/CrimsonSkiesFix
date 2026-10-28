@@ -316,7 +316,7 @@ mod tests {
         let va=STATE_PREFERRED_VA.to_le_bytes();
         bytes[5..9].copy_from_slice(&va);       // literal decoy, not relocated
         bytes[0xFFE..0x1002].copy_from_slice(&va); // across a 4KiB page
-        bytes[0x102D..0x1031.min(bytes.len())].fill(0); // no valid four-byte slot
+        // 0x8030 points exactly beyond the file-backed section.
         let relocs=[0x7FFEu32,0x7005,0x7FFE,0x7020,0x8030,0x6FFF];
         assert_eq!(scan_state_reloc_section(&bytes,0x7000,&relocs).unwrap(),
                    vec![0x7FFE]);
