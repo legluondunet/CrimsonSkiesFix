@@ -2835,6 +2835,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Seven verified direct x86 writes: conditional +0x4F3, twice +argument_low16, +output_byte, +stack_local, and two explicit resets.");
     println!("    1A77F called with state pointer from .txt2 0x19A4D and 0x19E30, uses KERNEL32!GetVersionExA and branches on OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
     println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
+    println!("    Two exact .txt2 E8 sources call shared worker 0x18F81: process path 0x1A1B2, DLL path 0x1A39C.");
+    println!("    DLL path has reset / worker / reset instructions at 0x1A360 / 0x1A39C / 0x1A3C0 IN STATIC SOURCE ORDER ONLY; reachability remains unproven.");
     unsafedisc_dll_byte_mix::audit_original(dll,&pe)?;
     println!("  Conditional original .txt2 byte mixer: 0x19798 -> 0x19C78, XOR buffer byte with 4 bytes of 32-bit state at preferred VA 0x00905010 and second-buffer byte.");
     println!("    The byte result is added to global state mod 2^32; source/destination byte pointers advance; guarded parity-detour returns to 0x19D85.");
