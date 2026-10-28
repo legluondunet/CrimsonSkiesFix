@@ -316,6 +316,50 @@ pub fn first_case_checked_record_window(
     Some((offset,end))
 }
 
+/// A bounded, fail-closed NATIVE-PORT MODEL of the 0x28-byte
+/// IMAGE_SECTION_HEADER search implied by the original 189F0 code.
+/// This does NOT invoke original A810 or the proprietary DLL.
+///
+/// The input is a synthetic or caller-owned complete byte slice, the
+/// offset and limit are exclusive byte boundaries, and 0x28 records
+/// are consumed at the same stride as the original. 0 is a legitimate
+/// Some(0) match; None means no match. The cap prevents unbounded
+/// attempts on a hostile/incorrect descriptor. Unlike original
+/// 189F0, malformed trailing records produce Err, not a read attempt
+/// followed by comparison against an unchecked buffer.
+pub fn checked_section_header_scan(
+    bytes:&[u8],start:u32,limit:u32,
+    mask:u32,expected:u32,max_records:usize,
+)->Result<Option<u32>> {
+    if max_records==0 {
+        return Err("section scan requires a nonzero iteration bound".into());
+    }
+    if start>limit || usize::try_from(limit)
+        .ok().is_none_or(|n|n>bytes.len()) {
+        return Err("section scan bounds are outside supplied bytes".into());
+    }
+    let mut offset=start;
+    let mut inspected=0usize;
+    while offset<limit {
+        if inspected==max_records {
+            return Err("section scan iteration bound exceeded".into());
+        }
+        let (_,end)=first_case_checked_record_window(offset,limit)
+            .ok_or("truncated or wrapping 0x28-byte section record")?;
+        let begin=usize::try_from(offset).map_err(|_|"section start overflow")?;
+        let finish=usize::try_from(end).map_err(|_|"section end overflow")?;
+        let record=bytes.get(begin..finish)
+            .ok_or("section record lies outside supplied bytes")?;
+        if first_case_checked_record(1,record,mask,expected) {
+            return Ok(Some(offset));
+        }
+        inspected+=1;
+        offset=offset.checked_add(0x28)
+            .ok_or("section scan unsigned offset wrapped")?;
+    }
+    Ok(None)
+}
+
 /// Anchor only exact original source bytes for the first case
 /// matcher; no semantic assumption is made about the called
 /// 0xA810 memory-reading helper beyond the CALL target.
@@ -660,6 +704,50 @@ mod tests {
         assert_eq!(first_case_checked_record_window(0xFFFF_FFF0,u32::MAX),None);
         assert_eq!(first_case_checked_record_window(u32::MAX,u32::MAX),None);
         assert_eq!(first_case_checked_record_window(1,0),None);
+    }
+
+    #[test]
+    fn checked_section_scan_preserves_zero_offset_and_record_mask() {
+        let mut bytes=vec![0u8;0x28*3];
+        // Each record is a synthetic 40-byte PE section header,
+        // with Characteristics DWORD at offset +0x24.
+        for (i,attr) in [0x2000_0020u32,0x4000_0040,0xC000_0040].iter().enumerate() {
+            let at=i*0x28+0x24;
+            bytes[at..at+4].copy_from_slice(&attr.to_le_bytes());
+        }
+        assert_eq!(checked_section_header_scan(&bytes,0,0x78,
+                   0x2000_0000,0x2000_0000,4).unwrap(),Some(0));
+        assert_eq!(checked_section_header_scan(&bytes,0,0x78,
+                   0x8000_0000,0x8000_0000,4).unwrap(),Some(0x50));
+        assert_eq!(checked_section_header_scan(&bytes,0,0x78,
+                   0x0000_1000,0x1000,4).unwrap(),None);
+    }
+
+    #[test]
+    fn checked_section_scan_handles_nonzero_first_and_exact_end() {
+        let mut bytes=vec![0u8;0x90];
+        bytes[0x60..0x64].copy_from_slice(&0xABCD_9876u32.to_le_bytes());
+        // Start 0x3C, CHARACTERISTICS at 0x3C+0x24 = 0x60.
+        assert_eq!(checked_section_header_scan(
+            &bytes,0x3C,0x64,0xFFFF,0x9876,1).unwrap(),Some(0x3C));
+        assert_eq!(checked_section_header_scan(
+            &bytes,0x3C,0x64,0xFFFF,0x1111,1).unwrap(),None);
+        assert!(checked_section_header_scan(
+            &bytes,0x3C,0x63,0xFFFF,0x9876,1).is_err());
+    }
+
+    #[test]
+    fn checked_section_scan_rejects_partial_tail_and_iteration_exhaustion() {
+        let bytes=vec![0u8;0x28*3+1];
+        assert!(checked_section_header_scan(
+            &bytes,0,bytes.len() as u32,0xFF,1,4).is_err());
+        assert!(checked_section_header_scan(
+            &bytes,0,0x28*3,0xFF,1,2).is_err());
+        assert_eq!(checked_section_header_scan(
+            &bytes,0,0x28*3,0xFF,1,3).unwrap(),None);
+        assert!(checked_section_header_scan(&bytes,0,0x28,0,0,0).is_err());
+        assert!(checked_section_header_scan(&bytes,0x29,0x28,0,0,1).is_err());
+        assert!(checked_section_header_scan(&bytes,0,0xFFFF,0,0,1).is_err());
     }
 
     #[test]
