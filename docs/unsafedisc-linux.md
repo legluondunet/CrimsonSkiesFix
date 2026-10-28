@@ -4272,3 +4272,50 @@ stage-order regression. This strengthens the reason to
 trace callers of the `.txt2` function before generalizing
 the exact original DLL's zero-sized directory findings
 to all possible `A140` invocations.
+
+
+### Original .text caller resolves the .txt2 name argument to dplayerx.dll (2026-10-28)
+
+Further exact-byte examination identifies an **instruction-aligned
+caller of the .txt2 routine at 0x1A20D**:
+
+```text
+.text RVA 0x981A: PUSH 0x00900030
+.text RVA 0x981F: PUSH 0
+.text RVA 0x9821: CALL 0x1A20D
+.text RVA 0x9826: ADD ESP,8
+```
+
+The pushed pointer is the original PE preferred base
+`0x008E0000` plus data RVA `0x20030`.
+The independent, already verified E25C metadata decoder
+produces the literal module name **`dplayerx.dll`**
+from the hash-pinned .data bytes at this RVA. In the
+callee `0x1A20D`, the `[EBP+0xC]` argument is
+passed to E25C and then to GetModuleHandleA; the
+local mode-0x67 descriptor reaches A140 at `0x1A299`.
+
+Therefore this **specific** cross-section chain
+`.text 0x9821 -> .txt2 0x1A20D -> .text A140`
+uses **dplayerx.dll** as its requested module
+name, not an unspecified game module. This
+**narrows an earlier uncertainty**, but does not
+prove the chain runs on every attach path or that
+the other .txt2 caller at `0x1A137` uses the same
+string. Nor does it establish that the loaded module
+handle has a particular runtime value.
+
+The native inspector now verifies the precise
+`PUSH/PUSH/CALL/ADD ESP` instruction sequence,
+reads the pushed preferred VA, maps it to the
+original .data RVA, decodes the real metadata
+to `dplayerx.dll`, and checks the already-known
+`1A247 -> E25C`, GetModuleHandleA IAT,
+`1A25F -> A550`, `1A299 -> A140`
+call sequence. A synthetic regression verifies
+base-relative RVA arithmetic and instruction offsets.
+
+The **remaining** A140 invocation at 0x1A137
+requires independent tracing before any further
+module-specific generalization. All research is
+offline and read-only.
