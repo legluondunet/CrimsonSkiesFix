@@ -247,3 +247,43 @@ instruction groups in `audit_secondary_fallback_all_flags`, and
 tests all flag combinations without running Windows DLL code.
 This establishes a *local branch's* state preservation only;
 it does not recover the four platform-specific helper bodies.
+
+
+### Newly identified USER32 keyboard gate and adjacent INT 68h (2026-10-28)
+
+A **separate, short, file-backed original .txt2 routine** begins at
+RVA \`0x1D42F\` (the last 104 bytes of executable virtual .txt2).
+Its complete seven-comparison predicate has been checked against the
+exact SHA-256-matched \`dplayerx.dll\`:
+
+1. \`PUSH 0; CALL [0x008FE110]\` invokes the genuine PE import
+   \`USER32.dll!GetKeyboardType(0)\`, then compares \`EAX\` against **7**.
+2. Only if equal, \`PUSH 1; CALL [0x008FE110]\` invokes
+   \`GetKeyboardType(1)\` and compares its value against **0x0D01
+   through 0x0D07**, inclusive, one exact equality at a time.
+3. It returns \`AX=1\` precisely when both checks match, otherwise
+   \`AX=0\`. It has no other identified outgoing helper call.
+
+A file-backed original \`E8 rel32\` at **0x1CD46** targets exactly
+\`0x1D42F\`. The immediately following site at \`0x1CD4B\` masks the
+result with \`0xFFFF\`, tests it and uses \`JNE\` to skip past a
+literal **\`INT 0x68\`** when nonzero. The neighboring zero-result path
+loads **AX=0x4300** immediately before \`INT 0x68\` at \`0x1CD5B\`,
+then compares the returned EAX to 0x4300.
+
+This is **static, source-byte evidence only**. It would be misleading
+to claim that the \`1CD46\` callsite or interrupt executes during real
+Crimson Skies startup. Overlapping instructions and opaque control
+flow prevent establishing that from adjacency alone. The purpose of
+the interrupt and its behavior on particular Windows/Wine versions
+are **unknown**, as is any relationship to SafeDisc's EAX modifiers.
+In particular this does *not* prove that Japanese keyboards are
+required, or that an INT 68h instruction explains a game crash.
+
+\`src/unsafedisc_dll_keyboard_probe.rs\` checks original opcodes,
+all seven branch displacements, the rel32 call target, both real
+\`USER32!GetKeyboardType\` imports and the neighboring conditional
+branch. It includes pure synthetic tests over the keyboard type and
+subtype domain, and runs under \`inspect --modifier-research\`.
+An independent local Python check against the verified original DLL
+returned PASS without executing any original code.
