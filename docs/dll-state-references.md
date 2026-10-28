@@ -1363,6 +1363,46 @@ perform an independently established bound check. This is
 static historical disassembly, **not** a safety guarantee
 or a recommendation to run these routines on untrusted data.
 
+#### Matching original write backends: AA00 / A5C0 / A720
+
+The exact original `.text` code also contains a **write gateway**
+at RVA **`0xAA00`**, structurally parallel to read gateway `0xA810`.
+It checks type `0x64` (early AX=0) and the same initialization WORD
+at preferred VA `0x00904AE4`, invoking `A870` when needed.
+Upon accepted initialization, **type `0x65`** dispatches to
+the original file writer **`0xA5C0`**, and other types
+dispatch to **`0xA720`**, which recognizes only `0x66` and `0x67`.
+
+| Source type | Original write operation | Condition for AX=1 |
+| --- | --- | --- |
+| `0x65` | `A5C0`: `SetFilePointer` followed by imported `WriteFile` | Seek return != `0xFFFFFFFF`, nonzero WriteFile AX and exact written byte count |
+| `0x66` | `A720`: dynamically resolved `WriteProcessMemory` through VA `0x00904ADC` | Nonzero returned EAX and exact written byte count |
+| `0x67` | `A720`: source-memory copy with two calls through `VirtualProtect` pointer VA `0x00904AD8` | Both protection changes report success on the audited success path |
+| Other | Unsupported backend | AX=0 |
+
+In the `0x67` branch, the first call to `VirtualProtect` supplies
+**new protection `0x04` (`PAGE_READWRITE`)**. After the
+original `REP MOVSD` / `REP MOVSB` copy, the routine invokes
+`VirtualProtect` again with the saved prior protection. This
+second invocation is checked, and failure produces AX=0.
+
+**Caution:** the source also contains an earlier, conditional
+mapped-memory copy before the first `VirtualProtect` call.
+Therefore a later AX=0 result is **not a proof that nothing
+was written**. The original code may also copy into memory
+without establishing comprehensive address bounds. These
+observations are conditional source-code semantics only.
+
+The new `audit_original_write_backends` verifies original
+readable `.text` instruction sequences, the AA00/A5C0/A720
+direct call targets, the genuine imported `WriteFile` and
+`SetFilePointer` IAT identities and both dynamically populated
+process-memory pointer slots. Synthetic Rust tests cover
+the write backend type selection, full-write comparisons
+and both protection outcomes. The separate offline Python
+verifier checks these original-byte sites without loading
+the DLL or invoking any Windows API.
+
 #### Four XOR-encoded names establish the dynamic API imports
 
 Four null-terminated encoded byte strings are embedded in
@@ -1408,9 +1448,9 @@ New module `src/unsafedisc_dll_io_backends.rs` checks the
 four decoded names, original decoder and API resolver
 opcodes, actual import identities, A560 file-read opcodes
 and A620 process-memory/mapped-copy branch instructions.
-It includes pure synthetic tests for the type switch,
-file/process full-read success conditions, decoding, and
-the mapped-copy fallback. A separate standalone
+It includes pure synthetic tests for the type switches,
+file/process full-read and full-write success conditions,
+XOR decoding, virtual-map matching and protection outcomes. A separate standalone
 `verify_io_backends.py` uses only the Python standard library
 to check original file-backed bytes; it **passes** on the
 retail SHA-256-pinned DLL and **rejects** a tampered 1-byte copy.
