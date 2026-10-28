@@ -435,6 +435,28 @@ mod tests {
     }
 
     #[test]
+    fn original_bdd0_failure_write_can_precede_worker_mixer_bypass() {
+        // Conditional chain: BDD0 reaches BE52 (AX=0, but stores
+        // selected third-argument minus one); BED0 copies its two
+        // local output DWORDs on its unconditional epilogue; A310
+        // returns the same AX to the caller's low-word gate at
+        // 196AE, which skips this iteration's 19C78 mixer.
+        //
+        // A zero AX alone does NOT imply the BE52 branch executed;
+        // this test explicitly assumes the BE52 path.
+        let changed_selected=bdd0_failure_selected_dword(0x100);
+        assert_eq!(changed_selected,0xFF);
+        let bed0=conditional_original_worker_bed0_trace(0,[1;8]);
+        assert_eq!(bed0.returned_ax,0);
+        assert!(bed0.output_dwords_written);
+        assert!(bed0.secondary_indices.is_empty());
+        assert!(super::unsafedisc_dll_worker_finalizer::
+            worker_setup_skips_mixer(u32::from(bed0.returned_ax)));
+        // This composition cannot establish actual startup
+        // reachability, pointer validity or any mixer input state.
+    }
+
+    #[test]
     fn original_worker_index_four_checks_other_seven_slots() {
         let t=conditional_original_worker_bed0_trace(1,[1;8]);
         assert_eq!(t.secondary_indices,vec![0,1,2,3,5,6,7]);
