@@ -91,6 +91,44 @@ pub fn get_version_path(api_success:bool,platform_id:u32)->WindowsVersionPath {
     else {WindowsVersionPath::OtherPlatform}
 }
 
+/// The x86 sequence reached from the original GetVersionExA-failure
+/// JE at 1A7B8 follows a flag-preserving MOV/NOP detour, a JE at
+/// 1A846 and a JMP at 1A849 into 1A854. There it loads the passed
+/// DWORD pointer, ANDs its value with 0xFF, stores it back and sets
+/// AX=1. This is *only* a conditional failure-path effect, not the
+/// state after a successful Windows version probe or at mixer entry.
+pub fn version_query_failure_state(original:u32)->(u32,u16) {
+    (original & 0xFF,1)
+}
+
+/// Assert independently located original code bytes and all three
+/// control transfers of the 1A77F GetVersionExA failure fallback.
+/// No Windows API is invoked and no DLL code is executed.
+pub fn audit_version_failure_fallback(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x1A7B6u32,&[0x85,0xC0,0x0F,0x84,0x82,0x00,0x00,0x00][..]),
+        (0x1A840,&[0x75,0x09,0x8B,0xC9,0x90,0x90,0x74,0x01,0x90,0xEB,0x09][..]),
+        (0x1A854,&[0x8B,0x45,0x08,0x8B,0x08][..]),
+        (0x1A859,&[0x81,0xE1,0xFF,0x00,0x00,0x00][..]),
+        (0x1A85F,&[0x8B,0x55,0x08,0x89,0x0A][..]),
+        (0x1A864,&[0x66,0xB8,0x01,0x00][..]),
+        (0x1A868,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    // Numeric targets are derived directly from the signed displacements
+    // that audit_version_failure_fallback checks above.
+    let query_failure_jump=0x1A7B8u32 + 6 + 0x82;
+    let preserved_zero_flag_jump=0x1A846u32 + 2 + 1;
+    let unconditional_fallback_jump=0x1A849u32 + 2 + 9;
+    if query_failure_jump!=0x1A840 ||
+       preserved_zero_flag_jump!=0x1A849 ||
+       unconditional_fallback_jump!=0x1A854 {
+        return Err("original 1A77F failure-path branch targets changed".into());
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
@@ -194,6 +232,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     if iat_slot!=0x1E058 || other_slot!=iat_slot {
         return Err("original 1A77F/1A9B6 platform-detection import slots changed".into());
     }
+    audit_version_failure_fallback(dll,pe)?;
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
         imp.symbol=="GetVersionExA" &&
@@ -354,6 +393,28 @@ mod tests {
         }
         assert_eq!(all.len(),19);
         assert_eq!(classify_state_operand(0x1A9B6),StateRefKind::Unclassified);
+    }
+
+    #[test]
+    fn failed_os_version_probe_keeps_only_original_low_byte() {
+        for (before,after) in [
+            (0u32,0u32), (1,1), (0x1234_5678,0x78),
+            (0xDEAD_BEEF,0xEF), (0xFFFF_FF00,0),
+            (u32::MAX,0xFF),
+        ] {
+            assert_eq!(version_query_failure_state(before),(after,1));
+        }
+    }
+
+    #[test]
+    fn fallback_state_transition_is_idempotent_but_not_a_reset() {
+        for before in [0,0x0100,0xFF,0xFEDC_BA98,u32::MAX] {
+            let (after,result)=version_query_failure_state(before);
+            assert_eq!(result,1);
+            assert_eq!(version_query_failure_state(after).0,after);
+            assert_eq!(after & !0xFF,0);
+        }
+        assert_ne!(version_query_failure_state(0x1234_5678).0,0);
     }
 
     #[test]
