@@ -6484,9 +6484,11 @@ opaque protected EAX modifiers at 0x65BE and 0x6621.
 
 Five synthetic tests cover no-carry membership and huge
 non-uniqueness, genuine carry paths, incorrect observations and
-bounds. Five additional exact-solver tests check the 2^24
+bounds. Seven additional exact-solver tests check the 2^24
 single-byte count, a carry from low byte, a carry from low16
-to high16, inconsistent observations and length/example caps.
+to high16, inconsistent observations, length/example caps,
+inclusion of all no-carry candidates, and the information
+equivalence of repeated unchanged-state measurements.
 
 **Required to apply this to actual encrypted `.txt`:** verify
 that the original 19C78 loop visits the same byte recurrence
