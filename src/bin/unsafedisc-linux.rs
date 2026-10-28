@@ -18,6 +18,8 @@ mod unsafedisc_indexed_affine;
 mod unsafedisc_historical_155;
 #[path = "../unsafedisc_historical_155_list_plan.rs"]
 mod unsafedisc_historical_155_list_plan;
+#[path = "../unsafedisc_historical_155_reloc_builder.rs"]
+mod unsafedisc_historical_155_reloc_builder;
 
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
@@ -5131,6 +5133,8 @@ fn inspect_historical_155_cli() -> Result<()> {
     unsafedisc_historical_155_list_plan::audit_155_post_builder_rva_mapper(
         backed,base,code.virtual_address
     )?;
+    let reloc_builder=unsafedisc_historical_155_reloc_builder::
+        audit_155_reloc_cutpoint_builder(backed,base,code.virtual_address)?;
     let provenance=unsafedisc_historical_155::audit_155_section_table_provenance(
         backed,base,code.virtual_address
     )?;
@@ -5183,6 +5187,11 @@ fn inspect_historical_155_cli() -> Result<()> {
     println!("  Follow-on post-builder RVA mapper: 0x4022B2..0x40230B; source RVA [0x403B43], section RVA at +0x0C, RawSize at +0x10, raw pointer at +0x14.");
     println!("  The archived code tests inclusive raw end and next-header VirtualAddress [EAX+0x34], then stores delta at [0x403B3F] and raw offset at [0x403B43].");
     println!("  This exact opcode audit is public-archive-derived; actual original 20,480-byte variant must be supplied locally, and no runtime behavior is inferred.");
+    println!("  Archived relocation cutpoint builder: mode=0x{:X} written at [0x{:08X}] (sentinel); first sorted cutpoint at 0x{:08X}.",
+        reloc_builder.reloc_mode_value,reloc_builder.mode_global_va,
+        reloc_builder.first_cutpoint_va);
+    println!("  Nonzero relocation WORDs are converted into RVA and RVA+4 cutpoints; archived code does NOT filter the four-bit PE relocation type.");
+    println!("  This is a static public-variant audit only: exact byte agreement with owner's private original is still untested in this session.");
     // Advisory static DATA inspection; the owner's original 1.5.5
     // may differ from the compatibility-modified public archive.
     // Its on-disk initial zeros are NOT evidence of runtime clearing.

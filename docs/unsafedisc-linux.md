@@ -6018,3 +6018,58 @@ was not available for a fresh comparison in this session.
 The inspect-historical audit intentionally fails closed if
 the original executable's bytes differ. No original game bytes,
 protected DLL, original tool, or decrypted output is published.
+
+### Pinned public archive: relocation cutpoint builder and mode 4 (2026-10-28)
+
+An independent static, non-executing disassembly of the pinned
+18,944-byte public compatibility binary (Git blob
+825c467b6b403e1c85a5875ede5696dedfe17652) establishes the
+control path at virtual addresses 0x40234D through 0x4023DF.
+
+The fallback at 0x402358 scans for a four-byte section-name prefix
+'.rel'. The earlier 0x402320 route can also enter the same builder
+upon a suitable address match, so the '.rel' fallback is NOT
+the exclusive entry condition.
+
+At 0x402366, PUSHAD preserves caller registers, EDI is assigned
+0x403CB0, and 0x40236C writes the DWORD value 4 at [EDI-4],
+that is global 0x403CAC. This directly connects the relocation
+builder to the previously analyzed mode-4 selector at 0x401D48.
+
+The builder reads relocation block VirtualAddress and SizeOfBlock
+at 0x402382/0x402384. For a nonzero page VirtualAddress it
+inserts a calculated cutpoint (blockVA+0x1FFF)&0x7FFFF000.
+It then skips the eight-byte IMAGE_BASE_RELOCATION header and
+treats the remaining bytes as 16-bit relocation words.
+
+At 0x4023A7..0x4023C6, a zero whole relocation WORD is skipped.
+For any nonzero WORD, the code ANDs it with 0x0FFF, adds the
+block page RVA and inserts both resulting RVA and RVA+4 in a
+sorted cutpoint table. Importantly, NO 4-bit IMAGE_REL_BASED
+type check is performed in this historical window. An unusual
+nonzero IMAGE_REL_BASED_ABSOLUTE word would therefore be
+processed, even though the safe native PE relocation parser
+rightly does not treat type-0 padding as a HIGHLOW relocation.
+
+The insertion helper 0x4023CA..0x4023DF shifts prior entries
+while its new value is <= the preceding DWORD. Consequently
+equal cutpoints are not explicitly deduplicated by that helper.
+The initial marker 4 is an insertion guard, not evidence that
+the capacity or end-of-table checks are safe. The source loop's
+block size arithmetic can also underflow if malformed input is
+supplied, so the port rejects malformed synthetic block lengths.
+
+Added src/unsafedisc_historical_155_reloc_builder.rs with a
+strict archived-opcode/branch audit and bounded, synthetic-only
+cutpoint model. Four tests cover pinned instruction windows,
+mode-4 provenance, nonzero type-0 words, duplicate cutpoints
+and overflow or invalid block geometries. The original retail
+game/DLL input has not been compared against this new byte
+window, and no runtime relocation mode is assumed for Crimson.
+
+These findings establish a critical piece of the historical
+checksum preparation path, NOT the missing dplayerx.dll EAX
+modifier routines or a working unpacker. Nothing proprietary
+was committed. The temporary diagnostic Actions step used to
+inspect the public archived executable has been removed;
+no binary is downloaded by the normal CI jobs.
