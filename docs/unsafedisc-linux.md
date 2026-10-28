@@ -344,9 +344,31 @@ section completion. The initial `JMP` at `401D03`
 intentionally skips that POPAD; returning to it on the
 first entry would instead restore a frame not yet saved.
 The normal loop-back jumps `401D77` and `401D80`
-both target `401D05`. This is an analysis of **static x86
-structure and nominal control flow**, not a dynamic trace or
-a claim about every error path.
+both target `401D05`. The **relocation-aware branch** has
+also been connected to this same iterator:
+
+```asm
+401EDD  POPAD
+401EDE  JMP 401D79    ; E9 96 FE FF FF (signed rel32 -0x16A)
+401D79  POP ESI
+401D7A  MOV [60BCCC],ESI
+401D80  JMP 401D05    ; POPAD for the section iterator
+401D05  POPAD
+401D06  MOV ESI,[EDI] ; read next section-header pointer
+```
+
+This proves the **relocation path also reaches the same
+section-loop continuation** in the audited public variant,
+subject to reaching its normal epilogue. The updated native
+audit checks the actual `E9 rel32` displacement, the
+`POPAD / POP ESI / MOV` bridge and the final `JMP rel8`
+back to the iterator. It is not a proof of all historical
+paths, of balanced stack state under exceptions, or of
+a successful modifier call.
+
+This is an analysis of **static x86 structure and nominal
+control flow**, not a dynamic trace or a claim about every
+error path.
 
 The size calculation is precisely:
 
