@@ -3807,6 +3807,25 @@ with any **bit-affine F2**, whether F1 is affine or arbitrarily
 nonlinear, under the recovered historical
 `F2(F1(input) XOR mask)` expression.
 
+**Important register-contract correction (2026-10-28):** direct
+disassembly of historical `0x401F96..0x401F9D` reveals
+`CALL EDX; XOR EAX,ECX; ADD EDX,0x63; CALL EDX`.
+The first encrypted DLL helper's actual preservation of ECX
+and EDX is **not yet verified**. Consequently the claimed
+`F2(F1(x XOR mask) XOR mask)` relation, and hence the
+F2-only affine contradiction, are **conditional on that
+register-preservation contract**, rather than proven
+properties of the fully recovered retail decoder. If the
+first call changes ECX in a context-dependent manner, the
+effective intermediate XOR mask may differ; if it changes
+EDX, the next call target may differ. The **measured
+13/8/5 contradiction statistics remain valid** for the
+tested *hypothetical* mathematical model. They are not by
+themselves a proof that the actual second DLL routine
+is nonlinear until those register effects have been
+recovered. The same caveat applies to first-stage-only
+deductions that require the exact composite expression.
+
 The broader Gaussian-elimination F2-only test has 13 difference
 relations, 8 independent mask-difference features, and 5
 contradicting dependent relations. The zero output-collision result
