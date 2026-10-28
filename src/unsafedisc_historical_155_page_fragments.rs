@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(r.fragment_calls,4);
         assert_eq!(r.complete_dwords,2044);
         assert_eq!(r.excluded_bytes,16);
-        assert_eq!(r.max_fragment_dwords,1018);
+        assert_eq!(r.max_fragment_dwords,1022); // second page: [4104,8192)
         assert_eq!(r.incomplete_tail_bytes,0);
     }
     #[test]
