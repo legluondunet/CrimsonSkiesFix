@@ -26,6 +26,9 @@ mod unsafedisc_dll_bootstrap;
 #[path = "../unsafedisc_dll_category_dispatch.rs"]
 mod unsafedisc_dll_category_dispatch;
 
+#[path = "../unsafedisc_dll_ranges.rs"]
+mod unsafedisc_dll_ranges;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2815,6 +2818,9 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
+    let range_edges=unsafedisc_dll_ranges::verify_original(dll,&pe)?;
+    println!("  Original B850/B880/B8E0 handlers: {range_edges} verified range-list and interval-helper E8 calls.");
+    println!("  Confirmed 12-byte record allocation, category/interval comparisons and linked-list field stores; NOT .txt plaintext restoration.");
     println!("  A2A0 module category dispatch: B5D0 record lookup, B850 first, B880/B8E0 only after prior zero returns.");
     println!("  Original control-flow signatures validated; no branch execution or .txt decoding is asserted.");
     let (startup_selectors,final_iterators)=unsafedisc_dll_bootstrap::audit_original(dll,&pe)?;
