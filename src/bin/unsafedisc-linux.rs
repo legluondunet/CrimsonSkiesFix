@@ -3991,6 +3991,7 @@ struct Options {
     sections: bool,
     key_research: bool,
     modifier_research: bool,
+    modifier_snapshot: Option<PathBuf>,
     startup_research: bool,
     attach_research: bool,
     xref_research: bool,
@@ -4004,7 +4005,7 @@ fn help() {
     println!("unSafeDisc Linux research port (native Rust, initial read-only stage)\n\
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
-      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
+      --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--modifier-snapshot CS98-DLL-00.BIN] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
   unsafedisc-linux inspect-snapshot --snapshot CS98-DLL-00.BIN\n\\
   unsafedisc-linux inspect-historical --unsafedisc unSafedisc.exe\n\
   unsafedisc-linux --help\n\
@@ -4103,6 +4104,7 @@ fn parse_args() -> Result<Option<Options>> {
             "--dplayerx" if options.dplayerx.is_none() => options.dplayerx = Some(PathBuf::from(value)),
             "--reference" if options.reference.is_none() => options.reference = Some(PathBuf::from(value)),
             "--reported-key" if options.reported_key.is_none() => options.reported_key = Some(parse_hex_u32(&value)?),
+            "--modifier-snapshot" if options.modifier_snapshot.is_none() => options.modifier_snapshot = Some(PathBuf::from(value)),
             _ => return Err(format!("unrecognized or repeated argument: {key}")),
         }
     }
@@ -4118,10 +4120,16 @@ fn parse_args() -> Result<Option<Options>> {
     if options.reference_audit && options.reference.is_none() {
         return Err("--reference-audit requires --reference TESTME.EXE".into());
     }
+    if options.modifier_snapshot.is_some() && (!options.key_research || options.reference.is_none()) {
+        return Err("--modifier-snapshot requires --key-research and --reference TESTME.EXE".into());
+    }
     Ok(Some(options))
 }
 
 fn inspect(options: Options) -> Result<()> {
+    let captured_modifiers=options.modifier_snapshot.as_ref()
+        .map(|p|load_verified_modifier_snapshot(p.as_path()))
+        .transpose()?;
     let loader = read_original(options.loader.as_ref().unwrap(), LOADER_LEN, LOADER_SHA)?;
     let icd = read_original(options.icd.as_ref().unwrap(), ICD_LEN, ICD_SHA)?;
     let dll = read_original(options.dplayerx.as_ref().unwrap(), DLL_LEN, DLL_SHA)?;
@@ -4527,7 +4535,7 @@ fn inspect(options: Options) -> Result<()> {
             }
 
             let (composite,algebra,indexed_affine,mask_alias,second_stage,first_stage)=inspect_original_modifier_reference_pairs(
-                &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
+                &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key,captured_modifiers.as_ref())?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
             println!("  Composite EAX pair observations at index=0: {}; unique input/output DWORDs: {} / {}; contradictions: {} forward, {} reverse.",
@@ -5119,6 +5127,7 @@ fn inspect_original_modifier_reference_pairs(
     icd:&[u8], reference:&[u8],
     original:&Pe32, decoded:&Pe32,
     relocations:&[RelocBlock], key:[u32;4],
+    captured:Option<&unsafedisc_modifier_snapshot::Pair>,
 )->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit,
            unsafedisc_indexed_affine::IndexedAffineAudit,
            unsafedisc_indexed_affine::MaskAliasAudit,
@@ -5159,6 +5168,8 @@ fn inspect_original_modifier_reference_pairs(
     let mut reverse=std::collections::HashMap::<u32,u32>::new();
     let mut indexed_forward=std::collections::HashMap::<(u32,u32),u32>::new();
     let mut indexed_reverse=std::collections::HashMap::<(u32,u32),u32>::new();
+    let mut captured_matches=0usize;
+    let mut captured_mismatches=0usize;
     for (page_number,page) in reserved.chunks(4096).enumerate() {
         let base=page_number.checked_mul(4096)
             .ok_or("composite audit page number overflow")?;
@@ -5193,8 +5204,16 @@ fn inspect_original_modifier_reference_pairs(
                     .map_err(|_| "composite fragment word index overflow")?;
                 let mask=unsafedisc_indexed_affine::index_mask(idx);
                 let at=absolute_start+index*4;
-                let source=read_u32(encrypted,at)? ^mask;
+                let encrypted_word=read_u32(encrypted,at)?;
+                let source=encrypted_word^mask;
                 let intermediate=read_u32(&inverse,index*4)?;
+                if let Some(modifiers)=captured {
+                    if modifiers.extra_word(encrypted_word,idx)==intermediate {
+                        captured_matches+=1;
+                    } else {
+                        captured_mismatches+=1;
+                    }
+                }
                 let (seen,fconf,rconf)=insert_indexed_modifier_observation(
                     &mut indexed_forward,&mut indexed_reverse,idx,source,intermediate);
                 audit.indexed_repeated_observations+=usize::from(seen);
@@ -5202,6 +5221,13 @@ fn inspect_original_modifier_reference_pairs(
                 audit.indexed_reverse_conflicts+=usize::from(rconf);
                 audit.max_index=audit.max_index.max(index);
             }
+        }
+    }
+    if captured.is_some() {
+        println!("  Win98 capture EAX composite vs verified retail/reference: {} matching words, {} mismatches (of {} checked).",
+            captured_matches,captured_mismatches,audit.modified_dwords);
+        if captured_matches+captured_mismatches!=audit.modified_dwords || captured_mismatches!=0 {
+            return Err("Win98 captured F1/F2 does not fully explain protected/reference extra-layer observations; refusing any decrypt claim".into());
         }
     }
     audit.distinct_inputs=forward.len();
@@ -5426,19 +5452,8 @@ fn inspect_historical_155_cli() -> Result<()> {
     Ok(())
 }
 
-/// Inspect only the exact, owner-supplied Windows 98 passive DLL capture.
-/// Unlike a PE file on disk, this input is a complete *mapped* image whose
-/// RVA corresponds to the byte offset. No Windows code is ever executed.
-fn inspect_snapshot_cli() -> Result<()> {
-    let mut args=env::args().skip(2);
-    if args.next().as_deref()!=Some("--snapshot") {
-        return Err("usage: inspect-snapshot --snapshot CS98-DLL-00.BIN".into());
-    }
-    let path=PathBuf::from(args.next().ok_or("missing snapshot path")?);
-    if args.next().is_some() {
-        return Err("inspect-snapshot accepts only one --snapshot path".into());
-    }
-    let image=read_original(&path,SNAPSHOT_LEN,SNAPSHOT_SHA)?;
+fn load_verified_modifier_snapshot(path:&Path)->Result<unsafedisc_modifier_snapshot::Pair> {
+    let image=read_original(path,SNAPSHOT_LEN,SNAPSHOT_SHA)?;
     let pe=parse_pe32(&image)?;
     let nt=read_u32(&image,0x3C)? as usize;
     let optional=nt.checked_add(24).ok_or("PE optional header overflow")?;
@@ -5467,6 +5482,22 @@ fn inspect_snapshot_cli() -> Result<()> {
     {
         return Err("snapshot modifier opcode semantics differ from verified independent analysis".into());
     }
+    Ok(pair)
+}
+
+/// Inspect only the exact, owner-supplied Windows 98 passive DLL capture.
+/// Unlike a PE file on disk, this input is a complete *mapped* image whose
+/// RVA corresponds to the byte offset. No Windows code is ever executed.
+fn inspect_snapshot_cli() -> Result<()> {
+    let mut args=env::args().skip(2);
+    if args.next().as_deref()!=Some("--snapshot") {
+        return Err("usage: inspect-snapshot --snapshot CS98-DLL-00.BIN".into());
+    }
+    let path=PathBuf::from(args.next().ok_or("missing snapshot path")?);
+    if args.next().is_some() {
+        return Err("inspect-snapshot accepts only one --snapshot path".into());
+    }
+    let pair=load_verified_modifier_snapshot(&path)?;
     // Reversibility is a necessary check, not proof of a complete ICD decryptor.
     let mut state=0x51C0_A71E_u32;
     for source in [0,1,2,0x1234_5678,0xDEAD_BEEF,0x8000_0000,u32::MAX] {
