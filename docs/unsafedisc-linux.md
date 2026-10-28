@@ -4839,3 +4839,101 @@ initialization and complete loop, and verify
 the actual protected-code address/buffer contents
 before making any claim of restored functions
 at `0x65BE/0x6621`.
+
+
+### Mutable byte-mixer state provenance: PE zero-fill, seven direct writes and GetVersionExA (2026-10-28)
+
+The previous `19C78` byte-step model used one mutable DWORD
+at preferred VA **`0x00905010`**, RVA **`0x25010`**.
+Independent read-only examination of the exact original
+SHA-256-matched `dplayerx.dll` establishes much more about
+the **provenance** of this global state, without assuming a
+complete decoded control-flow graph.
+
+The original DLL's `.data` section has RVA `0x20000`,
+`SizeOfRawData=0x3E00` and `VirtualSize=0x6C80`.
+The state lies at section-relative offset `0x5010`:
+**inside mapped, zero-initialized virtual data but beyond
+the on-disk raw bytes**. Thus ordinary Windows PE image
+mapping initializes the state DWORD to **zero before
+the DLL has run**. This *does not* establish that it is
+zero when `19C78` executes.
+
+Instruction-aligned absolute accesses to the same global
+revealed **seven explicit state writers** in the readable
+`.txt2` section:
+
+| Original writer RVA | Verified x86 operation | Possible state effect |
+| --- | --- | --- |
+| `0x198A0` | `MOV [0x905010],EDX`, preceded by `NEG; SBB EAX,EAX; AND EAX,0x4F3; MOV EDX,[state]; ADD EDX,EAX` | `state += (prior_EAX != 0 ? 0x4F3 : 0)` |
+| `0x19A8B` | `MOV [state],ECX`, preceded by `AND EAX,0xFFFF; MOV ECX,[state]; ADD ECX,EAX` | `state += ([EBP+0x18] & 0xFFFF)` |
+| `0x19DE1` | `MOV [state],EDX` after `ADD EDX,ECX` | `state += produced_byte` inside the verified XOR step |
+| `0x19E79` | Second `MOV [state],ECX`, preceded by the same low-16 argument masking | A **separate** `state += ([EBP+0x18] & 0xFFFF)` |
+| `0x19F18` | `MOV [state],EAX`, preceded by `MOV EAX,[state]; ADD EAX,[EBP-4]` | `state += local_DWORD` |
+| `0x1A360` | `MOV DWORD PTR [state],0` | **Explicit reset to zero** |
+| `0x1A3C0` | Another `MOV DWORD PTR [state],0` | **Second explicit reset to zero** |
+
+The instructions at the two reset sites use the exact
+x86 form `C7 05 10 50 90 00 00 00 00 00`.
+**Neither reset is assumed to be reached** merely because
+its bytes are present. Similarly, a single on-disk
+absolute reference to `state` does not prove a full
+memory graph, nor that every listed writer executes
+between entry and the byte-step loop. The complete
+runtime order and any indirect writes are unresolved.
+
+**Two original callers invoke another helper with a
+pointer to the state:**
+
+```text
+.txt2:19A48 PUSH 0x00905010; 19A4D CALL A77F
+.txt2:19E2B PUSH 0x00905010; 19E30 CALL A77F
+```
+
+The separately disassembled original `.txt2:0xA77F`
+code prepares a `0x94`-byte **OSVERSIONINFOA** structure
+at `[EBP-0x94]`, passes it to the **actual imported**
+`KERNEL32!GetVersionExA` via IAT RVA `0x1E058`,
+and checks the API's success result.
+At RVA `0xA80B` it compares the DWORD at
+`[EBP-0x84]` against `2`. The relative offset
+`0x94-0x84=0x10` identifies **OSVERSIONINFOA.dwPlatformId**,
+and `2` is Win32 `VER_PLATFORM_WIN32_NT`.
+The NT subpath calls original helper `0xAE3F` at
+`0xA828` and the other-platform path calls
+`0xBEEE` at `0xA7F3`. A failed `GetVersionExA`
+call follows a third path and must not be
+treated as either of these successful branches.
+
+This is **direct structural evidence of a platform-
+dependent input to the state initialization/update
+machinery**, relevant to the historical Windows 9x/NT
+compatibility problem. It is **not proof** that this
+branch alone caused any observed OS incompatibility
+or that the original mixer state is a fixed OS
+version-derived key.
+
+The new `src/unsafedisc_dll_state_provenance.rs`
+module verifies the original `.data` virtual/raw
+geometry, all seven exact state-writer sequences,
+both actual E8 calls to A77F, OSVERSIONINFOA
+setup, GetVersionExA symbol/IAT identity,
+and the original platform-specific E8 destinations
+**only on the pinned original DLL**. Six synthetic
+Rust tests check PE zero-fill bounds, conditional
+`0x4F3` increments, two low-16 argument updates,
+write-site uniqueness, platform selection and
+OSVERSIONINFOA layout. The CLI reports only
+aggregate opcode provenance and the distinction
+between image-mapped initial state and runtime
+state. It does not execute a Windows API,
+modify any memory or output game bytes.
+
+**Next research:** trace all callers of the two
+explicit reset sequences, then reconstruct the
+state transitions along an actually reachable
+`19C78` invocation from a known initialized
+descriptor. In the meantime, `conditional_byte_step`
+remains a proven *local arithmetic primitive*
+with an **unknown input state**, not a complete
+SafeDisc code-restoration algorithm.
