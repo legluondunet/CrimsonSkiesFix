@@ -47,8 +47,13 @@ is not distributed here.
 The exact-version first key word defaults to `0x7496538F`; use
 `--reported-key` only to override it for controlled experiments.
 **This is a validated key and diagnostic framework, not a working
-unpacker:** two game-specific protected EAX modifier functions
-remain unrecovered.
+unpacker.** A Windows 98 passive memory capture yielded two EAX-only
+modifier routines (F1 and F2), now interpreted by a strict read-only
+Rust decoder. Their agreement with the **440,422** exact
+original/reference DWORD observations has not yet been established.
+See [Win98 passive modifier research](docs/win98-passive-modifiers.md)
+for SHA-gated `inspect-snapshot` and the optional
+`inspect --key-research --modifier-snapshot` cross-check.
 
 **It does not yet decrypt or reconstruct `CRIMSON.ICD`, and it does not
 modify the existing `crimson-patcher` functionality.** See the
