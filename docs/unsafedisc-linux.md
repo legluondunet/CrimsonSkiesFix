@@ -5945,10 +5945,11 @@ An additional read-only comparison of the already pinned historical
 x86 windows established a builder/iterator dependency:
 
 - 0x4022A8 writes each selected header pointer and advances the output
-  cursor by 4; it does not emit a NULL DWORD after the last entry.
+  cursor by 4; the audited loop itself does not emit a NULL DWORD.
 - 0x401D06 reads 32-bit section-header pointers until an entry is zero.
   Therefore some pre-existing or separately established NULL entry
-  is required. The constructor alone does not guarantee termination.
+  is required if no later code inserts one. The audited loop alone does
+  not establish full-function termination behavior.
 - 0x4022B0 uses LOOP rel8 with no preceding ECX=0 guard on the
   reconstructed path. Entering with zero would execute 2^32
   iterations before the 32-bit counter becomes zero again.
@@ -5969,3 +5970,5 @@ on-disk upper bound for the SHA-256-verified original tool if such
 zero-initialized DWORDs are present. No runtime clearing, lifetime,
 multiple invocation safety or original game decryption is inferred.
 Unpacking remains disabled; PR #5 is still experimental.
+
+The audit stops at the end of the 0x4022B0 LOOP instruction; bytes immediately afterward have not been freshly compared with the original historical binary. Consequently absence of a later terminator write is **not established**.

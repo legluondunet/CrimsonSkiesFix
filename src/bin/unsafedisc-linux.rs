@@ -5173,7 +5173,7 @@ fn inspect_historical_155_cli() -> Result<()> {
         builder.skip_header_va);
     println!("  Historical section LOOP with ECX=0 would execute {} iterations (32-bit wrap); native implementations must reject a zero section count.",
         unsafedisc_historical_155_list_plan::historical_155_loop_iterations(0));
-    println!("  Builder writes section pointers but NO final zero DWORD; the iterator requires an existing null slot. This is a static dependency, not a verified runtime guarantee.");
+    println!("  Audited builder LOOP does not write a final zero DWORD; iterator needs a zero slot. Code after the audited window may still initialize one; runtime behavior is unverified.");
     // Advisory static DATA inspection; the owner's original 1.5.5
     // may differ from the compatibility-modified public archive.
     // Its on-disk initial zeros are NOT evidence of runtime clearing.

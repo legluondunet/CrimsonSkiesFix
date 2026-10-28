@@ -20,11 +20,13 @@ pub fn historical_155_loop_iterations(initial_ecx: u32) -> u64 {
 
 /// A SAFE synthetic preview, never a Windows process-pointer writer.
 /// The historical builder at 0x4022A8 stores each selected section
-/// header's 32-bit address and advances EDI by four. It does NOT write
-/// a final NULL. The historical iterator at 0x401D06 reads pointers
+/// header's 32-bit address and advances EDI by four. The AUDITED LOOP
+/// does not write a final NULL; subsequent code is not excluded.
+/// The historical iterator at 0x401D06 reads pointers
 /// until it encounters zero. A previously zero-filled next slot is
-/// therefore a precondition, not an operation performed by the
-/// builder. Runtime initialization and intervening writes are unknown.
+/// therefore a precondition for the isolated loop-only model, not
+/// necessarily for the complete historical program. Later writes,
+/// runtime initialization and intervening changes remain unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoricalPointerListPreview {
     pub selected_indices: Vec<usize>,
@@ -35,7 +37,8 @@ pub struct HistoricalPointerListPreview {
 
 /// Bounded native-port-only model for invented or caller-owned
 /// section records and an explicit snapshot of destination slots.
-/// It must NOT silently invent a NULL terminator absent from x86.
+/// It must NOT silently invent a NULL terminator absent from the
+/// audited loop. This does not assert the rest of the function lacks one.
 /// Successful validation is not proof of real runtime conditions.
 pub fn hypothetical_155_pointer_list_preview(
     section_headers: &[u8],
@@ -53,7 +56,7 @@ pub fn hypothetical_155_pointer_list_preview(
     }
     let terminating_slot = selected_indices.len();
     if initial_destination_words[terminating_slot] != 0 {
-        return Err("historical list builder does not overwrite a stale nonzero terminator".into());
+        return Err("audited historical list loop does not overwrite a stale nonzero terminator".into());
     }
     let mut result = initial_destination_words.to_vec();
     let mut selected_header_vas = Vec::with_capacity(selected_indices.len());
