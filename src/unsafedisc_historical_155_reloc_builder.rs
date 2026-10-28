@@ -194,3 +194,97 @@ mod tests {
         assert!(hypothetical_155_reloc_cutpoints(u32::MAX,8,&[]).is_err());
     }
 }
+
+
+/// Independent read-only scan of IMAGE_BASE_RELOCATION entry WORDs.
+/// Unlike a HIGHLOW-only parser, this preserves the distinction
+/// between a ZERO type-0 padding WORD and a NONZERO type-0 WORD:
+/// historical 4023AD tests only the whole WORD for zero.
+///
+/// The caller must provide the exact bounded relocation directory
+/// bytes, not an arbitrary DLL memory address.
+#[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
+pub struct HistoricalRelocWordProfile {
+    pub blocks:usize,
+    pub highlow_words:usize,
+    pub zero_padding_words:usize,
+    pub nonzero_type_zero_words:usize,
+    pub odd_word_blocks:usize,
+}
+
+pub fn historical_155_reloc_word_profile(
+    directory:&[u8],
+)->Result<HistoricalRelocWordProfile,String>{
+    if directory.is_empty(){
+        return Err("empty historical relocation directory".into());
+    }
+    let mut at=0usize;
+    let mut out=HistoricalRelocWordProfile::default();
+    let mut prior=None;
+    while at<directory.len(){
+        let header=directory.get(at..at.checked_add(8)
+            .ok_or("relocation header offset overflow")?)
+            .ok_or("truncated historical relocation block header")?;
+        let page=u32::from_le_bytes(header[..4].try_into().unwrap());
+        let len=u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        if page%4096!=0 || len<8 || len%2!=0 ||
+           prior.is_some_and(|v| page<=v){
+            return Err("invalid historical relocation block geometry/order".into());
+        }
+        let end=at.checked_add(len).ok_or("relocation block end overflow")?;
+        let block=directory.get(at..end)
+            .ok_or("historical relocation block exceeds supplied directory")?;
+        let words=(len-8)/2;
+        if words%2!=0 {out.odd_word_blocks+=1;}
+        for entry in block[8..].chunks_exact(2){
+            let word=u16::from_le_bytes([entry[0],entry[1]]);
+            match word>>12 {
+                0 if word==0 => out.zero_padding_words+=1,
+                0 => out.nonzero_type_zero_words+=1,
+                3 => out.highlow_words+=1,
+                _ => return Err("unknown historical PE relocation type".into()),
+            }
+        }
+        out.blocks+=1;
+        prior=Some(page);
+        at=end;
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod relocation_word_profile_tests {
+    use super::*;
+
+    fn block(page:u32, words:&[u16])->Vec<u8>{
+        let mut out=Vec::new();
+        out.extend_from_slice(&page.to_le_bytes());
+        out.extend_from_slice(&(8u32+(words.len() as u32)*2).to_le_bytes());
+        for &word in words {out.extend_from_slice(&word.to_le_bytes());}
+        out
+    }
+
+    #[test]
+    fn type_zero_nonzero_is_not_the_same_as_zero_padding(){
+        let mut directory=block(0x1000,&[0,0x0001,0x3002,0]);
+        directory.extend_from_slice(&block(0x2000,&[0x3004,0,0x3008]));
+        assert_eq!(historical_155_reloc_word_profile(&directory).unwrap(),
+            HistoricalRelocWordProfile{
+                blocks:2,highlow_words:3,zero_padding_words:3,
+                nonzero_type_zero_words:1,odd_word_blocks:1,
+            });
+    }
+
+    #[test]
+    fn historical_type_profile_rejects_unsupported_or_truncated_words(){
+        assert!(historical_155_reloc_word_profile(&[]).is_err());
+        assert!(historical_155_reloc_word_profile(&[0;7]).is_err());
+        assert!(historical_155_reloc_word_profile(&block(0x1000,&[0x2001])).is_err());
+        assert!(historical_155_reloc_word_profile(&block(0x1001,&[0x3001])).is_err());
+        let mut d=block(0x1000,&[0x3001,0]);
+        d.extend_from_slice(&block(0x1000,&[0,0]));
+        assert!(historical_155_reloc_word_profile(&d).is_err());
+        let d=block(0x2000,&[0,0]);
+        assert!(historical_155_reloc_word_profile(&d[..d.len()-1]).is_err());
+    }
+}
