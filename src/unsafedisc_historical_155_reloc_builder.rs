@@ -210,6 +210,7 @@ pub struct HistoricalRelocWordProfile {
     pub zero_padding_words:usize,
     pub nonzero_type_zero_words:usize,
     pub odd_word_blocks:usize,
+    pub empty_word_blocks:usize,
 }
 
 pub fn historical_155_reloc_word_profile(
@@ -235,6 +236,7 @@ pub fn historical_155_reloc_word_profile(
         let block=directory.get(at..end)
             .ok_or("historical relocation block exceeds supplied directory")?;
         let words=(len-8)/2;
+        if words==0 {out.empty_word_blocks+=1;}
         if words%2!=0 {out.odd_word_blocks+=1;}
         for entry in block[8..].chunks_exact(2){
             let word=u16::from_le_bytes([entry[0],entry[1]]);
@@ -272,6 +274,7 @@ mod relocation_word_profile_tests {
             HistoricalRelocWordProfile{
                 blocks:2,highlow_words:3,zero_padding_words:3,
                 nonzero_type_zero_words:1,odd_word_blocks:1,
+                empty_word_blocks:0,
             });
     }
 
@@ -286,5 +289,85 @@ mod relocation_word_profile_tests {
         assert!(historical_155_reloc_word_profile(&d).is_err());
         let d=block(0x2000,&[0,0]);
         assert!(historical_155_reloc_word_profile(&d[..d.len()-1]).is_err());
+    }
+}
+
+
+/// Necessary preconditions for comparing a HIGHLOW-only checksum
+/// hypothesis to the archived, type-agnostic 1.5.5 cutpoint walker.
+/// SUCCESS DOES NOT PROVE EQUIVALENCE: historical zero padding,
+/// segment ordering, the checksum start state and DLL modifiers still
+/// need independent validation. This is a fail-closed preflight only.
+pub fn necessary_highlow_only_candidate_preflight(
+    profile:HistoricalRelocWordProfile, expected_highlow:usize, expected_padding:usize,
+)->Result<(),String>{
+    if profile.blocks==0 || profile.highlow_words==0 {
+        return Err("historical relocation profile lacks relocation entries".into());
+    }
+    if profile.highlow_words!=expected_highlow ||
+       profile.zero_padding_words.checked_add(profile.nonzero_type_zero_words)
+           !=Some(expected_padding){
+        return Err("historical relocation word counts differ from independent PE parser".into());
+    }
+    if profile.nonzero_type_zero_words!=0 {
+        return Err(format!(
+            "HIGHLOW-only key hypothesis cannot ignore {} nonzero ABSOLUTE words",
+            profile.nonzero_type_zero_words));
+    }
+    if profile.odd_word_blocks!=0 || profile.empty_word_blocks!=0 {
+        return Err(format!(
+            "HIGHLOW-only key hypothesis cannot safely model {} odd and {} empty historical relocation blocks",
+            profile.odd_word_blocks,profile.empty_word_blocks));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod candidate_preflight_tests {
+    use super::*;
+    fn good()->HistoricalRelocWordProfile{
+        HistoricalRelocWordProfile{
+            blocks:2,highlow_words:3,zero_padding_words:1,
+            nonzero_type_zero_words:0,odd_word_blocks:0,
+            empty_word_blocks:0,
+        }
+    }
+    #[test]
+    fn necessary_preflight_accepts_even_blocks_with_exact_zero_padding(){
+        assert!(necessary_highlow_only_candidate_preflight(good(),3,1).is_ok());
+        assert!(necessary_highlow_only_candidate_preflight(good(),2,1).is_err());
+        assert!(necessary_highlow_only_candidate_preflight(good(),3,2).is_err());
+    }
+    #[test]
+    fn necessary_preflight_rejects_nonzero_absolute_even_when_total_matches(){
+        let mut p=good();
+        p.nonzero_type_zero_words=1;p.zero_padding_words=0;
+        assert!(necessary_highlow_only_candidate_preflight(p,3,1).unwrap_err()
+            .contains("nonzero ABSOLUTE"));
+    }
+    #[test]
+    fn necessary_preflight_rejects_odd_or_empty_blocks(){
+        let mut p=good();
+        p.odd_word_blocks=1;
+        assert!(necessary_highlow_only_candidate_preflight(p,3,1).is_err());
+        p.odd_word_blocks=0;p.empty_word_blocks=1;
+        assert!(necessary_highlow_only_candidate_preflight(p,3,1).is_err());
+        p.empty_word_blocks=0;p.highlow_words=0;
+        assert!(necessary_highlow_only_candidate_preflight(p,0,1).is_err());
+    }
+    #[test]
+    fn word_profile_counts_empty_blocks_separately(){
+        let mut bytes=Vec::new();
+        bytes.extend_from_slice(&0x1000u32.to_le_bytes());
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&0x2000u32.to_le_bytes());
+        bytes.extend_from_slice(&12u32.to_le_bytes());
+        bytes.extend_from_slice(&0x3001u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        let p=historical_155_reloc_word_profile(&bytes).unwrap();
+        assert_eq!(p.empty_word_blocks,1);
+        assert_eq!(p.odd_word_blocks,0);
+        assert_eq!(p.highlow_words,1);
+        assert!(necessary_highlow_only_candidate_preflight(p,1,1).is_err());
     }
 }
