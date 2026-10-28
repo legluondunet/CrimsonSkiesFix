@@ -4567,3 +4567,44 @@ registered shadow-buffer contents from the actual
 mapped DLL image, and trace the original attach path
 through `A720` into the on-disk encrypted `.txt`
 region at RVA `0x65BE/0x6621`.
+
+
+### Original A810/AA00 wrappers distinguish file, process and module writes
+
+The exact original readable code exposes **two** higher-level
+dispatcher functions that select which I/O backend is used:
+`A810` (read) and `AA00` (write).
+
+| Descriptor mode | A810 read call | AA00 write call |
+| --- | --- | --- |
+| `0x64` | Immediate reject | Immediate reject |
+| `0x65` | `A560` (file I/O) | `A5C0` (file I/O) |
+| `0x66` | `A620` (ReadProcessMemory) | `A720` (WriteProcessMemory) |
+| `0x67` | `A620` (module memory / shadow) | `A720` (module write / VirtualProtect) |
+
+Exact confirmed E8 calls: `A84E -> A620`,
+`A858 -> A560`, `AA3E -> A720`,
+and `AA48 -> A5C0`. For modes other than
+`0x65` the wrapper calls the memory dispatcher,
+which rejects any mode other than `0x66` or `0x67`.
+
+A further *static* link into the write wrapper
+originates in the original **unobfuscated `.txt2`
+section at RVA `0x19448`**:
+`CALL rel32 AA00`. It establishes that a caller in
+readable code can reach the public write dispatcher,
+but control-flow obfuscation means the whole path is
+not proven to execute, nor is its passed module
+descriptor fully characterized yet.
+
+The new original-file audit asserts all five call
+destinations plus both wrappers' mode-0x64 and
+mode-0x65 comparison instructions. The Rust tests
+exercise all four mode routing cases. All operations
+are **read-only static inspection**: the inspector
+never invokes WriteProcessMemory or VirtualProtect.
+
+This new call provenance is the next place to trace
+the protected-code restoration pathway, alongside
+the previously documented `0x92B0 -> 0x9640`
+DLL-local byte-scrambling writer.
