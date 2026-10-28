@@ -4228,3 +4228,47 @@ fields populated before these two calls and determine
 whether either route refers to the **game's ICD** or
 only to other DLL-internal sections. That remains an
 open question rather than an asserted finding.
+
+
+### A second .txt2 initializer uses a caller-supplied decoded module name (2026-10-28)
+
+The previously identified `.txt2:0x1A299 -> A140`
+call has a concrete, independently checked **upstream
+descriptor preparation** sequence in the same readable
+`.txt2` routine:
+
+| Original RVA | Exact instruction / verified effect |
+| --- | --- |
+| `1A243` | `MOV EAX,[EBP+0xC]`: load caller-supplied pointer |
+| `1A246` | `PUSH EAX` |
+| `1A247` | `CALL E25C`: existing decoded-label helper |
+| `1A24F` | `PUSH EAX`: pass decoded-name pointer |
+| `1A250` | `CALL DWORD PTR [0x008FE098]`: **same verified GetModuleHandleA IAT slot** used at `0x986A` |
+| `1A256` | `MOV [EBP-8],EAX`: save returned module handle |
+| `1A259` | `PUSH 0x67`: descriptor read mode |
+| `1A25B` | `LEA ECX,[EBP-0xC]; PUSH ECX` |
+| `1A25F` | `CALL A550`: mode/descriptor setup |
+| `1A295` | `LEA EDX,[EBP-0xC]; PUSH EDX` |
+| `1A299` | `CALL A140`: module registry initialization |
+
+All three E8 destinations (`E25C`, `A550` and
+`A140`) and the IAT operand have been independently
+verified on the real SHA-256-pinned DLL. This caller
+uses the same already-confirmed Windows API identity
+as the ordinary `dplayerx.dll` setup, but its encoded
+module-name pointer **originates in the caller's arguments**.
+
+**Limit:** the actual string supplied by that caller
+has **not** been established here. Nor have the complete
+opaque branch predicates been proved to reach every
+instruction. The resolved handle could be for another
+DLL or another loaded module; no particular game process
+or ICD address can yet be asserted.
+
+The native `unsafedisc_dll_bootstrap.rs` inspector now
+validates this chain and the identity of the referenced
+`GetModuleHandleA` IAT slot and includes a synthetic
+stage-order regression. This strengthens the reason to
+trace callers of the `.txt2` function before generalizing
+the exact original DLL's zero-sized directory findings
+to all possible `A140` invocations.
