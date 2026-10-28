@@ -2825,9 +2825,11 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
     let verified_pipeline_calls=unsafedisc_dll_write_pipeline::audit_original(dll,&pe)?;
-    println!("  Original readable .txt2 dual-read / local-helper / write chain: {verified_pipeline_calls} proven direct CALL targets.");
+    println!("  Original readable .txt2 dual-read / local-helper / write chain: {verified_pipeline_calls} proven direct CALL targets (including A310 category-4 region checks).");
     println!("    A810 at 0x19327 -> buffer A, A810 at 0x19348 -> buffer B, processing helper 0x195DF at 0x1940B, AA00 at 0x19448 -> buffer A.");
     println!("    Final write shares the original FIRST read's descriptor, offset, length and buffer STACK SLOTS; runtime values and execution are NOT proven.");
+    println!("    0x195DF calls 0xA310 with category 4: checks registered module page bounds (+0x34/+0x38), optionally adjusts region metadata and calls secondary range helpers.");
+    println!("    This connects the local processing helper to code-section CATEGORY MANAGEMENT, not to a verified decryption algorithm.");
     let memory_apis=unsafedisc_dll_memory_io::audit_original(dll,&pe)?;
     println!("  Verified original A870 chained-string decoder and dynamic KERNEL32 memory API resolution:");
     for api in &memory_apis {
