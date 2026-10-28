@@ -3931,3 +3931,44 @@ cover the real original-like section table and a
 counterexample where a later section survives the
 directory-start filter. Neither original protected
 code nor generated decrypted data is committed.
+
+
+### Original A2A0 category handlers have an ordered, short-circuiting dispatch (2026-10-28)
+
+A new local static disassembly of the exact original DLL identifies
+the control-flow contract behind the previously mapped category
+registrations. At original RVA `0xA2A0`, the dispatcher first
+calls `0xB5D0` (module record lookup). A missing record returns
+immediately. Otherwise it prepares the stored category pointer
+and module data and calls three category-related helpers in a
+strictly ordered **short-circuiting** chain:
+
+| Original call RVA | Callee | Entry condition |
+| --- | --- | --- |
+| `A2D3` | `B850` | Registered module exists |
+| `A2E4` | `B880` | `B850` returns AX=0 |
+| `A2F5` | `B8E0` | Both `B850` and `B880` return AX=0 |
+
+The original branch opcodes `A2B1 TEST EAX,EAX / JE`,
+`A2DB TEST AX,AX / JNE` and `A2EC TEST AX,AX / JNE`
+are all exact-file checked. The same dispatcher also
+calls `BF70` at RVA `A2C3` before entering these
+handlers; no semantic claim about BF70 is necessary yet.
+
+This supplies a concrete, testable interpretation of the
+A140 registration work: finding a nonzero-sized source directory
+only makes registration **eligible**. The actual category
+operation can stop at B850 without touching B880 or B8E0,
+depending on the previous return value. It would therefore
+be wrong to infer that all three handlers run for every
+registered category.
+
+The new `src/unsafedisc_dll_category_dispatch.rs`
+module verifies the exact CALL targets and gating branch
+bytes under the already enforced original DLL SHA-256,
+and runs **four synthetic tests** for missing records,
+nonzero-first result, nonzero-second result and
+both-zero fallthrough. The CLI prints only the guarded
+static summary. This remains offline static analysis, not
+execution of the protected DLL, a reconstructed EAX
+routine, or a plaintext page.
