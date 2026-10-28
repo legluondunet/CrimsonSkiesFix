@@ -32,7 +32,7 @@ pub struct StateWrite {
 
 // Explicit, instruction-aligned writes to the state DWORD in original
 // readable .txt2. They do NOT include pointer-mediated mutations via
-// helper routines such as A77F, so this is not an exhaustive list of
+// helper routines such as 1A77F, so this is not an exhaustive list of
 // effects on the global state.
 pub const VERIFIED_DIRECT_WRITES:[StateWrite;7]=[
     StateWrite{instruction_rva:0x198A0,operation:StateOperation::ConditionalAdd4f3},
@@ -118,7 +118,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     }
 
     // Two site-specific direct calls pass POINTERS to the same global
-    // state to A77F. A77F may modify it; these are not ordinary
+    // state to 1A77F. 1A77F may modify it; these are not ordinary
     // local DWORD assignments and must not be included in the
     // seven explicitly validated direct writes.
     for (push_at,call_at) in [
@@ -126,43 +126,43 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         (0x19E2B,0x19E30),
     ] {
         dll_expect_raw_x86(dll,pe,push_at,&[0x68,0x10,0x50,0x90,0x00])?;
-        if dll_relative_call_target(dll,pe,call_at)?!=0xA77F {
-            return Err(format!("A77F state-pointer call mismatch at 0x{call_at:05X}"));
+        if dll_relative_call_target(dll,pe,call_at)?!=0x1A77F {
+            return Err(format!("1A77F state-pointer call mismatch at 0x{call_at:05X}"));
         }
     }
 
-    // A77F builds OSVERSIONINFOA (148 bytes), calls the *actual*
+    // 1A77F builds OSVERSIONINFOA (148 bytes), calls the *actual*
     // original KERNEL32!GetVersionExA import, and branches on
     // OSVERSIONINFOA::dwPlatformId at +0x10. Platform ID 2
     // dispatches down the Win32 NT branch; other IDs down another.
     for (at,bytes) in [
-        (0xA79Fu32,&[0xC7,0x85,0x6C,0xFF,0xFF,0xFF,0x94,0,0,0][..]),
-        (0xA7A9,&[0x8D,0x85,0x6C,0xFF,0xFF,0xFF,0x50][..]),
-        (0xA7B0,&[0xFF,0x15,0x58,0xE0,0x8F,0x00][..]),
-        (0xA7B6,&[0x85,0xC0,0x0F,0x84,0x82,0,0,0][..]),
-        (0xA80B,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x02,0x75,0x2C][..]),
-        (0xA824,&[0x8B,0x55,0x08,0x52][..]),
-        (0xA7EF,&[0x8B,0x4D,0x08,0x51][..]),
+        (0x1A79Fu32,&[0xC7,0x85,0x6C,0xFF,0xFF,0xFF,0x94,0,0,0][..]),
+        (0x1A7A9,&[0x8D,0x85,0x6C,0xFF,0xFF,0xFF,0x50][..]),
+        (0x1A7B0,&[0xFF,0x15,0x58,0xE0,0x8F,0x00][..]),
+        (0x1A7B6,&[0x85,0xC0,0x0F,0x84,0x82,0,0,0][..]),
+        (0x1A80B,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x02,0x75,0x2C][..]),
+        (0x1A824,&[0x8B,0x55,0x08,0x52][..]),
+        (0x1A7EF,&[0x8B,0x4D,0x08,0x51][..]),
     ] {
         dll_expect_raw_x86(dll,pe,at,bytes)?;
     }
     for (at,target) in [
-        (0xA828u32,0xAE3Fu32),
-        (0xA7F3,0xBEEE),
+        (0x1A828u32,0x1AE3Fu32),
+        (0x1A7F3,0x1BEEE),
     ] {
         if dll_relative_call_target(dll,pe,at)?!=target {
-            return Err(format!("A77F platform-specific helper call mismatch at 0x{at:05X}"));
+            return Err(format!("1A77F platform-specific helper call mismatch at 0x{at:05X}"));
         }
     }
-    let (_,iat_slot)=dll_indirect_import_call(dll,pe,0xA7B0,base)?;
+    let (_,iat_slot)=dll_indirect_import_call(dll,pe,0x1A7B0,base)?;
     if iat_slot!=0x1E058 {
-        return Err("original A77F platform-detection import slot changed".into());
+        return Err("original 1A77F platform-detection import slot changed".into());
     }
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
         imp.symbol=="GetVersionExA" &&
         imp.library.eq_ignore_ascii_case("KERNEL32.dll")) {
-        return Err("original A77F GetVersionExA symbol verification failed".into());
+        return Err("original 1A77F GetVersionExA symbol verification failed".into());
     }
     Ok(())
 }
