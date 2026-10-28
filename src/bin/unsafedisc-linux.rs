@@ -2875,6 +2875,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    This is a proven conditional LOW-BYTE MASK, NOT a full 32-bit reset, successful-version path, or established mixer-entry state.");
     println!("    Independently verified GetVersionExA failure route in the other helper 1A9B6: EAX=0 -> 1AB34 -> original parity/flag detour -> AX=1 and return; no argument-pointer DWORD store on this path.");
     println!("    The two failure branches differ: 1A77F masks the low byte; 1A9B6 keeps the passed DWORD unchanged.");
+    println!("    Isolated original Windows-9x helper block: 1C7F0 contains conditional 1D28F -> 1D2A4: DWORD *[EBP+8] += 0x34F with 32-bit wrap, then join at 1D2C7.");
+    println!("    Both original JNE/JE pairs converge before and after this store. Reachability of 1D28F, other helper effects and actual mixer-entry state remain UNKNOWN.");
     println!("    1A77F GetVersionExA-SUCCESS dispatch, original conditional x86 path verified: dwPlatformId=1 -> 1BEEE (Win9x), =2 -> 1AE3F (NT), other -> low-byte mask at 1A854.");
     println!("    Both platform-specific helper bodies invoke the actual KERNEL32!GetModuleHandleA import through IAT 0x1E098; their later state effects are NOT recovered.");
     println!("    1A9B6 GetVersionExA-SUCCESS original x86 route: dwPlatformId=1 -> 1C7F0 (Win9x), =2 -> 1BAC7 (NT), other -> 1AB34 fallback entry.");
