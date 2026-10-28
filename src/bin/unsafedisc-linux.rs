@@ -4271,13 +4271,24 @@ fn inspect(options: Options) -> Result<()> {
             return Err("independent historical and PE relocation WORD profile disagree".into());
         }
         println!("Original ICD historical relocation WORD audit (read-only, no DLL execution):");
-        println!("  {} PE relocation blocks; {} HIGHLOW WORDs; {} zero ABSOLUTE words; {} nonzero type-0 ABSOLUTE words; {} odd-sized WORD blocks.",
+        println!("  {} PE relocation blocks; {} HIGHLOW WORDs; {} zero ABSOLUTE words; {} nonzero type-0 ABSOLUTE words; {} odd-sized WORD blocks; {} empty-entry blocks.",
             historic.blocks,historic.highlow_words,
             historic.zero_padding_words,historic.nonzero_type_zero_words,
-            historic.odd_word_blocks);
+            historic.odd_word_blocks,historic.empty_word_blocks);
         println!("  Public historical unSafeDisc 1.5.5 checks entire relocation WORD for zero, then masks low 12 bits. Native HIGHLOW-only checksum hypotheses may differ if nonzero type-0 entries exist.");
-        if historic.odd_word_blocks!=0 {
-            println!("  WARNING: archived DWORD-pair relocation consumer can read beyond odd-sized WORD blocks; no unsafe historical reads are attempted.");
+        if historic.odd_word_blocks!=0 || historic.empty_word_blocks!=0 {
+            println!("  WARNING: the archived relocation walker uses an unconditional initial read and a LOOP; odd/empty blocks can cause unsafe accesses or loop-wrap. No such reads are attempted.");
+        }
+        if options.key_research {
+            // Necessary only, not sufficient: matching PE metadata
+            // does not establish the runtime checksum, adapter or TEA key.
+            unsafedisc_historical_155_reloc_builder::
+                necessary_highlow_only_candidate_preflight(
+                    historic,modern_highlow,reloc_padding
+                )?;
+            println!("  HIGHLOW-only key-candidate necessary preflight PASSED (not proof of historical checksum equivalence).");
+        } else if historic.nonzero_type_zero_words>0 {
+            println!("  WARNING: nonzero type-0 words are excluded by native HIGHLOW checksum research, but not by the archived 1.5.5 cutpoint builder.");
         }
     }
     if options.historical_selection {
