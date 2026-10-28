@@ -5071,7 +5071,21 @@ fn inspect_historical_155_cli() -> Result<()> {
     unsafedisc_historical_155::audit_155_entry_to_modifier_loop(
         backed,base,code.virtual_address
     )?;
+    let startup=unsafedisc_historical_155::analyze_155_dll_startup(
+        backed,base,code.virtual_address
+    )?;
     println!("Historical original unSafedisc.exe 1.5.5: exact SHA-256 and CODE opcode audit PASSED.");
+    println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
+        startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
+    match startup.attach_branch {
+        unsafedisc_historical_155::HistoricalAttachBranch::AlwaysSkipManualAttach=>
+            println!("  DLL entrypoint: unconditional skip to 0x{:08X} (no explicit attach from 402D98).",startup.skip_target_va),
+        unsafedisc_historical_155::HistoricalAttachBranch::SkipWhenDsBit2Clear=>
+            println!("  DLL entrypoint: DS-bit2 ZF=1 skips manual DLL_PROCESS_ATTACH; else manual CALL at 0x{:08X}.",startup.manual_dll_entry_call_va),
+        unsafedisc_historical_155::HistoricalAttachBranch::SkipWhenDsBit2Set=>
+            println!("  DLL entrypoint: DS-bit2 ZF=0 skips manual DLL_PROCESS_ATTACH; else manual CALL at 0x{:08X}.",startup.manual_dll_entry_call_va),
+    }
+    println!("  Variant caveat: public version.dll-adapted 1.5.5 uses flags=0 plus ALWAYS skip; original private SHA-verified binary may use flags=1 and a DS guard.");
     println!("  DLL size 0x21E00 -> 401F43 guarded trampoline -> 401F62 extra-DWORD-layer loop.");
     println!("  401F56: EBX buffer -> ESI, EAX length -> EDI; loop processes EDI>>2 DWORDs.");
     println!("  401F96: CALL [DLL base+0x65BE] via EDX.");
