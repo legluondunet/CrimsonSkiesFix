@@ -2837,6 +2837,7 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
     println!("  Verified original .txt2 keyboard probe: RVA 0x1D42F calls USER32!GetKeyboardType(0/1), accepts type=7 and subtype 0xD01..0xD07 (AX=1).");
     println!("    An original E8 at RVA 0x1CD46 targets this predicate. The adjacent TEST/JNE forks around a literal INT 0x68 with AX=0x4300 when the gate returns zero.");
+    println!("    Independently audited predecessor: entry at 0x1CD16 (JBE/JA), 32/32 CF/ZF/PF/SF/OF assignments join CALL 0x1CD46 in 8..18 anchored instruction boundaries.");
     println!("    This is STATIC x86 source evidence only: entrypoint reachability, Windows interrupt semantics, and any relation to a real compatibility failure remain UNKNOWN.");
     // Relocation-backed references are a bounded address-level audit, not
     // a disassembly or a proof that all aliases to the state are covered.
