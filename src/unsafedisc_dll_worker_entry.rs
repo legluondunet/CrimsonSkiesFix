@@ -245,10 +245,70 @@ pub fn audit_initial_worker_fixed_selector(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+/// Original first switch case 183C2 calls 189F0. The 189F0
+/// source scans fixed-width 0x28 records: it invokes the original
+/// 0xA810 helper with source address, current offset, count 0x28,
+/// and an output buffer, then tests:
+///   (output DWORD at +0x24 & mask) == expected
+/// It returns the first matching offset or zero if no match;
+/// offset arithmetic and comparison are original unsigned DWORDs.
+/// No actual original record or 0xA810 implementation is supplied
+/// to this pure helper, and no protected bytes are read.
+pub fn first_case_record_matches(
+    trailing_dword:u32,mask:u32,expected:u32
+)->bool {
+    trailing_dword & mask == expected
+}
+pub fn first_case_advance_offset(offset:u32)->u32 {
+    offset.wrapping_add(0x28)
+}
+pub fn first_case_has_more_offsets(offset:u32,limit:u32)->bool {
+    offset<limit
+}
+
+/// Anchor only exact original source bytes for the first case
+/// matcher; no semantic assumption is made about the called
+/// 0xA810 memory-reading helper beyond the CALL target.
+/// This is a bounded local reconstruction, NOT an unpacker.
+pub fn audit_original_first_case_record_matcher(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    for (site,bytes) in [
+        (0x189F0u32,&[
+            0x8B,0x44,0x24,0x14,0x53,0x55,0x56,
+            0x8B,0x74,0x24,0x1C,0x57,0x3B,0xF0,0x73,0x41,
+        ][..]), // JAE return 0 when offset >= limit
+        (0x18A0C,&[
+            0x8B,0x44,0x24,0x14,0x57,0x6A,0x28,0x56,0x50,
+        ][..]), // A810(base, offset, 0x28, output)
+        (0x18A1A,&[
+            0x8B,0x57,0x24,0x8B,0xCB,0x23,0xCA,
+            0x83,0xC4,0x10,0x3B,0xCD,0x74,0x12,
+        ][..]), // (record[0x24] & mask) == expected
+        (0x18A28,&[
+            0x8B,0x44,0x24,0x24,0x83,0xC6,0x28,0x3B,0xF0,0x72,0xD9,
+        ][..]), // offset += 0x28; JB back into scan
+        (0x18A33,&[0x33,0xC0,0x5F,0x5E,0x5D,0x5B,0xC3][..]),
+        (0x18A3A,&[0x8B,0xC6,0x5F,0x5E,0x5D,0x5B,0xC3][..]),
+        (0x18A41,&[0x5F,0x5E,0x5D,0x33,0xC0,0x5B,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if dll_relative_call_target(dll,pe,0x183D4)?!=0x189F0 ||
+       dll_relative_call_target(dll,pe,0x18A15)?!=0xA810 ||
+       0x189FEu32+2+0x41!=0x18A41 ||
+       0x18A26+2+0x12!=0x18A3A ||
+       0x18A31+2-39!=0x18A0C {
+        return Err("original case1 record scan CALL/Jcc changed".into());
+    }
+    Ok(())
+}
+
 /// Audit the true first worker call chain, not a guessed entrypoint
 /// route. The two known callers are proven CALL targets but their
 /// reachability from DllMain is NOT established by this check.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_first_case_record_matcher(dll,pe)?;
     audit_initial_worker_fixed_selector(dll,pe)?;
     audit_first_dispatch_return_branch(dll,pe)?;
     for (site,expected) in [
@@ -370,6 +430,23 @@ mod tests {
         let negative=cmp_zero_eflags(0x8000_0000);
         assert!(negative.sf && !negative.zf && !negative.cf && !negative.of);
         assert_eq!(cmp_zero_eflags(0x10000).zf,false);
+    }
+
+    #[test]
+    fn case_one_compares_masked_record_tail_to_expected() {
+        assert!(first_case_record_matches(0xC0FF_EEAB,0x0000_00FF,0xAB));
+        assert!(!first_case_record_matches(0xC0FF_EEAB,0x0000_00FF,0xAC));
+        assert!(first_case_record_matches(0,0,0));
+        assert!(!first_case_record_matches(0,0,1));
+        assert!(!first_case_record_matches(0xFF,0x0F,0x1F));
+    }
+    #[test]
+    fn case_one_scan_stride_and_limit_are_unsigned_wrapping_dwords() {
+        assert_eq!(first_case_advance_offset(0),0x28);
+        assert_eq!(first_case_advance_offset(0xFFFF_FFF0),0x18);
+        assert!(!first_case_has_more_offsets(10,10));
+        assert!(first_case_has_more_offsets(9,10));
+        assert!(!first_case_has_more_offsets(u32::MAX,1));
     }
 
     #[test]
