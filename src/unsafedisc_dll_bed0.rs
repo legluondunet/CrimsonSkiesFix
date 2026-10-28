@@ -73,6 +73,48 @@ pub fn conditional_original_worker_bed0_trace(
     ).expect("4 is always a valid fixed original selector")
 }
 
+/// Original C430 lower-bound helper computes an unsigned MAX
+/// of the candidate's first DWORD and the supplied lower bound.
+pub fn original_c430_lower(start:u32,requested_lower:u32)->u32 {
+    start.max(requested_lower)
+}
+
+/// Original C450 upper-bound helper computes an unsigned MIN
+/// of the candidate's inclusive end (start + len - 1)
+/// and supplied upper limit; addition WRAPS on 32 bits.
+pub fn original_c450_upper(
+    start:u32,len:u32,requested_upper:u32
+)->u32 {
+    start.wrapping_add(len).wrapping_sub(1).min(requested_upper)
+}
+
+/// Original-BDD0 lower/upper limit helper byte audit. The
+/// clipping describes only these TWO original utility functions,
+/// not a complete valid or safe memory intersection.
+pub fn audit_original_bound_clipping(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0xC430u32,&[
+            0x8B,0x44,0x24,0x04,0x8B,0x4C,0x24,0x08,
+            0x8B,0,0x3B,0xC8,0x72,0x02,0x8B,0xC1,0xC3
+        ][..]),
+        (0xC450,&[
+            0x8B,0x44,0x24,0x04,0x8B,0x48,0x04,
+            0x8B,0x10,0x8D,0x44,0x11,0xFF,
+            0x8B,0x4C,0x24,0x08,0x3B,0xC8,
+            0x73,0x02,0x8B,0xC1,0xC3
+        ][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if 0xC43Cu32+2+2!=0xC440 ||
+       0xC463+2+2!=0xC467 ||
+       dll_relative_call_target(dll,pe,0xBE24)?!=0xC430 ||
+       dll_relative_call_target(dll,pe,0xBE34)?!=0xC450 {
+        return Err("original BDD0 bound-clipping helper changed".into());
+    }
+    Ok(())
+}
+
 /// On the original BDD0 failure branch at RVA BE52, EBP is
 /// already initialized to zero. The routine returns AX=0,
 /// but first stores (*third_argument - 1) modulo 2^32
@@ -142,6 +184,7 @@ pub fn audit_original_c550_predicate(dll:&[u8],pe:&Pe32)->Result<()> {
 /// targets. The x86 control effects described here are
 /// source-level facts, never simulated as an x86 CPU.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_bound_clipping(dll,pe)?;
     audit_original_c550_predicate(dll,pe)?;
     for (site,expected) in [
         (0x1969Fu32,&[
@@ -252,6 +295,27 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_bdd0_clips_low_with_max_and_high_with_min() {
+        assert_eq!(original_c430_lower(10,12),12);
+        assert_eq!(original_c430_lower(10,8),10);
+        assert_eq!(original_c450_upper(10,10,15),15);
+        assert_eq!(original_c450_upper(10,10,25),19);
+        // A ten-byte candidate [10,19] clipped to [12,15].
+        assert_eq!((
+            original_c430_lower(10,12),
+            original_c450_upper(10,10,15),
+        ),(12,15));
+    }
+
+    #[test]
+    fn original_upper_bound_uses_inclusive_wrapping_32bit_end() {
+        assert_eq!(original_c450_upper(0,0,u32::MAX),u32::MAX);
+        assert_eq!(original_c450_upper(u32::MAX,2,u32::MAX),0);
+        assert_eq!(original_c450_upper(10,0,100),9);
+        assert_eq!(original_c430_lower(0,u32::MAX),u32::MAX);
+    }
 
     #[test]
     fn bdd0_failed_predicate_still_writes_selected_pointee() {
