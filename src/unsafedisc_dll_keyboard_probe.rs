@@ -13,6 +13,15 @@ use super::{
 pub const GATE_RVA:u32=0x1D42F;
 pub const CALLSITE_RVA:u32=0x1CD46;
 
+
+/// If 1CD31 is entered, JL is taken when SF!=OF; otherwise the
+/// fallthrough has only two NOPs and complementary JGE at 1CD39
+/// takes the same callsite. No flags are changed between the Jccs.
+pub fn conditional_predecessor_target(sf:bool,of:bool)->u32 {
+    if sf!=of {CALLSITE_RVA}
+    else {CALLSITE_RVA}
+}
+
 /// Original helper 1D42F returns AX=1 only if GetKeyboardType(0)
 /// returns 7 and GetKeyboardType(1) returns 0xD01..=0xD07.
 /// Purely synthetic evaluation; does not call USER32.
@@ -53,6 +62,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         (0x1D490,&[0x66,0x33,0xC0][..]),
         (0x1D493,&[0x8B,0xE5,0x5D,0xC3][..]),
         (0x1C7FC,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0][..]),
+        (0x1CD31,&[0x0F,0x8C,0x0F,0,0,0,0x90,0x90,0x7D,0x0B][..]),
         (0x1CD4B,&[0x25,0xFF,0xFF,0x00,0x00,0x85,0xC0,0x75,0x27][..]),
         (0x1CD54,&[0x60,0x33,0xC0,0x66,0xB8,0x00,0x43][..]),
         (0x1CD5B,&[0xCD,0x68][..]),
@@ -96,6 +106,8 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         }
     }
     for (actual,want) in [
+        (0x1CD31u32+6+0x0F,0x1CD46),
+        (0x1CD39+2+0x0B,0x1CD46),
         (0x1D43Eu32+2+0x50,0x1D490),
         (0x1CD52+2+0x27,0x1CD7B),
         (0x1CD76+5+0xD4,0x1CE4F),
@@ -119,6 +131,18 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn complementary_signed_condition_codes_join_at_original_callsite() {
+        for sf in [false,true] {
+            for of in [false,true] {
+                assert_eq!(conditional_predecessor_target(sf,of),CALLSITE_RVA);
+                let jl=sf!=of;
+                let jge=sf==of;
+                assert_ne!(jl,jge);
+            }
+        }
+    }
+
     #[test]
     fn zero_return_enters_candidate_interrupt_branch() {
         assert_eq!(conditional_route(true),ConditionalRoute::BypassInt68);
