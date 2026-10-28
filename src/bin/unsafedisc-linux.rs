@@ -5161,6 +5161,35 @@ fn inspect_historical_155_cli() -> Result<()> {
         builder.pointer_list_stride);
     println!("  Historical selection: eight exact four-byte section-name exclusions; skipped branches converge at 0x{:08X}.",
         builder.skip_header_va);
+    // Advisory static DATA inspection; the owner's original 1.5.5
+    // may differ from the compatibility-modified public archive.
+    // Its on-disk initial zeros are NOT evidence of runtime clearing.
+    if let Ok(data_sec)=pe.section(b"DATA") {
+        let backed_len=if data_sec.virtual_size==0 {
+            data_sec.raw_len
+        } else {
+            data_sec.raw_len.min(data_sec.virtual_size as usize)
+        };
+        let end=data_sec.raw_offset.checked_add(backed_len)
+            .ok_or("original historical DATA file-range overflow")?;
+        let data_bytes=image.get(data_sec.raw_offset..end)
+            .ok_or("original historical DATA file-range unbacked")?;
+        match unsafedisc_historical_155::inspect_155_pointer_list_disk_state(
+            data_bytes,data_sec.virtual_address,base
+        ) {
+            Ok(state)=>println!(
+                "  On-disk selected-section list: global 0x{:08X}, initial pointer 0x{:08X}, {} complete backed pointer slots, {} leading zero DWORDs. NO runtime-zeroing claim.",
+                state.pointer_global_va,state.initial_pointer_list_va,
+                state.capacity_words_in_backed_data,state.leading_zero_words
+            ),
+            Err(reason)=>println!(
+                "  On-disk pointer-list state is UNCONFIRMED for this original binary: {reason}"
+            ),
+        }
+    } else {
+        println!("  On-disk pointer-list state unconfirmed: historical DATA section not identified.");
+    }
+
     println!("  PE section iterator: initial JMP -> 0x{:08X} skips POPAD; completed sections -> 0x{:08X} execute POPAD before next pointer.",
         iterator.first_entry_va,iterator.next_entry_restore_va);
     println!("  Section pointer-list stride {} bytes; section's effective raw extent min(RawSize, nonzero VirtualSize); header fields raw +0x{:X}, virtual +0x{:X}.",
