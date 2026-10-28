@@ -449,26 +449,26 @@ mod tests {
         let good=FirstModifierReturn{
             eax:f1,ecx:mask,
             edx:base+FIRST_MODIFIER_RVA,
-            ebx:index,esi:cursor,edi:48,
+            ebx:index,esi:cursor,edi:1040,
         };
         let actual=hypothetical_155_one_word(
-            source,index,base,cursor,48,good,second_function).unwrap();
+            source,index,base,cursor,1040,good,second_function).unwrap();
         let expected=second_function(first_function(source^mask)^mask);
         assert_eq!(actual,expected);
         let mut bad=good;bad.ecx^=0x100;
         assert!(hypothetical_155_one_word(
-            source,index,base,cursor,48,bad,second_function).is_err());
+            source,index,base,cursor,1040,bad,second_function).is_err());
         bad=good;bad.edx=0;
         assert!(hypothetical_155_one_word(
-            source,index,base,cursor,48,bad,second_function).is_err());
+            source,index,base,cursor,1040,bad,second_function).is_err());
         bad=good;bad.esi=cursor+4;
         assert!(hypothetical_155_one_word(
-            source,index,base,cursor,48,bad,second_function).is_err());
+            source,index,base,cursor,1040,bad,second_function).is_err());
         // Three bytes cannot enter the original whole-DWORD loop.
         assert!(hypothetical_155_one_word(
             source,0,base,cursor,3,good,second_function).is_err());
         assert!(hypothetical_155_one_word(
-            source,12,base,cursor,48,good,second_function).is_err());
+            source,260,base,cursor,1040,good,second_function).is_err());
     }
 
     #[test]
