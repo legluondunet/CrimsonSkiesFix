@@ -6363,3 +6363,55 @@ verified 128-bit TEA key. The main unsolved task remains
 decoding the title-specific dplayerx.dll EAX modifier
 functions 0x65BE and 0x6621 and verifying their effects
 on the original pre-TEA encrypted fragments.
+
+
+### Independent 4KiB relocation fragment geometry and F2 rank test (2026-10-28)
+
+To avoid testing the pre-TEA fragment layout exclusively against its
+own implementation, a second algorithm now independently enumerates
+page-local (start,end) intervals, without allocating the per-byte
+exclusion bitmap used by the older `pretea_fragment_geometry`.
+New module `src/unsafedisc_historical_155_page_fragments.rs`
+counts excluded relocation bytes, included bytes, nonempty modifier
+calls, complete DWORDs, leftover fragment tails, unaligned calls,
+cross-page HIGHLOWs and the maximum complete DWORDs in a fragment.
+
+When the exact SHA-256-verified retail ICD is inspected with
+`--key-research`, the two independent methods must AGREE on
+relocation counts, per-fragment calls, modified DWORDs, sub-DWORD
+tails and unaligned fragments before proceeding. The existing
+expected original layout remains 61,743 in-section HIGHLOW slots,
+48,149 complete-word fragments, 440,422 transformed complete DWORDs
+and 93,801 skipped sub-DWORD tail bytes, but the new path also
+reports crossing-relocation count and maximum fragment length.
+
+An independent per-byte reference oracle was added ONLY to
+synthetic unit tests. It exhaustively compares single and double
+slots near 4096-byte page boundaries, plus 240 deterministic
+generated geometries. Tests include adjacent slots, RVA/page offset
+zero, HIGHLOWs crossing a page at offset 0xFFF, a short final
+page, nonaligned retained fragments and overlap/overrun rejection.
+No real game bytes are transformed or made public.
+
+The title-specific encrypted F1/F2 DWORD layer remains unimplemented.
+However, the aggregate-only GF(2) F2 hypothesis scanner has a new
+conditional **injective-affine rank deficit** diagnostic. The older
+scan checked whether mask-difference -> output-difference equations
+were consistent. The new scan independently computes the XOR rank
+of output differences: if it is LESS than the independently
+observed mask-difference rank, NO injective affine F2 can explain
+the sample, even when every observed output is distinct and there
+are no affine consistency contradictions.
+
+Example synthetic fixture uses independent mask indices
+0,1,2,4 and outputs 0,1,2,3: input rank 3, output rank 2,
+no duplicate outputs, no affine contradictions. This disproves
+an *invertible affine F2* on those observations, not a nonlinear
+or noninjective modifier. Another positive test uses an
+invertible rotate/XOR F2, which preserves rank.
+
+This analysis requires the original modifier-1 caller to preserve
+ECX/EDX for the intended indexed model, and requires correct
+reference-backed observations from the original game. It is not
+a recovery of F2, does not extend incomplete observations to
+new inputs, and cannot by itself decrypt `dplayerx.dll`.
