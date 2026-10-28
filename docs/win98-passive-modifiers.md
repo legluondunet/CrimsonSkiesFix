@@ -179,3 +179,43 @@ The GitHub CI workflows continue to test only synthetic fixtures.
 
 Do **not** merge this research PR or enable an `unpack` command without
 independent full-file validation against the exact original game.
+
+
+## Final 61-byte exact-title historical output profile (2026-10-28)
+
+**Important distinction:** validated cryptographic decoding is NOT the same
+as reverse-engineering every legacy output-formatting side effect. The
+owner's private plaintext reference is used exclusively as an oracle, never
+copied into the generated candidate. The standalone optional **Python v0.9**
+prototype (still outside the Rust CLI) constructs an exact-title output
+profile from the already independently reconstructed v0.8 PE and the
+SHA-256-pinned original 344,851-byte `CRIMSON.EXE` loader.
+
+The 61 remaining differences were resolved into these exact locations:
+
+| File offsets | Count | Explanation and derivation | Evidence level |
+| --- | ---: | --- | --- |
+| `0xF6..0xF7` | 2 | Original zero pre-NT gap; reference's 4-byte `e_lfanew-4` value is `0xAD2B0000`, which equals the import-descriptor timestamp restored by the decoder. v0.9 derives its bytes from the reconstructed descriptor, not from plaintext reference. | Exact matching relationship; why the historical program writes here remains unverified |
+| `0x100..0x103` | 4 | PE COFF `TimeDateStamp` overwritten with ASCII `1911` instead of original `0x3A15DBDE`. | Legacy formatting **observed** in one historical output; source instructions not yet identified |
+| `0x300..0x32F` | 48 | unSafeDisc attribution signature inserted into the PE **header slack**, beyond the section table and before the first section's raw data. | Historical unSafeDisc marker, independently documented in contemporary sources; not code decryption |
+| `0x2452E3, 0x2452E6` | 2 | Module name case `KERNEL32.dll` → `KeRNeL32.dll`; no API thunk or address changes. | Exact-title legacy spelling **observed**, origin not yet traced |
+| `0x202FFD..0x202FFF` | 3 | Source loader size `344851 = 0x054313`, written as its three big-endian bytes `05 43 13`; located in the .text **raw padding beyond VirtualSize**. | Exact numeric relationship; historical writer mechanism not proven |
+| `0x275FFD..0x275FFE` | 2 | Output size `0x276000` represented as `27 60 00` over the final three raw bytes (one was already zero), beyond .reloc VirtualSize. | Exact numeric relationship; historical writer mechanism not proven |
+
+The optional output profile changes NO valid instructions or decryption
+results. Its two size relationships use SHA-verified input and generated
+output sizes; its pre-NT value comes from the **generated** import table;
+the historical timestamp, attribution text, and mixed-case module name
+are fixed observed **formatting constants**, not evidence of a recovered
+generic authoring algorithm. Do not claim those constants were reverse-
+engineered from the original unSafeDisc executable code.
+
+**Exact private local experiment:** no plaintext-reference argument was
+supplied to the v0.9 generator. Output length `2,580,480`, SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`,
+byte-for-byte equal to the separately held unmodified `testme.exe`.
+A separate default-mode regression reproduced the v0.8 output hash
+`a39570f6a3d33496b03757fca15d0153e37a91f215e93b6c117eae98d088eabc`.
+No private game inputs or decrypted files were committed. Windows/Wine game
+execution and generalization beyond this exact title remain untested.
+The Rust CLI remains read-only and PR #5 stays draft.
