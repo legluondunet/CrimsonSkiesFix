@@ -2837,6 +2837,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
             walk.skipped_directory_starts,
             walk.selected_section.as_deref().unwrap_or("none"));
     }
+    println!("  Verified category registry call tree: A2A0 -> B850/B880/B8E0, with C2A0 allocation of a 12-byte node and C2F0 start/extent arithmetic.");
+    println!("  These direct calls track range metadata; no original .txt plaintext or runtime write is inferred.");
     println!("  The .txt first match is a registered memory range candidate, NOT decrypted plaintext.");
     println!("  These are static selector outcomes for the exact original DLL, not runtime decoding proof.");
     println!("  Original DLL PE32 entry RVA: 0x{:08X} (on-disk code, NOT a memory dump).",
