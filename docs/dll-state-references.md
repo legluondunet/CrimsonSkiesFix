@@ -269,7 +269,14 @@ A file-backed original \`E8 rel32\` at **0x1CD46** targets exactly
 result with \`0xFFFF\`, tests it and uses \`JNE\` to skip past a
 literal **\`INT 0x68\`** when nonzero. The neighboring zero-result path
 loads **AX=0x4300** immediately before \`INT 0x68\` at \`0x1CD5B\`,
-then compares the returned EAX to 0x4300.
+then compares the returned EAX to 0x4300. The enclosing
+`0x1C7F0` routine also contains a verified zero initialization of its
+**stack-local** DWORD `[EBP-0x98]` at RVA `0x1C7FC`. In the
+conditional interrupt path, if returned EAX differs from `0x4300`,
+`0x1CD6A..0x1CD74` set that local DWORD to **1**; if EAX is still
+`0x4300`, the preceding value is preserved. Neither store targets
+the global decoder state `0x00905010`. This is again a conditional
+*source-code* rule, not an observation of an interrupt result.
 
 This is **static, source-byte evidence only**. It would be misleading
 to claim that the \`1CD46\` callsite or interrupt executes during real
