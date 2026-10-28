@@ -4608,3 +4608,74 @@ This new call provenance is the next place to trace
 the protected-code restoration pathway, alongside
 the previously documented `0x92B0 -> 0x9640`
 DLL-local byte-scrambling writer.
+
+
+### Two read buffers feed 0x195DF; AA00 writes the first read's exact stack-local range (2026-10-28)
+
+Continuing the original `.txt2:0x19448 -> AA00`
+research identified a much stronger chain inside the
+**readable, original SHA-256 pinned** DLL. There are **two**
+distinct `A810` reads, not just the first read previously
+described, followed by a local helper and a write:
+
+| Original call RVA | Callee | Local buffer slot | Offset slot | Byte-count slot | Descriptor |
+| --- | --- | --- | --- | --- | --- |
+| `0x19327` | `A810` (read) | `[EBP-0x1004]` (A) | `[EBP-0x1008]` | `[EBP-0x1014]` | `[EBP+8]` |
+| `0x19348` | `A810` (read) | `[EBP-0x2018]` (B) | `[EBP-0x1010]` | `[EBP-0x1018]` | `[EBP+8]` |
+| `0x1940B` | `195DF` (local processing) | A + B supplied | Read A context | Read A count | Copied three-DWORD descriptor |
+| **`0x19448`** | **`AA00` (write)** | **`[EBP-0x1004]` (A)** | **`[EBP-0x1008]`** | **`[EBP-0x1014]`** | **`[EBP+8]`** |
+
+All four E8 destinations were independently confirmed
+by re-evaluating the original signed relative offsets.
+For each `A810` and `AA00` call, the complete
+immediately preceding instruction-aligned
+`LEA/MOV/PUSH` argument sequence has been compared.
+
+At `0x193F5..0x19408`, the caller allocates 12 bytes
+on its stack and copies the three DWORD arguments
+at `[EBP+8]`, `[EBP+0xC]`, `[EBP+0x10]` into
+that temporary descriptor *by value* before calling
+`195DF`. The two local buffers and range context
+are also passed to the helper. The caller then uses
+`ADD ESP,0x20`, consistent with cleanup of 32
+bytes of pushed / copied arguments.
+
+The final write's four stack slots are therefore
+**identical to the first read's four stack slots**,
+while the second read has a different buffer, offset
+and byte-count slot. This is **strong static evidence
+for a same-range read–processing–write pipeline**
+using one module descriptor, but important limits
+remain:
+
+- Identical **stack slots** do not mean the values
+  cannot change between calls. The helper `195DF`
+  might also modify local state or the copied descriptor.
+  The equality is *structural*, not a trace of runtime
+  values.
+- The same descripter could be mode `0x65`, `0x66`
+  or `0x67`; the specific mode at this entry and
+  the selected section are not established by these
+  four calls alone.
+- `195DF` remains heavily obfuscated. Its exact
+  algorithm, inputs' meanings, and effects on
+  buffer A are not fully reconstructed. Calling
+  it a *verified decryption routine* would be
+  premature.
+- There is no demonstration that control flow
+  reaches all four operations in an actual process.
+  Neither `.txt` plaintext nor the modifier
+  bodies at `0x65BE/0x6621` have been recovered.
+
+New `src/unsafedisc_dll_write_pipeline.rs` contains
+**four synthetic tests** and verifies 23 exact
+original instruction/argument windows in addition
+to the four CALL destinations; it runs only after
+SHA-256 verification under `inspect --modifier-research`.
+This module does not copy decrypted bytes out of
+the game or invoke any Windows API.
+
+**Next priority:** reconstruct `195DF` and its
+subcalls with corrected x86 instruction boundaries,
+then establish the descriptor mode and actual
+memory region on the calling path.
