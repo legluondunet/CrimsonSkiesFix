@@ -53,7 +53,7 @@ jobs:
           test "$(stat -c%s "$exe")" = 18944
           test "$(git hash-object "$exe")" = 825c467b6b403e1c85a5875ede5696dedfe17652
           echo "PINNED_PUBLIC_X86_RELOCATION_WALKER"
-          objdump -D -Mintel --start-address=0x401D70 --stop-address=0x401EE5 "$exe"
+          objdump -D -Mintel --start-address=0x401CFD --stop-address=0x401F60 "$exe"
           echo "PINNED_PUBLIC_X86_RELOCATION_TABLE_BUILDER"
           objdump -D -Mintel --start-address=0x402355 --stop-address=0x4023E0 "$exe"
           rm -- "$exe"
