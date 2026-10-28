@@ -9,6 +9,7 @@ use crate::unsafedisc_historical_155_reloc_builder::{
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum RelocHazardKind {
     NonzeroAbsoluteWord,
+    HighlowAtPageStart,
     NonterminalZeroPadding,
     OddWordCount,
     EmptyWordBlock,
@@ -18,6 +19,7 @@ impl RelocHazardKind {
     pub fn label(self)->&'static str {
         match self {
             Self::NonzeroAbsoluteWord=>"nonzero type-0 ABSOLUTE word",
+            Self::HighlowAtPageStart=>"HIGHLOW at page offset zero (masked to zero)",
             Self::NonterminalZeroPadding=>"zero padding before a later nonzero word",
             Self::OddWordCount=>"odd 16-bit entry count",
             Self::EmptyWordBlock=>"empty relocation block",
@@ -74,6 +76,9 @@ pub fn locate_historical_reloc_hazards(
                 record(RelocHazardKind::AllZeroNonemptyBlock,None,None);
             }
             for (index,&word) in words.iter().enumerate(){
+                if word==0x3000 {
+                    record(RelocHazardKind::HighlowAtPageStart,Some(index),Some(word));
+                }
                 if word!=0 && word>>12==0 {
                     record(RelocHazardKind::NonzeroAbsoluteWord,Some(index),Some(word));
                 }
@@ -139,6 +144,19 @@ mod tests {
         assert!(locate_historical_reloc_hazards(&dir,0).unwrap().1.is_empty());
         dir.extend_from_slice(&block(0x1000,&[0x3001,0]));
         assert!(locate_historical_reloc_hazards(&dir,0).is_err());
+    }
+    #[test]
+    fn distinguishes_real_highlow_page_start_from_exact_zero_padding(){
+        let dir=block(0x1000,&[0x3000,0x3004,0,0]);
+        let (profile,sites)=locate_historical_reloc_hazards(&dir,12).unwrap();
+        assert_eq!(profile.highlow_page_start_words,1);
+        assert_eq!(profile.zero_padding_words,2);
+        assert_eq!(sites.len(),1);
+        assert_eq!(sites[0],RelocHazardSite{
+            kind:RelocHazardKind::HighlowAtPageStart,
+            block_page_rva:0x1000,block_directory_offset:0,
+            entry_index:Some(0),raw_word:Some(0x3000),
+        });
     }
     #[test]
     fn trailing_padding_is_not_a_nonterminal_hazard(){
