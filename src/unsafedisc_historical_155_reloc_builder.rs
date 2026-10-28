@@ -16,18 +16,7 @@ pub struct HistoricalRelocCutpointAudit {
     pub filters_reloc_type: bool,
 }
 
-/// The exact public archival x86 bytes came from the PINNED 18,944-byte
-/// compatibility variant (Git blob 825c467b6b403e1c85a5875ede5696dedfe17652).
-/// The owner's 20,480-byte original has not been freshly compared.
-pub fn audit_155_reloc_cutpoint_builder(
-    code:&[u8],image_base:u32,code_rva:u32
-)->Result<HistoricalRelocCutpointAudit,String>{
-    let base=image_base.checked_add(code_rva)
-        .ok_or("relocation builder base overflow")?;
-    if base!=0x401000 {
-        return Err("archived relocation builder CODE base mismatch".into());
-    }
-    let windows:&[(u32,&[u8])]=&[
+const ARCHIVED_RELOC_WINDOWS: &[(u32,&[u8])] = &[
         // Look for ".rel" in a first-four-byte section-name compare;
         // section-count LOOP (when this fallback path is entered).
         (0x402358,&[
@@ -67,8 +56,20 @@ pub fn audit_155_reloc_cutpoint_builder(
             0x8B,0x57,0xFC,0x3B,0xC2,0x77,0x04,
             0x89,0x17,0xEB,0xF2,0x89,0x07,0x5F,0xC3,
         ]),
-    ];
-    for &(va,bytes) in windows {
+];
+
+/// The exact public archival x86 bytes came from the PINNED 18,944-byte
+/// compatibility variant (Git blob 825c467b6b403e1c85a5875ede5696dedfe17652).
+/// The owner's 20,480-byte original has not been freshly compared.
+pub fn audit_155_reloc_cutpoint_builder(
+    code:&[u8],image_base:u32,code_rva:u32
+)->Result<HistoricalRelocCutpointAudit,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("relocation builder base overflow")?;
+    if base!=0x401000 {
+        return Err("archived relocation builder CODE base mismatch".into());
+    }
+    for &(va,bytes) in ARCHIVED_RELOC_WINDOWS {
         let at=va.checked_sub(base)
             .ok_or("archived reloc opcode before CODE")? as usize;
         if code.get(at..at.checked_add(bytes.len())
@@ -153,14 +154,23 @@ mod tests {
     #[test]
     fn mode_four_static_anchor_and_rel32_calls(){
         let mut code=vec![0u8;0x2000];
-        // Minimal independent regression: each unfilled window fails
-        // closed, even if the earlier section-list builder is valid.
         assert!(audit_155_reloc_cutpoint_builder(&code,0x400000,0x1000).is_err());
-        let at=(0x402366-0x401000) as usize;
-        code[at..at+13].copy_from_slice(&[
-            0x60,0xBF,0xB0,0x3C,0x40,0,
-            0xC7,0x47,0xFC,0x04,0,0,0,
-        ]);
+        for &(va,bytes) in ARCHIVED_RELOC_WINDOWS {
+            let at=(va-0x401000) as usize;
+            code[at..at+bytes.len()].copy_from_slice(bytes);
+        }
+        let result=audit_155_reloc_cutpoint_builder(&code,0x400000,0x1000).unwrap();
+        assert_eq!(result.mode_global_va,0x403CAC);
+        assert_eq!(result.reloc_mode_value,4);
+        assert!(!result.filters_reloc_type);
+        for &(va,_) in ARCHIVED_RELOC_WINDOWS {
+            let at=(va-0x401000) as usize;
+            code[at]^=1;
+            assert!(audit_155_reloc_cutpoint_builder(&code,0x400000,0x1000).is_err());
+            code[at]^=1;
+        }
+        let at=(0x4023BA-0x401000) as usize;
+        code[at]^=1;
         assert!(audit_155_reloc_cutpoint_builder(&code,0x400000,0x1000).is_err());
     }
     #[test]
