@@ -540,3 +540,76 @@ helper in the first place. Effects of the nested version query
 and the resulting path to \`0x1D26A\` still require research.
 In particular, **no unconditional \`+0x34F\` state effect is
 asserted** for this helper.
+
+
+### Conditional GetVersionExA -> pointer increment now linked (2026-10-28)
+
+The nested version-query branch inside helper \`0x1C7F0\` was
+followed farther. This is the first *bounded, source-backed local
+chain* from the helper's entry and an accepted keyboard check
+to the already proven \`+0x34F\` pointer-store block, under precisely
+identified **additional API conditions**:
+
+1. The helper-entry-to-keyboard gate and the gate-accepted-to-
+   \`GetVersionExA\` paths described above are taken.
+2. The nested **\`KERNEL32!GetVersionExA\` at \`0x1D058\`**
+   **succeeds** (\`EAX!=0\`). Its failure \`JE\` at \`0x1D060\`
+   enters \`0x1D19D\` directly, bypassing the forthcoming local
+   \`0x0F\` assignment.
+3. On success, an additional flag-preserving maze from
+   \`0x1D066\` reaches \`0x1D0C6\` where the **actual original
+   instruction compares \`OSVERSIONINFOA.dwPlatformId\` at
+   \`[EBP-0x84]\` with \`1\`**. A matching platform \`1\` uses
+   \`JE 0x1D19D\`; any **other** reported platform continues.
+4. The non-\`1\` path from \`0x1D0D3\` converges on an actual,
+   unambiguous \`MOV DWORD [EBP-0x98],0x0F\` at \`0x1D133\`.
+   This is the **stack-local** flag, NOT the decoder state.
+   The next control-flow network reaches \`0x1D19D\`, which
+   compares the same local flag with zero. With the known
+   value **15**, its \`JBE 0x1D305\` is **not taken**;
+   the fallthrough starts at \`0x1D1AA\`.
+5. The final fully explored flag-only network joins the existing
+   **pointer-null check at \`0x1D26A\`**. If the actual
+   **argument pointer is nonnull**, the already verified
+   \`0x1D2A4..0x1D2B3\` instructions then perform
+   \`*pointer = (*pointer + 0x34F) mod 2^32\`.
+   If the pointer is NULL the original code returns without
+   dereferencing it.
+
+The 32-flag independent original-image traversal found the following
+unconditional *local* convergence from each named start:
+
+| Conditional flag-only segment | Distinct paths | Instruction boundaries |
+| --- | ---: | ---: |
+| \`1D066 -> 1D0C6\` | 16 | 15–33 |
+| \`1D0D3 -> 1D133\` | 32 | 16–28 |
+| \`1D13D -> 1D19D\` | 16 | 15–27 |
+| \`1D1AA -> 1D26A\` | 32 | 31–60 |
+
+\`audit_win9x_nested_version_to_pointer_guard\` verifies these
+segments with original executable bytes, the pointer and local
+flag CMP/MOV instructions, and the four outer Jcc displacements;
+\`accepted_keyboard_nested_version_to_guard\` is a **pure
+synthetic branch model** with regression tests.
+
+**Precisely scoped result:** the local \`+0x34F\` operation is
+reached when all of these hold:
+\`helper 0x1C7F0 entered\` AND
+\`keyboard predicate accepted\` AND
+\`nested GetVersionExA returned success\` AND
+\`nested dwPlatformId != 1\` AND
+\`passed DWORD pointer != NULL\`.
+
+There are **other, unresolved paths**, including the
+keyboard-rejected \`INT 0x68\` route; the conditional proof
+must not be misread as an exclusive or universal rule.
+In particular, the **outer** \`GetVersionExA\` in \`0x1A9B6\`
+chooses helper \`0x1C7F0\` on a reported platform \`1\`.
+The inner and outer API results would ordinarily be expected
+to agree on a stable operating system; this analysis does not
+assert that the inner report is different, or that this
+conditional addition actually occurs during normal gameplay.
+
+The DLL entrypoint path to \`0x1A9B6\`, exact 32-bit state at
+the byte mixer \`0x19C78\`, and protected EAX modifier
+routines \`0x65BE\`/\`0x6621\` are **not** recovered.
