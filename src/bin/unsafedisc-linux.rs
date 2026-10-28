@@ -2845,7 +2845,9 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_worker_entry::audit_original(dll,&pe)?;
     println!("  Original 18F81 worker entry: its 18F91 flag-preserving maze always reaches 18FA9 for all 32 EFLAGS sets (4 routes, 5..8 instruction boundaries).");
     println!("    First worker CALL at 18FBF -> wrapper 18800 -> 181E0; the dispatcher invokes 18940 before its selector check. Entry-to-worker CALL sites are verified at 1A1B2 and 1A39C, not proven reached from DllMain.");
-    println!("    Original 181E0 dispatcher: input selector 1..11 maps to 11 individually relocated HIGHLOW VA entries at 18680; unsigned out-of-range routes to 184EB (also the legitimate case 4 entry). No selector values or outcomes guessed.");
+    println!("    Original 181E0 dispatcher: generic selector 1..11 maps to 11 individually relocated HIGHLOW VAs at 18680; out-of-range -> 184EB (also case 4).");
+    println!("    INITIAL worker call selector is now proven: 18FB9 PUSH literal 1 -> 18800 forwards arg2 -> 181E0 [ESP+0x178] reads 1, DEC -> case index 0 -> target 183C2 -> CALL 189F0. This requires original 18940 to return normally.");
+    println!("    The first wrapper's full-DWORD EAX return test at 18FCA bypasses to 19022 on ZERO; on NONZERO the sign-dependent maze reaches 18FFC CALL 18B00, with 12 or 15 instruction boundaries.");
     println!("  Original worker non-exit branch: CALL 196AE -> opaque helper A310; AND EAX,FFFFh / TEST / JE 19819: low16 zero skips current mixer preparation.");
     println!("    Nonzero low16 continues through three 32/32 EFLAGS-only networks: 196C3->196DB (8 paths), 196E4->196F8 (3 paths), 19704->19728 (4 paths).");
     println!("  Original worker mixer setup: CALL 1974A -> 19965; if it returns, the 19752 branch network joins 1976F for all 32 flags (6 paths, 7..10 steps).");
