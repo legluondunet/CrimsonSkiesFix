@@ -465,20 +465,44 @@ COFF `SizeOfOptionalHeader` field and bounds the table.
 A new `native_pe32_section_table_delta` helper models
 `24 + actual_optional_header_size` explicitly.
 
-**Critical provenance caveat:** `MOV CX,[ESI+6]`
-overwrites only the low 16 bits of ECX, then
-`MOV [403B3B],ECX` stores all 32 bits. The
-historical builder later uses the **full** stored
-ECX as the section count. This local instruction
-sequence **does not prove** that ECX high16 is zero;
-it must have been known or cleared by an earlier
-path for the intended 16-bit PE header count to
-be preserved. We therefore added a correct symbolic
+**Upstream correction (2026-10-28):** the earlier caveat
+about an **unknown** ECX high half is now resolved.
+The archived public executable contains the complete
+straight-line predecessor:
+
+```asm
+4024A5  XOR ECX,ECX            ; proves upper 16 bits zero
+4024A7  MOV CX,WORD [ESI+3Ch]  ; e_lfanew truncated to WORD
+4024AB  ADD ESI,ECX            ; DOS -> NT pointer
+4024AD  CMP ESI,EBX
+4024AF  JA 4028FE             ; size guard
+4024B5  CMP DWORD [ESI],0x4550 ; PE signature
+...
+4024E4  MOV CX,WORD [ESI+6]   ; section count (upper 16 still 0)
+4024E8  MOV [403B3B],ECX       ; actual 16-bit value zero-extended
+```
+
+Between `XOR ECX,ECX` and the second `MOV CX`,
+the audited instruction sequence contains **no
+write to ECX's upper 16 bits**. So the exact
+section count is correctly zero-extended on this
+verified **normal archived-image path**, even though
+the second `MOV CX` instruction *in isolation*
+would preserve its previous high half. Our
 `historical_155_mov_cx_section_count` helper
-retaining the previously unknown upper half, and
-do **not** silently reconstruct it as MOVZX.
-The native inspector's own PE32 parser remains
-bounded to the actual 16-bit NumberOfSections.
+still models isolated x86 register semantics, while
+the contiguous `4024A5..4024E7` byte audit
+now establishes the preceding zeroing.
+
+A **different historical limitation** is now
+clear: the archived 1.5.5 reads DOS
+`IMAGE_DOS_HEADER.e_lfanew` with `MOV CX` at
+`4024A7`, discarding its high 16 bits.
+The PE field is actually 32 bits. Our native
+Rust PE32 parser correctly reads the whole DWORD,
+and does not inherit this limitation. No claim
+is made about malformed original executables
+or unverified alternative control-flow entries.
 
 The new `audit_155_section_table_provenance` checks
 five exact machine-code instruction windows
