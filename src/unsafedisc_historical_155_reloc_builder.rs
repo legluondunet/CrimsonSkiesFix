@@ -222,6 +222,10 @@ pub fn archived_reloc_builder_loop_iterations(word_count:u32)->u64{
 pub struct HistoricalRelocWordProfile {
     pub blocks:usize,
     pub highlow_words:usize,
+    /// HIGHLOW has a nonzero raw WORD but masks to zero in 401DFF.
+    /// The historical consumer's zero-offset branch may treat it
+    /// differently from the builder and a modern HIGHLOW walker.
+    pub highlow_page_start_words:usize,
     pub zero_padding_words:usize,
     pub nonzero_type_zero_words:usize,
     pub odd_word_blocks:usize,
@@ -271,7 +275,12 @@ pub fn historical_155_reloc_word_profile(
                     pending_zeros+=1;
                 },
                 0 => out.nonzero_type_zero_words+=1,
-                3 => out.highlow_words+=1,
+                3 => {
+                    out.highlow_words+=1;
+                    if word & 0x0FFF == 0 {
+                        out.highlow_page_start_words+=1;
+                    }
+                },
                 _ => return Err("unknown historical PE relocation type".into()),
             }
             if word!=0 {
@@ -306,7 +315,8 @@ mod relocation_word_profile_tests {
         directory.extend_from_slice(&block(0x2000,&[0x3004,0,0x3008]));
         assert_eq!(historical_155_reloc_word_profile(&directory).unwrap(),
             HistoricalRelocWordProfile{
-                blocks:2,highlow_words:3,zero_padding_words:3,
+                blocks:2,highlow_words:3,
+                highlow_page_start_words:0,zero_padding_words:3,
                 nonzero_type_zero_words:1,odd_word_blocks:1,
                 empty_word_blocks:0,nonterminal_zero_padding_words:2,
                 zero_only_blocks:0,
@@ -349,6 +359,11 @@ pub fn necessary_highlow_only_candidate_preflight(
             "HIGHLOW-only key hypothesis cannot ignore {} nonzero ABSOLUTE words",
             profile.nonzero_type_zero_words));
     }
+    if profile.highlow_page_start_words!=0 {
+        return Err(format!(
+            "HIGHLOW-only checksum model is ambiguous for {} HIGHLOW relocations at page offset zero (masked original WORD=0)",
+            profile.highlow_page_start_words));
+    }
     if profile.nonterminal_zero_padding_words!=0 {
         return Err(format!(
             "HIGHLOW-only key hypothesis cannot ignore {} zero padding WORDs before subsequent relocations",
@@ -372,7 +387,8 @@ mod candidate_preflight_tests {
     use super::*;
     fn good()->HistoricalRelocWordProfile{
         HistoricalRelocWordProfile{
-            blocks:2,highlow_words:3,zero_padding_words:1,
+            blocks:2,highlow_words:3,
+            highlow_page_start_words:0,zero_padding_words:1,
             nonzero_type_zero_words:0,odd_word_blocks:0,
             empty_word_blocks:0,nonterminal_zero_padding_words:0,
             zero_only_blocks:0,
@@ -482,5 +498,38 @@ mod nonterminal_padding_tests {
         assert!(necessary_highlow_only_candidate_preflight(combined,1,3)
             .unwrap_err().contains("all-zero relocation blocks"));
         assert!(necessary_highlow_only_candidate_preflight(p,0,2).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod masked_highlow_zero_tests {
+    use super::*;
+    fn directory(words:&[u16])->Vec<u8>{
+        let mut dir=Vec::new();
+        dir.extend_from_slice(&0x1000u32.to_le_bytes());
+        dir.extend_from_slice(&(8u32+(words.len()*2) as u32).to_le_bytes());
+        for &w in words{dir.extend_from_slice(&w.to_le_bytes());}
+        dir
+    }
+    #[test]
+    fn actual_highlow_at_page_start_becomes_zero_after_archived_mask(){
+        let p=historical_155_reloc_word_profile(
+            &directory(&[0x3000,0x3004,0,0])
+        ).unwrap();
+        assert_eq!(p.highlow_words,2);
+        assert_eq!(p.highlow_page_start_words,1);
+        assert_eq!(p.zero_padding_words,2);
+        assert_eq!(p.nonterminal_zero_padding_words,0);
+        assert!(necessary_highlow_only_candidate_preflight(p,2,2)
+            .unwrap_err().contains("page offset zero"));
+    }
+    #[test]
+    fn ordinary_highlow_does_not_trigger_offset_zero_guard(){
+        let p=historical_155_reloc_word_profile(
+            &directory(&[0x3001,0x3004,0,0])
+        ).unwrap();
+        assert_eq!(p.highlow_page_start_words,0);
+        necessary_highlow_only_candidate_preflight(p,2,2).unwrap();
     }
 }
