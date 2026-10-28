@@ -4146,3 +4146,40 @@ byte transformer / code-restoration path. In particular,
 the fact that `B850`, `B880`, and `B8E0` are
 invoked from A2A0 does **not** establish that any of
 them decrypts modifier RVAs `0x65BE` or `0x6621`.
+
+
+### A140 ignores individual helper outcomes after the module-record gate (2026-10-28)
+
+One more control-flow distinction from the exact original
+`dplayerx.dll` changes the search priorities. The original A140
+initializer tests the result of `B540` at
+`A159: TEST ESI,ESI` and `A15B: JE A1F4`.
+
+- If B540 **fails to return a record**, A140 skips all eight
+  follow-on calls and exits with AX=0.
+- If B540 returns a record, A140 proceeds through its **five
+  source-directory helpers** (`B3D0`, `B1C0`, `AFB0`,
+  `AE10`, `AC10`) and **three section-class iterators**
+  (`AB80`, `AAF0`, `AA60`) **in order**.
+- Between these eight original calls, A140's instruction
+  sequence performs argument preparation and stack cleanup
+  without testing the callees' return values. At
+  `A1EE: MOV EDI,1` and `A1F4: MOV AX,DI`, it
+  returns success (AX=1) if it reached the end.
+- This does **not** mean that every helper performs actual
+  changes. `AFB0` and `AC10` have independently
+  established zero-size guards; the A2A0 category handler
+  also branches internally based on its own returns.
+
+The distinct conclusions are: **A140 itself does not
+stop because a directory-specific helper has no matching
+section**, whereas **A2A0 can short-circuit within its
+range-list handlers**. Confusing these two layers would
+incorrectly discard potential initialization work.
+
+The native `unsafedisc_dll_bootstrap.rs` now verifies
+the original `A159/A15B` branch and `A1EE/A1F4/A1FA`
+return instructions, and adds two synthetic tests for
+absent/present module-record control flow. This is a
+static conditional proof, not an observed successful
+Windows startup or .txt plaintext recovery.
