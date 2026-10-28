@@ -254,6 +254,52 @@ displays these fields **after exact original SHA-256 validation**.
 Two synthetic tests cover both startup classes and negative
 cases. Neither historical executable nor DLL is executed.
 
+### New branch-level confirmation: CRC is code-only; extra layer is not (2026-10-28)
+
+Independent rereading of the public archived 18,944-byte
+compatibility variant's x86 CODE section establishes a crucial
+distinction between the **checksum** and the **DLL-specific
+pre-TEA DWORD layer**. This is a verified byte-level branch
+property of the public variant, not a fresh runtime test of
+the owner's unmodified original:
+
+```asm
+401F01  TEST DWORD PTR [60BCD0], 0x20  ; IMAGE_SCN_CNT_CODE
+401F0B  JZ 401F43                    ; non-CODE skips checksum body
+401F0D  PUSHAD                       ; CODE checksum loop
+...
+401F3C  POPAD
+401F3D  CALL 401F43                  ; CODE also reaches extra layer
+401F42  RET
+401F43  CMP DWORD PTR [403C20],0x21E00 ; DLL-size gate
+401F4D  JE 401F50                    ; 1.50.20 special layer
+```
+
+The **JZ target and CALL target both equal `0x401F43`**,
+where the file-size-specific extra layer begins. Therefore the
+absence of the CODE bit does **not** by itself bypass the
+SafeDisc extra DWORD transformation; it bypasses *only*
+the preceding checksum calculation.
+
+This is relevant to exact Crimson 1.0.2.0 because historical
+selection includes both `.text` and `.data`. The former
+is marked CODE and contributes to the checksum; the latter
+is not CODE, yet it can still enter the extra transformation
+if the outer section traversal calls this helper and the DLL
+size condition is satisfied. It would be incorrect to equate
+`checksum excluded` with `decrypt excluded`. This branch
+analysis **does not prove any complete `.data` plaintext**
+or recovered DLL modifier.
+
+New `audit_155_codebit_crc_modifier_bridge` checks all
+five original x86 instruction windows, decodes actual
+`JZ rel8` and `CALL rel32` branch destinations, and
+fails closed if their common target or any opcode changes.
+A synthetic regression test covers opcode mutation, changed
+branch displacements, missing section bytes and wrong
+image base. The exact-original `inspect-historical` CLI
+now reports this distinction after SHA-256 verification.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
