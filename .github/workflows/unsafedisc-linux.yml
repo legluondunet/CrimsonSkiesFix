@@ -36,6 +36,12 @@ jobs:
             echo "ERROR: unsupported unpack command unexpectedly succeeded"
             exit 1
           fi
+          # Historical-only entry must not need any Crimson game file,
+          # and must reject a missing/incorrect original executable.
+          if ./target/release/unsafedisc-linux inspect-historical --unsafedisc ./nonexistent-original-unSafedisc.exe; then
+            echo "ERROR: missing historical executable unexpectedly accepted"
+            exit 1
+          fi
       - name: Upload experimental Linux executable
         uses: actions/upload-artifact@v4
         with:
@@ -69,6 +75,11 @@ jobs:
             throw "ERROR: unsupported unpack command unexpectedly succeeded"
           }
           Write-Host "Unsupported unpack command was correctly rejected."
+          & .\target\release\unsafedisc-linux.exe inspect-historical --unsafedisc .\nonexistent-original-unSafedisc.exe
+          if ($LASTEXITCODE -eq 0) {
+            throw "ERROR: missing historical executable unexpectedly accepted"
+          }
+          Write-Host "Missing historical original was correctly rejected."
           exit 0
       - name: Upload experimental Windows executable
         uses: actions/upload-artifact@v4
