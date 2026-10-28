@@ -16,6 +16,8 @@ mod unsafedisc_indexed_affine;
 
 #[path = "../unsafedisc_historical_155.rs"]
 mod unsafedisc_historical_155;
+#[path = "../unsafedisc_historical_155_list_plan.rs"]
+mod unsafedisc_historical_155_list_plan;
 
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
@@ -5169,6 +5171,9 @@ fn inspect_historical_155_cli() -> Result<()> {
     println!("  Native PE parser correctly reads 32-bit e_lfanew, 16-bit NumberOfSections and the actual optional-header length; it does not replicate legacy truncation.");
     println!("  Historical selection: eight exact four-byte section-name exclusions; skipped branches converge at 0x{:08X}.",
         builder.skip_header_va);
+    println!("  Historical section LOOP with ECX=0 would execute {} iterations (32-bit wrap); native implementations must reject a zero section count.",
+        unsafedisc_historical_155_list_plan::historical_155_loop_iterations(0));
+    println!("  Builder writes section pointers but NO final zero DWORD; the iterator requires an existing null slot. This is a static dependency, not a verified runtime guarantee.");
     // Advisory static DATA inspection; the owner's original 1.5.5
     // may differ from the compatibility-modified public archive.
     // Its on-disk initial zeros are NOT evidence of runtime clearing.
