@@ -98,6 +98,70 @@ modifier's actual register effects and EAX transformation
 from decoded `dplayerx.dll`, before claiming an exact
 whole-section portable decryption stage.
 
+### New standalone SHA-256-gated original-tool audit (2026-10-28)
+
+Instead of conflating the owner-supplied **unmodified 20,480-byte**
+`unSafedisc.exe` with the publicly archived **modified 18,944-byte**
+variant, the Rust CLI now has a separate optional command:
+
+```bash
+./unsafedisc-linux inspect-historical --unsafedisc ./unSafedisc.exe
+```
+
+This command **does not require any Crimson Skies game files**.
+It rejects non-regular files, symlinks, wrong file lengths and any
+SHA-256 not equal to the already documented original:
+
+```text
+e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f
+```
+
+It parses the historical PE32 layout, checks the executable `CODE`
+section, and verifies seven small instruction windows at exact VAs:
+`401F43, 401F4D, 401F56, 401F62, 401F71, 401F86, 401F98`.
+The instruction signatures were **independently checked against the
+public archive**. The original (different) owner-supplied binary
+**has not been rechecked in this session**, so this is a
+**future reproducible cross-version assertion**, not a claim
+of a fresh original-file pass. If its code differs at one of these
+windows, the tool will correctly fail closed, and that difference
+must be investigated rather than silently accepted.
+
+The newly proved *archived* control path is:
+
+```text
+401F43  CMP DWORD [403C20],0x21E00   ; DLL size
+401F4D  JE 401F50                     ; else RET 401F4F
+401F50  CALL 401F56
+401F56  PUSHAD
+401F57  MOV ESI,EBX                  ; buffer address
+401F59  MOV EDI,EAX                  ; byte length
+401F5B  CALL 401F62
+401F62  PUSHAD                       ; inner loop
+401F68  MOV ECX,EDI; SHR ECX,2
+401F6F  JAE 401FA6 on EBX >= count  ; POPAD, RET
+401F86  MOV EAX,[ESI]; XOR EAX,ECX   ; mask was constructed before
+401F96  CALL EDX                      ; DLL base + 0x65BE
+401F98  XOR EAX,ECX                  ; requires relevant preserved ECX
+401F9A  ADD EDX,0x63
+401F9D  CALL EDX                      ; requires relevant preserved EDX
+401FA4  JMP 401F67                    ; next index
+```
+
+This establishes a previously less explicit **wrapper
+parameter transfer** (EBX buffer / EAX byte length) and
+the direct original **DLL-size-gated bridge** into the
+extra-modifier loop. It is conditional on the outer caller
+actually reaching `401F43`, the first CALL returning,
+and title-specific EAX modifiers behaving appropriately.
+It does not establish that the two encrypted routines
+ever ran successfully on this modern system.
+
+Two additional synthetic tests cover exact-pattern mutation
+rejection and DLL-size/wrapper-register behavior. The
+original binary remains private; its machine code is
+never executed or copied to the repository.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
