@@ -164,6 +164,27 @@ pub fn audit_original_worker_counter_exit(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+
+/// Model ONLY the current worker loop-exit branch, not future
+/// iterations. None means that this specific unsigned JAE does
+/// not enter the finalizer, or that the outer Win9x path is outside
+/// the model. It does not imply that the real game never reaches
+/// the finalizer later.
+pub fn conditional_finalizer_at_worker_exit(
+    cursor:u32,increment:u32,limit:u32,
+    outer_api_success:bool,outer_platform_id:u32,
+    keyboard:KeyboardResult,nested:NestedVersionResult,
+    initial_global_state:u32,
+)->Option<ConditionalFinalizerOutcome> {
+    if !unsigned_worker_exit(cursor,increment,limit) {
+        return None;
+    }
+    conditional_win9x_finalizer(
+        outer_api_success,outer_platform_id,keyboard,nested,
+        initial_global_state
+    )
+}
+
 /// Original safe, flag-preserving maze only; the caller counter
 /// comparison at RVA 19689 is handled separately. Never interpret
 /// this as evidence that the DLL's DllMain reaches this block.
@@ -301,6 +322,36 @@ mod tests {
             }
         }
         assert_eq!((via_trampoline,direct),(16,16));
+    }
+
+    #[test]
+    fn incomplete_worker_counter_defers_current_finalizer_call() {
+        let result=conditional_finalizer_at_worker_exit(
+            2,3,6,true,1,
+            KeyboardResult::RejectedInterruptReturned{eax:0},
+            NestedVersionResult::Succeeded{platform_id:1},0x1357
+        );
+        assert_eq!(result,None);
+    }
+
+    #[test]
+    fn unsigned_counter_reaching_limit_enables_conditional_global_delta() {
+        for (cursor,step,limit) in [
+            (2,4,6),(0xFFFF_FFFE,1,0xFFFF_FFFF),(42,0,42)
+        ] {
+            let result=conditional_finalizer_at_worker_exit(
+                cursor,step,limit,true,1,
+                KeyboardResult::RejectedInterruptReturned{eax:0},
+                NestedVersionResult::Succeeded{platform_id:1},0xFFFF_FFFF
+            ).unwrap();
+            assert_eq!(result.state_after_caller_add,0x841);
+            assert_eq!(result.caller_add_delta,0x4F3);
+        }
+        assert!(conditional_finalizer_at_worker_exit(
+            0xFFFF_FFFF,1,1,true,1,
+            KeyboardResult::RejectedInterruptReturned{eax:0},
+            NestedVersionResult::Succeeded{platform_id:1},7
+        ).is_none()); // wrapped u32 counter is zero, below limit
     }
 
     #[test]
