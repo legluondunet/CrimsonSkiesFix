@@ -5078,6 +5078,9 @@ fn inspect_historical_155_cli() -> Result<()> {
     let iterator=unsafedisc_historical_155::audit_155_section_iterator(
         backed,base,code.virtual_address
     )?;
+    let crc_callers=unsafedisc_historical_155::audit_155_crc_helper_callers(
+        backed,base,code.virtual_address
+    )?;
     let startup=unsafedisc_historical_155::analyze_155_dll_startup(
         backed,base,code.virtual_address
     )?;
@@ -5115,6 +5118,10 @@ fn inspect_historical_155_cli() -> Result<()> {
         iterator.relocated_branch_va);
     println!("  Relocation walker final E9 rel32 joins at 0x{:08X} (POP ESI, restore scratch cursor), then returns via 401D05 POPAD.",
         iterator.relocation_return_through_va);
+    println!("  All three PAGE/FULL, PAGE/TAIL and HIGHLOW-fragment paths CALL the same RVA 0x{:08X} helper (sites 0x{:08X}, 0x{:08X}, 0x{:08X}).",
+        crc_callers.shared_helper_va,
+        crc_callers.full_page_call_va,crc_callers.tail_call_va,
+        crc_callers.relocation_call_va);
     println!("  Both code/non-code paths converge on DLL-size-gated pre-TEA modifier; section selection is a separate gate.");
     println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
         startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
