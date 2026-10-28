@@ -16,6 +16,9 @@ mod unsafedisc_indexed_affine;
 
 #[path = "../unsafedisc_historical_155.rs"]
 mod unsafedisc_historical_155;
+
+#[path = "../unsafedisc_modifier_snapshot.rs"]
+mod unsafedisc_modifier_snapshot;
 #[path = "../unsafedisc_historical_155_list_plan.rs"]
 mod unsafedisc_historical_155_list_plan;
 #[path = "../unsafedisc_historical_155_reloc_builder.rs"]
@@ -97,6 +100,10 @@ const LOADER_LEN: usize = 344_851;
 const ICD_LEN: usize = 2_580_578;
 const DLL_LEN: usize = 138_752;
 const TESTME_LEN: usize = 2_580_480;
+// Exact successful Windows 98 passive memory snapshot. Research only.
+// Never commit or redistribute the captured proprietary memory image.
+const SNAPSHOT_LEN: usize = unsafedisc_modifier_snapshot::SNAPSHOT_SIZE;
+const SNAPSHOT_SHA: &str = unsafedisc_modifier_snapshot::VERIFIED_SNAPSHOT_SHA256;
 const MAX_INPUT_LEN: u64 = 16 * 1024 * 1024;
 const CRPE_MARKER: &[u8] = b"CRPE\0\0";
 const SPECIAL_KEY_SKIP: usize = 0x148;
@@ -3998,6 +4005,7 @@ fn help() {
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
       --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
+  unsafedisc-linux inspect-snapshot --snapshot CS98-DLL-00.BIN\n\\
   unsafedisc-linux inspect-historical --unsafedisc unSafedisc.exe\n\
   unsafedisc-linux --help\n\
 \n\
@@ -5418,7 +5426,85 @@ fn inspect_historical_155_cli() -> Result<()> {
     Ok(())
 }
 
+/// Inspect only the exact, owner-supplied Windows 98 passive DLL capture.
+/// Unlike a PE file on disk, this input is a complete *mapped* image whose
+/// RVA corresponds to the byte offset. No Windows code is ever executed.
+fn inspect_snapshot_cli() -> Result<()> {
+    let mut args=env::args().skip(2);
+    if args.next().as_deref()!=Some("--snapshot") {
+        return Err("usage: inspect-snapshot --snapshot CS98-DLL-00.BIN".into());
+    }
+    let path=PathBuf::from(args.next().ok_or("missing snapshot path")?);
+    if args.next().is_some() {
+        return Err("inspect-snapshot accepts only one --snapshot path".into());
+    }
+    let image=read_original(&path,SNAPSHOT_LEN,SNAPSHOT_SHA)?;
+    let pe=parse_pe32(&image)?;
+    let nt=read_u32(&image,0x3C)? as usize;
+    let optional=nt.checked_add(24).ok_or("PE optional header overflow")?;
+    let size_image=read_u32(&image,optional+56)?;
+    let preferred=read_u32(&image,optional+28)?;
+    if size_image!=SNAPSHOT_LEN as u32 || preferred!=0x008E_0000 {
+        return Err("snapshot PE image geometry differs from verified Win98 capture".into());
+    }
+    if pe.sections.len()!=6 ||
+       pe.sections.iter().map(|s|s.name.split(|b| *b==0).next().unwrap_or(&[]))
+       .collect::<Vec<_>>()!=[
+           b".txt".as_slice(),b".text".as_slice(),b".txt2".as_slice(),
+           b".rdata".as_slice(),b".data".as_slice(),b".reloc".as_slice()
+       ] ||
+       pe.sections.iter().map(|s|s.virtual_address).collect::<Vec<_>>()
+       !=[0x1000,0x9000,0x18000,0x1E000,0x20000,0x27000]
+    {
+        return Err("snapshot section geometry differs from verified Win98 capture".into());
+    }
+    let pair=unsafedisc_modifier_snapshot::Pair::from_mapped_image(&image)?;
+    if pair.first.operations()!=24 || pair.second.operations()!=33 ||
+       pair.first.forward(0)!=0x8BD9_668C ||
+       pair.second.forward(0)!=0xF01C_8BF1 ||
+       pair.extra_word(0,0)!=0xC293_E587 ||
+       pair.extra_word(0,256)!=0x32A3_7588
+    {
+        return Err("snapshot modifier opcode semantics differ from verified independent analysis".into());
+    }
+    // Reversibility is a necessary check, not proof of a complete ICD decryptor.
+    let mut state=0x51C0_A71E_u32;
+    for source in [0,1,2,0x1234_5678,0xDEAD_BEEF,0x8000_0000,u32::MAX] {
+        for index in [0,1,255,256,257,0xABCD_1234] {
+            let out=pair.extra_word(source,index);
+            if pair.inverse_extra_word(out,index)!=source {
+                return Err("indexed EAX modifier inverse failed".into());
+            }
+        }
+    }
+    for _ in 0..512 {
+        state=state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        for index in [0,255,256] {
+            if pair.inverse_extra_word(pair.extra_word(state,index),index)!=state {
+                return Err("synthetic indexed EAX modifier inverse failed".into());
+            }
+        }
+    }
+    println!("Verified owner-supplied Win98 passive DLL snapshot (exact SHA-256 and PE geometry).");
+    println!("  F1 RVA=0x65BE, EAX-only operations={}",pair.first.operations());
+    println!("  F2 RVA=0x6621, EAX-only operations={}",pair.second.operations());
+    println!("  F1(0)=0x{:08X}; F2(0)=0x{:08X}",
+        pair.first.forward(0),pair.second.forward(0));
+    println!("  indexed composite at X=0: i=0 -> 0x{:08X}; i=256 -> 0x{:08X}",
+        pair.extra_word(0,0),pair.extra_word(0,256));
+    println!("  519 synthetic sources checked for indexed roundtrip (and four anchored results).");
+    println!("  Read-only. No DLL execution, no game decryption and no executable written.");
+    Ok(())
+}
+
 fn main() {
+    if env::args().nth(1).as_deref()==Some("inspect-snapshot") {
+        if let Err(e)=inspect_snapshot_cli() {
+            eprintln!("ERROR: {e}");
+            process::exit(1);
+        }
+        return;
+    }
     if env::args().nth(1).as_deref()==Some("inspect-historical") {
         if let Err(e)=inspect_historical_155_cli() {
             eprintln!("ERROR: {e}");
