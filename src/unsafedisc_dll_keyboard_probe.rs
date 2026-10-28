@@ -418,6 +418,97 @@ pub fn conditional_predecessor_arm(sf:bool,of:bool)->PredecessorArm {
     else {PredecessorArm::SignedGreaterEqual}
 }
 
+/// Conditional, observed event required. In particular, the
+/// keyboard-rejected branch contains INT 68h. We do NOT simulate
+/// or assume the interrupt succeeds, is callable on Wine, or returns.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum KeyboardResult {
+    Accepted,
+    /// This variant is meaningful ONLY if original INT 68h returned
+    /// normally with an EAX result, leaving the caller's frame usable.
+    RejectedInterruptReturned { eax:u32 },
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum NestedVersionResult {
+    Failed,
+    Succeeded { platform_id:u32 },
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum GuardRoute {
+    BypassPointerGuard,
+    ExaminePointerGuard,
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct NestedGateState {
+    /// Original [EBP-0x98] local at the CMP in 1D19D.
+    pub local_flag:u32,
+    pub route:GuardRoute,
+}
+
+/// A *conditional* model of the original source path, NOT a SafeDisc
+/// decryption step or a Windows API emulator.
+///
+/// On entry to Win9x helper, local [EBP-0x98] is explicitly zero.
+/// Accepted keyboard branch explicitly resets it to zero.
+/// Rejected keyboard branch reaches INT 68h and, if the interrupt
+/// returns normally, changes it to one iff full returned EAX != 4300h.
+/// The subsequent nested GetVersionExA success with dwPlatformId!=1
+/// overwrites it with fifteen. Otherwise it preserves the flag.
+/// CMP local,0 / JBE 1D305 enters the pointer guard iff flag>0.
+pub fn conditional_nested_pointer_route(
+    keyboard:KeyboardResult,
+    version:NestedVersionResult
+)->NestedGateState {
+    let from_keyboard=match keyboard {
+        KeyboardResult::Accepted => 0,
+        KeyboardResult::RejectedInterruptReturned{eax} =>
+            if eax==0x4300 {0}else{1},
+    };
+    let local_flag=match version {
+        NestedVersionResult::Succeeded{platform_id} if platform_id!=1 => 15,
+        _ => from_keyboard,
+    };
+    NestedGateState {
+        local_flag,
+        route:if local_flag==0 {GuardRoute::BypassPointerGuard}
+              else {GuardRoute::ExaminePointerGuard},
+    }
+}
+
+/// Original-byte anchor for the interrupted path only. The
+/// callsite-to-branch prefix, flag-only join at 1CE4F, and nested
+/// GetVersionExA paths have their own independent audits.
+pub fn audit_rejected_keyboard_interrupt_source(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (at,bytes) in [
+        (0x1C7FCu32,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0][..]),
+        (0x1CD4B,&[0x25,0xFF,0xFF,0,0,0x85,0xC0,0x75,0x27][..]),
+        (0x1CD54,&[0x60,0x33,0xC0,0x66,0xB8,0x00,0x43][..]),
+        (0x1CD5B,&[0xCD,0x68][..]),
+        (0x1CD5D,&[0x89,0x85,0x64,0xFF,0xFF,0xFF][..]),
+        (0x1CD63,&[0x3D,0x00,0x43,0,0,0x74,0x0B][..]),
+        (0x1CD6A,&[0xB8,0x01,0,0,0][..]),
+        (0x1CD6F,&[0x89,0x85,0x68,0xFF,0xFF,0xFF][..]),
+        (0x1CD75,&[0x61,0xE9,0xD4,0,0,0][..]),
+        (0x1CE45,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0][..]),
+        (0x1D133,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0x0F,0,0,0][..]),
+        (0x1D19D,&[0x83,0xBD,0x68,0xFF,0xFF,0xFF,0,
+                    0x0F,0x86,0x5B,0x01,0,0][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,at,bytes)?;
+    }
+    for (at,len,offset,want) in [
+        (0x1CD52i64,2i64,0x27i64,0x1CD7Bi64),
+        (0x1CD68,2,0x0B,0x1CD75),
+        (0x1CD76,5,0xD4,0x1CE4F),
+        (0x1D1A4,6,0x15B,0x1D305),
+    ] {
+        if at+len+offset!=want {
+            return Err("original keyboard rejected branch target changed".into());
+        }
+    }
+    Ok(())
+}
+
 /// Original helper 1D42F returns AX=1 only if GetKeyboardType(0)
 /// returns 7 and GetKeyboardType(1) returns 0xD01..=0xD07.
 /// Purely synthetic evaluation; does not call USER32.
@@ -450,6 +541,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_rejected_keyboard_interrupt_source(dll,pe)?;
     audit_win9x_entry_to_keyboard_gate(dll,pe)?;
     audit_win9x_gate_success_to_version_api(dll,pe)?;
     audit_win9x_nested_version_to_pointer_guard(dll,pe)?;
@@ -520,6 +612,77 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_keyboard_return_equal_to_4300_retains_zero_local() {
+        for version in [NestedVersionResult::Failed,
+                        NestedVersionResult::Succeeded{platform_id:1}] {
+            for keyboard in [
+                KeyboardResult::Accepted,
+                KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+            ] {
+                assert_eq!(conditional_nested_pointer_route(keyboard,version),
+                    NestedGateState{local_flag:0,route:GuardRoute::BypassPointerGuard});
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_keyboard_other_interrupt_return_reaches_pointer_guard() {
+        for ret in [0u32,1,0x42FF,0x4301,0xFFFF_4300,u32::MAX] {
+            for version in [
+                NestedVersionResult::Failed,
+                NestedVersionResult::Succeeded{platform_id:1},
+            ] {
+                assert_eq!(conditional_nested_pointer_route(
+                    KeyboardResult::RejectedInterruptReturned{eax:ret},version),
+                    NestedGateState{local_flag:1,route:GuardRoute::ExaminePointerGuard});
+            }
+        }
+    }
+
+    #[test]
+    fn nested_version_other_platform_sets_fifteen_independently_of_keyboard() {
+        for platform_id in [0u32,2,3,u32::MAX] {
+            for keyboard in [
+                KeyboardResult::Accepted,
+                KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+                KeyboardResult::RejectedInterruptReturned{eax:0},
+            ] {
+                assert_eq!(conditional_nested_pointer_route(keyboard,
+                    NestedVersionResult::Succeeded{platform_id}),
+                    NestedGateState{local_flag:15,route:GuardRoute::ExaminePointerGuard});
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_conditional_route_truth_table() {
+        for case in 0u32..3 {
+            for version_case in 0u32..4 {
+                let keyboard=match case {
+                    0=>KeyboardResult::Accepted,
+                    1=>KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+                    _=>KeyboardResult::RejectedInterruptReturned{eax:0x4301},
+                };
+                let version=match version_case {
+                    0=>NestedVersionResult::Failed,
+                    1=>NestedVersionResult::Succeeded{platform_id:1},
+                    2=>NestedVersionResult::Succeeded{platform_id:2},
+                    _=>NestedVersionResult::Succeeded{platform_id:0},
+                };
+                let result=conditional_nested_pointer_route(keyboard,version);
+                let local=if version_case>=2 {15}
+                    else if case==2 {1}else{0};
+                assert_eq!(result.local_flag,local);
+                assert_eq!(result.route,if local==0{
+                    GuardRoute::BypassPointerGuard
+                }else{
+                    GuardRoute::ExaminePointerGuard
+                });
+            }
+        }
+    }
+
     #[test]
     fn gate_accepts_exactly_seven_subtypes_for_type_seven() {
         for n in 0u32..=0xE00 {
