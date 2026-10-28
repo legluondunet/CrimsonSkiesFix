@@ -6415,3 +6415,23 @@ ECX/EDX for the intended indexed model, and requires correct
 reference-backed observations from the original game. It is not
 a recovery of F2, does not extend incomplete observations to
 new inputs, and cannot by itself decrypt `dplayerx.dll`.
+
+
+**Known observation coverage, not a recovered function:** the earlier
+SHA-verified retail/reference aggregate is pinned to 361,480 raw
+indexed observations. Only 13 same-input cross-mask differential
+relations were available, with mask-difference rank **8** and
+**five contradictions** to an affine F2. The historical complete
+index range 0..1006 spans mask rank **10**, so at least two
+independent mask directions remain unobserved in this differential
+dataset. The conditional affine-F2 hypothesis is already contradicted
+even before the new invertibility check, provided the encrypted
+first helper preserves the ECX/EDX values used by our model.
+
+The two newly introduced output-rank fields deliberately do NOT
+receive invented expected values from these previously reported
+aggregate counts. The CLI compares all preexisting pinned signature
+fields to their known exact values; the new output-rank indicators
+are tested independently with transparent synthetic fixtures.
+Only a fresh read-only run on the matching original files can
+establish their empirical values.
