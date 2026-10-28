@@ -148,17 +148,18 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         return Err("post-worker A200 module cleanup CALL changed".into());
     }
 
-    // Two site-specific direct calls pass POINTERS to the same global
-    // state to 1A77F. 1A77F may modify it; these are not ordinary
-    // local DWORD assignments and must not be included in the
-    // seven explicitly validated direct writes.
-    for (push_at,call_at) in [
-        (0x19A48u32,0x19A4Du32),
-        (0x19E2B,0x19E30),
+    // Three site-specific direct calls pass POINTERS to the same
+    // global state: two into 1A77F, and an earlier call into 1A9B6.
+    // Both helpers contain real GetVersionExA calls. Any pointer-
+    // mediated effects on state are outside the seven direct writes.
+    for (push_at,call_at,target) in [
+        (0x1987Du32,0x19882u32,0x1A9B6u32),
+        (0x19A48,0x19A4D,0x1A77F),
+        (0x19E2B,0x19E30,0x1A77F),
     ] {
         dll_expect_raw_x86(dll,pe,push_at,&[0x68,0x10,0x50,0x90,0x00])?;
-        if dll_relative_call_target(dll,pe,call_at)?!=0x1A77F {
-            return Err(format!("1A77F state-pointer call mismatch at 0x{call_at:05X}"));
+        if dll_relative_call_target(dll,pe,call_at)?!=target {
+            return Err(format!("original state-pointer helper call mismatch at 0x{call_at:05X}"));
         }
     }
 
@@ -167,6 +168,9 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     // OSVERSIONINFOA::dwPlatformId at +0x10. Platform ID 2
     // dispatches down the Win32 NT branch; other IDs down another.
     for (at,bytes) in [
+        (0x1A9EAu32,&[0xC7,0x85,0x6C,0xFF,0xFF,0xFF,0x94,0,0,0][..]),
+        (0x1AA28,&[0x8D,0x85,0x6C,0xFF,0xFF,0xFF,0x50][..]),
+        (0x1AA2F,&[0xFF,0x15,0x58,0xE0,0x8F,0x00][..]),
         (0x1A79Fu32,&[0xC7,0x85,0x6C,0xFF,0xFF,0xFF,0x94,0,0,0][..]),
         (0x1A7A9,&[0x8D,0x85,0x6C,0xFF,0xFF,0xFF,0x50][..]),
         (0x1A7B0,&[0xFF,0x15,0x58,0xE0,0x8F,0x00][..]),
@@ -186,8 +190,9 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         }
     }
     let (_,iat_slot)=dll_indirect_import_call(dll,pe,0x1A7B0,base)?;
-    if iat_slot!=0x1E058 {
-        return Err("original 1A77F platform-detection import slot changed".into());
+    let (_,other_slot)=dll_indirect_import_call(dll,pe,0x1AA2F,base)?;
+    if iat_slot!=0x1E058 || other_slot!=iat_slot {
+        return Err("original 1A77F/1A9B6 platform-detection import slots changed".into());
     }
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
@@ -236,6 +241,16 @@ mod tests {
                    .filter(|w|w.operation==StateOperation::AddArgumentLow16).count(),2);
         assert!(VERIFIED_DIRECT_WRITES.windows(2).all(|p|
             p[0].instruction_rva<p[1].instruction_rva));
+    }
+
+    #[test]
+    fn three_address_passing_calls_feed_two_os_version_helpers() {
+        let calls=[(0x1987Du32,0x19882u32,0x1A9B6u32),
+                   (0x19A48,0x19A4D,0x1A77F),
+                   (0x19E2B,0x19E30,0x1A77F)];
+        assert_eq!(calls.iter().filter(|&&(_,_,target)|target==0x1A77F).count(),2);
+        assert_eq!(calls.iter().filter(|&&(_,_,target)|target==0x1A9B6).count(),1);
+        assert!(calls.iter().all(|&(push,call,_)|push+5==call));
     }
 
     #[test]
