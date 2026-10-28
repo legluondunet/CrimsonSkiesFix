@@ -29,6 +29,9 @@ mod unsafedisc_dll_category_dispatch;
 #[path = "../unsafedisc_dll_ranges.rs"]
 mod unsafedisc_dll_ranges;
 
+#[path = "../unsafedisc_dll_memory_io.rs"]
+mod unsafedisc_dll_memory_io;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2818,6 +2821,14 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
+    let memory_apis=unsafedisc_dll_memory_io::audit_original(dll,&pe)?;
+    println!("  Verified original A870 chained-string decoder and dynamic KERNEL32 memory API resolution:");
+    for api in &memory_apis {
+        println!("    {}: encoded RVA 0x{:05X}, resolved function slot RVA 0x{:05X} (read-only).",
+            api.name,api.encoded_rva,api.resolved_slot_rva);
+    }
+    println!("  A620/A720: descriptor mode 0x66 uses process memory API calls; mode 0x67 uses module-backed direct read/write, optional record shadow and VirtualProtect.");
+    println!("  These are protected DLL static code paths, NOT proof that any encrypted .txt page was decoded at runtime.");
     let range_edges=unsafedisc_dll_ranges::verify_original(dll,&pe)?;
     println!("  Original B850/B880/B8E0 handlers: {range_edges} verified range-list and interval-helper E8 calls.");
     println!("  Confirmed 12-byte record allocation, category/interval comparisons and linked-list field stores; NOT .txt plaintext restoration.");
