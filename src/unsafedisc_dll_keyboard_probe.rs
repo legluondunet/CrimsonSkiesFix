@@ -14,6 +14,105 @@ pub const GATE_RVA:u32=0x1D42F;
 pub const CALLSITE_RVA:u32=0x1CD46;
 
 
+/// Only the x86 flags read by the eight pairs of complementary
+/// Jcc instructions between 1CD16 and the keyboard-gate CALL.
+/// This is a bounded, synthetic static control-flow model, not
+/// instruction execution or a real Windows execution trace.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct GatePredecessorFlags {
+    pub cf:bool, pub zf:bool, pub pf:bool, pub sf:bool, pub of:bool,
+}
+
+/// Follow one source-level path with immutable flags. Every visited
+/// non-branch opcode is an audited NOP or register self-MOV.
+/// The model intentionally begins AT 1CD16, not at the DLL entrypoint.
+pub fn trace_gate_predecessor(flags:GatePredecessorFlags)->Result<Vec<u32>> {
+    let mut pc=0x1CD16u32;
+    let mut visited=Vec::new();
+    for _ in 0..24 {
+        visited.push(pc);
+        if pc==CALLSITE_RVA {return Ok(visited);}
+        pc=match pc {
+            0x1CD16 => if flags.cf || flags.zf {0x1CD29} else {0x1CD18},
+            0x1CD18 => if !flags.cf && !flags.zf {0x1CD29} else {
+                return Err("JBE/JA flag complement violated".into());
+            },
+            0x1CD29 => if flags.sf {0x1CD19} else {0x1CD2B},
+            0x1CD2B => if !flags.sf {0x1CD19} else {
+                return Err("JS/JNS flag complement violated".into());
+            },
+            0x1CD19 => if !flags.pf {0x1CD2E} else {0x1CD1F},
+            0x1CD1F => 0x1CD21, // MOV EDX,EDX
+            0x1CD21 => 0x1CD22, // NOP
+            0x1CD22 => 0x1CD23, // NOP
+            0x1CD23 => if !flags.cf && !flags.zf {0x1CD2E} else {0x1CD25},
+            0x1CD25 => if flags.pf {0x1CD2E} else {
+                return Err("JP reached with PF=0 after JNP".into());
+            },
+            0x1CD2E => if !flags.pf {0x1CD41} else {0x1CD30},
+            0x1CD30 => if flags.pf {0x1CD41} else {
+                return Err("JNP/JP flag complement violated".into());
+            },
+            0x1CD41 => if flags.of {0x1CD31} else {0x1CD43},
+            0x1CD43 => if !flags.of {0x1CD31} else {
+                return Err("JO/JNO flag complement violated".into());
+            },
+            0x1CD31 => if flags.sf!=flags.of {CALLSITE_RVA} else {0x1CD37},
+            0x1CD37 => 0x1CD38, // NOP
+            0x1CD38 => 0x1CD39, // NOP
+            0x1CD39 => if flags.sf==flags.of {CALLSITE_RVA} else {
+                return Err("JL/JGE flag complement violated".into());
+            },
+            _ => return Err(format!(
+                "unknown executable instruction boundary in 1CD16 predecessor trace: 0x{pc:05X}"
+            )),
+        };
+    }
+    Err("gate predecessor trace did not converge in 24 steps".into())
+}
+
+/// Original instruction bytes behind the bounded trace, excluding
+/// unreachable overlapping junk opcode interpretations. These are
+/// compared only after the SHA-256 verification at the CLI entry.
+pub fn audit_gate_predecessor_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (rva,bytes) in [
+        (0x1CD16u32,&[0x76,0x11,0x77,0x0F][..]),
+        (0x1CD19,&[0x0F,0x8B,0x0F,0x00,0x00,0x00][..]),
+        (0x1CD1F,&[0x8B,0xD2,0x90,0x90][..]),
+        (0x1CD23,&[0x77,0x09,0x7A,0x07][..]),
+        (0x1CD29,&[0x78,0xEE,0x79,0xEC][..]),
+        (0x1CD2E,&[0x7B,0x11,0x7A,0x0F][..]),
+        (0x1CD31,&[0x0F,0x8C,0x0F,0x00,0x00,0x00,0x90,0x90,0x7D,0x0B][..]),
+        (0x1CD41,&[0x70,0xEE,0x71,0xEC][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,bytes)?;
+    }
+    // Independently of the synthetic trace, every signed relative
+    // displacement in its original Jcc pairs resolves to the
+    // previously established source-level instruction boundaries.
+    for (from,len,delta,target) in [
+        (0x1CD16i64,2i64,0x11i64,0x1CD29i64),
+        (0x1CD18,2,0x0F,0x1CD29),
+        (0x1CD19,6,0x0F,0x1CD2E),
+        (0x1CD23,2,0x09,0x1CD2E),
+        (0x1CD25,2,0x07,0x1CD2E),
+        (0x1CD29,2,-18,0x1CD19),
+        (0x1CD2B,2,-20,0x1CD19),
+        (0x1CD2E,2,0x11,0x1CD41),
+        (0x1CD30,2,0x0F,0x1CD41),
+        (0x1CD41,2,-18,0x1CD31),
+        (0x1CD43,2,-20,0x1CD31),
+        (0x1CD31,6,0x0F,0x1CD46),
+        (0x1CD39,2,0x0B,0x1CD46),
+    ] {
+        if from+len+delta!=target {
+            return Err("original keyboard predecessor displacement invalid".into());
+        }
+    }
+    Ok(())
+}
+
+
 /// If 1CD31 is entered, JL is taken when SF!=OF; otherwise the
 /// fallthrough has only two NOPs and complementary JGE at 1CD39
 /// takes the same callsite. No flags are changed between the Jccs.
@@ -57,6 +156,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_gate_predecessor_original(dll,pe)?;
     for (site,bytes) in [
         (0x1D42Fu32,&[0x55,0x8B,0xEC,0x51,0x6A,0x00][..]),
         (0x1D43B,&[0x83,0xF8,0x07,0x75,0x50,0x6A,0x01][..]),
@@ -134,6 +234,49 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn all_32_flag_combinations_join_keyboard_gate_from_1cd16() {
+        let mut shortest=usize::MAX;
+        let mut longest=0usize;
+        let mut variants=std::collections::HashSet::new();
+        for bits in 0u8..32 {
+            let f=GatePredecessorFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let path=trace_gate_predecessor(f).unwrap();
+            assert_eq!(path.first(),Some(&0x1CD16));
+            assert_eq!(path.last(),Some(&CALLSITE_RVA));
+            assert!(!path.contains(&0x1CD5B));
+            assert!(!path.contains(&0x1CD27)); // unreachable junk path
+            assert!(!path.contains(&0x1CD45)); // unreachable overlapping x86
+            shortest=shortest.min(path.len());
+            longest=longest.max(path.len());
+            variants.insert(path);
+        }
+        assert_eq!(shortest,5);
+        assert!(longest<=24);
+        assert!(variants.len()>3);
+    }
+
+    #[test]
+    fn keyboard_gate_predecessor_convergence_is_independent_of_eflags() {
+        for cf in [false,true] {
+            for zf in [false,true] {
+                for pf in [false,true] {
+                    for sf in [false,true] {
+                        for of in [false,true] {
+                            let flags=GatePredecessorFlags {cf,zf,pf,sf,of};
+                            let trace=trace_gate_predecessor(flags).unwrap();
+                            assert_eq!(trace.last(),Some(&CALLSITE_RVA));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn complementary_signed_condition_codes_join_at_original_callsite() {
         for sf in [false,true] {
