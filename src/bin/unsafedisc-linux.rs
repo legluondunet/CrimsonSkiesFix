@@ -2862,7 +2862,9 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("  Original A310->BED0 stage engine: 196A0 PUSH literal 4, forwarded to BED0 at A3F2. BED0 copies eight DWORD slots locally, invokes BDD0 first with selected slot 4.");
     println!("    If BDD0 AX != 0, BED0 checks the seven OTHER slots through BCA0 in order 0,1,2,3,5,6,7, stopping on first returned AX==0. A separate selector 3 would skip all followups.");
     println!("    BED0 writes TWO working DWORDs back unconditionally even after helper AX==0; BDD0 failure can itself change a local cursor. AX==0 DOES NOT imply no state mutation.");
-    println!("    BDD0/BCA0 use additional original C* helper routines; their actual results, memory inputs and mixer state remain UNKNOWN.");
+    println!("    BDD0 failure AX=0 branch still writes selected pointer's DWORD = (another working DWORD - 1) modulo 2^32. No safe pointer assumptions made.");
+    println!("    Exact C550 unsigned range predicate plus C430 lower=max(start,lower), C450 upper=min(start+len-1, upper) with 32-bit wrap are original-byte audited.");
+    println!("    BDD0/BCA0 use other original C* helpers; actual stage outputs, runtime pointers and byte-mixer state remain UNKNOWN.");
     println!("  Former opaque A310 source helper is now partially recovered in readable original .text: null cursor/limit, cursor>=limit (unsigned), or missing B5D0 map -> AX=0.");
     println!("    On accepted source it checks a 4 KiB page cache, optionally invokes original C0D0/C0C0/BFB0 cache helpers, then delegates to BED0; BED0 result is NOT inferred.");
     println!("    Aligned nonzero cursor probe decrements by one before 4 KiB same-page comparison. Cache globals and runtime data are NOT reconstructed.");
