@@ -185,6 +185,124 @@ pub fn audit_original_memory_map_lookup(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+/// The original AA00 write gateway mirrors A810's type/initialization
+/// checks: type 0x64 returns AX=0, type 0x65 dispatches to A5C0,
+/// and other types dispatch to A720. A720 itself recognizes only
+/// types 0x66 and 0x67. This shares the same source-type classifier.
+pub fn write_backend_for_source_type(source_type:u32)->OriginalIoBackend {
+    backend_for_source_type(source_type)
+}
+
+/// A5C0 file-write backend: SetFilePointer != FFFFFFFF,
+/// WriteFile low AX!=0, and bytes-written == requested.
+pub fn file_write_accepted(
+    file_pointer_result:u32,
+    write_file_ax:u16,
+    bytes_written:u32,
+    requested:u32,
+)->bool {
+    file_pointer_result!=u32::MAX &&
+        write_file_ax!=0 && bytes_written==requested
+}
+
+/// A720 type-66 backend: dynamically loaded WriteProcessMemory
+/// must return nonzero EAX AND write exactly requested bytes.
+pub fn process_write_accepted(
+    write_process_memory_eax:u32,
+    bytes_written:u32,
+    requested:u32,
+)->bool {
+    write_process_memory_eax!=0 && bytes_written==requested
+}
+
+/// A720 type-67 path conditionally uses VirtualProtect before a
+/// local copy, and invokes VirtualProtect again to restore the
+/// previous page protection. The original success branch returns
+/// AX=1 only if BOTH protection calls return nonzero. This models
+/// AX success, NOT absence of partial writes or memory safety.
+pub fn protected_copy_write_accepted(
+    first_protection_eax:u32,
+    restore_protection_eax:u32,
+)->bool {
+    first_protection_eax!=0 && restore_protection_eax!=0
+}
+
+/// Original AA00 + A5C0 + A720 writer source checks, all
+/// independently anchored in the exact SHA-pinned DLL .text.
+pub fn audit_original_write_backends(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0xAA00u32,&[0x56,0x8B,0x74,0x24,0x08,0x83,0x7E,0x08,
+                       0x64,0x75,0x05,0x66,0x33,0xC0,0x5E,0xC3][..]),
+        (0xAA10,&[0x66,0x83,0x3D,0xE4,0x4A,0x90,0,0x01][..]),
+        (0xAA18,&[0x74,0x0C,0xE8,0x51,0xFE,0xFF,0xFF,0x66,
+                   0x85,0xC0,0x75,0x02,0x5E,0xC3][..]),
+        (0xAA31,&[0x83,0xF8,0x65,0x8B,0x44,0x24,0x14,
+                   0x50,0x51,0x52,0x56,0x74,0x0A][..]),
+        (0xAA3E,&[0xE8,0xDD,0xFC,0xFF,0xFF,0x83,
+                   0xC4,0x10,0x5E,0xC3][..]),
+        (0xAA48,&[0xE8,0x73,0xFB,0xFF,0xFF,0x83,
+                   0xC4,0x10,0x5E,0xC3][..]),
+        (0xA5C0,&[0x56,0x8B,0x74,0x24,0x08,0x57,
+                  0x83,0x7E,0x08,0x65,0x75,0x43][..]),
+        (0xA5D2,&[0x6A,0,0x6A,0,0x50,0x51,
+                   0xFF,0x15,0x44,0xE0,0x8F,0][..]),
+        (0xA5DE,&[0x83,0xF8,0xFF,0x74,0x2C][..]),
+        (0xA5F1,&[0x6A,0,0x52,0x57,0x50,0x51,
+                   0xFF,0x15,0x48,0xE0,0x8F,0][..]),
+        (0xA5FD,&[0x66,0x85,0xC0,0x74,0x0D][..]),
+        (0xA602,&[0x39,0x7C,0x24,0x0C,0x75,0x07][..]),
+        (0xA608,&[0x66,0xB8,0x01,0,0x5F,0x5E,0xC3][..]),
+        (0xA60F,&[0x5F,0x66,0x33,0xC0,0x5E,0xC3][..]),
+        (0xA720,&[0x51,0x8B,0x44,0x24,0x08,0x53,0x55,
+                  0x56,0x8B,0x48,0x08,0x57][..]),
+        (0xA72C,&[0x83,0xF9,0x67,0x74,0x09,
+                   0x83,0xF9,0x66,0x0F,0x85,0xC4,0,0,0][..]),
+        (0xA743,&[0x83,0xF9,0x67,0x0F,0x85,0x85,0,0,0][..]),
+        (0xA78D,&[0x51,0x6A,0x04,0x55,0x53,
+                   0xFF,0x15,0xD8,0x4A,0x90,0][..]),
+        (0xA7BE,&[0xFF,0x15,0xD8,0x4A,0x90,0][..]),
+        (0xA7D1,&[0x8B,0x74,0x24,0x20,0x8B,0x4C,0x24,0x24,
+                   0x8D,0x54,0x24,0x1C,0x52][..]),
+        (0xA7E4,&[0xFF,0x15,0xDC,0x4A,0x90,0][..]),
+        (0xA7EA,&[0x85,0xC0,0x74,0x10,0x39,0x74,
+                   0x24,0x1C,0x75,0x0A][..]),
+        (0xA7F4,&[0x66,0xB8,0x01,0,0x5F,0x5E,
+                   0x5D,0x5B,0x59,0xC3][..]),
+        (0xA7FE,&[0x5F,0x5E,0x5D,0x66,0x33,
+                   0xC0,0x5B,0x59,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (site,target) in [
+        (0xAA1Au32,0xA870),
+        (0xAA3E,0xA720),
+        (0xAA48,0xA5C0),
+        (0xA74D,0xB5D0),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!(
+                "original write backend CALL 0x{site:05X} target changed"
+            ));
+        }
+    }
+    let base=read_u32(dll,read_u32(dll,0x3C)? as usize+24+28)?;
+    let imports=dll_import_bindings(dll,pe)?;
+    for (site,iat,symbol) in [
+        (0xA5D8u32,0x1E044u32,"SetFilePointer"),
+        (0xA5F7,0x1E048,"WriteFile"),
+    ] {
+        let (_,actual)=dll_indirect_import_call(dll,pe,site,base)?;
+        if actual!=iat ||
+            !imports.iter().any(|entry|entry.iat_rva==iat &&
+             entry.symbol==symbol &&
+             entry.library.eq_ignore_ascii_case("KERNEL32.dll"))
+        {
+            return Err(format!("original write IAT 0x{site:05X} changed"));
+        }
+    }
+    Ok(())
+}
+
 /// Original A870 caches dynamically resolved Kernel32 functions
 /// in three distinct PREFERRED VA .data slots. These slots are
 /// virtual zero-fill in the retail image (no raw bytes at the
@@ -214,6 +332,7 @@ fn verified_original_encoded_name(
 /// user-provided dplayerx.dll bytes. The original DLL's functions
 /// are NEVER executed, and no protected .txt or .icd bytes are read.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_write_backends(dll,pe)?;
     audit_original_memory_map_lookup(dll,pe)?;
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
@@ -343,6 +462,36 @@ mod tests {
         }
         encoded.push(0);
         encoded
+    }
+
+    #[test]
+    fn write_dispatch_mirrors_read_types_but_has_separate_original_calls() {
+        for typ in [0u32,0x64,0x65,0x66,0x67,0x68,u32::MAX] {
+            assert_eq!(
+                write_backend_for_source_type(typ),
+                backend_for_source_type(typ)
+            );
+        }
+    }
+    #[test]
+    fn file_write_accepts_only_complete_successful_seek_and_write() {
+        assert!(file_write_accepted(0,1,40,40));
+        assert!(!file_write_accepted(u32::MAX,1,40,40));
+        assert!(!file_write_accepted(0,0,40,40));
+        assert!(!file_write_accepted(0,1,39,40));
+    }
+    #[test]
+    fn writeprocessmemory_requires_full_count_and_nonzero_eax() {
+        assert!(process_write_accepted(1,40,40));
+        assert!(!process_write_accepted(0,40,40));
+        assert!(!process_write_accepted(1,39,40));
+    }
+    #[test]
+    fn original_protected_copy_reports_failure_on_either_protect_call() {
+        assert!(protected_copy_write_accepted(1,1));
+        assert!(!protected_copy_write_accepted(0,1));
+        assert!(!protected_copy_write_accepted(1,0));
+        assert!(!protected_copy_write_accepted(0,0));
     }
 
     #[test]
