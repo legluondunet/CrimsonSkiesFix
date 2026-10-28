@@ -387,3 +387,44 @@ not by itself prove that this branch executes. The rule does not
 identify the input state or the *final* state passed to \`0x19C78\`,
 and neither protected EAX modifier at \`0x65BE\` / \`0x6621\` is
 recovered. The user-owned original DLL is never committed.
+
+
+### Stronger Win9x DWORD pointer guard (2026-10-28)
+
+A second exact-original static trace now begins **earlier**, at
+\`0x1D26A\`. Here the code compares the argument **pointer itself**
+(\`CMP DWORD [EBP+8],0\`) against zero:
+
+- **Null argument pointer:** the original \`JE 0x1D2FC\` skips all
+  dereferences and the \`0x34F\` addition, sets \`AX=1\`, and jumps
+  from \`0x1D300\` to the verified function epilogue \`0x1D428\`.
+- **Non-null argument pointer:** fallthrough at \`0x1D274\` enters
+  complementary \`JNP/JP\`, \`JO/JNO\`, \`JL/JA/JGE\`, \`JL/JGE\`,
+  \`JG/JLE\` and finally \`JNE/JE\` sequences. In the audited
+  source-level paths, no intervening instruction modifies the EFLAGS
+  used for a branch. All **32** possible combinations of
+  CF/ZF/PF/SF/OF therefore reach **\`0x1D2A4\`**.
+  An independent original-image check counted **20 distinct paths**
+  of **8–17 instruction boundaries**, starting at \`0x1D274\`.
+
+The resulting *local* rule is:
+
+\`\`\`text
+IF execution enters original RVA 0x1D26A:
+  IF argument_pointer == NULL:
+    return with AX=1 (no DWORD dereference)
+  ELSE:
+    *(u32*)argument_pointer += 0x34F (wrapping 32 bits)
+    continue at RVA 0x1D2C7
+\`\`\`
+
+The Rust \`win9x_pointer_gate\` and
+\`win9x_nonnull_gate_trace\` models, original-byte assertion
+\`audit_win9x_pointer_guard_original\`, and two synthetic regression
+tests document precisely this constrained flow. No memory access is
+performed by the model.
+
+This considerably strengthens the **local null-vs-nonnull guard**
+and state effect. It does **not** prove a path from entry of
+\`0x1C7F0\` to \`0x1D26A\`, or show whether other branches modify the
+pointed-to DWORD before/after it.
