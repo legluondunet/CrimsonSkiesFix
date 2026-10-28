@@ -608,6 +608,57 @@ pub fn audit_win9x_conditional_returns(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+/// The conditional global-state route begins only if the original
+/// direct callsite at 1987D executes and outer GetVersionExA reports
+/// platform 1, dispatching to 1C7F0. Other outer outcomes do NOT
+/// use this modeled route. The pointer is the original 00905010h
+/// state DWORD, *not* merely a scratch DWORD on the Win9x stack.
+/// The returned value is the conditional state after THIS helper,
+/// never the full eventual 19C78 mixer-entry state.
+pub fn conditional_original_state_route(
+    outer_api_success:bool, outer_platform_id:u32,
+    keyboard:KeyboardResult, nested:NestedVersionResult, before:u32
+)->Option<ConditionalWin9xOutcome> {
+    if !outer_api_success || outer_platform_id!=1 {
+        return None;
+    }
+    Some(conditional_win9x_outcome(
+        keyboard,nested,Win9xPointer::WritableDword(before)
+    ))
+}
+
+/// Original-pointer and rel32 CALL audit of the 1987D -> 1A9B6
+/// -> 1C7F0 chain. Original binary not executed, all RVA bytes
+/// are verified only after the parent SHA-256 gate succeeds.
+pub fn audit_original_global_state_call_chain(dll:&[u8],pe:&Pe32)->Result<()> {
+    let state=super::unsafedisc_dll_state_provenance::STATE_PREFERRED_VA;
+    if state!=0x0090_5010 {
+        return Err("the original global decoder state RVA changed".into());
+    }
+    dll_expect_raw_x86(dll,pe,0x1987D,&[
+        0x68,0x10,0x50,0x90,0x00, // PUSH preferred global-state VA
+    ])?;
+    dll_expect_raw_x86(dll,pe,0x1AA9A,&[
+        0x8B,0x4D,0x08,0x51, // MOV ECX,[EBP+8]; PUSH ECX
+    ])?;
+    dll_expect_raw_x86(dll,pe,0x1D2A4,&[
+        0x8B,0x4D,0x08,0x8B,0x11,
+        0x81,0xC2,0x4F,0x03,0,0, // ADD EDX,0x34F
+        0x8B,0x45,0x08,0x89,0x10,
+    ])?;
+    for (site,expected) in [
+        (0x19882u32,0x1A9B6u32),
+        (0x1AA9Eu32,0x1C7F0u32),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=expected {
+            return Err(format!(
+                "original global-state pointer forwarding CALL 0x{site:05X} changed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Original helper 1D42F returns AX=1 only if GetKeyboardType(0)
 /// returns 7 and GetKeyboardType(1) returns 0xD01..=0xD07.
 /// Purely synthetic evaluation; does not call USER32.
@@ -640,6 +691,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_global_state_call_chain(dll,pe)?;
     audit_win9x_conditional_returns(dll,pe)?;
     audit_rejected_keyboard_interrupt_source(dll,pe)?;
     audit_win9x_entry_to_keyboard_gate(dll,pe)?;
@@ -836,6 +888,45 @@ mod tests {
                 wrote_dword:true
             });
         }
+    }
+
+    #[test]
+    fn outer_query_must_select_original_windows9x_helper() {
+        for platform_id in [0,1,2,3,u32::MAX] {
+            for success in [false,true] {
+                let result=conditional_original_state_route(
+                    success,platform_id,KeyboardResult::Accepted,
+                    NestedVersionResult::Succeeded{platform_id:2},42
+                );
+                assert_eq!(result.is_some(),success && platform_id==1);
+            }
+        }
+    }
+
+    #[test]
+    fn debugger_like_68h_return_could_increment_original_global_state() {
+        let result=conditional_original_state_route(
+            true,1,
+            KeyboardResult::RejectedInterruptReturned{eax:0},
+            NestedVersionResult::Succeeded{platform_id:1},
+            u32::MAX
+        ).unwrap();
+        assert_eq!(result,ConditionalWin9xOutcome{
+            ax:1,
+            pointed_value:Some(0x34E),
+            wrote_dword:true,
+        });
+        let normal=conditional_original_state_route(
+            true,1,
+            KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+            NestedVersionResult::Succeeded{platform_id:1},
+            u32::MAX
+        ).unwrap();
+        assert_eq!(normal,ConditionalWin9xOutcome{
+            ax:0,
+            pointed_value:Some(u32::MAX),
+            wrote_dword:false,
+        });
     }
 
     #[test]
