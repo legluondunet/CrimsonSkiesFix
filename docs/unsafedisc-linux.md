@@ -6116,3 +6116,31 @@ This module runs only within the existing exact-hash-gated historical
 inspection and does not run the old x86 code, process real game data,
 or implement a working unpacker. A byte mismatch against the
 owner's actual original program must fail closed.
+
+
+### Original ICD diagnostic: nonzero ABSOLUTE relocation words (2026-10-28)
+
+The archived public relocation cutpoint builder compares a complete 16-bit
+entry word against zero; the later consumer then discards the upper
+four type bits via 0x0FFF0FFF. A nonzero type-0 ABSOLUTE word could
+therefore affect historical cutpoints while a standards-aware native
+HIGHLOW-only walker excludes it. The existing 280 ABSOLUTE records
+reported for the user's retail ICD do not by themselves tell us
+whether all 280 WORD values are exactly zero.
+
+Added a bounded, read-only independently structured relocation WORD
+profile that counts exact-zero type-0 entries, nonzero type-0 entries,
+HIGHLOW entries, and blocks with an odd number of 16-bit words.
+It rechecks section spans, block order and types, and cross-verifies
+the totals against the existing original ICD PE relocation parser.
+The profile is printed when the user selects --historical-selection,
+--checksum-research or --key-research on the exact-hash original
+CRIMSON.ICD. Synthetic regression tests cover type-zero nonzero
+values, odd word counts, truncation and unsupported relocation types.
+
+No private original ICD is available for a fresh native run during
+this session, so the actual original nonzero ABSOLUTE count is NOT
+claimed here. If it is nonzero, existing HIGHLOW-only checksum
+research remains a hypothesis, not an assertion of historical
+byte-for-byte traversal. All original inputs stay on the user's
+machine; no decrypted file or real protected modifier is produced.
