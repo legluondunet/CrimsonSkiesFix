@@ -22,6 +22,8 @@ mod unsafedisc_historical_155_list_plan;
 mod unsafedisc_historical_155_reloc_builder;
 #[path = "../unsafedisc_historical_155_reloc_consumer.rs"]
 mod unsafedisc_historical_155_reloc_consumer;
+#[path = "../unsafedisc_historical_155_reloc_hazards.rs"]
+mod unsafedisc_historical_155_reloc_hazards;
 
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
@@ -3231,7 +3233,8 @@ fn pe_relocation_blocks(image: &[u8], pe: &Pe32) -> Result<(Vec<RelocBlock>, usi
 // This reads only SHA-256-verified original on-disk ICD bytes.
 fn historical_icd_reloc_word_profile(
     image:&[u8],pe:&Pe32,
-)->Result<unsafedisc_historical_155_reloc_builder::HistoricalRelocWordProfile>{
+)->Result<(unsafedisc_historical_155_reloc_builder::HistoricalRelocWordProfile,
+            Vec<unsafedisc_historical_155_reloc_hazards::RelocHazardSite>)>{
     let nt=read_u32(image,0x3C)? as usize;
     let opt_at=nt.checked_add(24).ok_or("reloc profile optional header offset overflow")?;
     let opt_len=read_u16(image,nt+20)? as usize;
@@ -3258,7 +3261,9 @@ fn historical_icd_reloc_word_profile(
         .ok_or("reloc profile raw end overflow")?;
     let data=image.get(start..end)
         .ok_or("reloc profile exceeds original file")?;
-    unsafedisc_historical_155_reloc_builder::historical_155_reloc_word_profile(data)
+    unsafedisc_historical_155_reloc_hazards::
+        locate_historical_reloc_hazards(data,12)
+        .map_err(|error|error.into())
 }
 
 // Historical unSafeDisc 1.5.5 static branch evidence:
@@ -4262,7 +4267,7 @@ fn inspect(options: Options) -> Result<()> {
     let protected_pe = parse_pe32(&icd)?;
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
     if options.historical_selection || options.checksum_research || options.key_research {
-        let historic=historical_icd_reloc_word_profile(&icd,&protected_pe)?;
+        let (historic,hazard_sites)=historical_icd_reloc_word_profile(&icd,&protected_pe)?;
         let modern_highlow:usize=relocs.iter()
             .map(|block|block.highlow_offsets.len()).sum();
         if historic.highlow_words!=modern_highlow ||
@@ -4277,6 +4282,21 @@ fn inspect(options: Options) -> Result<()> {
             historic.odd_word_blocks,historic.empty_word_blocks,
             historic.nonterminal_zero_padding_words,historic.zero_only_blocks);
         println!("  Public historical unSafeDisc 1.5.5 checks entire relocation WORD for zero, then masks low 12 bits. Native HIGHLOW-only checksum hypotheses may differ if nonzero type-0 entries exist.");
+        if hazard_sites.is_empty() {
+            println!("  No historical relocation hazard sites found in metadata (the checksum and private modifier remain unverified).");
+        } else {
+            println!("  First {} historical relocation hazard locations (metadata only, no protected bytes):",hazard_sites.len());
+            for site in &hazard_sites {
+                let where_word=site.entry_index.map(|i|format!("entry [{}]",i))
+                    .unwrap_or_else(||"whole block".to_string());
+                let word=site.raw_word.map(|w|format!(", word=0x{w:04X}"))
+                    .unwrap_or_default();
+                println!("    PE block page RVA=0x{:08X}, directory +0x{:X}, {}: {}{}",
+                    site.block_page_rva,site.block_directory_offset,where_word,
+                    site.kind.label(),word);
+            }
+            println!("  Listing is capped at 12 sites; summary counts above cover the entire verified relocation directory.");
+        }
         if historic.odd_word_blocks!=0 || historic.empty_word_blocks!=0 {
             println!("  WARNING: the archived relocation walker uses an unconditional initial read and a LOOP; odd/empty blocks can cause unsafe accesses or loop-wrap. No such reads are attempted.");
         }
