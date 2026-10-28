@@ -1337,6 +1337,25 @@ pointer plus offset. A separate fallback copies from
 `[source+4]+offset`. Both direct-copy branches set `AX=1`
 after executing their respective copies.
 
+**Map descriptor lookup B5D0 is now independently explained.**
+The source pointer passed to `B5D0` is compared against a small
+table at preferred VA **`0x00904AE8`**. Each descriptor is
+**`0xD0` bytes** long; the scan ends before VA `0x00904EF8`,
+so there are exactly **five** candidate descriptors, not an
+unbounded search. For each candidate, the original code first
+checks a **WORD at offset `+0` equals 1**; active candidates
+are compared with **12 bytes** from the supplied query against
+the descriptor's key at offset `+4` using `REPE CMPSB`.
+The first matching descriptor is returned; otherwise EAX=0.
+
+These five descriptors reside in the **virtual zero-filled**
+part of `.data`, so the original on-disk DLL contains no
+runtime descriptor keys or active flags. Their values cannot
+be recovered by pretending the file contains initialized data.
+`audit_original_memory_map_lookup` verifies the exact original
+opcodes, five-entry/stride geometry and branch targets;
+its two synthetic tests check active exact-match semantics.
+
 **Safety limit:** the mapped branch clamps its copy count to
 `min(requested, descriptor_total_size)`, not
 `descriptor_total_size - offset`. The fallback path does not
