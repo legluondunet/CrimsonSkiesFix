@@ -360,6 +360,106 @@ pub fn audit_secondary_version_success_dispatch(
     Ok(())
 }
 
+
+/// x86 EFLAGS subset used by the original obfuscated 1AB34 fallback.
+/// All instructions on the verified paths are Jcc/JMP/NOP, self-MOV,
+/// self-XCHG, MOV AX,1, and epilogue. No argument-pointer dereference,
+/// helper call or writable memory operand occurs on those paths.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct FallbackFlags {
+    pub zf:bool, pub cf:bool, pub pf:bool, pub sf:bool, pub of:bool,
+}
+
+/// Source-level, conditional control-flow model only. Not execution of
+/// original x86. The bounded walk fails closed on unrecognized sites
+/// or nonconverging branches. The separate original-byte audit anchors
+/// all of the sites participating in this model.
+pub fn secondary_fallback_steps(flags:FallbackFlags)->Result<usize> {
+    let mut pc=0x1AB34u32;
+    let mut set_ax=false;
+    for steps in 1..=40 {
+        pc=match pc {
+            0x1AB34 => if !flags.pf {0x1AB3A} else {0x1AB36},
+            0x1AB36 => 0x1AB38, // MOV ESI,ESI
+            0x1AB38 => 0x1AB48, // JMP +0E
+            0x1AB3A => 0x1AB3B, // NOP
+            0x1AB3B => 0x1AB3C, // NOP
+            0x1AB3C => if !flags.cf && !flags.zf {0x1AB43} else {0x1AB3E},
+            0x1AB3E => 0x1AB40, // XCHG ESI,ESI
+            0x1AB40 => if flags.zf {0x1AB43} else {0x1AB42},
+            0x1AB42 => 0x1AB43, // NOP
+            0x1AB43 => if !flags.pf {0x1AB36} else {
+                return Err("1AB43 PF changed without a flag-writing instruction".into())
+            },
+            0x1AB48 => if !flags.cf {0x1AB55} else {0x1AB4A},
+            0x1AB4A => if flags.zf {0x1AB53} else {0x1AB4C},
+            0x1AB4C => 0x1AB4E, // XCHG EBX,EBX
+            0x1AB4E => if !flags.cf && !flags.zf {0x1AB53} else {0x1AB50},
+            0x1AB50 => 0x1AB52, // XCHG EBP,EBP
+            0x1AB52 => 0x1AB53, // NOP
+            0x1AB53 => 0x1AB58, // JMP +03
+            0x1AB55 => if !flags.cf {0x1AB4A} else {
+                return Err("1AB55 reached with unexpected carry flag".into())
+            },
+            0x1AB58 => 0x1AB61, // JMP +07
+            0x1AB61 => 0x1AB5A, // JMP -09
+            0x1AB5A => 0x1AB5C, // MOV EDX,EDX
+            0x1AB5C => if !flags.zf && flags.sf==flags.of {0x1AB64} else {0x1AB5E},
+            0x1AB5E => 0x1AB5F, // NOP
+            0x1AB5F => if flags.zf || flags.sf!=flags.of {0x1AB64} else {0x1AB61},
+            0x1AB64 => {set_ax=true;0x1AB68}, // MOV AX,1
+            0x1AB68 => 0x1AB77, // JMP +0D
+            0x1AB77 if set_ax => return Ok(steps),
+            _ => return Err(format!("unknown original 1AB34 branch at RVA 0x{pc:05X}")),
+        };
+    }
+    Err("original 1AB34 fallback did not converge within 40 steps".into())
+}
+
+/// Assert every backed instruction group that can be reached by the
+/// complete five-flag branch-model on the SHA-pinned retail DLL.
+/// The error checks are intentionally strict and read-only.
+pub fn audit_secondary_fallback_all_flags(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x1AB34u32,&[0x7B,0x04][..]),
+        (0x1AB36,&[0x8B,0xF6][..]),
+        (0x1AB38,&[0xEB,0x0E][..]),
+        (0x1AB3A,&[0x90,0x90][..]),
+        (0x1AB3C,&[0x77,0x05][..]),
+        (0x1AB3E,&[0x87,0xF6][..]),
+        (0x1AB40,&[0x74,0x01][..]),
+        (0x1AB42,&[0x90][..]),
+        (0x1AB43,&[0x7B,0xF1][..]),
+        (0x1AB48,&[0x73,0x0B][..]),
+        (0x1AB4A,&[0x74,0x07][..]),
+        (0x1AB4C,&[0x87,0xDB][..]),
+        (0x1AB4E,&[0x77,0x03][..]),
+        (0x1AB50,&[0x87,0xED][..]),
+        (0x1AB52,&[0x90][..]),
+        (0x1AB53,&[0xEB,0x03][..]),
+        (0x1AB55,&[0x73,0xF3][..]),
+        (0x1AB58,&[0xEB,0x07][..]),
+        (0x1AB61,&[0xEB,0xF7][..]),
+        (0x1AB5A,&[0x8B,0xD2][..]),
+        (0x1AB5C,&[0x7F,0x06][..]),
+        (0x1AB5E,&[0x90][..]),
+        (0x1AB5F,&[0x7E,0x03][..]),
+        (0x1AB64,&[0x66,0xB8,0x01,0x00][..]),
+        (0x1AB68,&[0xEB,0x0D][..]),
+        (0x1AB77,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for mask in 0..32u32 {
+        let flags=FallbackFlags {
+            zf:mask&1!=0,cf:mask&2!=0,pf:mask&4!=0,
+            sf:mask&8!=0,of:mask&16!=0,
+        };
+        secondary_fallback_steps(flags)?;
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
@@ -467,6 +567,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     audit_version_success_dispatch(dll,pe)?;
     audit_secondary_version_failure_fallback(dll,pe)?;
     audit_secondary_version_success_dispatch(dll,pe)?;
+    audit_secondary_fallback_all_flags(dll,pe)?;
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
         imp.symbol=="GetVersionExA" &&
@@ -660,6 +761,23 @@ mod tests {
         // The model does not guess any output for platform=1 or 2:
         // each executes a different, opaque original helper.
         assert_ne!(version_success_dispatch(1),version_success_dispatch(2));
+    }
+
+    #[test]
+    fn all_thirty_two_fallback_flag_combinations_return_ax_one() {
+        let mut min_steps=usize::MAX;
+        let mut max_steps=0usize;
+        for mask in 0..32u32 {
+            let flags=FallbackFlags {
+                zf:mask&1!=0,cf:mask&2!=0,pf:mask&4!=0,
+                sf:mask&8!=0,of:mask&16!=0,
+            };
+            let steps=secondary_fallback_steps(flags).unwrap();
+            min_steps=min_steps.min(steps);
+            max_steps=max_steps.max(steps);
+        }
+        // Both routes converge without a state-pointer memory access.
+        assert_eq!((min_steps,max_steps),(15,26));
     }
 
     #[test]
