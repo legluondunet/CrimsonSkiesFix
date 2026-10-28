@@ -129,6 +129,58 @@ pub fn audit_version_failure_fallback(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+
+/// The OTHER original GetVersionExA helper (1A9B6) has a different
+/// failure route. From TEST EAX,EAX at 1AA35 with EAX=0, the original
+/// branch network at 1AB34..1AB68 reaches AX=1/return without any
+/// dereference/store through its [EBP+8] argument pointer.
+/// No claim is made about a successful API query or indirect effects
+/// of the actual Windows API call itself.
+pub fn version_query_failure_secondary_state(original:u32)->(u32,u16) {
+    (original,1)
+}
+
+/// Verify a static, conditional EAX=0 path through the original
+/// obfuscated 1A9B6 routine. The ZF=1/PF=1/CF=0 flag conditions
+/// follow from x86 TEST EAX,EAX on zero; all instructions along this
+/// verified route either preserve those flags or set AX before return.
+pub fn audit_secondary_version_failure_fallback(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    for (site,bytes) in [
+        (0x1AA35u32,&[0x85,0xC0,0x0F,0x84,0xF7,0x00,0x00,0x00][..]),
+        (0x1AB34,&[0x7B,0x04][..]), // JNP not taken: PF=1
+        (0x1AB36,&[0x8B,0xF6,0xEB,0x0E][..]),
+        (0x1AB48,&[0x73,0x0B,0x74,0x07][..]), // JAE taken: CF=0
+        (0x1AB53,&[0xEB,0x03,0x73,0xF3][..]),
+        (0x1AB58,&[0xEB,0x07,0x8B,0xD2,0x7F,0x06][..]),
+        (0x1AB5E,&[0x90,0x7E,0x03][..]), // JG false, JLE true: ZF=1
+        (0x1AB61,&[0xEB,0xF7][..]),
+        (0x1AB64,&[0x66,0xB8,0x01,0x00,0xEB,0x0D][..]),
+        (0x1AB77,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    // This list models the original conditional branch choices on
+    // GetVersionExA returning 0. It never executes or emulates the DLL.
+    let branch_targets=[
+        (0x1AA37u32+6+0xF7,0x1AB34),
+        (0x1AB38+2+0x0E,0x1AB48),
+        (0x1AB48+2+0x0B,0x1AB55),
+        (0x1AB55+2-13,0x1AB4A),
+        (0x1AB4A+2+7,0x1AB53),
+        (0x1AB53+2+3,0x1AB58),
+        (0x1AB58+2+7,0x1AB61),
+        (0x1AB61+2-9,0x1AB5A),
+        (0x1AB5F+2+3,0x1AB64),
+        (0x1AB68+2+13,0x1AB77),
+    ];
+    if branch_targets.iter().any(|&(actual,expected)| actual!=expected) {
+        return Err("1A9B6 conditional failure branch target changed".into());
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
@@ -233,6 +285,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         return Err("original 1A77F/1A9B6 platform-detection import slots changed".into());
     }
     audit_version_failure_fallback(dll,pe)?;
+    audit_secondary_version_failure_fallback(dll,pe)?;
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
         imp.symbol=="GetVersionExA" &&
@@ -404,6 +457,15 @@ mod tests {
         ] {
             assert_eq!(version_query_failure_state(before),(after,1));
         }
+    }
+
+    #[test]
+    fn secondary_os_probe_failure_retains_original_state() {
+        for before in [0,1,0x1234_5678,0xFFFF_FF00,u32::MAX] {
+            assert_eq!(version_query_failure_secondary_state(before),(before,1));
+        }
+        assert_ne!(version_query_failure_secondary_state(0x1234_5678),
+                   version_query_failure_state(0x1234_5678));
     }
 
     #[test]
