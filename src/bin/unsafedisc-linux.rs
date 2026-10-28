@@ -2896,6 +2896,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Conditional same-local scenario: later 197D4 reads the FULL 32-bit [EBP-8] for the cursor update, unlike 19728's low16 immediate push; interim opaque helper writes to that local are unknown.");
     println!("    Exact original 1974A CALL 19965 / ADD ESP,14h and 19798 CALL 19C78 / ADD ESP,18h reclaim 20 and 24 stack bytes; this does not establish exact helper argument signatures.");
     println!("  Original worker mixer setup: CALL 1974A -> 19965; if it returns, the 19752 branch network joins 1976F for all 32 flags (6 paths, 7..10 steps).");
+    println!("    Static 19965 neighborhood: at 19A4D a pointer to global mixer state is passed to 1A77F (Windows GetVersionExA helper), and at 19A8B the same global += ([EBP+18]&FFFF). Address order is NOT proof of a reachable same-function route.");
+    println!("    Hypothetical GetVersionExA-failure + subsequent direct add, with no intervening state writes: (original_state&FF)+(arg&FFFF), 32-bit wrapping. Actual 19965 CFG, OS result and 19C78 initial state remain unknown.");
     println!("    Exactly 8/32 cases pass via 19765 CALL to a bare RET at 197F8; the following JA 1976B must be taken, avoiding the apparent early RET. No original CALL is executed by this tool.");
     println!("  Original worker CALL at 19798 -> byte mixer 19C78. If it returns, ADD ESP,0x18 at 1979D updates flags; all 32 flag assignments from 197A0 reach counter update 197D4 (24 unique paths, 12..23 instructions).");
     println!("  Original worker counter update at 197D4: [EBP-0x0C] += [EBP-0x08] (wrapping). 197DD -> 197FA for all 32 EFLAGS patterns (8 unique paths, 5..13 instructions).");
