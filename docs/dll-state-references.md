@@ -1137,3 +1137,38 @@ to `0x181E0`; exact state changes while that dispatcher runs;
 the later opaque `0xA310`/`0x19965` helpers, and the final
 global state at the byte mixer `0x19C78`. This analysis
 does not enable SafeDisc unpacking or decrypt protected bytes.
+
+
+#### First worker wrapper return: full DWORD zero test
+
+When the first `0x18800` wrapper returns normally to `0x18FC4`,
+the worker adjusts its stack, saves returned EAX at `[EBP-0x10]`,
+and performs the **full 32-bit** `CMP DWORD [EBP-0x10],0`
+at `0x18FCA`. The original `JE` at **`0x18FCE`** takes
+the **zero result** directly to RVA **`0x19022`**,
+where the local DWORD is reset to zero. This differs from
+the **LOW-16-bit** test after the unrelated later `0xA310` call.
+
+**For any nonzero 32-bit return value**, the original
+`JL/JA/JMP/JO/JNO` maze at `0x18FD0..0x18FF0`
+converges on the next argument setup. For values with the high
+sign bit clear, the path has **12 instruction boundaries**;
+with it set, the path has **15**. The original CMP sets CF=OF=0,
+ZF=0 and SF to the high sign bit. The intervening original
+instructions on the audited paths do not alter these flags.
+The next direct call at **`0x18FFC`** targets **`0x18B00`**.
+
+`audit_first_dispatch_return_branch` verifies the exact original
+comparison, opcode groups, both result routes and the real
+`0x18B00` call target. Its pure model
+`first_dispatch_return_route` distinguishes the full-DWORD
+zero bypass from nonzero continuation. An independently
+executed standard-library offline verifier
+`verify_worker_entry_dispatch.py` checks the same original
+byte sites and rejects any retail DLL hash mismatch.
+
+**Limitations:** the return value of `0x18800` / `0x181E0`
+is unknown. This static flow does not prove which side of
+`0x18FCE` is taken at game startup, how many worker
+iterations occur, or how this first call reaches later
+`0x196AE` / `0x19798` sites.
