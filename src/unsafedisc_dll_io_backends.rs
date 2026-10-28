@@ -126,6 +126,65 @@ pub fn type67_copy_source(
     }
 }
 
+/// Original B5D0 lookup scans precisely 5 virtual .data map
+/// descriptors at preferred VA 904AE8..904E28, stride 0xD0.
+/// Each slot checks an active WORD at +0 and then a 12-byte
+/// key at +4. The five records are VIRTUAL zero-fill in the
+/// original PE and cannot be inspected for runtime contents.
+pub const MEMORY_MAP_FIRST_VA:u32=0x00904AE8;
+pub const MEMORY_MAP_END_VA:u32=0x00904EF8;
+pub const MEMORY_MAP_STRIDE:u32=0xD0;
+pub const MEMORY_MAP_COUNT:usize=5;
+
+/// Pure data-driven analogue of B5D0's exact match rule.
+/// Does not touch process memory, DLL globals or Windows APIs.
+pub fn first_active_memory_map_match(
+    query:&[u8;12],
+    flags:&[u16;MEMORY_MAP_COUNT],
+    keys:&[[u8;12];MEMORY_MAP_COUNT],
+)->Option<usize> {
+    (0..MEMORY_MAP_COUNT)
+        .find(|&i|flags[i]==1 && keys[i]==*query)
+}
+
+/// Original 0xB5D0 resolves the map descriptor by bytewise
+/// REPE CMPSB on 12 bytes. The five-entry table is allocated
+/// in virtual zero-filled .data, not the raw DLL image.
+pub fn audit_original_memory_map_lookup(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0xB5D0u32,&[0x8B,0x54,0x24,0x04,0x53,0x56,0x57,
+                     0xB8,0xE8,0x4A,0x90,0][..]),
+        (0xB5DC,&[0x66,0x83,0x38,0x01,0x75,0x10][..]),
+        (0xB5E2,&[0xB9,0x0C,0,0,0,0x8B,0xFA,0x8D,0x70,
+                   0x04,0x33,0xDB,0xF3,0xA6,0x74,0x0E][..]),
+        (0xB5F2,&[0x05,0xD0,0,0,0,0x3D,0xF8,0x4E,0x90,
+                   0,0x72,0xDE][..]),
+        (0xB5FE,&[0x33,0xC0,0x5F,0x5E,0x5B,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    if MEMORY_MAP_FIRST_VA+MEMORY_MAP_STRIDE*(MEMORY_MAP_COUNT as u32)
+       !=MEMORY_MAP_END_VA ||
+       0xB5E0u32+2+0x10!=0xB5F2 ||
+       0xB5F0+2+0x0E!=0xB600 ||
+       0xB5FC+2-34!=0xB5DC ||
+       dll_relative_call_target(dll,pe,0xA63F)?!=0xB5D0 {
+        return Err("original 5-slot memory map lookup geometry changed".into());
+    }
+    let sec=pe.section(b".data")?;
+    for i in 0..MEMORY_MAP_COUNT {
+        let rva=MEMORY_MAP_FIRST_VA-0x008E0000
+            +MEMORY_MAP_STRIDE*(i as u32);
+        let relative=rva.checked_sub(sec.virtual_address)
+            .ok_or("memory map descriptor not in .data")?;
+        if relative<sec.raw_len as u32 ||
+           relative+MEMORY_MAP_STRIDE>sec.virtual_size {
+            return Err("memory map descriptor not fully in original virtual zero-fill".into());
+        }
+    }
+    Ok(())
+}
+
 /// Original A870 caches dynamically resolved Kernel32 functions
 /// in three distinct PREFERRED VA .data slots. These slots are
 /// virtual zero-fill in the retail image (no raw bytes at the
@@ -155,6 +214,7 @@ fn verified_original_encoded_name(
 /// user-provided dplayerx.dll bytes. The original DLL's functions
 /// are NEVER executed, and no protected .txt or .icd bytes are read.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_memory_map_lookup(dll,pe)?;
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
     if base!=0x008E0000 {
@@ -277,6 +337,28 @@ mod tests {
         }
         encoded.push(0);
         encoded
+    }
+
+    #[test]
+    fn five_memory_map_slots_use_first_active_exact_twelve_byte_key() {
+        let query=*b"0123456789AB";
+        let mut keys=[[0u8;12];5];
+        let mut flags=[0u16;5];
+        assert_eq!(first_active_memory_map_match(&query,&flags,&keys),None);
+        keys[1]=query;keys[3]=query;
+        assert_eq!(first_active_memory_map_match(&query,&flags,&keys),None);
+        flags[3]=1;
+        assert_eq!(first_active_memory_map_match(&query,&flags,&keys),Some(3));
+        flags[1]=1;
+        assert_eq!(first_active_memory_map_match(&query,&flags,&keys),Some(1));
+        keys[1][11]=b'C';
+        assert_eq!(first_active_memory_map_match(&query,&flags,&keys),Some(3));
+    }
+    #[test]
+    fn memory_map_slots_cover_exact_five_descriptors() {
+        assert_eq!(MEMORY_MAP_COUNT,5);
+        assert_eq!(MEMORY_MAP_FIRST_VA+5*MEMORY_MAP_STRIDE,MEMORY_MAP_END_VA);
+        assert_eq!(MEMORY_MAP_FIRST_VA+4*MEMORY_MAP_STRIDE,0x00904E28);
     }
 
     #[test]
