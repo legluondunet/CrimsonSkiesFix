@@ -2839,6 +2839,7 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
     unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
     unsafedisc_dll_worker_finalizer::audit_original(dll,&pe)?;
+    println!("  Original worker CALL at 19798 -> byte mixer 19C78. If it returns, ADD ESP,0x18 at 1979D updates flags; all 32 flag assignments from 197A0 reach counter update 197D4 (24 unique paths, 12..23 instructions).");
     println!("  Original worker counter update at 197D4: [EBP-0x0C] += [EBP-0x08] (wrapping). 197DD -> 197FA for all 32 EFLAGS patterns (8 unique paths, 5..13 instructions).");
     println!("    16/32 patterns use a stack-balanced no-op CALL 1965A (bare RET) and forced JGE; 16 enter 197FA directly. Then [EBP-0x14] := [EBP-0x04].");
     println!("  Original state caller finalizer: all 32 EFLAGS paths from 19800 reach 19686 (5 paths, 8..12 instructions); if unsigned [EBP-0x0C] >= [EBP-0x14], JAE reaches 19819.");
