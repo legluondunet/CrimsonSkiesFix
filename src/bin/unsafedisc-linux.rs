@@ -5078,6 +5078,9 @@ fn inspect_historical_155_cli() -> Result<()> {
     let iterator=unsafedisc_historical_155::audit_155_section_iterator(
         backed,base,code.virtual_address
     )?;
+    let builder=unsafedisc_historical_155::audit_155_section_list_builder(
+        backed,base,code.virtual_address
+    )?;
     let crc_callers=unsafedisc_historical_155::audit_155_crc_helper_callers(
         backed,base,code.virtual_address
     )?;
@@ -5110,6 +5113,12 @@ fn inspect_historical_155_cli() -> Result<()> {
         checksum_bridge.codebit,
         checksum_bridge.bypass_checksum_target_va,
         checksum_bridge.after_checksum_call_target_va);
+    println!("  PE section list builder: table at [0x{:08X}], count [0x{:08X}], pointer-list destination [0x{:08X}]; {}-byte headers, {}-byte output pointers.",
+        builder.source_header_pointer_va,builder.section_count_va,
+        builder.pointer_list_destination_va,builder.section_header_stride,
+        builder.pointer_list_stride);
+    println!("  Historical selection: eight exact four-byte section-name exclusions; skipped branches converge at 0x{:08X}.",
+        builder.skip_header_va);
     println!("  PE section iterator: initial JMP -> 0x{:08X} skips POPAD; completed sections -> 0x{:08X} execute POPAD before next pointer.",
         iterator.first_entry_va,iterator.next_entry_restore_va);
     println!("  Section pointer-list stride {} bytes; section's effective raw extent min(RawSize, nonzero VirtualSize); header fields raw +0x{:X}, virtual +0x{:X}.",
