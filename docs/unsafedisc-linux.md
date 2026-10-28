@@ -4448,3 +4448,100 @@ results. A synthetic unit test covers category
 selection and the resource-versus-export difference.
 The CLI labels these results as **on-disk-only**.
 The game/DLL files are neither executed nor modified.
+
+
+### Recovered A620/A720 memory-I/O paths and three chained-decoded Windows APIs (2026-10-28)
+
+A read-only analysis of the *exact* original, SHA-256-pinned
+`dplayerx.dll` now identifies the previously unresolved link
+between the mode-0x67 descriptors registered by `A140`
+and the actual byte-reading and byte-writing subsystem.
+
+**RVA `A870` dynamically resolves three `KERNEL32.dll`
+memory APIs**. Its original source metadata uses a separate
+chained byte decoder at RVA `A970` (not the older E25C
+metadata-label XOR stream). The independent original-byte
+decoding is:
+
+```text
+out[0] = encoded[0]
+out[i] = (encoded[i] - 1 mod 256) XOR out[i-1]    for i >= 1
+stop at source NUL byte
+```
+
+| Original encoded-string RVA | Verified recovered name | Resolved DLL-global slot RVA |
+| --- | --- | --- |
+| `0x204B8` | `Kernel32.dll` | DLL handle only |
+| `0x204C8` | **`ReadProcessMemory`** | `0x24AE0` |
+| `0x204E0` | **`WriteProcessMemory`** | `0x24ADC` |
+| `0x204F8` | **`VirtualProtect`** | `0x24AD8` |
+
+The original instruction-aligned `A870` path makes
+`A930` calls to clone/decode each label and then
+`A9B0` calls to resolve the APIs using the original
+imported `GetProcAddress`. The three resolved
+function pointers are stored to the slots above.
+This API-resolution subsystem is **distinct from** the
+earlier 13-callsite `C708` dynamic API table and
+should not be conflated with it.
+
+**RVA `A620`: read dispatcher**
+
+- Descriptor mode `0x66` calls the resolved
+  **ReadProcessMemory** pointer from `[0x904AE0]`.
+  Read success/byte-count conditions are checked in x86.
+- Descriptor mode `0x67` first looks up its module
+  record through `B5D0`. If record field `+0x3C`
+  is present and the signed request offset lies in
+  `[0, record[+0x40])`, it reads from that
+  **optional shadow-buffer backing**.
+- Otherwise, mode `0x67` performs a direct copy from
+  `descriptor[+4] + request_offset`. Original
+  `REP MOVSD` and `REP MOVSB` instructions are
+  verified at RVAs `A69D/A6A4`.
+
+**RVA `A720`: write dispatcher**
+
+- Descriptor mode `0x66` calls the resolved
+  **WriteProcessMemory** pointer from `[0x904ADC]`,
+  checking success and the written-byte count.
+- Descriptor mode `0x67` likewise looks up the
+  module record and may update its shadow-buffer
+  backing at fields `+0x3C/+0x40`. It then invokes
+  resolved **VirtualProtect** (`[0x904AD8]`)
+  to permit writes to `descriptor[+4] + offset`,
+  copies source bytes into that module memory via
+  `REP MOVSD/MOVSB`, and invokes **VirtualProtect**
+  again to restore the previous protection.
+  Successful API calls are **conditional**, not
+  observed runtime facts.
+
+Both paths' use of the **same registered-module
+shadow-buffer fields** provides concrete evidence that
+the earlier A140/B5D0 registry is connected to actual
+data movement, not only to category bookkeeping.
+It does **not** establish where those shadow buffers
+are allocated or populated, the runtime state of the
+descriptor, or that the protected `.txt` code was
+decoded. A successful generic memory write would
+not by itself prove a correctly decrypted EAX routine.
+
+The new module `src/unsafedisc_dll_memory_io.rs`
+verifies six original E8 call destinations,
+**30 exact original x86 opcode sequences**, the
+three dynamic API destination slots and the four
+actual chained-decoded names. It is integrated into
+`inspect --modifier-research` only after exact
+SHA-256 validation, prints only API names and
+addresses, and provides **five synthetic Rust tests**
+for the original string codec, malformed data,
+mode dispatch, optional buffer bounds and signed
+32-bit offset edge cases. It does **not** load
+or execute `dplayerx.dll`.
+
+**Next research:** determine where `record[+0x3C]`
+and `record[+0x40]` are written; distinguish
+registered shadow-buffer contents from the actual
+mapped DLL image, and trace the original attach path
+through `A720` into the on-disk encrypted `.txt`
+region at RVA `0x65BE/0x6621`.
