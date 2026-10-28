@@ -4559,6 +4559,12 @@ fn inspect(options: Options) -> Result<()> {
             let historic_mask_rank=unsafedisc_second_stage::original_mask_rank(1006);
             println!("  Full original 0..1006 index-mask GF(2) rank: {historic_mask_rank}/32 (joint rank ceiling: {}/64).",
                 32+historic_mask_rank);
+            if second_stage.differential_rank>historic_mask_rank {
+                return Err("retail/reference F2 mask-difference rank exceeds original-mask mathematical ceiling".into());
+            }
+            println!("  Differential mask subspace coverage: {}/{} independent original-mask dimensions; {} unobserved independent mask dimensions. This is an observation-coverage bound, NOT a recovered F2.",
+                second_stage.differential_rank,historic_mask_rank,
+                historic_mask_rank-second_stage.differential_rank);
             println!("  F2-only affine differential test: {} shared inputs spanning different masks, {} relations, rank {}/32, {} contradictions.",
                 second_stage.multi_mask_inputs,second_stage.differential_observations,
                 second_stage.differential_rank,second_stage.differential_contradictions);
