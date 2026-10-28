@@ -1115,11 +1115,46 @@ original preferred-base VA values resolve to these exact RVAs:
 | 10 | `0x1863E` |
 | 11 | `0x1841D` |
 
+
+#### Exact selector of the FIRST worker invocation: case 1, not arbitrary
+
+The *first* call made by the original `0x18F81` worker has now
+been traced all the way through the argument-shuffling wrapper.
+At **`0x18FB9`** the worker pushes the **literal argument `1`**
+as the second argument to `0x18800`; the other five values are
+a pointer, a zero local DWORD and three output pointers.
+
+The byte-anchored `0x18800` wrapper forwards that argument
+**unchanged** as the second of seven arguments to `0x181E0`.
+The dispatcher allocates `0x160` bytes, saves four registers
+(16 bytes), calls the independent `0x18940` helper with three
+temporary stack arguments, and restores the temporary stack
+with `ADD ESP,0x0C` at **`0x1821F`**. Therefore the
+`MOV ECX,[ESP+0x178]` at `0x18240` reads the original
+**second** argument: `0x160 + 0x10 + 8 = 0x178`.
+
+The original `DEC ECX` then changes that `1` to index `0`.
+Consequently, **if `0x18940` returns normally and the
+original stack layout remains valid, this initial dispatch
+selects the table's case 1 at RVA `0x183C2`**, whose
+original first direct call (after preparing its arguments)
+is **`0x183D4 -> 0x189F0`**. Both the original call and
+its target are SHA-pinned in
+`audit_initial_worker_fixed_selector`.
+
+This resolves the **first invocation selector**, not all later
+selector values or the opaque behavior of `0x18940` and
+`0x189F0`. The actual return value to the worker remains
+unknown; the conditional bypass versus `0x18B00` path
+documented below is therefore unaffected.
+
 **Out-of-range input** (zero or 12 and above) reaches the
 original `JA` fallback RVA **`0x184EB`**. The legitimate
 input `4` also selects `0x184EB`, which is not an error.
-This is an **11-case switch**, not proof that the worker
-passes any particular selector value at runtime.
+This is an **11-case switch**. The first worker invocation's
+selector is now statically proven to be `1`, assuming normal
+helper returns; subsequent invocations and selector values
+remain unknown.
 
 The Rust `src/unsafedisc_dll_worker_entry.rs` validates the original
 entry prologue, conditional branch network, five direct CALL
@@ -1132,8 +1167,8 @@ read-only and never execute the original DLL.
 
 **Still unresolved:** entrypoint/DllMain reachability of the
 two identified worker callsites; return values of the original
-subroutine `0x18940`; the actual dispatch selector passed
-to `0x181E0`; exact state changes while that dispatcher runs;
+subroutine `0x18940`; later dispatch selector values or actual case results;
+exact state changes while the dispatcher runs;
 the later opaque `0xA310`/`0x19965` helpers, and the final
 global state at the byte mixer `0x19C78`. This analysis
 does not enable SafeDisc unpacking or decrypt protected bytes.
