@@ -50,6 +50,9 @@ mod unsafedisc_dll_worker_finalizer;
 #[path = "../unsafedisc_dll_worker_entry.rs"]
 mod unsafedisc_dll_worker_entry;
 
+#[path = "../unsafedisc_dll_io_backends.rs"]
+mod unsafedisc_dll_io_backends;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2843,6 +2846,11 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
     unsafedisc_dll_worker_finalizer::audit_original(dll,&pe)?;
     unsafedisc_dll_worker_entry::audit_original(dll,&pe)?;
+    unsafedisc_dll_io_backends::audit_original(dll,&pe)?;
+    println!("  Original .text IO backends: type 0x65 -> A560 SetFilePointer/ReadFile with exact byte count; type 0x66 -> A620 dynamic ReadProcessMemory; type 0x67 -> A620 in-process memcpy (mapped or direct fallback).");
+    println!("    Dynamically loaded API names decoded from .data: Kernel32.dll, ReadProcessMemory, WriteProcessMemory, VirtualProtect.");
+    println!("    Original A970 cumulative XOR decoder and A870 resolver fill global API slots 904AE0/904ADC/904AD8; no Windows API invoked, no live file/process memory accessed.");
+    println!("    Important: 0x67 mapped branch caps copy count at min(request, total map size), NOT map size minus offset; this static audit is not a safety proof.");
     println!("  Original 18F81 worker entry: its 18F91 flag-preserving maze always reaches 18FA9 for all 32 EFLAGS sets (4 routes, 5..8 instruction boundaries).");
     println!("    First worker CALL at 18FBF -> wrapper 18800 -> 181E0; the dispatcher invokes 18940 before its selector check. Entry-to-worker CALL sites are verified at 1A1B2 and 1A39C, not proven reached from DllMain.");
     println!("    Original 181E0 dispatcher: generic selector 1..11 maps to 11 individually relocated HIGHLOW VAs at 18680; out-of-range -> 184EB (also case 4).");
