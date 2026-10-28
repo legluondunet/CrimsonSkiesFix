@@ -305,6 +305,57 @@ pub fn audit_original_mixer_setup_detour(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+/// A disjoint original-source callsite/cleanup audit:
+///   1974A CALL 19965; 1974F ADD ESP,0x14
+///   19798 CALL 19C78; 1979D ADD ESP,0x18
+/// These are net caller stack adjustments of 20 and 24 bytes
+/// respectively. The arithmetic is CONSISTENT with five and six
+/// DWORD push-sized arguments, but does not prove every byte
+/// belongs to an argument: local stack reservations and register
+/// manipulation between pushes have not been fully recovered.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct OriginalCallerCleanup {
+    pub call_rva:u32,
+    pub callee_rva:u32,
+    pub cleanup_rva:u32,
+    pub caller_reclaims_bytes:u32,
+}
+
+pub const ORIGINAL_WORKER_CALL_CLEANUPS:[OriginalCallerCleanup;2]=[
+    OriginalCallerCleanup {
+        call_rva:0x1974A,callee_rva:0x19965,
+        cleanup_rva:0x1974F,caller_reclaims_bytes:0x14,
+    },
+    OriginalCallerCleanup {
+        call_rva:0x19798,callee_rva:0x19C78,
+        cleanup_rva:0x1979D,caller_reclaims_bytes:0x18,
+    },
+];
+
+/// Validate the actual immediate return-address stack adjustment
+/// against the genuine SHA-pinned DLL. Not an inferred C ABI or
+/// a recovery of the argument list to either helper.
+pub fn audit_original_worker_call_cleanups(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    for call in ORIGINAL_WORKER_CALL_CLEANUPS {
+        if call.cleanup_rva!=call.call_rva+5 ||
+           call.caller_reclaims_bytes%4!=0 {
+            return Err("original worker call/cleanup layout changed".into());
+        }
+        if dll_relative_call_target(dll,pe,call.call_rva)?
+            !=call.callee_rva {
+            return Err(format!(
+                "original helper call target changed at 0x{:05X}",
+                call.call_rva
+            ));
+        }
+        dll_expect_raw_x86(dll,pe,call.cleanup_rva,
+            &[0x83,0xC4,call.caller_reclaims_bytes as u8])?;
+    }
+    Ok(())
+}
+
 /// The original worker directly CALLs the byte mixer 19C78 from
 /// 19798. Its return is followed by ADD ESP,0x18 (which sets EFLAGS),
 /// then a bounded maze comprising ONLY flag-preserving original
@@ -539,6 +590,7 @@ pub fn trace_original_finalizer_maze(
 /// Audit original instruction boundaries and conditional caller
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_worker_call_cleanups(dll,pe)?;
     audit_original_worker_mixer_predecessor(dll,pe)?;
     audit_original_mixer_setup_detour(dll,pe)?;
     audit_original_mixer_to_counter_bridge(dll,pe)?;
@@ -699,6 +751,22 @@ mod tests {
         assert_eq!(safe_detour_cases,8);
         assert_eq!(0x19765u32+5+0x8E,0x197F8);
         assert_eq!(0x1976Bu32+2+2,0x1976F);
+    }
+
+    #[test]
+    fn two_call_cleanups_are_distinct_net_stack_adjustments() {
+        let [setup,mixer]=ORIGINAL_WORKER_CALL_CLEANUPS;
+        assert_eq!((setup.call_rva,setup.callee_rva,
+                    setup.cleanup_rva,setup.caller_reclaims_bytes),
+                   (0x1974A,0x19965,0x1974F,20));
+        assert_eq!((mixer.call_rva,mixer.callee_rva,
+                    mixer.cleanup_rva,mixer.caller_reclaims_bytes),
+                   (0x19798,0x19C78,0x1979D,24));
+        for call in ORIGINAL_WORKER_CALL_CLEANUPS {
+            assert_eq!(call.call_rva+5,call.cleanup_rva);
+            assert_eq!(call.caller_reclaims_bytes%4,0);
+        }
+        // 20/24-byte caller cleanup is NOT proof of a 5/6-arg ABI.
     }
 
     #[test]
