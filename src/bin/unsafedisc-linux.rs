@@ -2823,6 +2823,10 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("  Confirmed 12-byte record allocation, category/interval comparisons and linked-list field stores; NOT .txt plaintext restoration.");
     println!("  A2A0 module category dispatch: B5D0 record lookup, B850 first, B880/B8E0 only after prior zero returns.");
     println!("  Original control-flow signatures validated; no branch execution or .txt decoding is asserted.");
+    let a140=unsafedisc_dll_bootstrap::model_a140_completion(true);
+    println!("  A140 control-flow: once B540 finds/allocates a module record, all {} directory helpers + {} section-class iterators run; AX=1.",
+        a140.directory_helpers_called,a140.class_iterators_called);
+    println!("  A140 does not branch on individual handler outcomes; downstream A2A0 handlers still have their own early exits.");
     let (startup_selectors,final_iterators)=unsafedisc_dll_bootstrap::audit_original(dll,&pe)?;
     println!("  Verified DllMain -> A140 bootstrap source-selection chain (read-only):");
     for s in &startup_selectors {
