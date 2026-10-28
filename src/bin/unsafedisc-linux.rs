@@ -44,6 +44,9 @@ mod unsafedisc_dll_state_provenance;
 #[path = "../unsafedisc_dll_keyboard_probe.rs"]
 mod unsafedisc_dll_keyboard_probe;
 
+#[path = "../unsafedisc_dll_worker_finalizer.rs"]
+mod unsafedisc_dll_worker_finalizer;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2835,6 +2838,12 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
     unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
+    unsafedisc_dll_worker_finalizer::audit_original(dll,&pe)?;
+    println!("  Original state caller finalizer: all 32 EFLAGS paths from 19800 reach 19686 (5 paths, 8..12 instructions); if unsigned [EBP-0x0C] >= [EBP-0x14], JAE reaches 19819.");
+    println!("    All 32 flag assignments from 19819 reach PUSH 00905010h at 1987D (16 paths, 31..41 instructions), followed by CALL 1A9B6.");
+    println!("    After the helper, 1A9B6 forwards its helper AX via a local WORD; the caller at 1988A masks EAX to 16 bits, then adds 0x4F3 to global state iff AX != 0.");
+    println!("    Conditional special case: if original Win9x helper executes with accepted state guard, +0x34F within helper AND then +0x4F3 at caller => global state += 0x842 (wrapping), NOT universally.");
+    println!("    Caller loop-exit branch and return from both nested Windows APIs / INT 68h remain runtime conditions; no 19C78 mixer-entry state is asserted.");
     println!("  Verified original .txt2 keyboard probe: RVA 0x1D42F calls USER32!GetKeyboardType(0/1), accepts type=7 and subtype 0xD01..0xD07 (AX=1).");
     println!("    An original E8 at RVA 0x1CD46 targets this predicate. The adjacent TEST/JNE forks around a literal INT 0x68 with AX=0x4300 when the gate returns zero.");
     println!("    Independently audited predecessor: entry at 0x1CD16 (JBE/JA), 32/32 CF/ZF/PF/SF/OF assignments join CALL 0x1CD46 in 8..18 anchored instruction boundaries.");
