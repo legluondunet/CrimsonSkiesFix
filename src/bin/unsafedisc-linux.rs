@@ -3769,6 +3769,44 @@ fn historical_155_section_selected(sec: &PeSection) -> bool {
 fn historical_155_section_checksum_eligible(sec: &PeSection) -> bool {
     historical_155_section_selected(sec) && sec.characteristics & 0x20 != 0
 }
+// Independently read the exact original ICD's 40-byte section records
+// and cross-check the newly reconstructed 1.5.5 assembler name filter
+// against the already-established four-byte selection helper.
+// The exact-hash gate for ICD has run before this function is called.
+fn audit_original_icd_historical_section_list(
+    original:&[u8],pe:&Pe32,
+)->Result<(Vec<usize>,usize)>{
+    let nt=read_u32(original,0x3C)? as usize;
+    let optional_len=read_u16(original,nt+20)? as usize;
+    let table=nt.checked_add(24)
+        .and_then(|n|n.checked_add(optional_len))
+        .ok_or("original ICD section table header overflow")?;
+    let count=pe.sections.len();
+    let size=count.checked_mul(40)
+        .ok_or("original ICD section table length overflow")?;
+    let end=table.checked_add(size)
+        .ok_or("original ICD section table end overflow")?;
+    let bytes=original.get(table..end)
+        .ok_or("original ICD section headers beyond file")?;
+    let selected=unsafedisc_historical_155::
+        historical_155_selected_section_indices(bytes,count)?;
+    for (i,section) in pe.sections.iter().enumerate(){
+        let selected_by_new=selected.contains(&i);
+        let selected_by_existing=historical_155_section_selected(section);
+        if selected_by_new!=selected_by_existing {
+            return Err(format!(
+                "original ICD section #{i} disagrees with 1.5.5 name-filter audit"
+            ));
+        }
+        if bytes[i*40..i*40+8]!=section.name {
+            return Err(format!(
+                "original ICD section #{i} metadata differs between PE parser and raw records"
+            ));
+        }
+    }
+    Ok((selected,count))
+}
+
 fn print_historical_155_section_filter(pe: &Pe32) {
     println!("Original unSafeDisc 1.5.5 section-name/CRC filter (STATIC original x86):");
     println!("  Source: historic 2000 executable, SHA-256 e484c9aa...f0f1eaa9f.");
@@ -4181,6 +4219,10 @@ fn inspect(options: Options) -> Result<()> {
     let protected_pe = parse_pe32(&icd)?;
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
     if options.historical_selection {
+        let (selected,total)=audit_original_icd_historical_section_list(
+            &icd,&protected_pe)?;
+        println!("Independent original-ICD PE header list: {}/{} accepted section names in source order; both native filters agree.",
+            selected.len(),total);
         print_historical_155_section_filter(&protected_pe);
         let (word_count,tail_count)=
             unsafedisc_historical_155::original_complete_dwords_and_tail(4095);
