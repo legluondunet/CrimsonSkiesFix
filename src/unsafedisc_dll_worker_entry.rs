@@ -259,6 +259,39 @@ pub fn first_case_record_matches(
 )->bool {
     trailing_dword & mask == expected
 }
+/// In the original 189F0 record loop, CALL A810 ends at 18A1A;
+/// the very next instructions read [EDI+0x24] and compare it.
+/// There is NO TEST of A810's returned AX between this CALL and
+/// the mask comparison. This models the immediate original
+/// comparison independently of whether the read succeeded.
+/// It does NOT assert what an uninitialized/stale buffer contains.
+pub fn first_case_original_ignores_read_status(
+    trailing_dword:u32,mask:u32,expected:u32,_read_ax:u16
+)->bool {
+    first_case_record_matches(trailing_dword,mask,expected)
+}
+
+/// This is the fail-closed policy a FUTURE native implementation
+/// would need instead of relying on original 189F0's unchecked read.
+/// The record is synthetic and requires 0x28 valid bytes plus an
+/// explicitly successful original A810 low-AX result.
+pub fn first_case_checked_record(
+    read_ax:u16,record:&[u8],mask:u32,expected:u32
+)->bool {
+    if read_ax==0 || record.len()!=0x28 {return false;}
+    let mut trailing=[0u8;4];
+    trailing.copy_from_slice(&record[0x24..0x28]);
+    first_case_record_matches(u32::from_le_bytes(trailing),mask,expected)
+}
+
+/// Original 189F0 returns the matching unsigned offset in EAX,
+/// but also returns EAX=0 on no match. Thus a match at offset
+/// zero and a failed search have the SAME returned DWORD.
+/// No claim is made that a real game scan can start at offset 0.
+pub fn first_case_return_dword(found_offset:Option<u32>)->u32 {
+    found_offset.unwrap_or(0)
+}
+
 pub fn first_case_advance_offset(offset:u32)->u32 {
     offset.wrapping_add(0x28)
 }
@@ -549,6 +582,40 @@ mod tests {
         assert!(!first_case_record_matches(0,0,1));
         assert!(!first_case_record_matches(0xFF,0x0F,0x1F));
     }
+    #[test]
+    fn original_case_one_compares_after_read_even_if_ax_is_zero() {
+        // The original comparison at 18A1A does not branch on
+        // the A810 return status. The buffer contents are a
+        // hypothetical given, not the contents of a real failure.
+        for ax in [0u16,1,0xFFFF] {
+            assert!(first_case_original_ignores_read_status(
+                0xC0FF_EEAB,0xFF,0xAB,ax));
+            assert!(!first_case_original_ignores_read_status(
+                0xC0FF_EEAB,0xFF,0xAC,ax));
+        }
+    }
+
+    #[test]
+    fn safe_case_one_requires_successful_complete_record() {
+        let mut record=[0u8;0x28];
+        record[0x24..0x28].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+        assert!(first_case_checked_record(1,&record,0xFFFF,0x3344));
+        assert!(!first_case_checked_record(0,&record,0xFFFF,0x3344));
+        assert!(!first_case_checked_record(1,&record[..0x27],0xFFFF,0x3344));
+        record[0x24]=0;
+        assert!(!first_case_checked_record(1,&record,0xFFFF,0x3344));
+    }
+
+    #[test]
+    fn first_case_zero_offset_collides_with_not_found_sentinel() {
+        assert_eq!(first_case_return_dword(None),0);
+        assert_eq!(first_case_return_dword(Some(0)),0);
+        assert_eq!(first_case_return_dword(Some(0x28)),0x28);
+        assert_eq!(first_case_return_dword(Some(u32::MAX)),u32::MAX);
+        assert_ne!(first_case_return_dword(None),
+                   first_case_return_dword(Some(0x28)));
+    }
+
     #[test]
     fn case_one_scan_stride_and_limit_are_unsigned_wrapping_dwords() {
         assert_eq!(first_case_advance_offset(0),0x28);
