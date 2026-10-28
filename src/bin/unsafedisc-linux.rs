@@ -2814,10 +2814,16 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     let startup_selectors=unsafedisc_dll_bootstrap::audit_original(dll,&pe)?;
     println!("  Verified DllMain -> A140 bootstrap source-selection chain (read-only):");
     for s in &startup_selectors {
-        println!("    category {}, selector {}: PE directory {} {:?}=0x{:08X} -> {}",
-            s.category,s.selector,s.directory_index,s.directory_field,
+        println!("    category {}, selector {}: source directory {} (RVA 0x{:08X}, size {}) => early size guard {}; selector directory {} {:?}=0x{:08X} -> {}",
+            s.category,s.selector,s.source_directory_index,s.source_rva,s.source_size,
+            if s.passes_nonzero_size_guard {"PASS"} else {"ZERO -> EARLY EXIT"},
+            s.directory_index,s.directory_field,
             s.candidate_rva,s.matching_section.as_deref().unwrap_or("none"));
     }
+    let possible=startup_selectors.iter().filter(|s|s.passes_nonzero_size_guard).count();
+    if possible!=3 { return Err("pinned DLL early bootstrap source-directory guards changed".into()); }
+    println!("  Early-exit reachability: 3 of 5 helpers have nonzero source sizes; 2 abort before their category update.");
+    println!("  A failed later section lookup does NOT rule out earlier registry updates.");
     println!("  These are static selector outcomes for the exact original DLL, not runtime decoding proof.");
     println!("  Original DLL PE32 entry RVA: 0x{:08X} (on-disk code, NOT a memory dump).",
         pe.entry_rva);
