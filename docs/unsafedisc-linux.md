@@ -436,6 +436,59 @@ earlier stages, the private owner's original **has not been
 rechecked in this session**, and the archived variant is
 not byte-identical to that original.
 
+### Upstream NT-header provenance, fixed table offset, and MOV CX caveat (2026-10-28)
+
+Further disassembly of the public modified 1.5.5 archive
+connects the selected-section table back to the PE
+NT/COFF header, rather than treating its global pointers
+as unknown inputs:
+
+```asm
+4024D5  MOV [403B13],ESI        ; retain original NT header pointer
+4024E4  MOV CX,WORD [ESI+6]     ; COFF NumberOfSections
+4024E8  MOV [403B3B],ECX        ; store FULL 32-bit ECX
+...
+402514  ADD ESI,0xF8           ; NT headers to IMAGE_SECTION_HEADER[0]
+40251A  MOV [403B17],ESI       ; selected-list builder source
+...
+402522  MOV EAX,0x28           ; 40-byte header size
+402527  IMUL DWORD [403B3B]    ; full 32-bit count from global
+```
+
+The hard-coded offset `0xF8` corresponds exactly
+to **4 bytes of NT signature + 20 bytes of COFF header
++ 0xE0 bytes of standard PE32 optional header**.
+This is a property of the archived historical code,
+not a safe assumption for arbitrary PE32 files.
+The native Rust PE parser already reads the actual
+COFF `SizeOfOptionalHeader` field and bounds the table.
+A new `native_pe32_section_table_delta` helper models
+`24 + actual_optional_header_size` explicitly.
+
+**Critical provenance caveat:** `MOV CX,[ESI+6]`
+overwrites only the low 16 bits of ECX, then
+`MOV [403B3B],ECX` stores all 32 bits. The
+historical builder later uses the **full** stored
+ECX as the section count. This local instruction
+sequence **does not prove** that ECX high16 is zero;
+it must have been known or cleared by an earlier
+path for the intended 16-bit PE header count to
+be preserved. We therefore added a correct symbolic
+`historical_155_mov_cx_section_count` helper
+retaining the previously unknown upper half, and
+do **not** silently reconstruct it as MOVZX.
+The native inspector's own PE32 parser remains
+bounded to the actual 16-bit NumberOfSections.
+
+The new `audit_155_section_table_provenance` checks
+five exact machine-code instruction windows
+and reports the NT/table/global relationships
+from the owner's hash-approved original when
+available. The public-archive x86 layout has
+been independently verified; the owner's
+private original **was not re-tested here**.
+The code is only inspected, never executed.
+
 ### Exact eight-name skip loop now linked to selected section pointers (2026-10-28)
 
 The archived public, compatibility-modified unSafeDisc 1.5.5
