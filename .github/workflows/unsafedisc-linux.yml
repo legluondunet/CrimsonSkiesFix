@@ -54,7 +54,7 @@ jobs:
           test "$(git hash-object "$archive")" = 825c467b6b403e1c85a5875ede5696dedfe17652
           echo "Historical public variant: exact pinned Git blob / 18944 bytes."
           objdump -h "$archive"
-          objdump -D -Mintel --start-address=0x402240 --stop-address=0x402360 "$archive"
+          objdump -D -Mintel --start-address=0x402240 --stop-address=0x402440 "$archive"
           objdump -D -Mintel --start-address=0x401cf0 --stop-address=0x401d20 "$archive"
           rm -- "$archive"
       - name: Upload experimental Linux executable

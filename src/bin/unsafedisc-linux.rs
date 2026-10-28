@@ -5125,6 +5125,12 @@ fn inspect_historical_155_cli() -> Result<()> {
     let builder=unsafedisc_historical_155::audit_155_section_list_builder(
         backed,base,code.virtual_address
     )?;
+    // Additional static region verified against the pinned PUBLIC
+    // variant; the owner's distinct original must pass exact bytes
+    // before the CLI asserts the same historical control flow.
+    unsafedisc_historical_155_list_plan::audit_155_post_builder_rva_mapper(
+        backed,base,code.virtual_address
+    )?;
     let provenance=unsafedisc_historical_155::audit_155_section_table_provenance(
         backed,base,code.virtual_address
     )?;
@@ -5174,6 +5180,9 @@ fn inspect_historical_155_cli() -> Result<()> {
     println!("  Historical section LOOP with ECX=0 would execute {} iterations (32-bit wrap); native implementations must reject a zero section count.",
         unsafedisc_historical_155_list_plan::historical_155_loop_iterations(0));
     println!("  Audited builder LOOP does not write a final zero DWORD; iterator needs a zero slot. Code after the audited window may still initialize one; runtime behavior is unverified.");
+    println!("  Follow-on post-builder RVA mapper: 0x4022B2..0x40230B; source RVA [0x403B43], section RVA at +0x0C, RawSize at +0x10, raw pointer at +0x14.");
+    println!("  The archived code tests inclusive raw end and next-header VirtualAddress [EAX+0x34], then stores delta at [0x403B3F] and raw offset at [0x403B43].");
+    println!("  This exact opcode audit is public-archive-derived; actual original 20,480-byte variant must be supplied locally, and no runtime behavior is inferred.");
     // Advisory static DATA inspection; the owner's original 1.5.5
     // may differ from the compatibility-modified public archive.
     // Its on-disk initial zeros are NOT evidence of runtime clearing.

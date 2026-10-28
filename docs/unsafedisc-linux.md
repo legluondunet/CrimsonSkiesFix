@@ -5972,3 +5972,49 @@ multiple invocation safety or original game decryption is inferred.
 Unpacking remains disabled; PR #5 is still experimental.
 
 The audit stops at the end of the 0x4022B0 LOOP instruction; bytes immediately afterward have not been freshly compared with the original historical binary. Consequently absence of a later terminator write is **not established**.
+
+### Public-variant post-builder RVA mapper (2026-10-28)
+
+Temporary GitHub Actions static disassembly of the independently
+SHA-1 Git-blob-verified 18,944-byte public unSafeDisc 1.5.5 variant
+(Git blob 825c467b6b403e1c85a5875ede5696dedfe17652, pinned
+nckstwrt/SafeDiscLoader commit 4d1dc33e6e63a4ddca77bbcfa44a7ff98180e064)
+found a distinct address-conversion scan immediately after the
+previously audited section-list LOOP instruction at 0x4022B0.
+
+The scan at 0x4022B2 reloads the section header table from
+global 0x403B17 and a candidate target RVA from 0x403B43.
+It compares each header's VirtualAddress (+0x0C) and SizeOfRawData
+(+0x10) against the target. Its unsigned tests accept
+VirtualAddress <= target <= VirtualAddress+SizeOfRawData
+at the exact x86 branch level (inclusive upper comparison).
+It additionally compares [EAX+0x34] against target, which is
+the NEXT 40-byte section header's VirtualAddress at +0x0C.
+On equality it skips the current header and examines the next.
+
+On a match it stores delta=(VirtualAddress-PointerToRawData)
+at global 0x403B3F and subtracts this from the original target
+in 0x403B43, deriving a raw file offset. It preserves VA, raw size
+and raw pointer in globals 0x403B53, 0x403B4B and 0x403B4F.
+
+The immediate retry branch at 0x4022BD has no visible count limit
+and the read at +0x34 on a last-header match is beyond the
+recorded section table; neither behavior is replicated unsafely
+in Rust. A historical inclusive end can be a one-past-end byte
+and is rejected by the separate safe native byte-lookup helper.
+
+New synthetic-only functions in
+src/unsafedisc_historical_155_list_plan.rs provide:
+an exact anchored opcode/rel8 audit for 0x4022B2..0x40230B,
+a bounded model of the historical selection, and a separate
+file-backed strict policy. Four additional synthetic tests cover
+the next-section boundary, raw-end rejection, last-header
+access, invalid file extents and 32-bit arithmetic overflow.
+
+IMPORTANT: this precise newly examined byte region was verified
+only in the 18,944-byte public archival compatibility variant.
+The owner's 20,480-byte SHA-pinned original unSafeDisc executable
+was not available for a fresh comparison in this session.
+The inspect-historical audit intentionally fails closed if
+the original executable's bytes differ. No original game bytes,
+protected DLL, original tool, or decrypted output is published.
