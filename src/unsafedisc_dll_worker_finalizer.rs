@@ -94,11 +94,32 @@ pub fn hypothetical_worker_locals(
 /// At 19728 the ORIGINAL instruction is 66 8B 45 F8 (MOV AX,
 /// WORD [EBP-8]), followed immediately by 50 (PUSH EAX).
 /// A 16-bit MOV updates only AX. It does not clear EAX[31:16].
-/// This is the immediate PUSH operand model, NOT a claim that a
-/// later helper receives an unmodified value or that EAX's upper
-/// word is unknown for every actual reachable call.
+/// This isolated MOV AX/PUSH model is distinct from the known
+/// nonzero-A310 path. On THAT verified path, an earlier AND EAX,FFFF
+/// clears the upper word (see conditional_original_19728_push).
+/// No later helper argument or entrypoint reachability is inferred.
 pub fn hypothetical_19728_push_eax(eax_before:u32,local_step:u32)->u32 {
     (eax_before & 0xFFFF_0000) | (local_step & 0xFFFF)
+}
+
+/// Unlike MOV AX considered in isolation, the ORIGINAL worker
+/// nonzero A310-return path first executes AND EAX,0xFFFF at
+/// 196B6. The three separately audited opaque segments up to
+/// 19728 contain only branches, NOP and self-MOV/XCHG, while
+/// the intervening 196DB and 196F8 local arithmetic changes
+/// ECX and EDX, NOT EAX. Hence, on this conditional path,
+/// the 19728 PUSH EAX is exactly local_step & 0xFFFF.
+///
+/// None means the low16 A310 test takes the 19819 bypass,
+/// so the 19728 PUSH is not reached on this modeled pass.
+/// This conclusion is local and does not infer any later helper
+/// argument or real original startup reachability.
+pub fn conditional_original_19728_push(
+    a310_return_eax:u32,local_step:u32
+)->Option<u32> {
+    let eax_after_and=a310_return_eax & 0xFFFF;
+    if eax_after_and==0 {return None;}
+    Some(hypothetical_19728_push_eax(eax_after_and,local_step))
 }
 
 /// A separate safe-analysis predicate, never an assertion that
@@ -626,6 +647,22 @@ mod tests {
                 assert_eq!(pushed & 0xFFFF,low);
             }
         }
+    }
+
+    #[test]
+    fn conditional_real_worker_path_clears_high_ax_before_push() {
+        for ret in [1u32,0xFFFF,0x0001_0001,0xFFFF_FFFF,0x8000_0001] {
+            for step in [0,1,0xFFFF,0x10000,0x1234_5678,u32::MAX] {
+                assert_eq!(conditional_original_19728_push(ret,step),
+                    Some(step & 0xFFFF));
+            }
+        }
+        for ret in [0u32,0x0001_0000,0xFFFF_0000,0x8000_0000] {
+            assert_eq!(conditional_original_19728_push(ret,u32::MAX),None);
+        }
+        // A 65536-byte hypothetical local step pushes a zero
+        // DWORD, not an uninitialized high half.
+        assert_eq!(conditional_original_19728_push(1,65536),Some(0));
     }
 
     #[test]
