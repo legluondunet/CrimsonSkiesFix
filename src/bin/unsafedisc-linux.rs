@@ -5113,6 +5113,8 @@ fn inspect_historical_155_cli() -> Result<()> {
         iterator.header_stride_bytes,iterator.raw_size_field_offset,iterator.virtual_size_field_offset);
     println!("  Mode=4 uses relocation-aware path at 0x{:08X}; separate CODE flag only controls CRC, not all decryption.",
         iterator.relocated_branch_va);
+    println!("  Relocation walker final E9 rel32 joins at 0x{:08X} (POP ESI, restore scratch cursor), then returns via 401D05 POPAD.",
+        iterator.relocation_return_through_va);
     println!("  Both code/non-code paths converge on DLL-size-gated pre-TEA modifier; section selection is a separate gate.");
     println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
         startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
