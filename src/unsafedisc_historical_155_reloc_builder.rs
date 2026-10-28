@@ -226,6 +226,9 @@ pub struct HistoricalRelocWordProfile {
     /// The historical consumer's zero-offset branch may treat it
     /// differently from the builder and a modern HIGHLOW walker.
     pub highlow_page_start_words:usize,
+    /// A zero-offset HIGHLOW after entry zero is not covered by the
+    /// 401E16 first-entry special case and is conservatively refused.
+    pub highlow_page_start_not_first_words:usize,
     pub zero_padding_words:usize,
     pub nonzero_type_zero_words:usize,
     pub odd_word_blocks:usize,
@@ -267,7 +270,7 @@ pub fn historical_155_reloc_word_profile(
         if words%2!=0 {out.odd_word_blocks+=1;}
         let mut pending_zeros=0usize;
         let mut any_nonzero=false;
-        for entry in block[8..].chunks_exact(2){
+        for (index,entry) in block[8..].chunks_exact(2).enumerate(){
             let word=u16::from_le_bytes([entry[0],entry[1]]);
             match word>>12 {
                 0 if word==0 => {
@@ -279,6 +282,7 @@ pub fn historical_155_reloc_word_profile(
                     out.highlow_words+=1;
                     if word & 0x0FFF == 0 {
                         out.highlow_page_start_words+=1;
+                        if index!=0 {out.highlow_page_start_not_first_words+=1;}
                     }
                 },
                 _ => return Err("unknown historical PE relocation type".into()),
@@ -316,7 +320,8 @@ mod relocation_word_profile_tests {
         assert_eq!(historical_155_reloc_word_profile(&directory).unwrap(),
             HistoricalRelocWordProfile{
                 blocks:2,highlow_words:3,
-                highlow_page_start_words:0,zero_padding_words:3,
+                highlow_page_start_words:0,
+                highlow_page_start_not_first_words:0,zero_padding_words:3,
                 nonzero_type_zero_words:1,odd_word_blocks:1,
                 empty_word_blocks:0,nonterminal_zero_padding_words:2,
                 zero_only_blocks:0,
@@ -359,10 +364,14 @@ pub fn necessary_highlow_only_candidate_preflight(
             "HIGHLOW-only key hypothesis cannot ignore {} nonzero ABSOLUTE words",
             profile.nonzero_type_zero_words));
     }
-    if profile.highlow_page_start_words!=0 {
+    // At 401E16 a ZERO first masked offset jumps to 401E28,
+    // which increments by four and excludes the page-start DWORD.
+    // Thus a first-entry 0x3000 is intentionally handled, not
+    // automatically a HIGHLOW-only checksum divergence.
+    if profile.highlow_page_start_not_first_words!=0 {
         return Err(format!(
-            "HIGHLOW-only checksum model is ambiguous for {} HIGHLOW relocations at page offset zero (masked original WORD=0)",
-            profile.highlow_page_start_words));
+            "HIGHLOW-only checksum model has {} out-of-order/noninitial HIGHLOW page-start WORDs requiring separate legacy control-flow handling",
+            profile.highlow_page_start_not_first_words));
     }
     if profile.nonterminal_zero_padding_words!=0 {
         return Err(format!(
@@ -388,7 +397,8 @@ mod candidate_preflight_tests {
     fn good()->HistoricalRelocWordProfile{
         HistoricalRelocWordProfile{
             blocks:2,highlow_words:3,
-            highlow_page_start_words:0,zero_padding_words:1,
+            highlow_page_start_words:0,
+            highlow_page_start_not_first_words:0,zero_padding_words:1,
             nonzero_type_zero_words:0,odd_word_blocks:0,
             empty_word_blocks:0,nonterminal_zero_padding_words:0,
             zero_only_blocks:0,
@@ -521,8 +531,18 @@ mod masked_highlow_zero_tests {
         assert_eq!(p.highlow_page_start_words,1);
         assert_eq!(p.zero_padding_words,2);
         assert_eq!(p.nonterminal_zero_padding_words,0);
+        assert_eq!(p.highlow_page_start_not_first_words,0);
+        necessary_highlow_only_candidate_preflight(p,2,2).unwrap();
+    }
+    #[test]
+    fn page_start_highlow_after_first_word_requires_distinct_analysis(){
+        let p=historical_155_reloc_word_profile(
+            &directory(&[0x3004,0x3000,0,0])
+        ).unwrap();
+        assert_eq!(p.highlow_page_start_words,1);
+        assert_eq!(p.highlow_page_start_not_first_words,1);
         assert!(necessary_highlow_only_candidate_preflight(p,2,2)
-            .unwrap_err().contains("page offset zero"));
+            .unwrap_err().contains("noninitial"));
     }
     #[test]
     fn ordinary_highlow_does_not_trigger_offset_zero_guard(){
