@@ -776,3 +776,42 @@ modern Windows, Wine, NTVDM or non-9x execution; no such
 runtime experiment has been performed. It also does not by itself
 show that an inconsistent decoder key or a Crimson Skies startup
 crash actually results.
+
+
+### Conditional anti-SoftICE perturbation traced to actual global state (2026-10-28)
+
+The original Win9x helper's `+0x34F` write is now connected to the **actual**
+global decoder state by an original-byte-backed, conditional pointer chain:
+
+1. RVA **`0x1987D`** executes `PUSH 0x00905010`, the preferred virtual
+   address of the previously verified global decoder-state DWORD.
+   Its `CALL` at **`0x19882`** targets helper **`0x1A9B6`**.
+2. If the outer `GetVersionExA` succeeds and reports platform **1**,
+   the independently audited branch of `0x1A9B6` forwards its `[EBP+8]`
+   argument unchanged with `MOV ECX,[EBP+8]; PUSH ECX` at **`0x1AA9A`**,
+   followed by `CALL 0x1C7F0` at **`0x1AA9E`**.
+3. If that Win9x helper's nested conditional paths reach the pointer
+   guard **`0x1D26A`**, a nonnull, usable pointer causes the original
+   `MOV ECX,[EBP+8]; MOV EDX,[ECX]; ADD EDX,0x34F;
+   MOV EAX,[EBP+8]; MOV [EAX],EDX` block at **`0x1D2A4`** to update
+   **the same global DWORD** by `+0x34F`, modulo 2^32.
+
+Most significantly, with **both outer and inner OS-version reports
+equal to platform 1**, the source path can still change the global state
+**if** the keyboard predicate rejects and **if** the original `INT 68h`
+returns normally with **full EAX different from `0x4300`**. If it
+instead returns `0x4300`, this branch bypasses the write and returns
+with AX=0. The former route sets AX=1 and adds `0x34F` to the state.
+
+This matches a documented SafeDisc **anti-SoftICE debugger** pattern
+(see historical references above), but must **not** be presented
+as an observed result on current Windows or Wine. Reaching the
+original `0x1987D` callsite from DLL startup is not established.
+The global mixer-entry state at `0x19C78` remains undetermined.
+
+`audit_original_global_state_call_chain` validates the original pointer
+PUSH, two actual rel32 CALL targets, argument forwarding and final
+original ADD/store. `conditional_original_state_route` is a pure
+model requiring explicit hypothetical outer/inner OS observations;
+it never runs the DLL. The independent offline Python verifier also
+checks these exact opcode groups and their original targets.
