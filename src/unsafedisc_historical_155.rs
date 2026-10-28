@@ -100,6 +100,39 @@ pub fn original_complete_dwords_and_tail(byte_length:u32)->(u32,u32){
     (byte_length>>2,byte_length&3)
 }
 
+/// Bounded minimal x86 branch decoder for verified historical sites.
+/// Unlike constant arithmetic assertions, this reads the actual input
+/// displacement bytes. It deliberately accepts only Jcc rel8/JMP rel8
+/// or CALL rel32 rather than attempting general disassembly.
+pub fn historical_155_branch_target(
+    code:&[u8],code_va:u32,instruction_va:u32
+)->Result<u32,String> {
+    let start=instruction_va.checked_sub(code_va)
+        .ok_or("historical branch precedes CODE section")? as usize;
+    let opcode=*code.get(start)
+        .ok_or("historical branch outside CODE section")?;
+    let (size,delta)=match opcode {
+        0x70..=0x7F|0xEB => {
+            let d=*code.get(start+1)
+                .ok_or("historical rel8 branch truncated")?;
+            (2i64,i64::from(d as i8))
+        }
+        0xE8 => {
+            let end=start.checked_add(5)
+                .ok_or("historical rel32 branch offset overflow")?;
+            let four=code.get(start+1..end)
+                .ok_or("historical rel32 CALL truncated")?;
+            let d=i32::from_le_bytes(
+                four.try_into().map_err(|_|"historical rel32 width")?);
+            (5,i64::from(d))
+        }
+        _ => return Err("unsupported historical control transfer".into())
+    };
+    let target=i64::from(instruction_va)+size+delta;
+    u32::try_from(target)
+        .map_err(|_|"historical control target outside 32-bit address space".into())
+}
+
 /// Site-aware read-only x86 audit for the original/archived 1.5.5
 /// IMAGE_SCN_MEM_EXECUTE CODE section. The small instruction windows
 /// below were independently rechecked against the public archived
@@ -162,19 +195,22 @@ pub fn audit_155_entry_to_modifier_loop(
             ));
         }
     }
-    // Verified direct-call branch destinations, independently
-    // calculated from the exact audited bytes (no dynamic execution):
-    // 1F4D JE +1 -> 1F50, 1F50 CALL +1 -> 1F56,
-    // 1F5B CALL +2 -> 1F62;
-    // 1F65 JMP +1 -> 1F68, 1F6F JAE +0x35 -> 1FA6,
-    // 1FA4 JMP -0x3F -> 1F67.
-    if 0x401F4Fu32+1!=0x401F50 ||
-       0x401F50+5+1!=0x401F56 ||
-       0x401F5B+5+2!=0x401F62 ||
-       0x401F65+2+1!=0x401F68 ||
-       0x401F6F+2+0x35!=0x401FA6 ||
-       (0x401FA4i64+2-0x3F)!=0x401F67 {
-        return Err("historical 1.5.5 control transfers changed".into());
+    // Independently decode six real rel8/rel32 displacements.
+    // No untrusted branch target is followed or executed.
+    for (source,want) in [
+        (0x401F4Du32,0x401F50u32), // JE size-qualified path
+        (0x401F50,0x401F56),      // CALL EBX/EAX wrapper
+        (0x401F5B,0x401F62),      // CALL extra-DWORD layer
+        (0x401F65,0x401F68),      // initial branch past INC EBX
+        (0x401F6F,0x401FA6),      // unsigned word-count exit
+        (0x401FA4,0x401F67),      // next index before comparison
+    ] {
+        let found=historical_155_branch_target(code,code_va,source)?;
+        if found!=want {
+            return Err(format!(
+                "historical 1.5.5 branch at 0x{source:08X} -> 0x{found:08X}, expected 0x{want:08X}"
+            ));
+        }
     }
     Ok(())
 }
@@ -225,6 +261,34 @@ mod tests {
                 edx:base.wrapping_add(FIRST_MODIFIER_RVA),
                 ebx:index,esi:pointer,edi:length,
             })
+    }
+
+    #[test]
+    fn short_and_near_x86_branch_decoder_handles_sign_and_bounds() {
+        let code=[
+            0x74u8,0x03,        // 1000 -> 1005
+            0xEB,0xFC,          // 1002 -> 1000 (negative)
+            0xE8,0xFB,0xFF,0xFF,0xFF, // 1004 -> 1004
+            0x73,0xFD,         // 1009 -> 1008
+        ];
+        assert_eq!(historical_155_branch_target(
+            &code,0x1000,0x1000).unwrap(),0x1005);
+        assert_eq!(historical_155_branch_target(
+            &code,0x1000,0x1002).unwrap(),0x1000);
+        assert_eq!(historical_155_branch_target(
+            &code,0x1000,0x1004).unwrap(),0x1004);
+        assert_eq!(historical_155_branch_target(
+            &code,0x1000,0x1009).unwrap(),0x1008);
+        assert!(historical_155_branch_target(
+            &code[..1],0x1000,0x1000).is_err());
+        assert!(historical_155_branch_target(
+            &code[..6],0x1000,0x1004).is_err());
+        assert!(historical_155_branch_target(
+            &[0x90],0x1000,0x1000).is_err());
+        assert!(historical_155_branch_target(
+            &code,0x1000,0x0FFF).is_err());
+        assert!(historical_155_branch_target(
+            &[0xEB,0x7F],u32::MAX-1,u32::MAX-1).is_err());
     }
 
     #[test]
