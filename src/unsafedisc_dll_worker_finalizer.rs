@@ -122,6 +122,55 @@ pub fn conditional_original_19728_push(
     Some(hypothetical_19728_push_eax(eax_after_and,local_step))
 }
 
+/// Cross-stage model of a single ORIGINAL worker iteration, but
+/// CONDITIONAL on BOTH helper calls returning normally and no
+/// intervening write to caller local [EBP-8]. 19728 prepares a
+/// low16-only PUSH before 19965, while 197D4 adds the full
+/// 32-bit local [EBP-8] to [EBP-0x0C]. This models the potential
+/// size/progress split, not the effective 19965 argument value:
+/// the intermediate 19729..1974A argument chain remains unknown.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HypotheticalWorkerStepProgress {
+    pub value_pushed_at_19728:u32,
+    pub full_step_at_197d4:u32,
+    pub next_cursor:u32,
+    pub truncated_at_push:bool,
+}
+
+pub fn hypothetical_worker_step_progress(
+    a310_return_eax:u32,cursor:u32,local_step:u32,
+)->Option<HypotheticalWorkerStepProgress> {
+    let pushed=conditional_original_19728_push(a310_return_eax,local_step)?;
+    Some(HypotheticalWorkerStepProgress {
+        value_pushed_at_19728:pushed,
+        full_step_at_197d4:local_step,
+        next_cursor:cursor.wrapping_add(local_step),
+        truncated_at_push:pushed!=local_step,
+    })
+}
+
+/// Cross-check the THREE x86 instructions defining the conditional
+/// local-value provenance. No original code is executed, and the
+/// raw bytes alone cannot prove preservation of the step across
+/// either opaque callee.
+pub fn audit_original_worker_step_local(
+    dll:&[u8],pe:&Pe32,
+)->Result<()> {
+    for (site,bytes) in [
+        (0x196F8u32,&[
+            0x8B,0x55,0xEC,0x2B,0x55,0xF4,0x83,0xC2,0x01,
+            0x89,0x55,0xF8,
+        ][..]),
+        (0x19728,&[0x66,0x8B,0x45,0xF8,0x50][..]),
+        (0x197D4,&[
+            0x8B,0x45,0xF4,0x03,0x45,0xF8,0x89,0x45,0xF4,
+        ][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    Ok(())
+}
+
 /// A separate safe-analysis predicate, never an assertion that
 /// SafeDisc applied these checks at runtime. The original x86 can
 /// produce zero steps, wrapped counters and low16 truncations.
@@ -591,6 +640,7 @@ pub fn trace_original_finalizer_maze(
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     audit_original_worker_call_cleanups(dll,pe)?;
+    audit_original_worker_step_local(dll,pe)?;
     audit_original_worker_mixer_predecessor(dll,pe)?;
     audit_original_mixer_setup_detour(dll,pe)?;
     audit_original_mixer_to_counter_bridge(dll,pe)?;
@@ -715,6 +765,39 @@ mod tests {
         // A 65536-byte hypothetical local step pushes a zero
         // DWORD, not an uninitialized high half.
         assert_eq!(conditional_original_19728_push(1,65536),Some(0));
+    }
+
+    #[test]
+    fn conditional_full_step_and_low16_push_can_diverge() {
+        let p=hypothetical_worker_step_progress(1,0x1000,0x10000).unwrap();
+        assert_eq!(p,HypotheticalWorkerStepProgress {
+            value_pushed_at_19728:0,
+            full_step_at_197d4:0x10000,
+            next_cursor:0x11000,
+            truncated_at_push:true,
+        });
+        let normal=hypothetical_worker_step_progress(
+            0xFFFF_0001,10,0xFFFF).unwrap();
+        assert_eq!(normal.value_pushed_at_19728,0xFFFF);
+        assert_eq!(normal.next_cursor,10+0xFFFF);
+        assert!(!normal.truncated_at_push);
+        assert!(hypothetical_worker_step_progress(0x1_0000,0,42).is_none());
+    }
+
+    #[test]
+    fn full_step_cursor_uses_wrapping_arithmetic_independently() {
+        for (cursor,step,pushed,after) in [
+            (0u32,0u32,0u32,0u32),
+            (u32::MAX,1,1,0),
+            (0xFFFF_FFFF,0x1_0001,1,0x1_0000),
+            (1,0xFFFF_FFFF,0xFFFF,0),
+        ] {
+            let r=hypothetical_worker_step_progress(1,cursor,step).unwrap();
+            assert_eq!(r.value_pushed_at_19728,pushed);
+            assert_eq!(r.full_step_at_197d4,step);
+            assert_eq!(r.next_cursor,after);
+            assert_eq!(r.truncated_at_push,step>u32::from(u16::MAX));
+        }
     }
 
     #[test]
