@@ -70,19 +70,25 @@ pub fn hypothetical_exact_mixer_initial_states(
     let mut total=0u64;
     let mut examples=Vec::new();
     for (carry_vector,lows) in low_groups {
-        let mut high_signatures=HashMap::<Vec<u8>,Vec<u16>>::new();
+        // At most 12 observed XOR bytes fit into a stack-owned
+        // u128 signature. Avoid allocating a Vec<u8> for EACH of
+        // 65,536 high-half probes (especially costly in debug CI).
+        let mut high_signatures=HashMap::<u128,Vec<u16>>::new();
         for high in 0..=65535u32 {
-            let signature:Vec<u8>=carry_vector.iter()
-                .map(|&c|xor_two_bytes(high.wrapping_add(u32::from(c)) as u16))
-                .collect();
+            let mut signature=0u128;
+            for (i,&carry) in carry_vector.iter().enumerate() {
+                let byte=xor_two_bytes(high.wrapping_add(u32::from(carry)) as u16);
+                signature |= u128::from(byte) << (8*i);
+            }
             high_signatures.entry(signature).or_default().push(high as u16);
         }
         for low in lows {
-            let expected:Vec<u8>=prefix.iter().enumerate()
-                .map(|(i,&p)|{
-                    let low_at=(u32::from(low)+p) as u16;
-                    observed[i]^xor_two_bytes(low_at)
-                }).collect();
+            let mut expected=0u128;
+            for (i,&prefix_sum) in prefix.iter().enumerate() {
+                let low_at=(u32::from(low)+prefix_sum) as u16;
+                let byte=observed[i]^xor_two_bytes(low_at);
+                expected |= u128::from(byte) << (8*i);
+            }
             if let Some(highs)=high_signatures.get(&expected) {
                 total+=highs.len() as u64;
                 for &high in highs {
