@@ -81,8 +81,37 @@ disk, the comparison must account for raw PE section offsets and relocations.
   the unmodified Win98 process (no breakpoint trace could be collected).
 - Whether both functions are stable over time and across machines.
 - Their full call frequency, input values and surrounding stages.
-- Remaining relocation normalization, section checksum, SafeDisc key stages,
-  and full ICD decryption.
+- The complete use of relocation normalization and section checksum in
+  the full ICD transformation, despite a previously validated four-word
+  TEA key and its unchanged-fragment tail oracle.
+
+## Next deterministic oracle: the original retail/reference pair
+
+The same native CLI already audits the **exact** SHA-256-verified original
+`CRIMSON.ICD` and unmodified decrypted `TESTME.EXE`. A four-word TEA
+key has been independently corroborated against 28,947 unchanged
+fragment tails (58,076 bytes). Under the `inspect` command, the
+original reference audit identifies **440,422** extra-layer DWORDs.
+
+With the verified Win98 capture present, the following command now
+**checks each of those 440,422 words** against the captured F1/F2 result:
+
+```bash
+./target/release/unsafedisc-linux inspect \
+  --loader CRIMSON.EXE --icd CRIMSON.ICD \
+  --dplayerx dplayerx.dll --reference TESTME.EXE \
+  --key-research --modifier-snapshot CS98-DLL-00.BIN
+```
+
+This prints only aggregate match counts, never raw retail/reference
+pairs. A mismatch refuses the verification instead of pretending the
+capture solved full SafeDisc decryption. The owner must keep all four
+canonical originals and the mapped memory capture private.
+
+**Not yet established:** whether the runtime-captured F1/F2 functions
+match the retail/reference oracle for the entire original code section.
+The GitHub Actions tests run on synthetic fixtures only and cannot make
+that title-specific determination without the owner's inputs.
 
 Do **not** merge this research PR or enable an `unpack` command without
 independent full-file validation against the exact original game.
