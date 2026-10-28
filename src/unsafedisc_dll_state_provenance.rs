@@ -181,6 +181,99 @@ pub fn audit_secondary_version_failure_fallback(
     Ok(())
 }
 
+
+/// Conditional destinations of 1A77F *after* GetVersionExA succeeds.
+/// The helpers can modify the supplied state pointer, and their behavior
+/// is NOT modeled here. A non-1/non-2 platform reaches the same 0xFF
+/// masking instruction used by the failed API-query path.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum VersionSuccessDispatch {
+    Win9xHelper1beee,
+    WinNtHelper1ae3f,
+    FallbackLowByteMask,
+}
+pub fn version_success_dispatch(platform_id:u32)->VersionSuccessDispatch {
+    match platform_id {
+        1 => VersionSuccessDispatch::Win9xHelper1beee,
+        2 => VersionSuccessDispatch::WinNtHelper1ae3f,
+        _ => VersionSuccessDispatch::FallbackLowByteMask,
+    }
+}
+
+/// The successful-GetVersionExA path from 1A7B6 initially uses an
+/// overlapping-instruction detour: 1A7BE -> 1A7D1 -> 1A7C1 -> 1A7C9
+/// -> 1A7D6. TEST EAX,EAX on a nonzero BOOL sets ZF=0 and CF=0.
+/// Compare against platform 1, then 2; other platforms reach 1A854.
+/// On 1 and 2, these are only dispatched helper calls: their effects
+/// and return values are unknown. No raw PE bytes are modified.
+pub fn audit_version_success_dispatch(dll:&[u8],pe:&Pe32)->Result<()> {
+    // Every anchored opcode group below was independently compared with
+    // the exact-hash-verified original DLL before being recorded.
+    for (site,bytes) in [
+        (0x1A7B6u32,&[0x85,0xC0][..]),
+        (0x1A7BE,&[0x75,0x11][..]),  // JNE -> 1A7D1
+        (0x1A7D1,&[0x73,0xEE][..]),  // JAE -> 1A7C1
+        (0x1A7C1,&[0x0F,0x86,0x0F,0,0,0][..]), // JBE not taken
+        (0x1A7C9,&[0x77,0x0B][..]),  // JA -> 1A7D6
+        (0x1A7D6,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x01][..]),
+        (0x1A7DD,&[0x75,0x2C][..]), // JNE -> 1A80B
+        (0x1A7DF,&[0x70,0x0B][..]), // JO not taken after equal CMP 1
+        (0x1A7E1,&[0x77,0x07][..]), // JA not taken after equal CMP 1
+        (0x1A7E3,&[0x87,0xF6][..]), // flag-preserving self-XCHG
+        (0x1A7E5,&[0x74,0x03][..]), // JE -> 1A7EA
+        (0x1A7EA,&[0xEB,0x03][..]), // JMP -> 1A7EF
+        (0x1A7EF,&[0x8B,0x4D,0x08,0x51][..]), // forward same argument
+        (0x1A7F8,&[0x83,0xC4,0x04][..]),
+        (0x1A80B,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x02][..]),
+        (0x1A812,&[0x75,0x2C][..]), // JNE -> 1A840
+        (0x1A814,&[0x73,0x0B][..]), // JAE -> 1A821 after equal CMP
+        (0x1A821,&[0x73,0xF3][..]), // JAE -> 1A816 after equal CMP
+        (0x1A816,&[0x74,0x07][..]), // JE -> 1A81F
+        (0x1A81F,&[0xEB,0x03][..]), // JMP -> 1A824
+        (0x1A824,&[0x8B,0x55,0x08,0x52][..]), // forward same argument
+        (0x1A82D,&[0x83,0xC4,0x04][..]),
+        (0x1A840,&[0x75,0x09][..]), // JNE when CMP 2 failed
+        (0x1A84B,&[0x87,0xDB][..]),
+        (0x1A84D,&[0x77,0x00][..]),
+        (0x1A84F,&[0x75,0xF1][..]), // JNE -> 1A842
+        (0x1A842,&[0x8B,0xC9,0x90,0x90][..]),
+        (0x1A846,&[0x74,0x01][..]), // JE not taken
+        (0x1A849,&[0xEB,0x09][..]), // JMP -> 1A854
+        (0x1A854,&[0x8B,0x45,0x08,0x8B,0x08][..]),
+        (0x1A859,&[0x81,0xE1,0xFF,0,0,0][..]),
+        (0x1A862,&[0x89,0x0A][..]),
+        (0x1A864,&[0x66,0xB8,0x01,0x00][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (site,target) in [
+        (0x1A7F3u32,0x1BEEEu32),
+        (0x1A828,0x1AE3F),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!("original 1A77F successful platform call changed at 0x{site:05X}"));
+        }
+    }
+    // Verify the two platform helpers' REAL imported dependency:
+    // each uses KERNEL32!GetModuleHandleA via IAT 1E098. This does
+    // NOT infer the subsequent memory modifications made by helpers.
+    let base=read_u32(dll,read_u32(dll,0x3C)? as usize+24+28)?;
+    let imports=dll_import_bindings(dll,pe)?;
+    if !imports.iter().any(|b|
+        b.iat_rva==0x1E098 && b.symbol=="GetModuleHandleA" &&
+        b.library.eq_ignore_ascii_case("KERNEL32.dll"))
+    {
+        return Err("original SafeDisc GetModuleHandleA import identity changed".into());
+    }
+    for site in [0x1AEC3u32,0x1BF52] {
+        let (_,iat)=dll_indirect_import_call(dll,pe,site,base)?;
+        if iat!=0x1E098 {
+            return Err(format!("platform helper original IAT slot changed at 0x{site:05X}"));
+        }
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
@@ -285,6 +378,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         return Err("original 1A77F/1A9B6 platform-detection import slots changed".into());
     }
     audit_version_failure_fallback(dll,pe)?;
+    audit_version_success_dispatch(dll,pe)?;
     audit_secondary_version_failure_fallback(dll,pe)?;
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
@@ -457,6 +551,28 @@ mod tests {
         ] {
             assert_eq!(version_query_failure_state(before),(after,1));
         }
+    }
+
+    #[test]
+    fn successful_version_probe_routes_three_platform_classes() {
+        assert_eq!(version_success_dispatch(1),
+                   VersionSuccessDispatch::Win9xHelper1beee);
+        assert_eq!(version_success_dispatch(2),
+                   VersionSuccessDispatch::WinNtHelper1ae3f);
+        for other in [0,3,4,0xFFFF_FFFF] {
+            assert_eq!(version_success_dispatch(other),
+                       VersionSuccessDispatch::FallbackLowByteMask);
+        }
+    }
+
+    #[test]
+    fn nonstandard_platform_fallback_is_distinct_from_helper_effects() {
+        assert_eq!(version_success_dispatch(0),
+                   VersionSuccessDispatch::FallbackLowByteMask);
+        assert_eq!(version_query_failure_state(0x1234_5678).0,0x78);
+        // The model does not guess any output for platform=1 or 2:
+        // each executes a different, opaque original helper.
+        assert_ne!(version_success_dispatch(1),version_success_dispatch(2));
     }
 
     #[test]
