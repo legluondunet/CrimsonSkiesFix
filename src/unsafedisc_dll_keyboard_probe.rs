@@ -34,6 +34,15 @@ pub fn conditional_route(gate:bool)->ConditionalRoute {
     else {ConditionalRoute::EnterInt68}
 }
 
+
+/// Conditional local (not global) DWORD update on the INT 68h path:
+/// original 1CD63 compares the returned EAX with the input AX=4300h.
+/// Only a DIFFERENT return sets the [EBP-0x98] local flag to one.
+/// Neither the actual interrupt return nor branch reachability is known.
+pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
+    if returned_eax==0x4300 {prior} else {1}
+}
+
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     for (site,bytes) in [
@@ -43,6 +52,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
         (0x1D48A,&[0x66,0xB8,0x01,0x00,0xEB,0x03][..]),
         (0x1D490,&[0x66,0x33,0xC0][..]),
         (0x1D493,&[0x8B,0xE5,0x5D,0xC3][..]),
+        (0x1C7FC,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0][..]),
         (0x1CD4B,&[0x25,0xFF,0xFF,0x00,0x00,0x85,0xC0,0x75,0x27][..]),
         (0x1CD54,&[0x60,0x33,0xC0,0x66,0xB8,0x00,0x43][..]),
         (0x1CD5B,&[0xCD,0x68][..]),
@@ -114,6 +124,16 @@ mod tests {
         assert_eq!(conditional_route(true),ConditionalRoute::BypassInt68);
         assert_eq!(conditional_route(false),ConditionalRoute::EnterInt68);
     }
+    #[test]
+    fn interrupt_return_comparison_changes_only_an_abstract_local_flag() {
+        for old in [0,1,42,u32::MAX] {
+            assert_eq!(local_interrupt_probe_transition(old,0x4300),old);
+        }
+        for ret in [0,1,0x42FF,0x4301,0xFFFF_FFFF] {
+            assert_eq!(local_interrupt_probe_transition(0,ret),1);
+        }
+    }
+
     #[test]
     fn key_sites_are_backed_by_original_txt2_geometry() {
         assert!(CALLSITE_RVA<GATE_RVA);
