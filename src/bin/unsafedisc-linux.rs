@@ -20,6 +20,8 @@ mod unsafedisc_historical_155;
 mod unsafedisc_historical_155_list_plan;
 #[path = "../unsafedisc_historical_155_reloc_builder.rs"]
 mod unsafedisc_historical_155_reloc_builder;
+#[path = "../unsafedisc_historical_155_reloc_consumer.rs"]
+mod unsafedisc_historical_155_reloc_consumer;
 
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
@@ -5135,6 +5137,8 @@ fn inspect_historical_155_cli() -> Result<()> {
     )?;
     let reloc_builder=unsafedisc_historical_155_reloc_builder::
         audit_155_reloc_cutpoint_builder(backed,base,code.virtual_address)?;
+    let reloc_consumer=unsafedisc_historical_155_reloc_consumer::
+        audit_155_reloc_consumer(backed,base,code.virtual_address)?;
     let provenance=unsafedisc_historical_155::audit_155_section_table_provenance(
         backed,base,code.virtual_address
     )?;
@@ -5192,6 +5196,12 @@ fn inspect_historical_155_cli() -> Result<()> {
         reloc_builder.first_cutpoint_va);
     println!("  Nonzero relocation WORDs are converted into RVA and RVA+4 cutpoints; archived code does NOT filter the four-bit PE relocation type.");
     println!("  This is a static public-variant audit only: exact byte agreement with owner's private original is still untested in this session.");
+    println!("  Archived relocation walker strips type nibbles in packed pairs with mask 0x{:08X}; safe model rejects an unpaired final relocation WORD.",
+        reloc_consumer.paired_word_mask);
+    println!("  Span helper at 0x401EF5 clips against section end [0x{:08X}]; on overrun it redirects its return to 0x{:08X}, then enters shared helper 0x{:08X}.",
+        reloc_consumer.section_end_va,reloc_consumer.clip_return_va,
+        reloc_consumer.normal_call_helper_va);
+    println!("  These are x86-byte-verifiable control semantics, not evidence of retail runtime reachability or recovered protected plaintext.");
     // Advisory static DATA inspection; the owner's original 1.5.5
     // may differ from the compatibility-modified public archive.
     // Its on-disk initial zeros are NOT evidence of runtime clearing.
