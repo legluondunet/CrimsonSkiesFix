@@ -5165,3 +5165,31 @@ These observations strengthen requirements for a robust port. They
 are **not** a recovered game-specific plaintext record, an observed
 failed Win32 memory read, or proof of `18F81` reaching its mixer.
 All real original code remains non-executed.
+
+
+### First-case record scan uses start<limit, not full 0x28-byte availability (2026-10-28)
+
+A further independent composition of the original `189F0` entry
+comparison and the immediately reached `18A0C` fixed-length read
+shows a distinct boundary condition: before requesting an `A810`
+read of **`0x28` bytes**, the scan checks **only**
+`unsigned_offset < unsigned_limit`, not that the whole
+`[offset, offset+0x28)` window is available.
+
+Therefore an offset one byte below the limit still triggers
+a full-record read attempt in the historical source. Whether
+that real request can succeed or fail depends on the chosen
+`A810` backend and memory descriptor; we do **not** claim an
+actual retail out-of-bounds access. If the backend fails, the
+separate, independently anchored **unchecked AX** issue described
+above still applies to the subsequent comparison.
+
+Added an explicit **future-safe-only** window predicate,
+`first_case_checked_record_window`, with two synthetic tests:
+partial-final-record rejection and unsigned overflow avoidance at
+`0xFFFFFFF0 + 0x28`. It leaves the original `first_case_has_more_offsets`
+and `first_case_advance_offset` x86 models unchanged.
+
+Together these findings define three distinct matters to address in
+any native port: complete-record bounds, successful reads, and
+unambiguous matching semantics. No private record data is reconstructed.
