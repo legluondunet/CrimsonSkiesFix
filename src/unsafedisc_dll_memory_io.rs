@@ -30,6 +30,24 @@ pub fn read_route(mode:u32)->MemoryIoRoute {
 pub fn write_route(mode:u32)->MemoryIoRoute {
     read_route(mode)
 }
+ 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum DescriptorIoRoute {
+    Rejected,
+    FileIo,
+    ProcessIo,
+    ModuleIo,
+}
+
+pub fn wrapper_route(mode:u32)->DescriptorIoRoute {
+    match mode {
+        0x65=>DescriptorIoRoute::FileIo,
+        0x66=>DescriptorIoRoute::ProcessIo,
+        0x67=>DescriptorIoRoute::ModuleIo,
+        _=>DescriptorIoRoute::Rejected,
+    }
+}
+
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct ShadowWindow {
@@ -77,6 +95,29 @@ pub struct ApiSlot {
 }
 
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<ApiSlot>> {
+    // A810 / AA00 are the public read/write descriptor wrappers.
+    // They dispatch mode 0x65 to file I/O, 0x66/0x67 to process
+    // and module memory handlers, and mode 0x64 to an early exit.
+    // One original .txt2 E8 call supplies a clear-code path to AA00.
+    for (site,target) in [
+        (0xA84Eu32,0xA620u32),
+        (0xA858,0xA560),
+        (0xAA3E,0xA720),
+        (0xAA48,0xA5C0),
+        (0x19448,0xAA00),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!("SafeDisc original descriptor wrapper call at 0x{site:05X} changed"));
+        }
+    }
+    for (site,bytes) in [
+        (0xA815u32,&[0x83,0x7E,0x08,0x64][..]),
+        (0xA841,&[0x83,0xF8,0x65][..]),
+        (0xAA05,&[0x83,0x7E,0x08,0x64][..]),
+        (0xAA31,&[0x83,0xF8,0x65][..]),
+    ]{
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
     // The init routine obtains the APIs by taking a DLL handle from
     // a chain-decoded name then resolving three chain-decoded labels.
     for (site,target) in [
@@ -220,6 +261,15 @@ mod tests {
         assert_eq!(decode_original_api_label(&[0]),None);
         assert_eq!(decode_original_api_label(&[0xFF,0]),None);
         assert_eq!(decode_original_api_label(&[b'A',0xFF]),None);
+    }
+
+    #[test]
+    fn wrapper_rejects_mode_64_and_selects_all_three_supported_modes() {
+        assert_eq!(wrapper_route(0x64),DescriptorIoRoute::Rejected);
+        assert_eq!(wrapper_route(0x65),DescriptorIoRoute::FileIo);
+        assert_eq!(wrapper_route(0x66),DescriptorIoRoute::ProcessIo);
+        assert_eq!(wrapper_route(0x67),DescriptorIoRoute::ModuleIo);
+        assert_eq!(wrapper_route(0x68),DescriptorIoRoute::Rejected);
     }
 
     #[test]
