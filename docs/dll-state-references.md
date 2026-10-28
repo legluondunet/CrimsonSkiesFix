@@ -376,7 +376,7 @@ The recovered rule is deliberately isolated as
 \`conditional_win9x_34f_step\` in
 \`src/unsafedisc_dll_state_provenance.rs\`. Synthetic tests cover
 32-bit wraparound and both entry/exit ZF conditions; a dedicated
-original-byte audit validates all ten instruction groups and four
+original-byte audit validates the recorded original instructions and four
 original Jcc displacement targets on the exact SHA-256-pinned
 private DLL, without executing Windows code.
 
