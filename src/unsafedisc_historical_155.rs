@@ -422,6 +422,7 @@ pub struct HistoricalSectionIterator {
     pub virtual_size_field_offset:u32,
     pub raw_pointer_field_offset:u32,
     pub relocated_branch_va:u32,
+    pub relocation_return_through_va:u32,
 }
 
 /// Confirm the control-flow and the on-disk PE section header field
@@ -510,6 +511,7 @@ pub fn audit_155_section_iterator(
         virtual_size_field_offset:0x08,
         raw_pointer_field_offset:0x14,
         relocated_branch_va:0x401D82,
+        relocation_return_through_va:0x401D79,
     })
 }
 
@@ -716,6 +718,7 @@ mod tests {
         assert_eq!(audit.first_entry_va,0x401D06);
         assert_eq!(audit.next_entry_restore_va,0x401D05);
         assert_eq!(audit.header_stride_bytes,4);
+        assert_eq!(audit.relocation_return_through_va,0x401D79);
         assert_eq!(audit.raw_size_field_offset,0x10);
         assert_eq!(audit.virtual_size_field_offset,0x08);
         assert_eq!(audit.characteristics_field_offset,0x24);
