@@ -3727,6 +3727,8 @@ necessary condition on the candidate *F1*:
 | **Rank obstruction to affine F1, if F2 injective** | **10** |
 | Repeated input-difference classes | 299 |
 | Input-difference classes with contradictory mask differences | **52** |
+| Conditional `rotl(x,r)+k` LSB-compatible rotations | **0 / 32** |
+| Conditional `rotl(x+k,r)` LSB-compatible rotations | **0 / 32** |
 
 Unlike the *number* of Gaussian-elimination residuals (which can
 change with input ordering), **augmented rank minus input rank**
@@ -3736,10 +3738,19 @@ strong conditional disproof of an affine F1, not of injectivity:
 the graph has no cycles and currently cannot test F2 injectivity
 beyond the earlier local collision probes.
 
-This experiment has six synthetic tests covering
+This experiment has eight synthetic tests covering
 affine-compatible mapping, direct repeated-delta contradictions,
 inconsistent graph cycles, canonical aliases, deterministic
-ordering and the empty/no-evidence case. The executable inspector
+ordering, the empty/no-evidence case and simple modular-rotation
+LSB necessary conditions. A wraparound addition has no carry
+into its lowest bit. Consequently, for the two families
+`F1(x)=rotl(x,r)+k` and `F1(x)=rotl(x+k,r)`, each possible rotation
+must satisfy an elementary, offset-independent relation between
+the low input-difference bit and one output-difference bit.
+All 32 rotation counts in both families fail on the independently
+measured retail/reference equal-output constraints **if F2
+is injective**. This does not reject more general nonlinear
+modifiers. The executable inspector
 pins the aggregate genuine-title graph signature only after the
 same original-game, SHA-256, TEA and reference gates have passed.
 No plaintext, input/output table or executable bytes are stored.
