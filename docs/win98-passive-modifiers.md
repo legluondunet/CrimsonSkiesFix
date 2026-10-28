@@ -81,9 +81,8 @@ disk, the comparison must account for raw PE section offsets and relocations.
   the unmodified Win98 process (no breakpoint trace could be collected).
 - Whether both functions are stable over time and across machines.
 - Their full call frequency, input values and surrounding stages.
-- The complete use of relocation normalization and section checksum in
-  the full ICD transformation, despite a previously validated four-word
-  TEA key and its unchanged-fragment tail oracle.
+- PE loader behavior and game runtime compatibility of the reconstructed
+  candidate, including the legacy name-case/header/filler differences.
 
 ## Next deterministic oracle: the original retail/reference pair
 
@@ -123,18 +122,60 @@ Expected input geometry for the exact title/version:
 | Fragment-local complete F1/F2 DWORDs | 440,422 |
 | Fragments with at least one DWORD | 48,149 |
 
-The full **1,855,489/1,855,489** matching result is NOT claimed until
-the exact private retail/reference and Win98 snapshot files are
-executed together. GitHub Actions uses synthetic fixtures only.
-Even an exact matching non-HIGHLOW audit would **not** restore the 245
-site-specific relocation/IAT pointer changes or prove a complete
-playable replacement executable. The owner must keep all four
-canonical originals and the mapped memory capture private.
+## Verified owner's exact-game run (2026-10-28)
 
-**Not yet established:** whether the runtime-captured F1/F2 functions
-match the retail/reference oracle for the entire original code section.
-The GitHub Actions tests run on synthetic fixtures only and cannot make
-that title-specific determination without the owner's inputs.
+The owner supplied a new private archive containing exactly the four
+original files, all of whose SHA-256 fingerprints were checked against
+the pinned expectations. The same captured Win98 DLL image was present.
+The exact-head, GitHub Actions-built **Linux CLI** was downloaded and
+run locally against these FIVE verified inputs with
+`inspect --key-research --modifier-snapshot`, not a synthetic fixture.
+
+The native process exited 0 and independently confirmed:
+
+- **440,422 / 440,422** matching F1/F2 transformed .text DWORDs.
+- **1,855,489 / 1,855,489** identical non-HIGHLOW .text bytes after
+  forward F1/F2 and the correctly ordered overlapping TEA blocks.
+- **168,072 / 168,072** identical non-HIGHLOW .data bytes with the
+  same transformation, excluding 990 real HIGHLOW DWORDs.
+- **58,076 / 58,076** independent unchanged fragment tail bytes
+  from TEA-key validation.
+
+Total full-forward bytes verified: **2,023,561 / 2,023,561**,
+no mismatches. The CLI implementation is still read-only; it does not
+write game output. No retail input, snapshot or per-word plaintext is
+committed to the repository.
+
+A **separate private, experimental Python reconstruction prototype**
+was validated against these same SHA-pinned inputs, **without using
+the reference as its reconstructed output source**. The prototype:
+- Reuses recovered F1/F2, TEA and relocation-aware fragment boundaries
+  for .text and .data.
+- Restores exactly **245 historically rotated** CALL [IAT] operands,
+  using a title-specific verified site list; 228 other CALL [IAT]
+  operands are already correct and MUST NOT be changed.
+- Restores KERNEL32/USER32 thunk permutations, 136 import-by-name
+  strings through a bounded rolling XOR decoder initialized to 0xDF,
+  and 21 import descriptor timestamp fields.
+- Trims 98 non-section trailing ICD bytes and writes to a **new**
+  output path only after exact SHA-256 verification.
+
+The output is a well-formed 2,580,480-byte PE32 with 6 sections,
+21 imported modules and 597 valid import entries. SHA-256 of the
+reconstruction candidate:
+`a39570f6a3d33496b03757fca15d0153e37a91f215e93b6c117eae98d088eabc`.
+
+**2,580,419 / 2,580,480** output bytes equal the unmodified historical
+`testme.exe` reference. All **61 residual differing bytes** are
+bounded to 54 header/legacy watermark bytes, 2 KERNEL32 name-case
+bytes, 3 .text raw-tail filler bytes and 2 .reloc directory-external
+filler bytes. Those bytes have **not** been blindly copied from the
+reference. Actual game launch and mission compatibility are untested.
+
+The experimental Python prototype lives outside the main Rust CLI
+and is not offered as a generally compatible SafeDisc unpacker.
+The GitHub CI workflows continue to test only synthetic fixtures.
+
 
 Do **not** merge this research PR or enable an `unpack` command without
 independent full-file validation against the exact original game.
