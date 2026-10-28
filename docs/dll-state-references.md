@@ -1062,3 +1062,78 @@ before the `0x19C78` byte mixer; and the protected EAX
 modifiers at `0x65BE` / `0x6621`. This is not an unpacker,
 an assertion of corrupt state under Wine, or a reason to
 patch out the anti-debug code before obtaining evidence.
+
+
+### Newly audited first call of shared worker and 11-way dispatcher (2026-10-28)
+
+The original DLL has two previously identified, literal direct calls
+to the shared worker RVA **`0x18F81`**, at `0x1A1B2` and `0x1A39C`.
+Rather than assuming either caller runs from DllMain, this inspection
+begins *at the worker entry itself* and establishes its first call.
+
+The exact original worker prologue at `0x18F81..0x18F90` saves
+EBP, allocates 28 bytes of locals, saves EBX/ESI/EDI, and initializes
+`[EBP-0x10]` to zero. The obfuscated network from `0x18F91`
+converges on argument preparation at **`0x18FA9`** for all 32
+possible CF/ZF/PF/SF/OF combinations: **4 distinct paths of
+5–8 original instruction boundaries**. This network contains
+only original Jcc instructions, self-MOV and NOPs, so it
+does not change the branch flags or perform another call.
+
+The original worker next prepares six arguments and invokes
+**`CALL 0x18800` at `0x18FBF`**. The verified `0x18800`
+wrapper reorganizes arguments and calls **`0x181E0` at
+`0x18823`**, then removes seven arguments and returns. The
+latter dispatcher allocates its stack frame and first calls
+the independent original routine **`0x18940` at `0x181FF`**;
+its return and effects remain unmodeled.
+
+After that call, the original `0x181E0` code copies and masks
+two local 16-bit values, constructs an address, and initializes
+three DWORD output pointers to zero. Its own original switch
+uses `MOV ECX,[ESP+0x178]` at **`0x18240`**, then
+`DEC ECX` at `0x18255`, `CMP ECX,10` at `0x18263`;
+`JA 0x184EB` at `0x1826C` and otherwise
+`JMP DWORD [ECX*4+0x008F8680]` at `0x18272`.
+
+The address `0x008F8680` is preferred DLL base `0x008E0000`
+plus table RVA **`0x18680`**. Its **11 consecutive DWORD
+entries all have actual PE `HIGHLOW` relocations**, and their
+original preferred-base VA values resolve to these exact RVAs:
+
+| Input selector (1-based) | Case RVA |
+| ---: | --- |
+| 1 | `0x183C2` |
+| 2 | `0x1850D` |
+| 3 | `0x1857F` |
+| 4 | `0x184EB` |
+| 5 | `0x18304` |
+| 6 | `0x18357` |
+| 7 | `0x185D5` |
+| 8 | `0x18279` |
+| 9 | `0x18486` |
+| 10 | `0x1863E` |
+| 11 | `0x1841D` |
+
+**Out-of-range input** (zero or 12 and above) reaches the
+original `JA` fallback RVA **`0x184EB`**. The legitimate
+input `4` also selects `0x184EB`, which is not an error.
+This is an **11-case switch**, not proof that the worker
+passes any particular selector value at runtime.
+
+The Rust `src/unsafedisc_dll_worker_entry.rs` validates the original
+entry prologue, conditional branch network, five direct CALL
+targets, the switch instructions, every relocation-backed
+DWORD and the exact 11 targets; it includes three synthetic
+selector tests. A separate stdlib-only Python verifier
+`verify_worker_entry_dispatch.py` was run against the SHA-256-pinned
+retail DLL and passed every check. Both implementations are
+read-only and never execute the original DLL.
+
+**Still unresolved:** entrypoint/DllMain reachability of the
+two identified worker callsites; return values of the original
+subroutine `0x18940`; the actual dispatch selector passed
+to `0x181E0`; exact state changes while that dispatcher runs;
+the later opaque `0xA310`/`0x19965` helpers, and the final
+global state at the byte mixer `0x19C78`. This analysis
+does not enable SafeDisc unpacking or decrypt protected bytes.
