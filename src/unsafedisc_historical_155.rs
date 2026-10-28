@@ -556,6 +556,51 @@ pub fn historical_155_section_window(
     })
 }
 
+/// The ordinary full-page and final-tail walkers, as well as the
+/// relocation-aware chunk walker, each CALL THE SAME helper at
+/// 401F01. That helper's CODE-bit test controls the CRC only, and
+/// has a separate DLL-size-gated modifier bridge at 401F43.
+/// These are CALL-target facts, not dynamic execution proofs.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalCrcCallers {
+    pub full_page_call_va:u32,
+    pub tail_call_va:u32,
+    pub relocation_call_va:u32,
+    pub shared_helper_va:u32,
+}
+pub fn audit_155_crc_helper_callers(
+    code:&[u8],image_base:u32,code_rva:u32
+)->Result<HistoricalCrcCallers,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("historical CRC callers CODE VA overflow")?;
+    if base!=0x401000 {
+        return Err("historical CRC caller CODE virtual base differs".into());
+    }
+    const CALLS:&[(u32,[u8;5])]=&[
+        (0x401D62,[0xE8,0x9A,0x01,0x00,0x00]),
+        (0x401D72,[0xE8,0x8A,0x01,0x00,0x00]),
+        (0x401ED8,[0xE8,0x24,0x00,0x00,0x00]),
+    ];
+    for &(va,bytes) in CALLS {
+        let at=va.checked_sub(base)
+            .ok_or("historical CRC CALL before CODE start")? as usize;
+        if code.get(at..at.checked_add(5).ok_or("CRC CALL length overflow")?)
+            !=Some(&bytes[..]) {
+            return Err(format!("historical CRC CALL byte mismatch at VA 0x{va:08X}"));
+        }
+        let target=historical_155_branch_target(code,base,va)?;
+        if target!=0x401F01 {
+            return Err(format!("historical CRC CALL at VA 0x{va:08X} targets 0x{target:08X}"));
+        }
+    }
+    Ok(HistoricalCrcCallers{
+        full_page_call_va:0x401D62,
+        tail_call_va:0x401D72,
+        relocation_call_va:0x401ED8,
+        shared_helper_va:0x401F01,
+    })
+}
+
 /// The original static length gate at 401F43 is exactly 0x21E00.
 /// This says the helper stage is *selected for execution* if its
 /// caller reached that gate, not that title-specific callees are
@@ -766,6 +811,39 @@ mod tests {
         assert!(historical_155_section_window(&header[..39],0x500).is_err());
         set(&mut header,0x14,u32::MAX);
         assert!(historical_155_section_window(&header,0x500).is_err());
+    }
+
+    #[test]
+    fn historical_three_chunk_paths_call_same_crc_and_modifier_helper(){
+        let mut code=vec![0u8;0x2000];
+        let cases:&[(u32,[u8;5])]=&[
+            (0x401D62,[0xE8,0x9A,0x01,0,0]),
+            (0x401D72,[0xE8,0x8A,0x01,0,0]),
+            (0x401ED8,[0xE8,0x24,0,0,0]),
+        ];
+        for &(va,bytes) in cases{
+            let i=(va-0x401000) as usize;
+            code[i..i+5].copy_from_slice(&bytes);
+        }
+        assert_eq!(
+            audit_155_crc_helper_callers(&code,0x400000,0x1000).unwrap(),
+            HistoricalCrcCallers{
+                full_page_call_va:0x401D62,
+                tail_call_va:0x401D72,
+                relocation_call_va:0x401ED8,
+                shared_helper_va:0x401F01,
+            });
+        for &(va,_) in cases{
+            let i=(va-0x401000) as usize;
+            code[i+1]^=1;
+            assert!(audit_155_crc_helper_callers(
+                &code,0x400000,0x1000).is_err());
+            code[i+1]^=1;
+        }
+        assert!(audit_155_crc_helper_callers(
+            &code[..0x500],0x400000,0x1000).is_err());
+        assert!(audit_155_crc_helper_callers(
+            &code,0x400001,0x1000).is_err());
     }
 
     #[test]
