@@ -3972,3 +3972,53 @@ both-zero fallthrough. The CLI prints only the guarded
 static summary. This remains offline static analysis, not
 execution of the protected DLL, a reconstructed EAX
 routine, or a plaintext page.
+
+
+### Category-4 .txt registration reaches a range-bookkeeping dispatcher, not yet a decoder (2026-10-28)
+
+With the eight original `A140` initialization calls now
+mapped to their PE section sources, we traced the **next**
+layer of category-4 registration on the exact user-supplied
+`dplayerx.dll` without executing it:
+
+```text
+A140 -> AB80 (selector 1 -> first CODE+EXECUTE = encrypted .txt)
+             -> A2A0 (register category 4)
+                  -> B850 (first range/list strategy)
+                  -> B880 (second range/list strategy)
+                  -> B8E0 (fallback range/list strategy)
+```
+
+These three `A2A0` strategies contain further bounded,
+verified original E8 calls to helper families:
+
+- `B850 -> BAD0`;
+- `B880 -> BC40`, `C2F0`, `B9D0`;
+- `B8E0 -> BC00`, `B7C0`, `B940`.
+
+The concrete `C2A0` helper requests a **12-byte allocation**
+using `B610`, then stores three DWORD fields at offsets
+`+0`, `+4`, `+8` of the new object. The `C2F0`
+helper compares an input against a range's start DWORD,
+stores the unsigned minimum, and adds an extent to the
+next DWORD using ordinary 32-bit wrapping arithmetic.
+These are specifically **metadata/list/range** operations
+in the observed helpers, not a validated byte decryption
+transform. The static category-4 selection points into
+encrypted `.txt`; it does not on its own produce an
+executable copy of that section.
+
+The native `--modifier-research` gate now verifies the
+**11 call targets**, the original byte instructions for
+the 12-byte node allocation/stores and two-word range
+update, as well as two synthetic range/metadata tests.
+The originally verified unSafeDisc reference is unchanged,
+and no original game bytes or decoded blocks are written.
+
+**Limits:** these exact opcodes support classification of
+the immediate helpers but do not exhaust all nested
+calls, opaque DLL startup decisions or changes made
+elsewhere in memory. A later or indirect step must
+still account for the unreadable on-disk modifier RVAs
+`0x65BE` and `0x6621`. We do not claim that
+the whole `A2A0` tree has been proven decryption-free.
