@@ -103,11 +103,22 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<ApiSlot>> {
         // A620 read: compare 0x67/0x66, registry fallback,
         // shadow [+0x3c] [+0x40], REP MOVS or dynamically
         // resolved ReadProcessMemory.
+        // B540 initializes the ENTIRE fresh 0xD0-byte record
+        // to zero, including shadow +0x3c and extent +0x40.
+        (0xB573,&[0xB9,0x34,0x00,0x00,0x00][..]),
+        (0xB578,&[0x33,0xC0][..]),
+        (0xB57C,&[0xF3,0xAB][..]),
+        // A200 cleanup releases optional shadow state.
+        (0xA253,&[0x8B,0x46,0x3C][..]),
+        (0xA25A,&[0x8B,0x56,0x40][..]),
+        (0xA26C,&[0xC7,0x46,0x3C,0x00,0x00,0x00,0x00][..]),
         (0xA629,&[0x83,0xF8,0x67][..]),
         (0xA62E,&[0x83,0xF8,0x66][..]),
         (0xA63F,&[0xE8,0x8C,0x0F,0x00,0x00][..]),
         (0xA64F,&[0x8B,0x78,0x3C][..]),
         (0xA65A,&[0x8B,0x40,0x40][..]),
+        (0xA64B,&[0x85,0xC0,0x74,0x38][..]),
+        (0xA687,&[0x8B,0x76,0x04][..]),
         (0xA677,&[0xF3,0xA5][..]),
         (0xA682,&[0xF3,0xA4][..]),
         (0xA69D,&[0xF3,0xA5][..]),
@@ -120,6 +131,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<ApiSlot>> {
         (0xA74D,&[0xE8,0x7E,0x0E,0x00,0x00][..]),
         (0xA75D,&[0x8B,0x50,0x3C][..]),
         (0xA768,&[0x8B,0x40,0x40][..]),
+        (0xA759,&[0x85,0xC0,0x74,0x2C][..]),
         (0xA780,&[0xF3,0xA5][..]),
         (0xA787,&[0xF3,0xA4][..]),
         (0xA792,&[0xFF,0x15,0xD8,0x4A,0x90,0x00][..]),
@@ -214,6 +226,19 @@ mod tests {
         assert_eq!(shadow_window(0x67,false,true,100,0),None);
         assert_eq!(shadow_window(0x67,true,false,100,0),None);
         assert_eq!(shadow_window(0x66,true,true,100,0),None);
+    }
+
+    #[test]
+    fn freshly_zeroed_record_has_no_alternate_backing() {
+        let initial_record=[0u8;0xD0];
+        let shadow_ptr=u32::from_le_bytes(initial_record[0x3C..0x40].try_into().unwrap());
+        let shadow_size=u32::from_le_bytes(initial_record[0x40..0x44].try_into().unwrap());
+        assert_eq!(shadow_ptr,0);
+        assert_eq!(shadow_size,0);
+        assert_eq!(shadow_window(0x67,true,shadow_ptr!=0,shadow_size,0),None);
+        // The original B540 initializer also copies descriptor fields
+        // and creates auxiliary category lists; this test establishes
+        // only the *initial* absence of a shadow buffer.
     }
 
     #[test]
