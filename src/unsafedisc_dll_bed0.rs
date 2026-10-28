@@ -73,6 +73,17 @@ pub fn conditional_original_worker_bed0_trace(
     ).expect("4 is always a valid fixed original selector")
 }
 
+/// On the original BDD0 failure branch at RVA BE52, EBP is
+/// already initialized to zero. The routine returns AX=0,
+/// but first stores (*third_argument - 1) modulo 2^32
+/// through the pointer passed as the FIRST argument.
+/// In the known BED0 call, that first argument is the
+/// selected slot's POINTER. This synthetic arithmetic does
+/// not dereference anything or establish pointer safety.
+pub fn bdd0_failure_selected_dword(third_arg_value:u32)->u32 {
+    third_arg_value.wrapping_sub(1)
+}
+
 /// Exact original C550 unsigned range predicate used by BDD0
 /// (and the node scan inside BE60). It is a *predicate*, not a
 /// bounds-safe range abstraction: length is not validated and
@@ -241,6 +252,17 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bdd0_failed_predicate_still_writes_selected_pointee() {
+        assert_eq!(bdd0_failure_selected_dword(0),u32::MAX);
+        assert_eq!(bdd0_failure_selected_dword(1),0);
+        assert_eq!(bdd0_failure_selected_dword(0x100),0xFF);
+        // The return is AX=0, but the STORE is real original x86.
+        let t=conditional_original_worker_bed0_trace(0,[1;8]);
+        assert_eq!(t.returned_ax,0);
+        assert!(t.output_dwords_written);
+    }
 
     #[test]
     fn exact_c550_unsigned_range_intersection_and_end_boundary() {
