@@ -5245,6 +5245,49 @@ fn inspect_original_modifier_reference_pairs(
            forward.checked_bytes!=1_855_489 || forward.differing_bytes!=0 {
             return Err("Win98 full forward candidate does not exactly recover reference non-HIGHLOW code; no unpacking may be enabled".into());
         }
+        // The historical 1.5.5 section filter selects BOTH .text and
+        // .data for the extra DWORD and TEA stages. The exact owner
+        // reference separately validates the non-HIGHLOW .data bytes.
+        let protected_data=original.section(b".data")?;
+        let reference_data=decoded.section(b".data")?;
+        if protected_data.virtual_address!=reference_data.virtual_address ||
+           protected_data.raw_offset!=reference_data.raw_offset ||
+           protected_data.raw_len!=reference_data.raw_len ||
+           protected_data.virtual_size!=reference_data.virtual_size {
+            return Err("Win98 .data reference PE geometry differs".into());
+        }
+        let data_extent=protected_data.virtual_size.min(protected_data.raw_len as u32) as usize;
+        let data_start=protected_data.raw_offset;
+        let data_end=data_start.checked_add(data_extent).ok_or("data extent overflow")?;
+        let source_data=icd.get(data_start..data_end).ok_or("data ciphertext span out of bounds")?;
+        let plain_data=reference.get(data_start..data_end).ok_or("data reference span out of bounds")?;
+        let first=protected_data.virtual_address;
+        let last=first.checked_add(data_extent as u32).ok_or("data RVA end overflow")?;
+        let mut slots=Vec::new();
+        for block in relocations {
+            for &offset in &block.highlow_offsets {
+                let at=block.page_rva.checked_add(offset as u32).ok_or("data HIGHLOW RVA overflow")?;
+                if first<=at && at<last {
+                    let rel=(at-first) as usize;
+                    if rel.checked_add(4).is_none_or(|end|end>data_extent){
+                        return Err("data HIGHLOW crosses raw section extent".into());
+                    }
+                    slots.push(rel);
+                }
+            }
+        }
+        let data_forward=unsafedisc_candidate_forward::compare_text(
+            source_data,plain_data,&slots,key,modifiers)?;
+        println!("  Win98 .data F1/F2 -> TEA: {} / {} equal non-HIGHLOW bytes; {} mismatches; {} relocations excluded.",
+            data_forward.matching_bytes,data_forward.checked_bytes,
+            data_forward.differing_bytes,slots.len());
+        if data_forward.fragments!=321 ||
+           data_forward.complete_words!=42_018 ||
+           data_forward.excluded_relocation_bytes!=3_960 ||
+           data_forward.checked_bytes!=168_072 ||
+           data_forward.differing_bytes!=0 {
+            return Err("Win98 full forward candidate does not recover reference .data".into());
+        }
     }
     audit.distinct_inputs=forward.len();
     audit.distinct_outputs=reverse.len();
