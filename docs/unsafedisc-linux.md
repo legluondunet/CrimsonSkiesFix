@@ -6073,3 +6073,46 @@ modifier routines or a working unpacker. Nothing proprietary
 was committed. The temporary diagnostic Actions step used to
 inspect the public archived executable has been removed;
 no binary is downloaded by the normal CI jobs.
+
+
+### Public archived relocation consumer: paired masking, span clipping, return redirection (2026-10-28)
+
+New static, non-executing disassembly of the 18,944-byte pinned PUBLIC
+compatibility variant (Git blob 825c467b6b403e1c85a5875ede5696dedfe17652)
+covered the relocated walker 0x401D82..0x401F01. The owner's separate
+20,480-byte original has NOT undergone a fresh byte-for-byte comparison.
+
+At x86 VA 0x401DFB the walker loads a DWORD containing two packed
+16-bit relocation entries, masks it with 0x0FFF0FFF at 0x401DFF and
+copies the masked offsets into a scratch buffer at 0x60BCD8.
+Thus both four-bit relocation type fields are removed, confirming
+the type-agnostic relocation-word handling seen in the earlier
+cutpoint builder. A nonempty odd number of WORD entries risks reading
+past the declared words in the old DWORD-copy loop; the native
+synthetic-only model refuses such an unpaired input.
+
+The original 0x401E28..0x401E3A logic detects an immediately adjacent
+next relocation offset by comparing it with previous offset + 4;
+the equality branch avoids processing an inter-relocation gap.
+
+At 0x401EF5 the common span helper calculates end = EBX+EAX
+(address plus requested length) and compares against the section
+end stored at global 0x60BCC0. If it exceeds the end, 0x401EE3
+restores EBX to the span start, clips EAX to section_end-start
+and 0x401EEC overwrites the return address at [ESP] with 0x401D79.
+It then jumps directly into the common checksum/extra-layer helper
+at 0x401F01. This redirects control to the outer section iterator
+after processing the clipped fragment, rather than returning normally.
+The nonclipped path restores the original EBX then falls through
+to 0x401F01.
+
+New module src/unsafedisc_historical_155_reloc_consumer.rs contains
+strict opcode and relative-branch assertions plus two bounded
+synthetic models for two-WORD masks and section-end clipping.
+Four tests cover instruction mutation, independent type nibble
+masks, odd-count rejection, exact-end/overrun behavior and overflow.
+
+This module runs only within the existing exact-hash-gated historical
+inspection and does not run the old x86 code, process real game data,
+or implement a working unpacker. A byte mismatch against the
+owner's actual original program must fail closed.
