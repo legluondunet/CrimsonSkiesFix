@@ -3686,3 +3686,64 @@ focus on nonlinear arithmetic, carries, bitwise Boolean networks,
 state dependence or original instruction deobfuscation. No single
 actual modifier function has yet been reconstructed and no
 `unpack` operation is enabled.
+
+
+### Conditional F1 XOR forest from repeated reference outputs (2026-10-28)
+
+The newly verified exact-original 361,346 **canonical**
+`(input, mask) -> output` observations display extensive reuse
+of *outputs* across different inputs and masks. Suppose **F2 is
+injective** over these values, while placing **no affinity or
+linearity restriction on F2**. For two equal outputs,
+
+```text
+F2(F1(x0) XOR m0) == F2(F1(x1) XOR m1)
+    => F1(x0) XOR F1(x1) == m0 XOR m1
+```
+
+This provides **25,168** XOR constraints on **37,025** distinct
+source inputs in **11,857** connected components; the largest
+component contains **140** source values. The graph is a forest:
+no independent cycles occur, so there are **zero** cycle
+contradictions. This is neither proof of F2 injectivity nor
+recovery of F1; every connected component has an undetermined
+XOR offset and almost all inputs remain unconstrained.
+
+A synthetic-tested read-only Rust module,
+`src/unsafedisc_first_stage.rs`, deterministically canonicalizes
+the observations, groups equal outputs, tracks an XOR-weighted
+union-find graph and measures an **order-independent** GF(2)
+necessary condition on the candidate *F1*:
+
+| Exact-reference conditional F1 measurement | Count |
+| --- | ---: |
+| Equal-output groups | 11,857 |
+| XOR edge constraints | 25,168 |
+| Source vertices participating in edges | 37,025 |
+| Largest component | 140 |
+| Consistent/conflicting cycles | 0 / 0 |
+| Rank of source-input XOR differences | **32** |
+| Rank of augmented (input difference, mask difference) equations | **42** |
+| **Rank obstruction to affine F1, if F2 injective** | **10** |
+| Repeated input-difference classes | 299 |
+| Input-difference classes with contradictory mask differences | **52** |
+
+Unlike the *number* of Gaussian-elimination residuals (which can
+change with input ordering), **augmented rank minus input rank**
+is order independent. The temporary independent Python test
+confirmed augmented rank 42 versus input rank 32. This is a
+strong conditional disproof of an affine F1, not of injectivity:
+the graph has no cycles and currently cannot test F2 injectivity
+beyond the earlier local collision probes.
+
+This experiment has six synthetic tests covering
+affine-compatible mapping, direct repeated-delta contradictions,
+inconsistent graph cycles, canonical aliases, deterministic
+ordering and the empty/no-evidence case. The executable inspector
+pins the aggregate genuine-title graph signature only after the
+same original-game, SHA-256, TEA and reference gates have passed.
+No plaintext, input/output table or executable bytes are stored.
+
+**Next research:** deterministic F1 and F2 nonlinear candidate
+families and authentic protected-DLL code decryption, rather than
+mistaking evidence for a general 32-bit decoder.
