@@ -2833,7 +2833,7 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
     println!("  Original global mixer state: preferred VA 0x00905010, RVA 0x25010, .data virtual zero-fill before initial runtime writes.");
     println!("    Seven verified direct x86 writes: conditional +0x4F3, twice +argument_low16, +output_byte, +stack_local, and two explicit resets.");
-    println!("    A77F called with state pointer from .txt2 0x19A4D and 0x19E30, uses KERNEL32!GetVersionExA and branches on OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
+    println!("    1A77F called with state pointer from .txt2 0x19A4D and 0x19E30, uses KERNEL32!GetVersionExA and branches on OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
     println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
     unsafedisc_dll_byte_mix::audit_original(dll,&pe)?;
     println!("  Conditional original .txt2 byte mixer: 0x19798 -> 0x19C78, XOR buffer byte with 4 bytes of 32-bit state at preferred VA 0x00905010 and second-buffer byte.");
