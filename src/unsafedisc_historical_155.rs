@@ -215,6 +215,31 @@ pub fn audit_155_entry_to_modifier_loop(
     Ok(())
 }
 
+/// A fail-closed NATIVE RESEARCH ADAPTER for one complete DWORD,
+/// dependent on caller-supplied SYNTHETIC output of modifier 1.
+/// A successful result means register preservation was explicitly
+/// established by the supplied fixture, not by loading a DLL.
+///
+/// No helper implementation is present. The caller supplies a
+/// transparent toy second-stage function to test composition.
+pub fn hypothetical_155_one_word<F>(
+    source:u32,index:u32,dll_base:u32,
+    cursor:u32,byte_length:u32,
+    first:FirstModifierReturn,second:F,
+)->Result<u32,String>
+where F:FnOnce(u32)->u32 {
+    let trace=trace_first_modifier_return(
+        source,index,dll_base,cursor,byte_length,first);
+    if !trace.core_contract_holds(){
+        return Err("original 1.5.5 register-preservation contract not established".into());
+    }
+    if trace.second_call_va !=
+       dll_base.wrapping_add(EXPECTED_SECOND_MODIFIER_RVA) {
+        return Err("historical second modifier target mismatch".into());
+    }
+    Ok(second(trace.second_call_eax))
+}
+
 /// The original static length gate at 401F43 is exactly 0x21E00.
 /// This says the helper stage is *selected for execution* if its
 /// caller reached that gate, not that title-specific callees are
@@ -406,6 +431,36 @@ mod tests {
             assert_eq!(original_index_mask(i),
                        crate::unsafedisc_indexed_affine::index_mask(i));
         }
+    }
+
+    #[test]
+    fn synthetic_first_second_modifiers_compose_only_under_register_contract() {
+        let source=0x4AF5_1807u32;
+        let index=259u32;
+        let mask=original_index_mask(index);
+        let base=0x006E_0000u32;
+        let cursor=0x0000_3000u32;
+        let first_function=|x:u32|x.rotate_left(7).wrapping_add(0xABCD_1234);
+        let second_function=|x:u32|x.rotate_right(9)^0x1234_ABCD;
+        let f1=first_function(source^mask);
+        let good=FirstModifierReturn{
+            eax:f1,ecx:mask,
+            edx:base+FIRST_MODIFIER_RVA,
+            ebx:index,esi:cursor,edi:48,
+        };
+        let actual=hypothetical_155_one_word(
+            source,index,base,cursor,48,good,second_function).unwrap();
+        let expected=second_function(first_function(source^mask)^mask);
+        assert_eq!(actual,expected);
+        let mut bad=good;bad.ecx^=0x100;
+        assert!(hypothetical_155_one_word(
+            source,index,base,cursor,48,bad,second_function).is_err());
+        bad=good;bad.edx=0;
+        assert!(hypothetical_155_one_word(
+            source,index,base,cursor,48,bad,second_function).is_err());
+        bad=good;bad.esi=cursor+4;
+        assert!(hypothetical_155_one_word(
+            source,index,base,cursor,48,bad,second_function).is_err());
     }
 
     #[test]
