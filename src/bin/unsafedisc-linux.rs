@@ -2827,6 +2827,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
         println!("    {}: encoded RVA 0x{:05X}, resolved function slot RVA 0x{:05X} (read-only).",
             api.name,api.encoded_rva,api.resolved_slot_rva);
     }
+    println!("  A810/AA00 shared descriptor dispatch: mode 0x65 -> file, 0x66 -> process memory API, 0x67 -> module-backed memory, 0x64 -> reject.");
+    println!("  Original .txt2 RVA 0x19448 calls AA00, the wrapper that may forward mode-0x67 writes to A720.");
     println!("  A620/A720: descriptor mode 0x66 uses process memory API calls; mode 0x67 uses module-backed direct read/write, optional record shadow and VirtualProtect.");
     println!("  These are protected DLL static code paths, NOT proof that any encrypted .txt page was decoded at runtime.");
     let range_edges=unsafedisc_dll_ranges::verify_original(dll,&pe)?;
