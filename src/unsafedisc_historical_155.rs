@@ -100,6 +100,117 @@ pub fn original_complete_dwords_and_tail(byte_length:u32)->(u32,u32){
     (byte_length>>2,byte_length&3)
 }
 
+/// Site-aware read-only x86 audit for the original/archived 1.5.5
+/// IMAGE_SCN_MEM_EXECUTE CODE section. The small instruction windows
+/// below were independently rechecked against the public archived
+/// 18,944-byte version.dll-adapted variant (Git blob 825c467b).
+/// An exact owner-original SHA-verified 20,480-byte binary must
+/// also pass this audit before the report describes its own bytes.
+/// Input is ONLY the mapped CODE section's backed bytes.
+pub fn audit_155_entry_to_modifier_loop(
+    code:&[u8],image_base:u32,code_rva:u32
+)->Result<(),String>{
+    let code_va=image_base.checked_add(code_rva)
+        .ok_or("historical executable CODE virtual address overflow")?;
+    if code_va!=0x0040_1000 {
+        return Err("historical 1.5.5 executable CODE base changed".into());
+    }
+    const WINDOWS:&[(u32,&[u8])]=&[
+        (0x0040_1F43,&[
+            0x81,0x3D,0x20,0x3C,0x40,0x00,0x00,0x1E,0x02,0x00,
+        ]),
+        // DLL-length equality -> entry trampoline, mismatch -> RET.
+        (0x0040_1F4D,&[
+            0x74,0x01,0xC3,0xE8,0x01,0,0,0,0xC3,
+        ]),
+        // 1F56 maps EBX -> ESI and EAX -> EDI, calls 1F62.
+        (0x0040_1F56,&[
+            0x60,0x8B,0xF3,0x8B,0xF8,
+            0xE8,0x02,0,0,0,0x61,0xC3,
+        ]),
+        // EBX starts at 0, loop steps through INC EBX on repeats.
+        // SHR EDI >>2, CMP EBX,ECX, JAE 1FA6.
+        (0x0040_1F62,&[
+            0x60,0x33,0xDB,0xEB,0x01,0x43,0x8B,0xCF,
+            0xC1,0xE9,0x02,0x3B,0xD9,0x73,0x35,
+        ]),
+        // OR of four FULL-WIDTH shifted index copies.
+        (0x0040_1F71,&[
+            0x8B,0xCB,0xC1,0xE1,0x18,0x8B,0xD3,
+            0xC1,0xE2,0x10,0x0B,0xCA,0x8B,0xC3,
+            0xC1,0xE0,0x08,0x0B,0xC8,0x0B,0xCB,
+        ]),
+        (0x0040_1F86,&[
+            0x8B,0x06,0x33,0xC1,0x8B,0x15,0x5C,0xCD,
+            0x70,0x00,0x81,0xC2,0xBE,0x65,0,0,0xFF,0xD2,
+        ]),
+        // ECX and EDX are NOT reloaded after first CALL EDX.
+        (0x0040_1F98,&[
+            0x33,0xC1,0x83,0xC2,0x63,0xFF,0xD2,0x89,
+            0x06,0x83,0xC6,0x04,0xEB,0xC1,0x61,0xC3,
+        ]),
+    ];
+    for &(va,expected) in WINDOWS {
+        let at=va.checked_sub(code_va)
+            .ok_or("historical 1.5.5 opcode before CODE start")?
+            as usize;
+        let end=at.checked_add(expected.len())
+            .ok_or("historical 1.5.5 instruction window overflow")?;
+        if code.get(at..end)!=Some(expected) {
+            return Err(format!(
+                "original 1.5.5 opcode mismatch/truncation at VA 0x{va:08X}"
+            ));
+        }
+    }
+    // Verified direct-call branch destinations, independently
+    // calculated from the exact audited bytes (no dynamic execution):
+    // 1F4D JE +1 -> 1F50, 1F50 CALL +1 -> 1F56,
+    // 1F5B CALL +2 -> 1F62;
+    // 1F65 JMP +1 -> 1F68, 1F6F JAE +0x35 -> 1FA6,
+    // 1FA4 JMP -0x3F -> 1F67.
+    if 0x401F4Fu32+1!=0x401F50 ||
+       0x401F50+5+1!=0x401F56 ||
+       0x401F5B+5+2!=0x401F62 ||
+       0x401F65+2+1!=0x401F68 ||
+       0x401F6F+2+0x35!=0x401FA6 ||
+       (0x401FA4i64+2-0x3F)!=0x401F67 {
+        return Err("historical 1.5.5 control transfers changed".into());
+    }
+    Ok(())
+}
+
+/// The original static length gate at 401F43 is exactly 0x21E00.
+/// This says the helper stage is *selected for execution* if its
+/// caller reached that gate, not that title-specific callees are
+/// present, decoded or callable under a modern OS.
+pub fn historical_extra_layer_selected(dll_size:u32)->bool {
+    dll_size==0x21E00
+}
+
+/// The gate's immediately reached wrapper 401F56 saves all general
+/// registers (PUSHAD), copies EBX=buffer to ESI and EAX=length to
+/// EDI, then CALLs the inner two-modifier loop at 401F62.
+/// A conditional symbolic bridge only: no original code is run.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalWrapperArgs {
+    pub buffer_pointer_esi:u32,
+    pub byte_length_edi:u32,
+    pub full_dwords:u32,
+    pub untouched_tail_bytes:u32,
+}
+pub fn conditional_155_wrapper_args(
+    caller_ebx:u32,caller_eax:u32,dll_size:u32,
+)->Option<HistoricalWrapperArgs>{
+    if !historical_extra_layer_selected(dll_size){return None;}
+    let (full_dwords,untouched_tail_bytes)=
+        original_complete_dwords_and_tail(caller_eax);
+    Some(HistoricalWrapperArgs {
+        buffer_pointer_esi:caller_ebx,
+        byte_length_edi:caller_eax,
+        full_dwords,untouched_tail_bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +225,62 @@ mod tests {
                 edx:base.wrapping_add(FIRST_MODIFIER_RVA),
                 ebx:index,esi:pointer,edi:length,
             })
+    }
+
+    #[test]
+    fn historical_length_guard_and_wrapper_register_mapping() {
+        for size in [0u32,0x21DFF,0x21E01,u32::MAX] {
+            assert!(!historical_extra_layer_selected(size));
+            assert!(conditional_155_wrapper_args(3,9,size).is_none());
+        }
+        let args=conditional_155_wrapper_args(
+            0x0123_4567,0x1003,0x21E00).unwrap();
+        assert_eq!(args,HistoricalWrapperArgs{
+            buffer_pointer_esi:0x0123_4567,
+            byte_length_edi:0x1003,
+            full_dwords:0x400,
+            untouched_tail_bytes:3,
+        });
+        assert_eq!(conditional_155_wrapper_args(
+            0x8000_0000,3,0x21E00).unwrap().full_dwords,0);
+    }
+
+    #[test]
+    fn exact_historical_opcode_audit_fails_closed_on_mutation() {
+        // Small, 0x2000-byte pure SYNTHETIC CODE fixture; never
+        // copies the executable or any original game data.
+        let mut fixture=vec![0u8;0x2000];
+        let windows:&[(u32,&[u8])]=&[
+            (0x401F43,&[0x81,0x3D,0x20,0x3C,0x40,0,0,0x1E,0x02,0]),
+            (0x401F4D,&[0x74,0x01,0xC3,0xE8,0x01,0,0,0,0xC3]),
+            (0x401F56,&[0x60,0x8B,0xF3,0x8B,0xF8,0xE8,0x02,0,0,0,0x61,0xC3]),
+            (0x401F62,&[0x60,0x33,0xDB,0xEB,0x01,0x43,0x8B,0xCF,
+                        0xC1,0xE9,0x02,0x3B,0xD9,0x73,0x35]),
+            (0x401F71,&[0x8B,0xCB,0xC1,0xE1,0x18,0x8B,0xD3,
+                        0xC1,0xE2,0x10,0x0B,0xCA,0x8B,0xC3,
+                        0xC1,0xE0,0x08,0x0B,0xC8,0x0B,0xCB]),
+            (0x401F86,&[0x8B,0x06,0x33,0xC1,0x8B,0x15,0x5C,0xCD,
+                        0x70,0,0x81,0xC2,0xBE,0x65,0,0,0xFF,0xD2]),
+            (0x401F98,&[0x33,0xC1,0x83,0xC2,0x63,0xFF,0xD2,0x89,
+                        0x06,0x83,0xC6,0x04,0xEB,0xC1,0x61,0xC3]),
+        ];
+        for &(va,bytes) in windows {
+            let at=(va-0x401000) as usize;
+            fixture[at..at+bytes.len()].copy_from_slice(bytes);
+        }
+        assert!(audit_155_entry_to_modifier_loop(
+            &fixture,0x400000,0x1000).is_ok());
+        assert!(audit_155_entry_to_modifier_loop(
+            &fixture,0x400001,0x1000).is_err());
+        for &(va,_) in windows {
+            let at=(va-0x401000) as usize;
+            fixture[at]^=0x80;
+            assert!(audit_155_entry_to_modifier_loop(
+                &fixture,0x400000,0x1000).is_err());
+            fixture[at]^=0x80;
+        }
+        assert!(audit_155_entry_to_modifier_loop(
+            &fixture[..0x900],0x400000,0x1000).is_err());
     }
 
     #[test]
