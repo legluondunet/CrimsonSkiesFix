@@ -2848,6 +2848,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_worker_entry::audit_original(dll,&pe)?;
     unsafedisc_dll_io_backends::audit_original(dll,&pe)?;
     println!("  Original .text IO backends: type 0x65 -> A560 SetFilePointer/ReadFile with exact byte count; type 0x66 -> A620 dynamic ReadProcessMemory; type 0x67 -> A620 in-process memcpy (mapped or direct fallback).");
+    println!("    Matching WRITE gateway AA00: type 0x65 -> A5C0 SetFilePointer/WriteFile (exact byte count); type 0x66 -> A720 dynamic WriteProcessMemory (exact byte count); type 0x67 -> A720 memory copy using VirtualProtect.");
+    println!("    B5D0 source map lookup scans exactly five virtual .data descriptors: 0xD0 stride, active WORD=1, 12-byte exact key; runtime records are NOT available in the file.");
     println!("    Dynamically loaded API names decoded from .data: Kernel32.dll, ReadProcessMemory, WriteProcessMemory, VirtualProtect.");
     println!("    Original A970 cumulative XOR decoder and A870 resolver fill global API slots 904AE0/904ADC/904AD8; no Windows API invoked, no live file/process memory accessed.");
     println!("    Important: 0x67 mapped branch caps copy count at min(request, total map size), NOT map size minus offset; this static audit is not a safety proof.");
