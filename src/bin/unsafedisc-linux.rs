@@ -5123,6 +5123,9 @@ fn inspect_historical_155_cli() -> Result<()> {
     let builder=unsafedisc_historical_155::audit_155_section_list_builder(
         backed,base,code.virtual_address
     )?;
+    let provenance=unsafedisc_historical_155::audit_155_section_table_provenance(
+        backed,base,code.virtual_address
+    )?;
     let crc_callers=unsafedisc_historical_155::audit_155_crc_helper_callers(
         backed,base,code.virtual_address
     )?;
@@ -5159,6 +5162,10 @@ fn inspect_historical_155_cli() -> Result<()> {
         builder.source_header_pointer_va,builder.section_count_va,
         builder.pointer_list_destination_va,builder.section_header_stride,
         builder.pointer_list_stride);
+    println!("  Historical NT -> PE section-table origin: stored NT header at [0x{:08X}], MOV CX from NT+0x{:X} to full ECX global [0x{:08X}], section table at NT+0x{:X}.",
+        provenance.nt_header_save_va,provenance.section_count_field_offset,
+        provenance.section_count_global_va,provenance.fixed_section_table_delta);
+    println!("  Important: MOV CX does NOT zero ECX high16; actual prior ECX state is not recovered. Native PE parser uses explicit u16 NumberOfSections and bounded optional-header length.");
     println!("  Historical selection: eight exact four-byte section-name exclusions; skipped branches converge at 0x{:08X}.",
         builder.skip_header_va);
     // Advisory static DATA inspection; the owner's original 1.5.5
