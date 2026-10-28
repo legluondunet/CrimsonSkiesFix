@@ -17,6 +17,9 @@ mod unsafedisc_indexed_affine;
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
 
+#[path = "../unsafedisc_first_stage.rs"]
+mod unsafedisc_first_stage;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4113,7 +4116,7 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("TEA one-bit negative control differs from independent original/reference result".into());
             }
 
-            let (composite,algebra,indexed_affine,mask_alias,second_stage)=inspect_original_modifier_reference_pairs(
+            let (composite,algebra,indexed_affine,mask_alias,second_stage,first_stage)=inspect_original_modifier_reference_pairs(
                 &icd,ref_bytes,&protected_pe,&reference_pe,&relocs,key)?;
             println!("  Additional extra-layer audit: {} / {} unchanged fragment-tail bytes.",
                 composite.matching_tail_bytes,composite.checked_tail_bytes);
@@ -4212,6 +4215,28 @@ fn inspect(options: Options) -> Result<()> {
                 return Err("pinned retail/reference F2-only audit signature mismatch".into());
             }
             println!("  CONFIRMED: all four title-specific aggregate research signatures match the independent original/reference audit.");
+            println!("  Conditional F1 XOR graph (requires injective F2): {} equal-output groups; {} relative XOR edges; {} vertices; {} components; largest {}.",
+                first_stage.multi_context_outputs,first_stage.xor_relations,first_stage.graph_vertices,
+                first_stage.graph_components,first_stage.largest_component);
+            println!("  Conditional F1 graph cycles: {} consistent, {} contradictory; F1-affinity ranks input {}/32, augmented {}/64 (obstruction rank {}).",
+                first_stage.compatible_cycles,first_stage.contradictory_cycles,
+                first_stage.affine_input_rank,first_stage.augmented_rank,
+                first_stage.augmented_rank-first_stage.affine_input_rank);
+            println!("  Conditional F1 direct XOR differences: {} repeated input-delta classes, {} incompatible mask-delta classes.",
+                first_stage.repeated_input_delta_classes,first_stage.contradictory_input_delta_classes);
+            if first_stage!=(unsafedisc_first_stage::FirstStageAudit{
+                raw_observations:361_480,canonical_observations:361_346,
+                canonical_conflicts:0,multi_context_outputs:11_857,
+                xor_relations:25_168,graph_vertices:37_025,
+                graph_components:11_857,largest_component:140,
+                compatible_cycles:0,contradictory_cycles:0,
+                affine_input_rank:32,augmented_rank:42,
+                repeated_input_delta_classes:299,
+                contradictory_input_delta_classes:52,
+            }) {
+                return Err("pinned retail/reference F1-only equal-output graph signature mismatch".into());
+            }
+            println!("  F1-only constraints are conditional: injectivity of F2 on unseen values remains UNPROVEN.");
             println!("  F2-only test makes NO affine assumption about the still-unknown F1.");
             println!("  This 64-feature test is a necessary condition only if BOTH original EAX modifiers are bit-affine.");
             println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
@@ -4647,7 +4672,8 @@ fn inspect_original_modifier_reference_pairs(
 )->Result<(ModifierReferenceAudit,unsafedisc_algebra::AlgebraAudit,
            unsafedisc_indexed_affine::IndexedAffineAudit,
            unsafedisc_indexed_affine::MaskAliasAudit,
-           unsafedisc_second_stage::SecondStageAudit)> {
+           unsafedisc_second_stage::SecondStageAudit,
+           unsafedisc_first_stage::FirstStageAudit)> {
     let protected=original.section(b".text")?;
     let plain=decoded.section(b".text")?;
     if protected.virtual_address!=plain.virtual_address ||
@@ -4736,7 +4762,8 @@ fn inspect_original_modifier_reference_pairs(
     let indexed_affine=unsafedisc_indexed_affine::diagnose(&indexed_forward);
     let mask_alias=unsafedisc_indexed_affine::audit_mask_aliases(&indexed_forward);
     let second_stage=unsafedisc_second_stage::diagnose(&indexed_forward);
-    Ok((audit,algebra,indexed_affine,mask_alias,second_stage))
+    let first_stage=unsafedisc_first_stage::diagnose(&indexed_forward);
+    Ok((audit,algebra,indexed_affine,mask_alias,second_stage,first_stage))
 }
 
 // Standard TEA reference routine, tested with synthetic vectors.
