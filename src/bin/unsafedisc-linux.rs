@@ -20,6 +20,9 @@ mod unsafedisc_second_stage;
 #[path = "../unsafedisc_first_stage.rs"]
 mod unsafedisc_first_stage;
 
+#[path = "../unsafedisc_dll_bootstrap.rs"]
+mod unsafedisc_dll_bootstrap;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2808,6 +2811,14 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     let pe = parse_pe32(dll)?;
     println!("SafeDisc 1.50.20 game-specific modifier research (STATIC CODE BYTES ONLY):");
     print_dll_memory_patch_research(dll,&pe)?;
+    let startup_selectors=unsafedisc_dll_bootstrap::audit_original(dll,&pe)?;
+    println!("  Verified DllMain -> A140 bootstrap source-selection chain (read-only):");
+    for s in &startup_selectors {
+        println!("    category {}, selector {}: PE directory {} {:?}=0x{:08X} -> {}",
+            s.category,s.selector,s.directory_index,s.directory_field,
+            s.candidate_rva,s.matching_section.as_deref().unwrap_or("none"));
+    }
+    println!("  These are static selector outcomes for the exact original DLL, not runtime decoding proof.");
     println!("  Original DLL PE32 entry RVA: 0x{:08X} (on-disk code, NOT a memory dump).",
         pe.entry_rva);
     println!("  DLL PE sections:");
