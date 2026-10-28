@@ -856,6 +856,12 @@ DLL checked **17 opcode windows**, the RET trampoline, and all
 
 This is NOT proof that the real DLL initializer calls into the
 `0x197D4` block, nor that the unsigned counter condition is met.
+The pure `conditional_finalizer_at_worker_exit` model additionally
+requires this **current-iteration** unsigned exit test before
+composing the Win9x helper and the caller's direct state add.
+Its `None` result means that this particular loop-exit edge was
+not taken (or the modeled outer Win9x branch was not selected):
+it does **not** mean the worker cannot reach it on a later iteration.
 On a failed JAE the worker continues along unmodeled code. The
 combined state delta below remains **conditional** on the original
 worker reaching this loop-exit branch.
@@ -928,7 +934,7 @@ without its write, and the caller adds zero.
 
 The complete provenance and both original flag-only regions
 are checked by `src/unsafedisc_dll_worker_finalizer.rs` under the
-SHA-gated `inspect --modifier-research` option. **Seven new synthetic
+SHA-gated `inspect --modifier-research` option. **Nine new synthetic
 Rust unit tests** check upper AX masking, state wrapping, matching
 versus differing interrupt outputs and exclusion of non-Win9x
 outer platforms. A self-contained external **Python standard-library
