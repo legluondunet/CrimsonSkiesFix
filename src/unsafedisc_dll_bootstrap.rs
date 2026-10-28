@@ -16,6 +16,27 @@ use super::{
 };
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct BootstrapCompletion {
+    pub has_module_record:bool,
+    pub directory_helpers_called:usize,
+    pub class_iterators_called:usize,
+    pub returns_success:bool,
+}
+
+/// The original A140 checks the result of B540 once. If that record
+/// exists, it calls five directory helpers and all three class iterators
+/// without branching on their return values; AX=1 is set at the end.
+/// This is a control-flow model, NOT a Windows/DLL runtime emulator.
+pub fn model_a140_completion(has_module_record:bool)->BootstrapCompletion {
+    BootstrapCompletion {
+        has_module_record,
+        directory_helpers_called:if has_module_record {5} else {0},
+        class_iterators_called:if has_module_record {3} else {0},
+        returns_success:has_module_record,
+    }
+}
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum DirectoryField { Rva, Size }
 
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -190,6 +211,19 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
     // by preferred VA, never treated as executable instruction bytes.
     check_call(dll,pe,0x987C,0xA140)?;
     check_call(dll,pe,0x989F,0x7212)?;
+    // A140 has one conditional early-exit at the B540 record result.
+    // After that branch, its five directory handlers and three
+    // category iterators are reached in order without result tests.
+    for (rva,bytes) in [
+        (0xA159u32,&[0x85,0xF6][..]),
+        (0xA15B,&[0x0F,0x84,0x93,0x00,0x00,0x00][..]),
+        (0xA1EE,&[0xBF,0x01,0x00,0x00,0x00][..]),
+        (0xA1F3,&[0x5D][..]),
+        (0xA1F4,&[0x66,0x8B,0xC7][..]),
+        (0xA1FA,&[0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,bytes)?;
+    }
     // A140 passes the registry record's +0x44 address to 18770:
     // the latter calls the PE NT header reader and copies exactly
     // 32 DWORDs (16 RVA/Size pairs) into that record.
@@ -370,6 +404,22 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_module_record_skips_all_a140_bootstrap_helpers() {
+        assert_eq!(model_a140_completion(false),BootstrapCompletion{
+            has_module_record:false,directory_helpers_called:0,
+            class_iterators_called:0,returns_success:false
+        });
+    }
+
+    #[test]
+    fn existing_record_reaches_all_eight_initializer_calls() {
+        assert_eq!(model_a140_completion(true),BootstrapCompletion{
+            has_module_record:true,directory_helpers_called:5,
+            class_iterators_called:3,returns_success:true
+        });
+    }
 
     #[test]
     fn scratch_offsets_resolve_to_directory_rva_or_size() {
