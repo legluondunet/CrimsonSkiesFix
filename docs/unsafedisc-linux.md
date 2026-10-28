@@ -5092,7 +5092,7 @@ intervening state updates for the retail `19C78` call has been
 established. This is **not** a recovered SafeDisc code decryptor.
 
 
-### Worker 196DB/196F8/19728/1976F: conditional arithmetic and partial-register hazard (2026-10-28)
+### Worker 196DB/196F8/19728/1976F: conditional mixed-width arithmetic and known upper-EAX zero (2026-10-28)
 
 A new synthesis of the **already exact-original-byte-verified**
 instruction runs surrounding the worker's `A310` gate establishes
@@ -5105,29 +5105,36 @@ four distinct local operations **when those sites execute**:
   extent inclusive, but the local inputs are not proven valid
   nonwrapping addresses.
 - `19728`: original bytes `66 8B 45 F8 50` mean **`MOV AX,
-  WORD [EBP-0x08]; PUSH EAX`**. This loads just the lower 16
-  bits, **preserving EAX's prior high 16 bits**, then pushes
-  the entire DWORD. It would be incorrect to model this instruction
-  as `MOVZX EAX, WORD [...]` without additional evidence of
-  previous EAX state. The x86 source assertion already existed,
-  but its mixed-width consequence was not separately modeled.
+  WORD [EBP-0x08]; PUSH EAX`**. Isolated x86 `MOV AX` preserves
+  the previous high 16 EAX bits. **But the original nonzero A310
+  branch at `196B6` first executes `AND EAX,0xFFFF`**. The
+  independently verified control-flow spans `196C3..196DB`,
+  `196E4..196F8` and `19704..19728` execute only branches,
+  NOP or self-MOV/XCHG, while intervening arithmetic changes
+  ECX/EDX, not EAX. Therefore **on this specific path the pushed
+  DWORD really is `[EBP-0x08] & 0xFFFF`**, and its high half
+  is provably zero. This is a *path-sensitive proof*, not a
+  claim that `MOV AX` generally zero-extends.
 - `1976F`: `ECX = [EBP+0x20] + [EBP-0x10]` with 32-bit
   wrapping arithmetic. The downstream use of this ECX has not
   been independently reconstructed here.
 
 Added `hypothetical_worker_locals`,
-`hypothetical_19728_push_eax`, and a deliberately distinct
-safe-analysis-only predicate for nonempty ordered, at-most-16-bit
-contiguous steps. Three synthetic Rust tests cover exact
-nonwrapping vectors, modulo-`2^32` overflow, zero-length candidate
-steps, the **65,536-byte length cliff**, and upper-word preservation
-across several bit patterns.
+`hypothetical_19728_push_eax`, the stricter
+`conditional_original_19728_push` (which returns `None` on
+the original low16-zero bypass and otherwise produces the
+zero-extended low16 step), and a distinct safe-analysis-only
+predicate for contiguous 16-bit-sized steps. Four synthetic Rust
+tests cover arithmetic wraparound, general x86 partial-register
+semantics, the conditional original path, and the **65,536-byte
+length cliff** (full local step `0x10000`, pushed DWORD `0`).
 
 These functions **do not establish** that the original worker
 actually executes every block, that intermediate locals are never
 overwritten, or that the `19728` DWORD is forwarded unchanged into
-`19965` or `19C78`. They prevent accidental substitution of
-idealized lengths or a zero-extending load in future static models.
+`19965` or `19C78`. They distinguish the general partial-register instruction
+from its proven preceding original upper-word clear and prevent
+confusing a full 32-bit local step with its pushed 16-bit truncation.
 No private executable is run or modified.
 
 
