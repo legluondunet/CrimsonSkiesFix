@@ -407,6 +407,80 @@ pub fn audit_155_codebit_crc_modifier_bridge(
     })
 }
 
+/// Upstream constructor linking the protected PE's original NT
+/// header pointer to the selected-header list at [403B17].
+/// The archived x86 assumes PE32's standard 0xE0 optional
+/// header length: 4-byte signature + 20-byte COFF + 0xE0
+/// gives 0xF8 bytes from NT header to section table.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalSectionTableProvenance{
+    pub nt_header_save_va:u32,
+    pub section_count_field_offset:u32,
+    pub section_count_global_va:u32,
+    pub fixed_section_table_delta:u32,
+    pub section_table_global_va:u32,
+    pub source_count_keeps_ecx_upper_half:bool,
+}
+pub fn audit_155_section_table_provenance(
+    code:&[u8],image_base:u32,code_rva:u32,
+)->Result<HistoricalSectionTableProvenance,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("historical PE section table CODE VA overflow")?;
+    if base!=0x401000 {
+        return Err("historical PE section table CODE base differs".into());
+    }
+    let exact=|va:u32,bytes:&[u8]|->Result<(),String>{
+        let i=va.checked_sub(base)
+            .ok_or("historical PE section table opcode before CODE")? as usize;
+        let end=i.checked_add(bytes.len())
+            .ok_or("historical PE section table opcode extent overflow")?;
+        if code.get(i..end)!=Some(bytes){
+            return Err(format!("historical PE header provenance opcode differs at 0x{va:08X}"));
+        }
+        Ok(())
+    };
+    // ESI has been established as a pointer to the 32-bit NT header;
+    // save it, then read COFF.NumberOfSections at NT+6 (WORD).
+    exact(0x4024D5,&[0x89,0x35,0x13,0x3B,0x40,0])?;
+    exact(0x4024E4,&[0x66,0x8B,0x4E,0x06])?; // MOV CX,[ESI+6]
+    exact(0x4024E8,&[0x89,0x0D,0x3B,0x3B,0x40,0])?; // store full ECX
+    // Fixed NT-to-section-table offset and global pointer store.
+    exact(0x402514,&[
+        0x81,0xC6,0xF8,0,0,0,
+        0x89,0x35,0x17,0x3B,0x40,0,
+    ])?;
+    // The later header offset multiplication reuses FULL ECX
+    // from [403B3B], so a nonzero original high half would matter.
+    exact(0x402522,&[
+        0xB8,0x28,0,0,0,0xF7,0x2D,0x3B,0x3B,0x40,0,
+    ])?;
+    Ok(HistoricalSectionTableProvenance{
+        nt_header_save_va:0x403B13,
+        section_count_field_offset:6,
+        section_count_global_va:0x403B3B,
+        fixed_section_table_delta:0xF8,
+        section_table_global_va:0x403B17,
+        source_count_keeps_ecx_upper_half:true,
+    })
+}
+/// Faithfully model x86 MOV CX,WORD PTR [ESI+6], as opposed to
+/// a zero-extending MOVZX ECX,WORD PTR []. The high 16 bits are
+/// caller state and remain UNKNOWN until earlier code is traced.
+pub fn historical_155_mov_cx_section_count(ecx_before:u32,count:u16)->u32{
+    (ecx_before&0xFFFF_0000)|u32::from(count)
+}
+/// Safely model the proper PE32 header offset rather than blindly
+/// importing the historical fixed 0xF8 for nonstandard optional
+/// header lengths. A native caller must use its parsed COFF size.
+pub fn native_pe32_section_table_delta(
+    optional_header_size:u16
+)->Result<u32,String>{
+    if optional_header_size<0x60 {
+        return Err("PE32 optional header is too short".into());
+    }
+    Ok(24+u32::from(optional_header_size))
+}
+
 /// The historical 1.5.5 section selection routine builds a
 /// list of 32-bit POINTERS to PE section headers, later consumed by
 /// 401D06. Its count is read from [403B3B], source section-table
@@ -897,6 +971,50 @@ mod tests {
             &[0u8;0x2000],0x400001,0x1000).is_err());
         assert!(analyze_155_dll_startup(
             &[0u8;0x2000],u32::MAX,0x1000).is_err());
+    }
+
+    #[test]
+    fn archived_original_pe_header_provenance_preserves_ecx_high_word(){
+        let mut code=vec![0u8;0x2000];
+        let windows:&[(u32,&[u8])]=&[
+            (0x4024D5,&[0x89,0x35,0x13,0x3B,0x40,0]),
+            (0x4024E4,&[0x66,0x8B,0x4E,0x06]),
+            (0x4024E8,&[0x89,0x0D,0x3B,0x3B,0x40,0]),
+            (0x402514,&[0x81,0xC6,0xF8,0,0,0,
+                0x89,0x35,0x17,0x3B,0x40,0]),
+            (0x402522,&[0xB8,0x28,0,0,0,0xF7,0x2D,0x3B,0x3B,0x40,0]),
+        ];
+        for &(va,b) in windows{
+            let i=(va-0x401000) as usize;
+            code[i..i+b.len()].copy_from_slice(b);
+        }
+        assert_eq!(audit_155_section_table_provenance(
+            &code,0x400000,0x1000).unwrap(),
+            HistoricalSectionTableProvenance{
+                nt_header_save_va:0x403B13,
+                section_count_field_offset:6,
+                section_count_global_va:0x403B3B,
+                fixed_section_table_delta:0xF8,
+                section_table_global_va:0x403B17,
+                source_count_keeps_ecx_upper_half:true,
+            });
+        assert_eq!(historical_155_mov_cx_section_count(0,6),6);
+        assert_eq!(historical_155_mov_cx_section_count(0xBEEF_0001,7),
+                   0xBEEF_0007);
+        assert_eq!(native_pe32_section_table_delta(0xE0).unwrap(),0xF8);
+        assert_eq!(native_pe32_section_table_delta(0xF0).unwrap(),0x108);
+        assert!(native_pe32_section_table_delta(0x5F).is_err());
+        for &(va,_) in windows {
+            let i=(va-0x401000) as usize;
+            code[i]^=1;
+            assert!(audit_155_section_table_provenance(
+                &code,0x400000,0x1000).is_err());
+            code[i]^=1;
+        }
+        assert!(audit_155_section_table_provenance(
+            &code[..0x300],0x400000,0x1000).is_err());
+        assert!(audit_155_section_table_provenance(
+            &code,0x400001,0x1000).is_err());
     }
 
     #[test]
