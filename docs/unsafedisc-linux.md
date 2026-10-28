@@ -3758,3 +3758,69 @@ No plaintext, input/output table or executable bytes are stored.
 **Next research:** deterministic F1 and F2 nonlinear candidate
 families and authentic protected-DLL code decryption, rather than
 mistaking evidence for a general 32-bit decoder.
+
+
+### The DLL bootstrap's five PE directory selectors narrow the .txt initialization candidates (2026-10-28)
+
+An independent instruction-by-instruction static analysis of the
+SHA-256 pinned original `dplayerx.dll` traced the module attach
+bootstrap beyond the previously recorded `0x987C -> A140` call.
+Before the direct `.txt` call at RVA `0x989F -> 0x7212`,
+`A140` calls these five setup helpers in this exact order:
+
+| Call in A140 | Helper | Registered category | .txt2 selector wrapper | Selector |
+| --- | --- | ---: | --- | ---: |
+| `A181` | `B3D0` | 1 | `18890` | 11 |
+| `A192` | `B1C0` | 1 | `18860` | 6 |
+| `A1A3` | `AFB0` | 2 | `18830` | 5 |
+| `A1B4` | `AE10` | 0 | `188C0` | 7 |
+| `A1CB` | `AC10` | 7 | `188F0` | 9 |
+
+The .txt2 `0x181E0` dispatcher bounds-checks the selector and
+uses the original 11-entry jump table at RVA `0x18680`.
+Each relevant branch calls **`0x18990`**, a section-header iterator.
+`0x18990` treats a candidate RVA as a location inside a PE section:
+`section.VirtualAddress <= RVA < section.VirtualAddress + (VirtualSize != 0 ? VirtualSize : SizeOfRawData)`.
+The candidate is loaded from an **explicit PE data-directory field**
+in the already-read NT header scratch area, rather than directly
+from the category integer.
+
+The original NT header begins at temporary `ESP+0x38`, and its data
+directory starts at **NT+0x78**, hence scratch `ESP+0xB0`
+denotes `IMAGE_DATA_DIRECTORY[0].VirtualAddress`. Mapping the
+original case-specific `MOV` instructions gives the following
+**exact retail DLL candidate selections**:
+
+| Selector | Jump-table target | Header word read | Actual field value | Candidate DLL section |
+| ---: | --- | --- | ---: | --- |
+| 11 | `1841D` | directory 13 **Size** | `0` | None |
+| 6 | `18357` | directory 2 **Size** | `0` | None |
+| 5 | `18304` | directory 2 **RVA** | `0` | None |
+| 7 | `185D5` | directory 0 **RVA** (export directory) | `0x1F350` | **`.rdata`** |
+| 9 | `18486` | directory 10 **Size** | `0` | None |
+
+The export-directory RVA `0x1F350` lies inside the original
+DLL's `.rdata` virtual interval
+`[0x1E000,0x1F3B0)`. None of the other four selector
+inputs can lie inside an ordinary positive-RVA PE section in
+the **same pinned DLL** because all four words are zero.
+
+This is a new constraint on *which section-registration helpers
+can find a candidate section* during the **static DLL initialization
+path**. It does **not** establish that every helper is reachable,
+that a non-null section lookup leads to a successful registry update,
+or that no other decoder exists. In particular, the complete
+behavior of `A140` and its descendants is still relevant to
+restoring the protected `.txt` EAX routines.
+
+The native `src/unsafedisc_dll_bootstrap.rs` research module
+checks actual rel32 call destinations at A140 and each helper,
+category/selector immediate opcodes, the .txt2 11-way jump-table
+entries, exact case-specific stack reads, `0x18990` range-check
+instruction opcodes and PE data-directory words. The
+`--modifier-research` CLI presents only aggregate section selection
+metadata after SHA-256 verification. **Four new synthetic Rust
+tests** cover directory offset mapping, correct virtual
+section bounds, raw-size fallback when VirtualSize=0, and
+the original-like candidate distribution. No game or DLL
+binary data is committed or executed.
