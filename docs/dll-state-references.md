@@ -683,3 +683,61 @@ INT-return comparison. **Whether that interruption ever returns
 normally on a target system is not established.** Actual entry
 state at \`0x19C78\` and the two protected EAX modifiers remain
 unknown. This does not enable unpacking or run any protected bytes.
+
+
+### Both conditional Win9x helper returns now separated (2026-10-28)
+
+Two **additional** original-image 32-flag static walks through the
+late portion of helper \`0x1C7F0\` distinguish the *low 16-bit return
+value* from whether the passed state DWORD was actually updated.
+
+**If \`[EBP-0x98] == 0\` at \`0x1D19D\`:**
+the original \`JBE 0x1D305\` bypasses the pointer check and takes an
+obfuscated EFLAGS-only path to **\`0x1D425\`**, which contains
+\`66 33 C0\` (**\`XOR AX,AX\`**) and then the verified epilogue
+\`0x1D428\`. For **all 32 flag combinations**, this route
+converges with **32 distinct paths of 44–77 instruction boundaries**.
+It sets **AX=0**, and does not access the argument DWORD in this
+audited suffix.
+
+**If \`[EBP-0x98] > 0\` at \`0x1D19D\`:**
+the original flag-only network reaches the pointer-null guard
+\`0x1D26A\`. A NULL pointer branches to **\`0x1D2FC\`**, which
+contains \`66 B8 01 00\` (**\`MOV AX,1\`**) and jumps directly
+to the same \`0x1D428\` epilogue: **AX=1, but no DWORD write**.
+
+A usable nonnull pointer instead reaches the original single
+\`+0x34F\` DWORD store at \`0x1D2B2\` and the complementary
+\`JNE/JE\` pair at \`0x1D2B4/0x1D2B6\`. From \`0x1D2C7\`
+all 32 flag combinations reach \`0x1D2FC\` with **16 distinct
+routes of 10–21 instruction boundaries**. Some valid original
+branches temporarily jump backward as far as **\`0x1D2B7\`**
+before converging; the bounded Rust interpreter permits only this
+explicitly audited back-edge range while still refusing loops,
+memory operations and unexpected instructions. Result:
+**AX=1 and the passed DWORD was incremented exactly once**.
+
+A combined pure conditional Rust model
+\`conditional_win9x_outcome\` distinguishes these three cases:
+
+| Local flag | Argument pointer | Original return AX | DWORD write |
+| --- | --- | ---: | --- |
+| Zero | Null or nonnull | **0** | No |
+| Nonzero | Null | **1** | No |
+| Nonzero | Valid writable DWORD | **1** | **Add 0x34F exactly once** |
+
+Because the source instructions write only **AX**, no claim is
+made about the original *high 16 bits of EAX*. The model also
+requires explicitly supplied observed Windows API outcomes and,
+if the keyboard gate rejected, an **assumed normally returning
+INT 68h**. These are not measured; neither actual pointer validity,
+full DLL startup reachability, global state at mixer entry, nor
+decryption is claimed.
+
+Original-byte checks now cover the \`MOV AX,1\`, \`XOR AX,AX\`,
+shared function epilogue, both flag-only suffixes, and the earlier
+interrupt / platform conditions. A standalone offline verifier,
+\`verify_rejected_keyboard_int68.py\` (distributed separately,
+**not** part of the proprietary DLL), compares 15 original opcode
+groups and both 32-flag suffix topologies against a user-supplied
+SHA-256-pinned retail \`dplayerx.dll\`. No protected code is run.
