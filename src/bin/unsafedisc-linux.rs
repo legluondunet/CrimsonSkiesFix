@@ -2844,6 +2844,7 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Original 1D058 FF15 imports KERNEL32!GetVersionExA at IAT 1E058; its return and platform ID are runtime-dependent.");
     println!("    Conditional nested Win9x query SUCCESS with dwPlatformId != 1 -> original stack-local 0x0F at 1D133 -> 1D19D -> pointer guard 1D26A.");
     println!("    Keyboard REJECTED: hypothetical NORMAL return from original INT 0x68 -> full EAX comparison with 0x4300. Return != 0x4300 sets stack-local [EBP-0x98]=1; equal retains zero.");
+    println!("    Historical identification: INT 0x68 with AX=0x4300 matches a published SafeDisc/Win9x anti-SoftICE debugger probe (see docs/dll-state-references.md). No modern Windows/Wine runtime behavior is inferred.");
     println!("    Keyboard accepted or rejected paths join the same nested version test. If nested version fails or platform=1, 1D19D reaches the pointer guard only when the rejected interrupt's returned EAX differed from 0x4300.");
     println!("    If nested version succeeds on platform !=1, stack-local becomes 15 and reaches pointer guard independently of interrupt. Interrupt availability/return on Windows/Wine is UNKNOWN.");
     println!("    Final Win9x conditional returns: bypass pointer guard -> XOR AX,AX at 1D425 (AX=0, no write); guard with NULL pointer -> MOV AX,1 at 1D2FC (no write); nonnull pointer -> exactly one +0x34F DWORD store, then AX=1.");
