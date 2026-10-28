@@ -4183,3 +4183,48 @@ return instructions, and adds two synthetic tests for
 absent/present module-record control flow. This is a
 static conditional proof, not an observed successful
 Windows startup or .txt plaintext recovery.
+
+
+### Two more original .txt2 call sites can invoke A140 with other descriptors (2026-10-28)
+
+Searching the *other readable executable sections* of the original
+SHA-256-verified `dplayerx.dll` for instruction-aligned direct
+`CALL rel32` references to the verified RVA `A140`
+revealed **two additional call sites inside `.txt2`**:
+
+| Source section and call RVA | Prior original instruction | Destination | Stack cleanup |
+| --- | --- | --- | --- |
+| `.txt2` `0x1A137` | `1A133: LEA ECX,[EBP-0xC]; PUSH ECX` | `0xA140` | `ADD ESP,8` |
+| `.txt2` `0x1A299` | `1A295: LEA EDX,[EBP-0xC]; PUSH EDX` | `0xA140` | `ADD ESP,8` |
+
+The previously known caller `.text:0x987C` uses
+the DLL-global descriptor prepared with
+`GetModuleHandleA("dplayerx.dll")`. By contrast,
+these two call sites pass addresses of **stack-local
+descriptors**. The exact content of those descriptors
+at runtime is **not known**, nor are the opaque paths
+to these calls proven reachable. The static observation
+therefore establishes *potential repeated initialization
+with different descriptor inputs*, not confirmed
+processing of another module or an additional decoder.
+
+This matters for scope: **all pinned category and
+PE-directory counts obtained from the original
+`dplayerx.dll` header apply to that particular DLL
+descriptor**, not automatically to these other possible
+A140 invocations. A different module's PE directory,
+if supplied by a reachable caller, could lead to a
+different set of eligible registration helpers.
+
+The research CLI now verifies original rel32 targets,
+both exact `LEA/PUSH` argument setups and matching
+`ADD ESP,8` cleanups, along with a synthetic test of
+the three recognized direct call-site RVAs. No .txt
+code is executed and no runtime descriptor values
+are invented.
+
+A next static investigation can trace the descriptor
+fields populated before these two calls and determine
+whether either route refers to the **game's ICD** or
+only to other DLL-internal sections. That remains an
+open question rather than an asserted finding.
