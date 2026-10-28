@@ -121,7 +121,10 @@ pub fn audit_155_reloc_cutpoint_builder(
 pub fn hypothetical_155_reloc_cutpoints(
     page_rva:u32,size_of_block:u32,entries:&[u16]
 )->Result<Vec<u32>,String>{
-    if page_rva==0 || size_of_block<8 ||
+    // Original 0x4023A7 reads a WORD before 0x4023C6 LOOP, so
+    // a zero-entry block would enter with ECX=0 and wrap for 2^32
+    // iterations. The safe preview refuses this unsupported case.
+    if entries.is_empty() || page_rva==0 || size_of_block<8 ||
        (size_of_block-8)%2!=0 ||
        usize::try_from((size_of_block-8)/2).ok()!=Some(entries.len()){
         return Err("invalid bounded relocation block geometry".into());
@@ -188,6 +191,7 @@ mod tests {
     #[test]
     fn invalid_block_length_or_overflow_fails_closed(){
         assert!(hypothetical_155_reloc_cutpoints(0x1000,7,&[]).is_err());
+        assert!(hypothetical_155_reloc_cutpoints(0x1000,8,&[]).is_err());
         assert!(hypothetical_155_reloc_cutpoints(0x1000,9,&[]).is_err());
         assert!(hypothetical_155_reloc_cutpoints(0x1000,10,&[]).is_err());
         assert!(hypothetical_155_reloc_cutpoints(0,8,&[]).is_err());
@@ -196,7 +200,16 @@ mod tests {
 }
 
 
-/// Independent read-only scan of IMAGE_BASE_RELOCATION entry WORDs.
+//// Exact x86 LOOP iteration count for the archived relocation WORD
+/// builder at 0x4023C6, assuming execution enters 0x4023A7 with
+/// ECX=word_count. In particular, ECX=0 does NOT mean zero
+/// iterations: the first body runs and the loop wraps to 2^32.
+/// This models only the counter, never actual memory reads.
+pub fn archived_reloc_builder_loop_iterations(word_count:u32)->u64{
+    if word_count==0 {1u64<<32} else {u64::from(word_count)}
+}
+
+// Independent read-only scan of IMAGE_BASE_RELOCATION entry WORDs.
 /// Unlike a HIGHLOW-only parser, this preserves the distinction
 /// between a ZERO type-0 padding WORD and a NONZERO type-0 WORD:
 /// historical 4023AD tests only the whole WORD for zero.
@@ -355,6 +368,14 @@ mod candidate_preflight_tests {
         p.empty_word_blocks=0;p.highlow_words=0;
         assert!(necessary_highlow_only_candidate_preflight(p,0,1).is_err());
     }
+    #[test]
+    fn empty_block_x86_loop_wraps_but_native_cutpoint_model_rejects(){
+        assert_eq!(archived_reloc_builder_loop_iterations(0),1u64<<32);
+        assert_eq!(archived_reloc_builder_loop_iterations(1),1);
+        assert_eq!(archived_reloc_builder_loop_iterations(100),100);
+        assert!(hypothetical_155_reloc_cutpoints(0x2000,8,&[]).is_err());
+    }
+
     #[test]
     fn word_profile_counts_empty_blocks_separately(){
         let mut bytes=Vec::new();
