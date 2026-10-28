@@ -57,6 +57,80 @@ pub fn conditional_win9x_finalizer(
 }
 
 
+/// The original worker directly CALLs the byte mixer 19C78 from
+/// 19798. Its return is followed by ADD ESP,0x18 (which sets EFLAGS),
+/// then a bounded maze comprising ONLY flag-preserving original
+/// Jcc, JMP, self-MOV/XCHG and NOP instructions until 197D4.
+/// All 32 EFLAGS assignments *after* ADD ESP reach 197D4.
+/// This is a conditional call-return-to-counter bridge; it does
+/// NOT prove that the original initializer enters 19798, or that
+/// the mixer always returns normally.
+pub fn trace_mixer_return_to_worker_counter(
+    dll:&[u8],pe:&Pe32,f:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    let mut pc=0x197A0u32;
+    let mut trace=Vec::new();
+    for _ in 0..32 {
+        if pc==0x197D4 {
+            trace.push(pc);
+            return Ok(trace);
+        }
+        if trace.contains(&pc) {
+            return Err(format!("mixer-return branch loops at 0x{pc:05X}"));
+        }
+        trace.push(pc);
+        pc=original_eflags_step_in_range(
+            dll,pe,pc,f,0x197A0,0x197D4
+        )?;
+    }
+    Err("mixer-return to counter trace did not converge".into())
+}
+
+/// Audit the original 19798 E8 rel32 target, the stack adjustment
+/// and exhaustive 32-EFLAGS continuation using the exact-hash DLL.
+/// This never executes the original code, reads its executable bytes
+/// as data and refuses any instruction with side effects.
+pub fn audit_original_mixer_to_counter_bridge(dll:&[u8],pe:&Pe32)->Result<()> {
+    if dll_relative_call_target(dll,pe,0x19798)?!=0x19C78 {
+        return Err("original worker byte-mixer CALL no longer targets 19C78".into());
+    }
+    dll_expect_raw_x86(dll,pe,0x19798,
+        &[0xE8,0xDB,0x04,0,0,0x83,0xC4,0x18])?;
+    for (site,bytes) in [
+        (0x197A0u32,&[0x70,0x0B,0x77,0x07,0x87,0xD2][..]),
+        (0x197AB,&[0xEB,0x03][..]),
+        (0x197B4,&[0x78,0x06,0x90,0x79,0x03][..]),
+        (0x197BC,&[0x7B,0x11,0x7A,0x0F][..]),
+        (0x197CF,&[0x70,0xEE,0x71,0xEC][..]),
+        (0x197D4,&[0x8B,0x45,0xF4,0x03,0x45,0xF8][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    let mut distinct=std::collections::HashSet::new();
+    let mut shortest=usize::MAX;
+    let mut longest=0usize;
+    for bits in 0u8..32 {
+        let flags=GatePredecessorFlags {
+            cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+            sf:bits&8!=0,of:bits&16!=0,
+        };
+        let path=trace_mixer_return_to_worker_counter(dll,pe,flags)?;
+        if path.first()!=Some(&0x197A0) || path.last()!=Some(&0x197D4) {
+            return Err("mixer return did not join the counter update".into());
+        }
+        shortest=shortest.min(path.len());
+        longest=longest.max(path.len());
+        distinct.insert(path);
+    }
+    if distinct.len()!=24 || shortest!=12 || longest!=23 {
+        return Err(format!(
+            "mixer-return to counter graph changed: {} paths {shortest}..{longest}",
+            distinct.len()
+        ));
+    }
+    Ok(())
+}
+
 /// At original 197D4 the worker loads [EBP-0x0C], adds the DWORD
 /// from [EBP-0x08] modulo 2^32, then stores it back. Its
 /// 197FA/197FD continuation sets [EBP-0x14]=[EBP-0x04].
@@ -217,6 +291,7 @@ pub fn trace_original_finalizer_maze(
 /// Audit original instruction boundaries and conditional caller
 /// behavior against an already SHA-256 verified, user-owned DLL.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_mixer_to_counter_bridge(dll,pe)?;
     audit_original_worker_counter_exit(dll,pe)?;
     for (rva,expected) in [
         (0x19686u32,&[0x8B,0x55,0xF4,0x3B,0x55,0xEC,0x0F,0x83,0x87,0x01,0,0][..]),
@@ -290,6 +365,16 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_mixer_bridge_and_counter_use_distinct_instruction_boundaries() {
+        assert_eq!(0x19798u32+5,0x1979D);
+        assert_eq!(0x1979D+3,0x197A0);
+        assert!(0x197A0<0x197D4);
+        assert!(0x197D4<0x197FA);
+        // The 32-path analysis is checked against the exact original
+        // bytes by audit_original, not simulated in synthetic tests.
+    }
+
     #[test]
     fn original_worker_exit_is_unsigned_and_wraps_at_32bits() {
         assert!(!unsigned_worker_exit(0,0,1));
