@@ -182,3 +182,48 @@ known low-byte transform.
 conditions in \`0x1AE3F\` and \`0x1BEEE\` (or establish that they do not
 write) before concluding the successful OS-probe effect on the global
 state. \`0x1A9B6\`'s success path is separately unresolved.
+
+### Successful GetVersionExA dispatch in the OTHER helper (1A9B6)
+
+A separate bounded x86 branch interpreter now follows the original
+\`0x1AA35\` nonzero-EAX path (distinct from the \`0x1A77F\` path).
+For **each** of three nonzero API-result examples
+(\`0x1\`, \`0x80000000\`, \`0x11223344\`), original PE bytes and x86
+flag conditions (ZF/CF/PF/SF/OF) yielded the same conditional
+platform-class destinations:
+
+| Successful API, \`dwPlatformId\` | First helper call or fallback entry |
+| --- | --- |
+| \`1\` (Windows 9x) | \`0x1AA9E\` calls \`0x1C7F0\` |
+| \`2\` (Windows NT) | \`0x1AB0F\` calls \`0x1BAC7\` |
+| \`0\`, \`3\`, \`0xFFFFFFFF\` | falls into \`0x1AB34\` |
+
+The program begins with a deliberately obfuscated chain of
+overlapping instruction boundaries at \`0x1AA3D..0x1AA75\`,
+then compares the same **OSVERSIONINFOA.dwPlatformId**
+at \`[EBP-0x84]\` to 1 and 2. The modeled 9x/NT call sites both push
+the original \`[EBP+8]\` argument pointer to their helper. Each
+actual E8 call destination and the path's anchoring instruction
+bytes are asserted in the separate Rust diagnostic.
+
+**Important distinction:** the \`0x1AB34\` entry for an unsupported
+platform is also involved in the API-*failure* path, but arrives with
+**different EFLAGS** after a preceding CMP. It cannot be assumed to
+behave identically, let alone preserve the state DWORD. Therefore the
+model reports **FallbackEntry1ab34**, *not* "unchanged" and not "low
+byte masked." The behavior of the \`0x1C7F0\` and \`0x1BAC7\`
+helpers also remains unresolved.
+
+Combined original static dispatch map under successful Windows version
+queries:
+
+| Helper calling GetVersionExA | Windows 9x, platform 1 | Windows NT, platform 2 | Other platform |
+| --- | --- | --- | --- |
+| \`0x1A77F\` | \`0x1BEEE\` | \`0x1AE3F\` | low-byte mask |
+| \`0x1A9B6\` | \`0x1C7F0\` | \`0x1BAC7\` | fallback entry \`0x1AB34\` (unknown effect) |
+
+These are **conditional static routing claims only**. They do not
+demonstrate real runtime reachability, successful execution of any
+platform-specific helpers or identification of the mixer-entry state,
+and do not recover the protected EAX modifiers at
+\`0x65BE\` and \`0x6621\`.
