@@ -1289,3 +1289,117 @@ initialization WORD, effects of `0xA870`, `0xA560`, and `0xA620`,
 and the record contents are not established here. The
 return value of `0xA810` is not necessarily the return value
 of the first worker invocation. No game memory is accessed.
+
+
+### Original process-memory and file-read backends: A560, A620 and A870 (2026-10-28)
+
+New **read-only, SHA-256-anchored** inspection of the original
+unencrypted `.text` code settles which backends the previously
+recovered `A810` data-source dispatcher actually uses:
+
+| Source type (`[source+8]`) | Backend | Original behavior (conditional on valid inputs) |
+| --- | --- | --- |
+| `0x64` | No backend | `A810` returns `AX=0` immediately |
+| `0x65` | `0xA560` | Seek file handle, then read exact requested byte count |
+| `0x66` | `0xA620` | Read another process's memory through a dynamically loaded callback |
+| `0x67` | `0xA620` | Copy directly from a mapped/local memory pointer |
+| Other | `0xA620` | Returns `AX=0` (unsupported original case) |
+
+**File backend A560.** The original code first checks type 0x65.
+At `0xA578`, its genuine PE IAT call is
+`KERNEL32.dll!SetFilePointer` (`IAT RVA 0x1E044`), with handle
+from `[source]`, offset argument and `FILE_BEGIN` origin 0.
+If EAX equals `0xFFFFFFFF`, the original code returns `AX=0`
+without consulting `GetLastError`, so it can treat a potentially
+ambiguous return as failure. Otherwise it calls the real
+`ReadFile` import at `0xA597` (`IAT 0x1E040`) and returns
+`AX=1` **only if** the imported function succeeds and the DWORD
+written to its `lpNumberOfBytesRead` equals the requested count.
+Partial reads or failures return `AX=0`.
+
+**Remote-process backend A620, type 0x66.** The original
+`0xA6C3` instruction calls an **indirect function pointer**
+at preferred VA `0x00904AE0`; it passes a process handle
+from `[source]`, an address computed as `[source+4]+offset`,
+an output pointer, a requested byte count and a bytes-read
+output pointer. It returns `AX=1` **only if** that callback
+returns nonzero and the actual count matches the request.
+On some failures it also calls the genuine imported
+`GetLastError` at IAT `0x1E04C`. The function pointer's
+identity is independently proven by the original resolver below.
+
+**Local-memory backend A620, type 0x67.** It calls `0xB5D0`
+to retrieve an optional mapping descriptor, then tests the
+pointer at descriptor offset `+0x3C`, a signed-nonnegative
+offset and a size at `+0x40`. Its mapped branch copies data
+with `REP MOVSD`/`REP MOVSB` from the descriptor's data
+pointer plus offset. A separate fallback copies from
+`[source+4]+offset`. Both direct-copy branches set `AX=1`
+after executing their respective copies.
+
+**Safety limit:** the mapped branch clamps its copy count to
+`min(requested, descriptor_total_size)`, not
+`descriptor_total_size - offset`. The fallback path does not
+perform an independently established bound check. This is
+static historical disassembly, **not** a safety guarantee
+or a recommendation to run these routines on untrusted data.
+
+#### Four XOR-encoded names establish the dynamic API imports
+
+Four null-terminated encoded byte strings are embedded in
+the original `.data` at RVAs `0x204B8`, `0x204C8`,
+`0x204E0`, and `0x204F8`. The **original decoder `0xA970`**
+uses a chained recurrence for the ith output character:
+
+```text
+plain[0]   = encoded[0]
+plain[i>0] = plain[i-1] XOR ((encoded[i] - 1) & 0xFF)
+```
+
+Running this rule against the **exact original bytes** yields:
+
+| Encoded-string RVA | Decoded name |
+| --- | --- |
+| `0x204B8` | `Kernel32.dll` |
+| `0x204C8` | `ReadProcessMemory` |
+| `0x204E0` | `WriteProcessMemory` |
+| `0x204F8` | `VirtualProtect` |
+
+The original initialization routine `0xA870` passes these
+names through its string decoder and dynamic resolution path
+(via the imported `LoadLibraryA` and `GetProcAddress`).
+The three dynamically resolved functions are stored at:
+
+| Preferred VA | Dynamically resolved function |
+| --- | --- |
+| `0x00904AE0` | `ReadProcessMemory` |
+| `0x00904ADC` | `WriteProcessMemory` |
+| `0x00904AD8` | `VirtualProtect` |
+
+These are **dynamically populated global pointer slots in
+zero-filled `.data`**, not static entries in the DLL's
+import address table. Original `A620` type-66 code calls the
+first global; other routines use the remaining functions.
+The use of process-memory APIs provides an original-code
+mechanism for inspecting or changing process memory, but does
+**not prove** which target process/address was used during
+Crimson Skies startup or whether those calls succeeded.
+
+New module `src/unsafedisc_dll_io_backends.rs` checks the
+four decoded names, original decoder and API resolver
+opcodes, actual import identities, A560 file-read opcodes
+and A620 process-memory/mapped-copy branch instructions.
+It includes pure synthetic tests for the type switch,
+file/process full-read success conditions, decoding, and
+the mapped-copy fallback. A separate standalone
+`verify_io_backends.py` uses only the Python standard library
+to check original file-backed bytes; it **passes** on the
+retail SHA-256-pinned DLL and **rejects** a tampered 1-byte copy.
+
+**Outstanding:** the input types and byte records observed
+at runtime; effects of `A870` initialization failures;
+the semantics of map helper `B5D0`; the protected code
+read from the external process; original loader entrypoint
+reachability and the final global mixer-state sequence.
+No DLL code, SafeDisc driver, Windows API or executable
+decryption was run or enabled by this research.
