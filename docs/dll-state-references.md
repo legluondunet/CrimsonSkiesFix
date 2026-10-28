@@ -278,6 +278,15 @@ conditional interrupt path, if returned EAX differs from `0x4300`,
 the global decoder state `0x00905010`. This is again a conditional
 *source-code* rule, not an observation of an interrupt result.
 
+The original bytes at `0x1CD31` and `0x1CD39` provide a
+narrower local reachability proof: **JL** to `0x1CD46`, followed
+(on its untaken path) only by two NOPs and **JGE** to the same target.
+Because `JL` and `JGE` are complementary on unchanged SF/OF,
+*every* flag assignment entering **0x1CD31** joins the E8 call at
+`0x1CD46`. This does **not** show that `0x1CD31` is reached from
+the process entrypoint. Rust checks both original branch encodings,
+their targets and all four SF/OF combinations.
+
 This is **static, source-byte evidence only**. It would be misleading
 to claim that the \`1CD46\` callsite or interrupt executes during real
 Crimson Skies startup. Overlapping instructions and opaque control
