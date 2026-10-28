@@ -104,8 +104,8 @@ pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->R
 pub fn trace_original_flag_segment(
     dll:&[u8],pe:&Pe32,start:u32,target:u32,f:GatePredecessorFlags
 )->Result<Vec<u32>> {
-    if !(0x1C806..=0x1D051).contains(&start) || target<=start ||
-       target>0x1D051 {
+    if !(0x1C806..=0x1D26A).contains(&start) || target<=start ||
+       target>0x1D26A {
         return Err("Win9x flag-only segment boundaries are invalid".into());
     }
     let mut pc=start;
@@ -174,6 +174,74 @@ pub fn audit_win9x_gate_success_to_version_api(dll:&[u8],pe:&Pe32)->Result<()> {
             return Err(format!(
                 "original gate-success segment 0x{start:05X}..0x{end:05X} changed: \
                  {} paths {observed_min}..{observed_max}",distinct.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+
+/// Narrow keyboard-accepted path ONLY. A second GetVersionExA
+/// call inside the Win9x helper decides whether the original
+/// local-flag assignment [EBP-0x98]=15 can be reached.
+/// On failure or dwPlatformId==1 the accepted-keyboard local is zero
+/// and the original JBE at 1D1A4 bypasses the pointer-add guard.
+/// On API success with dwPlatformId!=1 it is set to fifteen and
+/// the path reaches 1D26A (subject to the pointer-null guard).
+/// The keyboard-rejected/INT 68h outcome is NOT modeled here.
+pub fn accepted_keyboard_nested_version_to_guard(
+    nested_api_success:bool,platform_id:u32
+)->bool {
+    nested_api_success && platform_id!=1
+}
+
+/// Original-image proof of a conditional, not universal, path
+/// through the four remaining flag-only obfuscation networks.
+/// No OS API is called, no instruction from the DLL is executed.
+pub fn audit_win9x_nested_version_to_pointer_guard(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (rva,expected) in [
+        (0x1D05Eu32,&[0x85,0xC0,0x0F,0x84,0x37,0x01,0,0][..]),
+        (0x1D0C6,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x01][..]),
+        (0x1D0CD,&[0x0F,0x84,0xCA,0,0,0][..]),
+        (0x1D133,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0x0F,0,0,0][..]),
+        (0x1D19D,&[0x83,0xBD,0x68,0xFF,0xFF,0xFF,0][..]),
+        (0x1D1A4,&[0x0F,0x86,0x5B,0x01,0,0][..]),
+        (0x1D26A,&[0x83,0x7D,0x08,0,0x0F,0x84,0x88,0,0][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,expected)?;
+    }
+    for (pc,size,delta,target) in [
+        (0x1D060u32,6u32,0x137u32,0x1D19Du32), // API failure
+        (0x1D0CD,6,0xCA,0x1D19D), // dwPlatformId==1
+        (0x1D1A4,6,0x15B,0x1D305), // local flag ==0
+        (0x1D26E,6,0x88,0x1D2FC), // passed pointer==NULL
+    ] {
+        if pc+size+delta!=target {
+            return Err("original nested Win9x version-to-pointer guard branch changed".into());
+        }
+    }
+    for (start,end,want_unique,want_min,want_max) in [
+        (0x1D066u32,0x1D0C6u32,16usize,15usize,33usize),
+        (0x1D0D3,0x1D133,32,16,28),
+        (0x1D13D,0x1D19D,16,15,27),
+        (0x1D1AA,0x1D26A,32,31,60),
+    ] {
+        let mut unique=std::collections::HashSet::new();
+        let mut min=usize::MAX;
+        let mut max=0usize;
+        for bits in 0u8..32 {
+            let f=GatePredecessorFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let trace=trace_original_flag_segment(dll,pe,start,end,f)?;
+            min=min.min(trace.len()); max=max.max(trace.len());
+            unique.insert(trace);
+        }
+        if unique.len()!=want_unique || min!=want_min || max!=want_max {
+            return Err(format!(
+                "original nested Win9x segment 0x{start:05X}..0x{end:05X} changed: \
+                {} unique paths of {min}..{max} instruction sites",unique.len()
             ));
         }
     }
@@ -384,6 +452,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     audit_win9x_entry_to_keyboard_gate(dll,pe)?;
     audit_win9x_gate_success_to_version_api(dll,pe)?;
+    audit_win9x_nested_version_to_pointer_guard(dll,pe)?;
     audit_gate_predecessor_original(dll,pe)?;
     for (site,bytes) in [
         (0x1D42Fu32,&[0x55,0x8B,0xEC,0x51,0x6A,0x00][..]),
@@ -503,6 +572,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn accepted_keyboard_nested_version_conditional_state_add_gate() {
+        for platform in [0,1,2,3,u32::MAX] {
+            assert!(!accepted_keyboard_nested_version_to_guard(false,platform));
+            assert_eq!(
+                accepted_keyboard_nested_version_to_guard(true,platform),
+                platform!=1
+            );
+        }
+        // The result models a path to the existing pointer-null guard
+        // ONLY, not an unconditional write or the complete DLL state.
     }
 
     #[test]
