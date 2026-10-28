@@ -2869,7 +2869,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    The two failure branches differ: 1A77F masks the low byte; 1A9B6 keeps the passed DWORD unchanged.");
     println!("    1A77F GetVersionExA-SUCCESS dispatch, original conditional x86 path verified: dwPlatformId=1 -> 1BEEE (Win9x), =2 -> 1AE3F (NT), other -> low-byte mask at 1A854.");
     println!("    Both platform-specific helper bodies invoke the actual KERNEL32!GetModuleHandleA import through IAT 0x1E098; their later state effects are NOT recovered.");
-    println!("    1A9B6 GetVersionExA-SUCCESS original x86 route: dwPlatformId=1 -> 1C7F0 (Win9x), =2 -> 1BAC7 (NT), other -> 1AB34 fallback entry (effect unresolved).");
+    println!("    1A9B6 GetVersionExA-SUCCESS original x86 route: dwPlatformId=1 -> 1C7F0 (Win9x), =2 -> 1BAC7 (NT), other -> 1AB34 fallback entry.");
+    println!("    Original 1AB34 fallback: all 32 combinations of the five relevant x86 flags converge to AX=1 and return, without changing the passed DWORD on that branch.");
     println!("    All FOUR platform-specific helper BODIES and both helpers' runtime effects are unresolved; dispatch alone does not determine the state at 19C78.");
     println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
     println!("    Two exact .txt2 E8 sources call shared worker 0x18F81: process path 0x1A1B2, DLL path 0x1A39C.");
