@@ -1547,3 +1547,69 @@ same first-section layout, that alone does not decrypt
 their differing code bytes or recover either EAX modifier.
 **No SafeDisc unpacking was enabled and no retail file was
 modified or published.**
+
+
+### Original previously opaque A310 worker helper: source gate and cache (2026-10-28)
+
+The earlier worker source-helper call **`0x196AE -> 0xA310`**
+was previously treated as an unknown function whose returned
+**low 16 bits** determine whether the worker proceeds toward
+the byte mixer. The actual `0xA310` routine resides in the
+original **readable `.text`** section and has now been partially
+reconstructed using exact-original source instructions.
+
+On entry it first checks two required DWORD pointers:
+
+1. The original cursor-position pointer at `[ESP+0x18]`
+   (after the four preserved-register pushes) must be nonnull.
+2. The limit pointer at `[ESP+0x1C]` must also be nonnull.
+3. It reads the two pointed-to DWORDs and compares them
+   **unsigned**. If `cursor >= limit`, it jumps to original
+   `0xA3FF`, which returns **AX=0**.
+4. Otherwise it calls original **`0xB5D0`** to find a
+   matching source descriptor by the previously audited active
+   12-byte key. If B5D0 returns zero, this A310 call returns
+   **AX=0** as well.
+
+**Only when all four preconditions are satisfied** does the
+routine proceed into its cache and processing logic. This
+accounts for several real source-level early-zero outcomes
+without guessing the success of any memory or Win32 calls.
+
+#### Original 4 KiB page cache and delegated processing
+
+After successful map lookup, the original instructions compare
+its cached page-position DWORD at descriptor `+0x34` with the
+cursor, and compare the limit with cached descriptor `+0x38`.
+A nonzero cursor aligned to a 4096-byte boundary is first
+decremented by one **for this comparison only**.
+The actual page-index test is
+`((probe_cursor XOR cached_cursor) & 0xFFFFF000) == 0`.
+
+Depending on the cache values and an independent WORD at
+preferred VA **`0x00904AD4`**, the original code may call
+`0xC0D0`, `0xC0C0` or `0xBFB0` before updating the cached
+cursor and limit. Their effects are not treated as known.
+
+The common final call **`0xA3F2 -> 0xBED0`** receives arguments
+derived from the caller and the map record; **A310 returns
+BED0's return value**, with no additional invented success
+or failure interpretation. The existing worker checks only
+its low 16 bits. That returned value remains unresolved
+until BED0's own logic is reconstructed.
+
+`src/unsafedisc_dll_a310.rs` verifies the exact original
+instruction windows, every named original rel32 call
+(196AE->A310, A33E->B5D0, A394->C0D0, A3A2->C0C0,
+A3C8->BFB0, A3F2->BED0), and the null-pointer/unsigned
+comparison branch offsets. Four synthetic Rust tests model
+the three early-zero exits and the 4 KiB boundary probe.
+The standalone local Python checker `verify_a310_worker_gate.py`
+independently validates the same original file-backed bytes
+with a pinned SHA-256 gate. None of this executes the code.
+
+**Limits:** pointer validity after passing the null check,
+active map contents, page-cache contents, runtime page-boundary
+behavior and BED0's outcome are not established. This is a
+factual partial reconstruction of a former opaque helper,
+not a complete or safe process-memory reader.
