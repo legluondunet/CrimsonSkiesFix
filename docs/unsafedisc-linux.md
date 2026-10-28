@@ -195,6 +195,65 @@ is never embedded in CI. Full historical-source verification
 requires running the standalone command against the owner's
 private **original, exact-SHA-256** unSafeDisc 1.5.5.
 
+### Newly verified historical executable startup divergence (2026-10-28)
+
+Direct **byte-level** analysis of the publicly archived, compatibility-
+modified 18,944-byte unSafeDisc 1.5.5 (Git blob
+`825c467b6b403e1c85a5875ede5696dedfe17652`)
+exposes an IMPORTANT difference from earlier, private original
+20,480-byte unSafeDisc research notes. We parsed its PE import
+descriptors independently and confirmed that
+`0x402E0C: FF 25 08 D1 70 00` is the actual IAT trampoline for
+`KERNEL32!LoadLibraryExA`.
+
+The public variant's **original instruction bytes** include:
+
+```asm
+402D50  MOV EAX, 0x00403741        ; DLL filename
+402D55  PUSH 0                    ; dwFlags = 0
+402D57  PUSH 0                    ; hFile = NULL
+402D59  PUSH EAX                  ; lpLibFileName
+402D5A  CALL 0x402E0C            ; LoadLibraryExA
+...
+402D76  MOV CX, DS
+402D79  TEST CL, 4
+402D7C  JMP SHORT 0x402D9A       ; UNCONDITIONAL
+402D93  PUSH 0                    ; lpReserved (skipped)
+402D95  PUSH 1                    ; DLL_PROCESS_ATTACH (skipped)
+402D97  PUSH EAX                  ; HMODULE (skipped)
+402D98  CALL EBX                  ; DLL entrypoint (skipped)
+402D9A  RET
+```
+
+Therefore this **public variant** requests a **normal loader
+initialization** (`dwFlags=0`) and unconditionally bypasses
+its explicit manual call to the DLL's entrypoint. An earlier
+read of the owner's **different**, hash-verified original 20,480-byte
+executable recorded **`dwFlags=1`**
+(`DONT_RESOLVE_DLL_REFERENCES`) and a
+`DS`-selector-dependent branch for manual
+`DLL_PROCESS_ATTACH`. Those original-source findings must
+be checked again with the new standalone private-original audit:
+the private original **is not present in this session**.
+
+**Do NOT combine** the archived `dwFlags=0` behavior with
+the owner's original `dwFlags=1` behavior, nor infer that
+disabling manual initialization of the archived version
+disables normal loader-invoked initialization. The archived
+variant's path is a poor substitute for reconstructing the
+original SafeDisc loader's Windows 98 dependencies.
+
+Added `analyze_155_dll_startup`: bounded read-only decoding
+of the `402D50` argument pushes, the CALL rel32 target,
+the DOS/NT entrypoint-address arithmetic, the DS mask test,
+and the branch at `402D7C`. It distinguishes an unconditional
+manual-attach bypass (`JMP`) from conditional
+`JZ`/`JNZ` skips and fails on unrecognized/mutated bytes.
+The existing `inspect-historical --unsafedisc` command now
+displays these fields **after exact original SHA-256 validation**.
+Two synthetic tests cover both startup classes and negative
+cases. Neither historical executable nor DLL is executed.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
