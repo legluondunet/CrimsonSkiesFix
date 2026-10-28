@@ -22,6 +22,10 @@ pub enum DirectoryField { Rva, Size }
 pub struct BootstrapStep {
     pub category:u8,
     pub selector:u8,
+    pub source_directory_index:usize,
+    pub source_rva:u32,
+    pub source_size:u32,
+    pub passes_nonzero_size_guard:bool,
     pub directory_index:usize,
     pub directory_field:DirectoryField,
     pub candidate_rva:u32,
@@ -32,6 +36,7 @@ pub struct BootstrapStep {
 struct Route {
     a140_call:u32,
     helper:u32,
+    source_directory_index:usize,
     category_push:u32,
     category:u8,
     wrapper_call:u32,
@@ -47,7 +52,7 @@ struct Route {
 
 const ROUTES:[Route;5]=[
     Route {
-        a140_call:0xA181,helper:0xB3D0,
+        a140_call:0xA181,helper:0xB3D0,source_directory_index:12,
         category_push:0xB3E9,category:1,
         wrapper_call:0xB40B,wrapper:0x18890,
         selector_push:0x188AA,selector:11,
@@ -56,7 +61,7 @@ const ROUTES:[Route;5]=[
         find_section_call:0x1842D,scratch_field_offset:0x11C,
     },
     Route {
-        a140_call:0xA192,helper:0xB1C0,
+        a140_call:0xA192,helper:0xB1C0,source_directory_index:1,
         category_push:0xB1DA,category:1,
         wrapper_call:0xB201,wrapper:0x18860,
         selector_push:0x1887A,selector:6,
@@ -65,7 +70,7 @@ const ROUTES:[Route;5]=[
         find_section_call:0x18367,scratch_field_offset:0xC4,
     },
     Route {
-        a140_call:0xA1A3,helper:0xAFB0,
+        a140_call:0xA1A3,helper:0xAFB0,source_directory_index:2,
         category_push:0xAFC9,category:2,
         wrapper_call:0xAFED,wrapper:0x18830,
         // This wrapper forwards the selector from its caller.
@@ -75,7 +80,7 @@ const ROUTES:[Route;5]=[
         find_section_call:0x18314,scratch_field_offset:0xC0,
     },
     Route {
-        a140_call:0xA1B4,helper:0xAE10,
+        a140_call:0xA1B4,helper:0xAE10,source_directory_index:0,
         category_push:0xAE27,category:0,
         wrapper_call:0xAE44,wrapper:0x188C0,
         selector_push:0x188DA,selector:7,
@@ -84,7 +89,7 @@ const ROUTES:[Route;5]=[
         find_section_call:0x185E5,scratch_field_offset:0xB0,
     },
     Route {
-        a140_call:0xA1CB,helper:0xAC10,
+        a140_call:0xA1CB,helper:0xAC10,source_directory_index:9,
         category_push:0xAC28,category:7,
         wrapper_call:0xAC45,wrapper:0x188F0,
         selector_push:0x1890A,selector:9,
@@ -98,6 +103,15 @@ const ROUTES:[Route;5]=[
 // copied NT header, and NT+0x78 is IMAGE_DATA_DIRECTORY[0].
 // Therefore an original case reference to ESP+0xB0 selects the
 // first directory RVA (not the PE section table or a byte key).
+// B540's per-module record holds the copied IMAGE_DATA_DIRECTORY[16]
+ // array at record+0x44. A140 reads its RVA/Size DWORDs from exactly
+ // these locations and passes them to each helper. Do not confuse
+ // *source* directory index with the helper's later *selector* index.
+pub fn record_directory_field_offset(index:usize,field:DirectoryField)->Result<u32> {
+    if index>=16 {return Err("DLL record data-directory index out of range".into());}
+    Ok(0x44+(index as u32)*8+if field==DirectoryField::Size{4}else{0})
+}
+
 pub fn scratch_directory_field(stack_offset:u32)->Result<(usize,DirectoryField)> {
     let delta=stack_offset.checked_sub(0xB0)
         .ok_or_else(||"DLL selector scratch offset before first directory".to_string())?;
@@ -135,6 +149,36 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
     // by preferred VA, never treated as executable instruction bytes.
     check_call(dll,pe,0x987C,0xA140)?;
     check_call(dll,pe,0x989F,0x7212)?;
+    // A140 passes the registry record's +0x44 address to 18770:
+    // the latter calls the PE NT header reader and copies exactly
+    // 32 DWORDs (16 RVA/Size pairs) into that record.
+    dll_expect_raw_x86(dll,pe,0xA161,&[
+        0x55,0x8D,0x6E,0x44,0x55,0x53,0xE8,0x04,0xE6,0x00,0x00
+    ])?;
+    check_call(dll,pe,0xA167,0x18770)?;
+    check_call(dll,pe,0x18787,0x18940)?;
+    dll_expect_raw_x86(dll,pe,0x18793,&[0xB9,0x20,0,0,0])?;
+    dll_expect_raw_x86(dll,pe,0x18798,&[0x8D,0xB4,0x24,0xCC,0,0,0])?;
+    dll_expect_raw_x86(dll,pe,0x187A2,&[0xF3,0xA5])?;
+    // Concrete section-directory source loads from the record.
+    for (rva,bytes) in [
+        (0xA16Cu32,&[0x8B,0x8E,0xA8,0,0,0,0x8B,0x96,0xA4,0,0,0][..]),
+        (0xA186,&[0x8B,0x46,0x50,0x8B,0x4E,0x4C][..]),
+        (0xA197,&[0x8B,0x56,0x58,0x8B,0x46,0x54][..]),
+        (0xA1A8,&[0x8B,0x4E,0x48,0x8B,0x55,0x00][..]),
+        (0xA1B9,&[0x8B,0x86,0x90,0,0,0,0x8B,0x8E,0x8C,0,0,0][..])
+    ] { dll_expect_raw_x86(dll,pe,rva,bytes)?; }
+    // Every helper has a conditional early exit on a zero Size.
+    for (source_load,source_bytes,guard,guard_bytes) in [
+        (0xB3D0u32,&[0x8B,0x44,0x24,0x0C][..],0xB3D7u32,&[0x85,0xC0][..]),
+        (0xB1C1,&[0x8B,0x44,0x24,0x10][..],0xB1C8,&[0x85,0xC0][..]),
+        (0xAFB0,&[0x8B,0x44,0x24,0x0C][..],0xAFB7,&[0x85,0xC0][..]),
+        (0xAE10,&[0x8B,0x44,0x24,0x0C][..],0xAE17,&[0x85,0xC0][..]),
+        (0xAC11,&[0x8B,0x5C,0x24,0x10][..],0xAC17,&[0x85,0xDB][..])
+    ] {
+        dll_expect_raw_x86(dll,pe,source_load,source_bytes)?;
+        dll_expect_raw_x86(dll,pe,guard,guard_bytes)?;
+    }
     check_call(dll,pe,0x98C5,0x7C4F)?;
     dll_expect_raw_x86(dll,pe,0x18263,&[0x83,0xF9,0x0A])?;
     dll_expect_raw_x86(dll,pe,0x18272,&[0xFF,0x24,0x8D,0x80,0x86,0x8F,0x00])?;
@@ -167,6 +211,12 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
                 route.selector));
         }
         let (dir,field)=scratch_directory_field(route.scratch_field_offset)?;
+        let source_offset_rva=record_directory_field_offset(
+            route.source_directory_index,DirectoryField::Rva)?;
+        let source_offset_size=record_directory_field_offset(
+            route.source_directory_index,DirectoryField::Size)?;
+        let source_rva=read_u32(dll,nt+0x78+(source_offset_rva-0x44) as usize)?;
+        let source_size=read_u32(dll,nt+0x78+(source_offset_size-0x44) as usize)?;
         let relative=dir*8+if field==DirectoryField::Size {4} else {0};
         // Each original PE data-directory entry lives at NT+0x78;
         // verified on this exact PE32 build, not guessed from a VA.
@@ -174,20 +224,25 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
         let matched=containing_section(requested,&sections).map(str::to_string);
         output.push(BootstrapStep{
             category:route.category,selector:route.selector,
+            source_directory_index:route.source_directory_index,
+            source_rva,source_size,passes_nonzero_size_guard:source_size!=0,
             directory_index:dir,directory_field:field,
             candidate_rva:requested,matching_section:matched
         });
     }
 
     let expected=[
-        (1u8,11u8,13usize,DirectoryField::Size,0u32,None),
-        (1,6,2,DirectoryField::Size,0,None),
-        (2,5,2,DirectoryField::Rva,0,None),
-        (0,7,0,DirectoryField::Rva,0x1F350,Some(".rdata")),
-        (7,9,10,DirectoryField::Size,0,None),
+        (1u8,11u8,12usize,0x1E000u32,0x11Cu32,13usize,DirectoryField::Size,0u32,None),
+        (1,6,1,0x1ED14,0x3C,2,DirectoryField::Size,0,None),
+        (2,5,2,0,0,2,DirectoryField::Rva,0,None),
+        (0,7,0,0x1F350,0x60,0,DirectoryField::Rva,0x1F350,Some(".rdata")),
+        (7,9,9,0,0,10,DirectoryField::Size,0,None),
     ];
-    for (actual,(cat,selector,dir,field,value,section)) in output.iter().zip(expected) {
+    for (actual,(cat,selector,source_idx,source_rva,source_size,dir,field,value,section)) in output.iter().zip(expected) {
         if actual.category!=cat || actual.selector!=selector ||
+           actual.source_directory_index!=source_idx ||
+           actual.source_rva!=source_rva || actual.source_size!=source_size ||
+           actual.passes_nonzero_size_guard!=(source_size!=0) ||
            actual.directory_index!=dir || actual.directory_field!=field ||
            actual.candidate_rva!=value ||
            actual.matching_section.as_deref()!=section {
@@ -212,6 +267,37 @@ mod tests {
         assert!(scratch_directory_field(0xAC).is_err());
         assert!(scratch_directory_field(0xB2).is_err());
         assert!(scratch_directory_field(0x130).is_err());
+    }
+
+    #[test]
+    fn record_directory_slots_match_actual_a140_register_offsets() {
+        for (dir,rva,size) in [
+            (12usize,0xA4u32,0xA8u32),
+            (1,0x4C,0x50),
+            (2,0x54,0x58),
+            (0,0x44,0x48),
+            (9,0x8C,0x90),
+        ] {
+            assert_eq!(record_directory_field_offset(dir,DirectoryField::Rva).unwrap(),rva);
+            assert_eq!(record_directory_field_offset(dir,DirectoryField::Size).unwrap(),size);
+        }
+        assert!(record_directory_field_offset(16,DirectoryField::Rva).is_err());
+    }
+
+    #[test]
+    fn two_empty_source_directories_cannot_pass_a140_helper_guard() {
+        let originals=[
+            (12usize,0x1E000u32,0x11Cu32),
+            (1,0x1ED14,0x3C),
+            (2,0,0),
+            (0,0x1F350,0x60),
+            (9,0,0)
+        ];
+        let proceed:Vec<bool>=originals.iter().map(|row|row.2!=0).collect();
+        assert_eq!(proceed,[true,true,false,true,false]);
+        // The helper may act before a later section-selector fails;
+        // a zero selector result alone does NOT eliminate earlier writes.
+        assert!(proceed[0] && proceed[1]);
     }
 
     #[test]
