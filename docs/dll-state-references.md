@@ -1667,6 +1667,33 @@ assumption, and is deliberately **not** elided from the
 source-level model.
 
 
+#### BDD0 also clips the matched interval with C430 / C450
+
+After the candidate test succeeds, original `0xBDD0`
+calls two independently readable `.text` helpers:
+
+- **`0xBE24 -> 0xC430`** returns unsigned
+  `max(candidate_start, requested_lower)`.
+- **`0xBE34 -> 0xC450`** returns unsigned
+  `min((candidate_start + candidate_length - 1) mod 2^32, requested_upper)`.
+
+On the successful `BDD0` branch the resulting two endpoints
+are written back to its two pointer operands; the matched
+list node is stored in an additional output field and `AX=1`.
+The helper `0xC450` uses an **inclusive upper endpoint**
+and `LEA` with **wrapping 32-bit arithmetic**, not checked
+64-bit addition. For example, candidate `[10,19]` restricted
+to `[12,15]` gives endpoints 12 and 15. A candidate with
+start `0xFFFFFFFF`, length 2 produces inclusive endpoint zero
+under the original wrapping rule; it must not be treated
+as a safe, generalized interval operation.
+
+The pure Rust helpers `original_c430_lower` and
+`original_c450_upper` reproduce these exact operations.
+The original-byte audit pins both opcode windows, both
+relative calls, and the unsigned conditional branches;
+two synthetic Rust tests cover ordinary bounds and wraparound.
+
 #### C550: exact unsigned range predicate inside BDD0
 
 The original `0xBDD0` and its `0xBE60` list-search helper
@@ -1698,8 +1725,8 @@ displacements and both original callsites
 `0xBE11 -> C550`, `0xBE7D -> C550`.
 Two synthetic tests cover boundaries, truncation and
 wrapping. The independent Python script
-`verify_bed0_pipeline.py` now verifies **13 opcode windows,
-13 relative call targets and 12 branch destinations**
+`verify_bed0_pipeline.py` now verifies **15 opcode windows,
+15 relative call targets and 14 branch destinations**
 on the exact retail DLL and rejects a changed one-byte copy.
 
 The original **`0xBDD0`** success branch eventually sets its
