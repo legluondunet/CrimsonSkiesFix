@@ -61,8 +61,14 @@ for SHA-gated `inspect-snapshot` and the optional
 modify the existing `crimson-patcher` functionality.** A separate,
 SHA-gated Python candidate-reconstruction prototype has reproduced
 2,580,419 of 2,580,480 historical plaintext-reference bytes, but
-its output is **not yet runtime-validated** and it has not been
-merged into the Rust patcher. See the
+a separately controlled, exact-title **v0.9 historical output profile**
+now produces a file identical to the previously verified historical
+`TESTME.EXE` (SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`).
+This output parity depends partly on legacy *formatting constants* and
+measured size correlations, **not** a generalized recovery of historical
+unSafeDisc post-processing. Neither v0.8 nor v0.9 output is yet
+runtime-validated, and the separate Python prototype is not merged
+into the Rust patcher. See the
 [portage guide](docs/unsafedisc-linux.md) for build instructions,
 examples and current limitations. The separate
 [DLL state-pointer relocation audit](docs/dll-state-references.md) documents
