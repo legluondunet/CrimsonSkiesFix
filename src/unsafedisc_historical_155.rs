@@ -412,6 +412,10 @@ pub fn audit_155_codebit_crc_modifier_bridge(
 /// The archived x86 assumes PE32's standard 0xE0 optional
 /// header length: 4-byte signature + 20-byte COFF + 0xE0
 /// gives 0xF8 bytes from NT header to section table.
+/// Crucially, XOR ECX,ECX at 4024A5 is upstream of both
+/// MOV CX,[DOS+3C] and MOV CX,[NT+6] on the audited path.
+/// Therefore ECX upper 16 bits ARE ZERO on that path.
+/// The e_lfanew 16-bit read is a separate historical limitation.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct HistoricalSectionTableProvenance{
     pub nt_header_save_va:u32,
@@ -420,6 +424,8 @@ pub struct HistoricalSectionTableProvenance{
     pub fixed_section_table_delta:u32,
     pub section_table_global_va:u32,
     pub source_count_keeps_ecx_upper_half:bool,
+    pub ecx_high_word_zeroed_on_audited_path:bool,
+    pub dos_e_lfanew_read_width_bits:u8,
 }
 pub fn audit_155_section_table_provenance(
     code:&[u8],image_base:u32,code_rva:u32,
@@ -439,8 +445,24 @@ pub fn audit_155_section_table_provenance(
         }
         Ok(())
     };
-    // ESI has been established as a pointer to the 32-bit NT header;
-    // save it, then read COFF.NumberOfSections at NT+6 (WORD).
+    // The code first establishes ECX=0, reads ONLY WORD e_lfanew
+    // at DOS+0x3C into CX, computes the NT pointer, validates
+    // PE signature, and never modifies ECX again before the
+    // second MOV CX at 4024E4. This EXACT contiguous window
+    // establishes the zero upper half, not a guessed caller state.
+    exact(0x4024A5,&[
+        0x33,0xC9,0x66,0x8B,0x4E,0x3C,0x03,0xF1,0x3B,0xF3,
+        0x0F,0x87,0x49,0x04,0,0,
+        0x81,0x3E,0x50,0x45,0,0,
+        0x0F,0x85,0x3D,0x04,0,0,
+        0x66,0x83,0x7E,0xFE,0,0x75,0x06,
+        0x66,0xC7,0x46,0xFE,0x2B,0xAD,
+        0xC7,0x46,0x08,0x31,0x39,0x31,0x31,
+        0x89,0x35,0x13,0x3B,0x40,0,
+        0x8B,0x7E,0x54,0x03,0x3D,0x0F,0x3B,0x40,0,
+        0x66,0x8B,0x4E,0x06,
+    ])?;
+    // Save NT pointer and store WORD section count in zero-high ECX.
     exact(0x4024D5,&[0x89,0x35,0x13,0x3B,0x40,0])?;
     exact(0x4024E4,&[0x66,0x8B,0x4E,0x06])?; // MOV CX,[ESI+6]
     exact(0x4024E8,&[0x89,0x0D,0x3B,0x3B,0x40,0])?; // store full ECX
@@ -461,11 +483,14 @@ pub fn audit_155_section_table_provenance(
         fixed_section_table_delta:0xF8,
         section_table_global_va:0x403B17,
         source_count_keeps_ecx_upper_half:true,
+        ecx_high_word_zeroed_on_audited_path:true,
+        dos_e_lfanew_read_width_bits:16,
     })
 }
-/// Faithfully model x86 MOV CX,WORD PTR [ESI+6], as opposed to
-/// a zero-extending MOVZX ECX,WORD PTR []. The high 16 bits are
-/// caller state and remain UNKNOWN until earlier code is traced.
+/// Faithfully model the isolated x86 MOV CX,WORD PTR [ESI+6],
+/// as opposed to MOVZX. This instruction preserves the high
+/// 16 bits, BUT the audited preceding XOR ECX,ECX proves they
+/// are zero along this normal original-image execution path.
 pub fn historical_155_mov_cx_section_count(ecx_before:u32,count:u16)->u32{
     (ecx_before&0xFFFF_0000)|u32::from(count)
 }
@@ -977,6 +1002,18 @@ mod tests {
     fn archived_original_pe_header_provenance_preserves_ecx_high_word(){
         let mut code=vec![0u8;0x2000];
         let windows:&[(u32,&[u8])]=&[
+            (0x4024A5,&[
+                0x33,0xC9,0x66,0x8B,0x4E,0x3C,0x03,0xF1,0x3B,0xF3,
+                0x0F,0x87,0x49,0x04,0,0,
+                0x81,0x3E,0x50,0x45,0,0,
+                0x0F,0x85,0x3D,0x04,0,0,
+                0x66,0x83,0x7E,0xFE,0,0x75,0x06,
+                0x66,0xC7,0x46,0xFE,0x2B,0xAD,
+                0xC7,0x46,0x08,0x31,0x39,0x31,0x31,
+                0x89,0x35,0x13,0x3B,0x40,0,
+                0x8B,0x7E,0x54,0x03,0x3D,0x0F,0x3B,0x40,0,
+                0x66,0x8B,0x4E,0x06,
+            ]),
             (0x4024D5,&[0x89,0x35,0x13,0x3B,0x40,0]),
             (0x4024E4,&[0x66,0x8B,0x4E,0x06]),
             (0x4024E8,&[0x89,0x0D,0x3B,0x3B,0x40,0]),
@@ -997,8 +1034,13 @@ mod tests {
                 fixed_section_table_delta:0xF8,
                 section_table_global_va:0x403B17,
                 source_count_keeps_ecx_upper_half:true,
+                ecx_high_word_zeroed_on_audited_path:true,
+                dos_e_lfanew_read_width_bits:16,
             });
         assert_eq!(historical_155_mov_cx_section_count(0,6),6);
+        // On the verified straight-line path, XOR ECX,ECX
+        // makes the isolated high-word preservation harmless.
+        assert_eq!(historical_155_mov_cx_section_count(0,7),7);
         assert_eq!(historical_155_mov_cx_section_count(0xBEEF_0001,7),
                    0xBEEF_0007);
         assert_eq!(native_pe32_section_table_delta(0xE0).unwrap(),0xF8);
