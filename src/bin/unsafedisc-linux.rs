@@ -5075,6 +5075,9 @@ fn inspect_historical_155_cli() -> Result<()> {
         unsafedisc_historical_155::audit_155_codebit_crc_modifier_bridge(
             backed,base,code.virtual_address
         )?;
+    let iterator=unsafedisc_historical_155::audit_155_section_iterator(
+        backed,base,code.virtual_address
+    )?;
     let startup=unsafedisc_historical_155::analyze_155_dll_startup(
         backed,base,code.virtual_address
     )?;
@@ -5104,6 +5107,12 @@ fn inspect_historical_155_cli() -> Result<()> {
         checksum_bridge.codebit,
         checksum_bridge.bypass_checksum_target_va,
         checksum_bridge.after_checksum_call_target_va);
+    println!("  PE section iterator: initial JMP -> 0x{:08X} skips POPAD; completed sections -> 0x{:08X} execute POPAD before next pointer.",
+        iterator.first_entry_va,iterator.next_entry_restore_va);
+    println!("  Section pointer-list stride {} bytes; section's effective raw extent min(RawSize, nonzero VirtualSize); header fields raw +0x{:X}, virtual +0x{:X}.",
+        iterator.header_stride_bytes,iterator.raw_size_field_offset,iterator.virtual_size_field_offset);
+    println!("  Mode=4 uses relocation-aware path at 0x{:08X}; separate CODE flag only controls CRC, not all decryption.",
+        iterator.relocated_branch_va);
     println!("  Both code/non-code paths converge on DLL-size-gated pre-TEA modifier; section selection is a separate gate.");
     println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
         startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
