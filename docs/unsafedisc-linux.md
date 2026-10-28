@@ -4495,6 +4495,28 @@ should not be conflated with it.
   is present and the signed request offset lies in
   `[0, record[+0x40])`, it reads from that
   **optional shadow-buffer backing**.
+
+**Fresh record state:** the original `B540` module
+record allocator executes `MOV ECX,0x34; XOR EAX,EAX;
+REP STOSD`, clearing **52 DWORDs = 208 bytes**
+before writing initial descriptor metadata. This
+includes `record[+0x3C]` and `record[+0x40]`,
+which are initially **both zero**. So a freshly
+created record **cannot immediately supply shadow
+storage**; absent a later write to those fields,
+the `0x67` memory-I/O routines use direct
+module memory. The original `A200` cleanup reads
+`+0x3C/+0x40`, conditionally frees that backing,
+and clears `+0x3C` again. This is a static initial-
+state observation, not a proof the shadow fields
+can never be set later by other routines.
+
+The native original-file check now asserts B540's
+original zeroing instructions, A200's matching
+cleanup and both A620/A720 empty-record fallbacks.
+An additional synthetic Rust test confirms that
+the first 208 zeroed bytes cannot represent a
+present alternate buffer.
 - Otherwise, mode `0x67` performs a direct copy from
   `descriptor[+4] + request_offset`. Original
   `REP MOVSD` and `REP MOVSB` instructions are
