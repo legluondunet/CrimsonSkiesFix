@@ -303,3 +303,41 @@ branch. It includes pure synthetic tests over the keyboard type and
 subtype domain, and runs under \`inspect --modifier-research\`.
 An independent local Python check against the verified original DLL
 returned PASS without executing any original code.
+
+
+### Exhaustive conditional predecessor from 0x1CD16 (2026-10-28)
+
+A new independent **static** source-level walk of the
+\`0x1CD16..0x1CD46\` predecessor was performed on the exact
+SHA-256-verified, file-backed original \`dplayerx.dll\` bytes.
+It starts at the **instruction boundary** \`0x1CD16\`, which is
+earlier than the previously established \`0x1CD31\` local join.
+
+The original, byte-anchored complementary x86 branches are:
+
+| Original branch sites | Flag predicates | Converged target |
+| --- | --- | --- |
+| \`1CD16 JBE\` / \`1CD18 JA\` | \`CF || ZF\` / \`!CF && !ZF\` | \`1CD29\` |
+| \`1CD29 JS\` / \`1CD2B JNS\` | \`SF\` / \`!SF\` | \`1CD19\` |
+| \`1CD19 JNP\` / \`1CD23 JA\`, \`1CD25 JP\` | The PF=1 fallthrough contains only \`MOV EDX,EDX\` and two NOPs | \`1CD2E\` |
+| \`1CD2E JNP\` / \`1CD30 JP\` | \`!PF\` / \`PF\` | \`1CD41\` |
+| \`1CD41 JO\` / \`1CD43 JNO\` | \`OF\` / \`!OF\` | \`1CD31\` |
+| \`1CD31 JL\` / \`1CD39 JGE\` | \`SF != OF\` / \`SF == OF\` | \`1CD46\` |
+
+Because intervening instructions on **these proven paths** are only
+non-flag-changing self-MOVs and NOPs, every combination of the five
+relevant EFLAGS bits (\`CF\`, \`ZF\`, \`PF\`, \`SF\`, \`OF\`) is covered.
+The independent 32-case check yielded **16 distinct paths of 8–18
+visited instruction boundaries**, each arriving at the known
+\`CALL 0x1D42F\` at \`0x1CD46\`. The Rust function
+\`trace_gate_predecessor\` implements this bounded, fail-closed
+**conditional branch model** and regression-tests all 32 combinations;
+\`audit_gate_predecessor_original\` validates the original instruction
+bytes and relative branch targets against the SHA-pinned local DLL.
+
+This is a *local reachability proof from 0x1CD16 only*.
+It does **not** prove a path from \`DllMain\` or platform-specific helper
+entry \`0x1C7F0\` to \`0x1CD16\`. It does not execute x86 or any
+Windows API and does not reveal the actual values of the processor
+flags or the global state at the game's startup. The wider
+\`0x1C7F0\` body remains partially opaque.
