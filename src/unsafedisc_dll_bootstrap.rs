@@ -210,6 +210,18 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
     // 0x181E0 uses a bounded jump table. Jump table data are verified
     // by preferred VA, never treated as executable instruction bytes.
     check_call(dll,pe,0x987C,0xA140)?;
+    // Two additional direct E8 references to the same initializer
+    // originate in already-readable .txt2. Both prepare a stack-local
+    // descriptor, call A140, then clean up their stack. Static references
+    // do not establish their runtime reachability or descriptor contents.
+    for (site,setup) in [
+        (0x1A137u32,&[0x8D,0x4D,0xF4,0x51][..]),
+        (0x1A299,&[0x8D,0x55,0xF4,0x52][..]),
+    ] {
+        check_call(dll,pe,site,0xA140)?;
+        dll_expect_raw_x86(dll,pe,site-4,setup)?;
+        dll_expect_raw_x86(dll,pe,site+5,&[0x83,0xC4,0x08])?;
+    }
     check_call(dll,pe,0x989F,0x7212)?;
     // A140 has one conditional early-exit at the B540 record result.
     // After that branch, its five directory handlers and three
@@ -404,6 +416,16 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_a140_sources_include_two_other_readable_code_callers() {
+        let mut sites=[0x987Cu32,0x1A137u32,0x1A299u32];
+        sites.sort_unstable();
+        assert_eq!(sites,[0x987C,0x1A137,0x1A299]);
+        assert!(sites[1]>=0x18000 && sites[2]>=0x18000);
+        // This is a bound on *observed static direct references*, not
+        // a bound on indirect calls or execution at runtime.
+    }
 
     #[test]
     fn absent_module_record_skips_all_a140_bootstrap_helpers() {
