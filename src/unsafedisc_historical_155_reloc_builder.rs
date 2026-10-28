@@ -457,7 +457,7 @@ mod nonterminal_padding_tests {
     #[test]
     fn trailing_zero_padding_is_allowed_by_necessary_preflight(){
         let p=historical_155_reloc_word_profile(
-            &synthetic_directory(&[0x3000,0x3010,0,0])
+            &synthetic_directory(&[0x3001,0x3010,0,0])
         ).unwrap();
         assert_eq!(p.nonterminal_zero_padding_words,0);
         assert_eq!(p.zero_padding_words,2);
@@ -467,8 +467,8 @@ mod nonterminal_padding_tests {
     fn early_zero_is_not_interchangeable_with_highlow_only_traversal(){
         for entries in [
             vec![0,0x3010,0x3020,0],
-            vec![0x3000,0,0x3010,0],
-            vec![0x3000,0,0,0x3010],
+            vec![0x3001,0,0x3010,0],
+            vec![0x3001,0,0,0x3010],
         ] {
             let p=historical_155_reloc_word_profile(
                 &synthetic_directory(&entries)).unwrap();
