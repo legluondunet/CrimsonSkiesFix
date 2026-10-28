@@ -26,6 +26,35 @@ pub fn conditional_byte_step(
     (output,state.wrapping_add(u32::from(output)))
 }
 
+/// SYNTHETIC-ONLY composition of consecutive instances of the
+/// verified local byte primitive. This does NOT assert that 19C78
+/// necessarily loops over a contiguous block, or that other original
+/// instructions cannot update the global between iterations.
+/// Distinct source and destination slices avoid any inferred aliasing.
+pub fn hypothetical_consecutive_steps(
+    destination:&[u8],second_buffer:&[u8],initial_state:u32
+)->Option<(Vec<u8>,u32)> {
+    if destination.len()!=second_buffer.len() {return None;}
+    let mut state=initial_state;
+    let mut output=Vec::with_capacity(destination.len());
+    for (&dst,&other) in destination.iter().zip(second_buffer) {
+        let (byte,next)=conditional_byte_step(dst,other,state);
+        output.push(byte);
+        state=next;
+    }
+    Some((output,state))
+}
+
+/// Mathematical invariant for *only* the consecutive byte steps:
+/// state_after = state_before + SUM(output_byte) (mod 2^32).
+/// Thus an observed final state plus every output byte could
+/// reconstruct the PRE-STEP state. No actual original output/state
+/// bytes are claimed to be known by this helper.
+pub fn hypothetical_initial_state(final_state:u32,outputs:&[u8])->u32 {
+    outputs.iter().fold(final_state,
+        |state,&output|state.wrapping_sub(u32::from(output)))
+}
+
 /// The actual original code after XOR has a complementary JNP/JP
 /// split and a PUSH/CALL-to-single-RET/POP no-op detour. Both parity
 /// outcomes rejoin at the exact executable boundary RVA 0x19D85.
@@ -136,6 +165,45 @@ mod tests {
         let b=conditional_byte_step(0x45,0x80,0x0024_6810);
         assert_eq!(a.0^b.0,0x80);
         assert_ne!(a.1,b.1);
+    }
+
+    #[test]
+    fn contiguous_synthetic_steps_preserve_modular_state_sum() {
+        let dst=[0x10u8,0x20,0x30,0x40,0x50];
+        let other=[0x55u8,0xAA,0x00,0xFF,0xC3];
+        for start in [0u32,1,0x1122_3344,u32::MAX-7,u32::MAX] {
+            let (out,end)=hypothetical_consecutive_steps(
+                &dst,&other,start).unwrap();
+            let sum=out.iter().fold(0u32,
+                |acc,&byte|acc.wrapping_add(u32::from(byte)));
+            assert_eq!(end,start.wrapping_add(sum));
+            assert_eq!(hypothetical_initial_state(end,&out),start);
+        }
+    }
+
+    #[test]
+    fn synthetic_chain_composes_across_explicit_split_boundaries() {
+        let dst=[0x12,0x34,0x56,0x78];
+        let other=[0x89,0xAB,0xCD,0xEF];
+        let start=0xFFFF_FFFCu32;
+        let whole=hypothetical_consecutive_steps(
+            &dst,&other,start).unwrap();
+        let first=hypothetical_consecutive_steps(
+            &dst[..2],&other[..2],start).unwrap();
+        let second=hypothetical_consecutive_steps(
+            &dst[2..],&other[2..],first.1).unwrap();
+        let joined:Vec<u8>=first.0.iter()
+            .chain(second.0.iter()).copied().collect();
+        assert_eq!((joined,second.1),whole);
+        assert_eq!(hypothetical_initial_state(whole.1,&whole.0),start);
+    }
+
+    #[test]
+    fn hypothetical_chain_fails_closed_for_mismatched_buffers() {
+        assert!(hypothetical_consecutive_steps(&[1,2],&[3],0).is_none());
+        assert_eq!(hypothetical_consecutive_steps(&[],&[],42),
+                   Some((Vec::new(),42)));
+        assert_eq!(hypothetical_initial_state(u32::MAX,&[]),u32::MAX);
     }
 
     #[test]
