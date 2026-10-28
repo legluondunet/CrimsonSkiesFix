@@ -1247,3 +1247,45 @@ and the actual returned offset to the worker remain unknown.
 Consequently, neither the first worker zero/nonzero return
 branch nor any eventual global decoder-state value can yet be
 predicted from these static instructions alone.
+
+
+#### Original A810 read gateway: three conditional outcomes
+
+The previous section's first-case record-search helper
+`0x189F0` calls original **`0xA810`** to obtain one
+40-byte record. This function resides in the **readable `.text`**
+section, so its immediate dispatch conditions can be inspected
+without decoding protected `.txt` instructions.
+
+At `0xA810` it reads an argument pointer and compares the
+DWORD at its **offset `+8`** against hexadecimal **`0x64`**.
+An exact match returns immediately with **AX=0**, before calling
+a backend. For other types it compares a separate **WORD** at
+preferred address **`0x00904AE4`** with `1` (this is **not**
+the mixer state at `0x00905010`). When that WORD is not `1`,
+the original **`CALL 0xA870` at `0xA82A`** runs an
+initialization probe; if its returned **AX is zero**, `0xA810`
+returns early without dispatching a read backend.
+
+When initialization is accepted, original
+`CMP DWORD [ESI+8],0x65` at `0xA841` selects:
+
+| Original type field | Original branch |
+| --- | --- |
+| Exactly `0x64` | Immediate `AX=0` (no backend call) |
+| Exactly `0x65`, initialization accepted | `CALL 0xA560` |
+| Any other type excluding `0x64`, initialization accepted | `CALL 0xA620` |
+| Non-`0x64` type, initialization failed | Immediate return with `AX=0` |
+
+The SHA-pinned Rust auditor `audit_original_a810_backend_dispatch`
+verifies nine opcode groups in `.text` and all three direct
+call targets, without invoking them. Three pure synthetic
+unit tests exercise type and initialization outcomes; the
+independent Python verifier also checks the original bytes
+and all four conditional branch displacements.
+
+**Limits:** the source of the argument type, meaning of the
+initialization WORD, effects of `0xA870`, `0xA560`, and `0xA620`,
+and the record contents are not established here. The
+return value of `0xA810` is not necessarily the return value
+of the first worker invocation. No game memory is accessed.
