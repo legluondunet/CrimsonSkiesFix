@@ -5288,3 +5288,44 @@ asserts the three original opcode groups when given the
 already hash-verified user DLL. Two synthetic tests cover
 the 65536-byte cliff, low16-zero gate bypass, and 32-bit
 cursor wraparound. No protected code is executed.
+
+
+### Candidate setup-state dependency near 19965: 19A4D and 19A8B (2026-10-28)
+
+The original worker `1974A` CALL targets the readable
+`.txt2:19965` RVA. Two previously verified global-state
+operations appear **after** that entry in original RVA order:
+
+- `19A48 PUSH 0x00905010; 19A4D CALL 1A77F`: a pointer
+  to the global mixer state is passed to the original Windows
+  version-dependent helper.
+- `19A7B MOV EAX,[EBP+0x18]; AND EAX,FFFFh` followed
+  by `19A83` loading the global, `ADD ECX,EAX` and
+  `19A8B` writing the new global DWORD: conditional
+  state addition `+(argument & 0xFFFF)`.
+
+These sites fall between the callable entry RVA `19965`
+and mixer RVA `19C78` in **static instruction-address
+order**. This is a promising candidate for pre-mixer state
+initialization, but neither a full function boundary nor
+a real control-flow route from `19965` through both sites
+is demonstrated. There may be opaque early returns,
+branches, and intervening writes.
+
+A narrowly conditional algebraic scenario is nonetheless
+testable. If `1A77F` follows its already verified failed
+`GetVersionExA` path (state becomes `initial & 0xFF`),
+and **if** the following `19A8B` addition executes without
+another state mutation, the resulting DWORD is
+
+```text
+hypothetical_state = ((initial & 0xFF) + (arg & 0xFFFF)) mod 2^32
+```
+
+Added a pure `hypothetical_near_setup_failure_then_add`,
+two synthetic tests and an exact-original read-only audit of
+the original entry call, pointer push, helper call, mask,
+global read/add and global write. The audit verifies
+**original bytes and E8 destinations**, not actual
+execution, runtime OS results or a recovered entry state
+for `19C78`.
