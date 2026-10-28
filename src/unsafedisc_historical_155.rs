@@ -336,6 +336,77 @@ pub fn analyze_155_dll_startup(
     })
 }
 
+/// Verified historical 1.5.5 transition from the CODE-bit CRC
+/// mixing procedure to the separate DLL-size-gated extra layer.
+/// The public archived compatibility-modified binary has these same
+/// byte-exact windows; this inspector verifies owner-original input
+/// only after the caller's original SHA-256 gate.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalCrcModifierBridge {
+    pub codebit:u32,
+    pub bypass_checksum_target_va:u32,
+    pub after_checksum_call_target_va:u32,
+    pub guarded_extra_layer_va:u32,
+    pub noncode_reaches_extra_layer:bool,
+}
+
+/// Branch structure:
+///   401F01 TEST DWORD [60BCD0],0x20
+///   401F0B JZ   401F43        ; non-code bypasses CRC ONLY
+///   401F0D PUSHAD ...         ; code CRC arithmetic
+///   401F3C POPAD
+///   401F3D CALL 401F43        ; code rejoins DLL-size gate
+///   401F42 RET
+///   401F43 CMP DWORD [403C20],0x21E00 ; special layer gate
+/// This is independent of whether the higher-level caller selects
+/// a given section: it models the behavior IF the caller gets here.
+pub fn audit_155_codebit_crc_modifier_bridge(
+    code:&[u8],image_base:u32,code_rva:u32,
+)->Result<HistoricalCrcModifierBridge,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("historical CRC bridge CODE VA overflow")?;
+    if base!=0x401000 {
+        return Err("historical CRC bridge CODE base mismatch".into());
+    }
+    let exact=|va:u32,want:&[u8]|->Result<(),String>{
+        let start=va.checked_sub(base)
+            .ok_or("historical CRC site precedes CODE")? as usize;
+        let end=start.checked_add(want.len())
+            .ok_or("historical CRC instruction length overflow")?;
+        if code.get(start..end)!=Some(want){
+            return Err(format!(
+                "historical CRC-to-modifier opcode mismatch at 0x{va:08X}"
+            ));
+        }
+        Ok(())
+    };
+    exact(0x401F01,&[
+        0xF7,0x05,0xD0,0xBC,0x60,0,0x20,0,0,0
+    ])?;
+    exact(0x401F0B,&[0x74,0x36])?;
+    exact(0x401F0D,&[
+        0x60,0x85,0xC0,0x7E,0x2A,0xBD,0xB1,0x9A,0x37,0xFD
+    ])?;
+    exact(0x401F3C,&[
+        0x61,0xE8,0x01,0,0,0,0xC3
+    ])?;
+    exact(0x401F43,&[
+        0x81,0x3D,0x20,0x3C,0x40,0,0,0x1E,0x02,0
+    ])?;
+    let bypass=historical_155_branch_target(code,base,0x401F0B)?;
+    let after=historical_155_branch_target(code,base,0x401F3D)?;
+    if bypass!=0x401F43 || after!=bypass {
+        return Err("CODE and non-CODE paths do not converge at the special-layer gate".into());
+    }
+    Ok(HistoricalCrcModifierBridge{
+        codebit:0x20,
+        bypass_checksum_target_va:bypass,
+        after_checksum_call_target_va:after,
+        guarded_extra_layer_va:0x401F43,
+        noncode_reaches_extra_layer:true,
+    })
+}
+
 /// The original static length gate at 401F43 is exactly 0x21E00.
 /// This says the helper stage is *selected for execution* if its
 /// caller reached that gate, not that title-specific callees are
@@ -465,6 +536,51 @@ mod tests {
             &[0u8;0x2000],0x400001,0x1000).is_err());
         assert!(analyze_155_dll_startup(
             &[0u8;0x2000],u32::MAX,0x1000).is_err());
+    }
+
+    #[test]
+    fn historical_checksum_codebit_skips_crc_not_extra_layer() {
+        let mut code=vec![0u8;0x2000];
+        let patterns:&[(u32,&[u8])]=&[
+            (0x401F01,&[0xF7,0x05,0xD0,0xBC,0x60,0,0x20,0,0,0]),
+            (0x401F0B,&[0x74,0x36]),
+            (0x401F0D,&[0x60,0x85,0xC0,0x7E,0x2A,0xBD,0xB1,0x9A,0x37,0xFD]),
+            (0x401F3C,&[0x61,0xE8,0x01,0,0,0,0xC3]),
+            (0x401F43,&[0x81,0x3D,0x20,0x3C,0x40,0,0,0x1E,0x02,0]),
+        ];
+        for &(va,bytes) in patterns {
+            let i=(va-0x401000) as usize;
+            code[i..i+bytes.len()].copy_from_slice(bytes);
+        }
+        let good=audit_155_codebit_crc_modifier_bridge(
+            &code,0x400000,0x1000).unwrap();
+        assert_eq!(good,HistoricalCrcModifierBridge{
+            codebit:0x20,
+            bypass_checksum_target_va:0x401F43,
+            after_checksum_call_target_va:0x401F43,
+            guarded_extra_layer_va:0x401F43,
+            noncode_reaches_extra_layer:true,
+        });
+        for &(va,_) in patterns {
+            let i=(va-0x401000) as usize;
+            code[i]^=1;
+            assert!(audit_155_codebit_crc_modifier_bridge(
+                &code,0x400000,0x1000).is_err());
+            code[i]^=1;
+        }
+        let skip=(0x401F0C-0x401000) as usize;
+        code[skip]=0x35;
+        assert!(audit_155_codebit_crc_modifier_bridge(
+            &code,0x400000,0x1000).is_err());
+        code[skip]=0x36;
+        let call=(0x401F3E-0x401000) as usize;
+        code[call]=0x02;
+        assert!(audit_155_codebit_crc_modifier_bridge(
+            &code,0x400000,0x1000).is_err());
+        assert!(audit_155_codebit_crc_modifier_bridge(
+            &code[..0x400],0x400000,0x1000).is_err());
+        assert!(audit_155_codebit_crc_modifier_bridge(
+            &code,0x400000,0x1001).is_err());
     }
 
     #[test]
