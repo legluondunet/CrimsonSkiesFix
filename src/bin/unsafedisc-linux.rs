@@ -56,6 +56,9 @@ mod unsafedisc_dll_io_backends;
 #[path = "../unsafedisc_dll_pe_sections.rs"]
 mod unsafedisc_dll_pe_sections;
 
+#[path = "../unsafedisc_dll_a310.rs"]
+mod unsafedisc_dll_a310;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2851,6 +2854,10 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_worker_entry::audit_original(dll,&pe)?;
     unsafedisc_dll_io_backends::audit_original(dll,&pe)?;
     unsafedisc_dll_pe_sections::audit_original(dll,&pe)?;
+    unsafedisc_dll_a310::audit_original(dll,&pe)?;
+    println!("  Former opaque A310 source helper is now partially recovered in readable original .text: null cursor/limit, cursor>=limit (unsigned), or missing B5D0 map -> AX=0.");
+    println!("    On accepted source it checks a 4 KiB page cache, optionally invokes original C0D0/C0C0/BFB0 cache helpers, then delegates to BED0; BED0 result is NOT inferred.");
+    println!("    Aligned nonzero cursor probe decrements by one before 4 KiB same-page comparison. Cache globals and runtime data are NOT reconstructed.");
     println!("  Original first worker case is a PE32 section finder: 18940 reads 0x40 DOS + 0xF8 NT header bytes via A810 and compares DWORD PE signature.");
     println!("    At 18204 the dispatcher derives the section-header range from NumberOfSections (40 bytes each) and SizeOfOptionalHeader.");
     println!("    Original case 183C2 calls 189F0 with mask 0x20000020 (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE); first matching section's raw offset and RVA are returned as outputs.");
