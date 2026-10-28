@@ -1207,3 +1207,43 @@ is unknown. This static flow does not prove which side of
 `0x18FCE` is taken at game startup, how many worker
 iterations occur, or how this first call reaches later
 `0x196AE` / `0x19798` sites.
+
+
+#### First-case matcher: exact 0x28-byte record search
+
+After the now-proven first selector chooses case **1** at RVA
+`0x183C2`, that case pushes its arguments and executes the
+original **`CALL 0x189F0` at `0x183D4`**. The exact-original
+read-only disassembly of `0x189F0` reveals an **unsigned
+record-search loop**:
+
+- The original input offset is compared unsigned against an end
+  offset. If `offset >= end`, the helper returns EAX=0.
+- Each iteration calls the original routine **`0xA810` at
+  `0x18A15`**, with the current offset and length **`0x28`**
+  (40 bytes), plus base and output arguments. The operation
+  performed internally by `0xA810` is not yet reconstructed.
+- After that call returns, the code reads a DWORD at offset
+  **`0x24`** in the output record, computes
+  **`record_field & mask`** and compares it with `expected`.
+  On equality, it returns the **current record offset**.
+- Otherwise, it advances the offset by **`0x28`** using 32-bit
+  arithmetic, checks unsigned `offset < end`, and loops or
+  returns zero. Whether the source ever reaches offset zero
+  on a successful match is not established.
+
+The exact opcode windows at `0x189F0`, `0x18A0C`,
+`0x18A1A`, `0x18A28`, `0x18A33`, `0x18A3A` and `0x18A41`,
+the direct rel32 calls, and three relevant Jcc displacements
+are verified in `audit_original_first_case_record_matcher`.
+Pure Rust helpers test the record predicate, unsigned limit
+and wrapping record stride. The standalone Python
+`verify_worker_entry_dispatch.py` reproduces the checks
+against the SHA-256-verified original DLL, without executing
+any original DLL code.
+
+**Limitations:** input records, the opaque `0xA810` implementation
+and the actual returned offset to the worker remain unknown.
+Consequently, neither the first worker zero/nonzero return
+branch nor any eventual global decoder-state value can yet be
+predicted from these static instructions alone.
