@@ -407,6 +407,147 @@ pub fn audit_155_codebit_crc_modifier_bridge(
     })
 }
 
+/// The archived x86 iterator has a compact PUSHAD/POPAD
+/// trampoline: first entry jumps past POPAD; every completed section
+/// jumps BACK to POPAD before reading the next pointer. The input to
+/// this audit is CODE section bytes, never the game or executable
+/// being inspected as instructions.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalSectionIterator {
+    pub first_entry_va:u32,
+    pub next_entry_restore_va:u32,
+    pub header_stride_bytes:u32,
+    pub characteristics_field_offset:u32,
+    pub raw_size_field_offset:u32,
+    pub virtual_size_field_offset:u32,
+    pub raw_pointer_field_offset:u32,
+    pub relocated_branch_va:u32,
+}
+
+/// Confirm the control-flow and the on-disk PE section header field
+/// loads in the PUBLIC archived 1.5.5 program. When invoked by the
+/// SHA-gated original CLI, a differing private original fails closed.
+pub fn audit_155_section_iterator(
+    code:&[u8],image_base:u32,code_rva:u32
+)->Result<HistoricalSectionIterator,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("original section iterator CODE VA overflow")?;
+    if base!=0x401000 {
+        return Err("original section iterator CODE base differs".into());
+    }
+    let expect=|va:u32,pattern:&[u8]|->Result<(),String>{
+        let i=va.checked_sub(base)
+            .ok_or("original section iterator instruction before CODE")?
+            as usize;
+        if code.get(i..i.checked_add(pattern.len())
+            .ok_or("original section iterator instruction size overflow")?)
+            !=Some(pattern) {
+            return Err(format!("original 1.5.5 section iterator x86 mismatch at 0x{va:08X}"));
+        }
+        Ok(())
+    };
+    // MOV EDI,[403957]; JMP +1; POPAD (subsequent entries only);
+    // MOV ESI,[EDI]; ADD EDI,4; OR ESI,ESI; JNE +2; POPAD; RET.
+    expect(0x401CFD,&[
+        0x8B,0x3D,0x57,0x39,0x40,0,
+        0xEB,0x01,0x61,0x8B,0x37,0x83,0xC7,0x04,
+        0x0B,0xF6,0x75,0x02,0x61,0xC3
+    ])?;
+    // MOV EAX,[ESI+0x24]; MOV [60BCD0],EAX; PUSHAD;
+    // MOV EAX,[ESI+0x10]; MOV EDI,[ESI+0x0C];
+    // MOV [60BCD4],EDI; CMP EAX,[ESI+0x08];
+    // JBE +9; CMP DWORD [ESI+8],0; JE +3;
+    // MOV EAX,[ESI+8]. Raw size is capped by nonzero VS.
+    expect(0x401D11,&[
+        0x8B,0x46,0x24,0xA3,0xD0,0xBC,0x60,0,0x60,
+        0x8B,0x46,0x10,0x8B,0x7E,0x0C,
+        0x89,0x3D,0xD4,0xBC,0x60,0,
+        0x3B,0x46,0x08,0x76,0x09,0x83,0x7E,0x08,0,
+        0x74,0x03,0x8B,0x46,0x08,
+    ])?;
+    // MOV ESI,[ESI+0x14] (PointerToRawData);
+    // ADD ESI,[403B0F] (historical file-memory mapping);
+    // MOV [60BCB4],ESI (current section data);
+    expect(0x401D34,&[
+        0x8B,0x76,0x14,0x03,0x35,0x0F,0x3B,0x40,0,
+        0x89,0x35,0xB4,0xBC,0x60,0
+    ])?;
+    // CMP DWORD [ESI-4],4 (relocation-aware mode) / JE 401D82.
+    expect(0x401D48,&[0x83,0x7E,0xFC,0x04,0x74,0x34])?;
+    // Once the simple traversal completes, JMP 401D05
+    // re-enters at POPAD then obtains the next 40-byte section ptr.
+    expect(0x401D77,&[0xEB,0x8C])?;
+    expect(0x401D80,&[0xEB,0x83])?;
+    let targets=[
+        (0x401D03u32,0x401D06u32), // first entry skips POPAD
+        (0x401D0D,0x401D11), // nonzero section pointer
+        (0x401D29,0x401D34), // raw_size<=virtual_size
+        (0x401D2F,0x401D34), // virtual_size==0
+        (0x401D4C,0x401D82), // relocation-aware path
+        (0x401D77,0x401D05), // simple path after remainder
+        (0x401D80,0x401D05), // simple path finalization
+    ];
+    for (src,want) in targets {
+        let got=historical_155_branch_target(code,base,src)?;
+        if got!=want {
+            return Err(format!(
+                "1.5.5 section iterator branch at 0x{src:08X} targets 0x{got:08X}, expected 0x{want:08X}"
+            ));
+        }
+    }
+    Ok(HistoricalSectionIterator{
+        first_entry_va:0x401D06,
+        next_entry_restore_va:0x401D05,
+        header_stride_bytes:4, // POINTER table stride, NOT section-header size
+        characteristics_field_offset:0x24,
+        raw_size_field_offset:0x10,
+        virtual_size_field_offset:0x08,
+        raw_pointer_field_offset:0x14,
+        relocated_branch_va:0x401D82,
+    })
+}
+
+/// Exact SizeOfRawData vs nonzero VirtualSize selection derived
+/// from 401D1A..401D34. The underlying PE section-header size
+/// remains 40 bytes; its pointer-list stride above is four bytes.
+pub fn historical_155_extent(raw_size:u32,virtual_size:u32)->u32 {
+    if virtual_size==0 {raw_size}
+    else {raw_size.min(virtual_size)}
+}
+
+/// Safe native-port-only mapping of selected section bytes using
+/// the original PE32 file offsets. No original executable or game
+/// byte material is embedded and no actual DLL is called.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalSectionWindow{
+    pub rva:u32,
+    pub file_offset:u32,
+    pub selected_extent:u32,
+    pub characteristics:u32,
+    pub checksum_eligible:bool,
+}
+pub fn historical_155_section_window(
+    header:&[u8],file_length:usize
+)->Result<HistoricalSectionWindow,String>{
+    if header.len()!=40 {
+        return Err("historical section header must contain exactly 40 bytes".into());
+    }
+    let read=|at:usize|u32::from_le_bytes(
+        [header[at],header[at+1],header[at+2],header[at+3]]
+    );
+    let size=historical_155_extent(read(0x10),read(0x08));
+    let file_offset=read(0x14);
+    let end=u64::from(file_offset)+u64::from(size);
+    if end>file_length as u64 {
+        return Err("historical selected section extent exceeds backed file".into());
+    }
+    let characteristics=read(0x24);
+    Ok(HistoricalSectionWindow{
+        rva:read(0x0C),file_offset,selected_extent:size,
+        characteristics,checksum_eligible:characteristics&0x20!=0,
+    })
+}
+
 /// The original static length gate at 401F43 is exactly 0x21E00.
 /// This says the helper stage is *selected for execution* if its
 /// caller reached that gate, not that title-specific callees are
@@ -536,6 +677,81 @@ mod tests {
             &[0u8;0x2000],0x400001,0x1000).is_err());
         assert!(analyze_155_dll_startup(
             &[0u8;0x2000],u32::MAX,0x1000).is_err());
+    }
+
+    #[test]
+    fn historical_pushed_state_section_iterator_matches_archived_opcodes(){
+        let mut code=vec![0u8;0x2000];
+        let windows:&[(u32,&[u8])]=&[
+            (0x401CFD,&[0x8B,0x3D,0x57,0x39,0x40,0,
+                0xEB,0x01,0x61,0x8B,0x37,0x83,0xC7,0x04,
+                0x0B,0xF6,0x75,0x02,0x61,0xC3]),
+            (0x401D11,&[0x8B,0x46,0x24,0xA3,0xD0,0xBC,0x60,0,0x60,
+                0x8B,0x46,0x10,0x8B,0x7E,0x0C,0x89,0x3D,
+                0xD4,0xBC,0x60,0,0x3B,0x46,0x08,0x76,0x09,
+                0x83,0x7E,0x08,0,0x74,0x03,0x8B,0x46,0x08]),
+            (0x401D34,&[0x8B,0x76,0x14,0x03,0x35,0x0F,0x3B,0x40,0,
+                0x89,0x35,0xB4,0xBC,0x60,0]),
+            (0x401D48,&[0x83,0x7E,0xFC,0x04,0x74,0x34]),
+            (0x401D77,&[0xEB,0x8C]),
+            (0x401D80,&[0xEB,0x83]),
+        ];
+        for &(va,bytes) in windows{
+            let i=(va-0x401000) as usize;
+            code[i..i+bytes.len()].copy_from_slice(bytes);
+        }
+        let audit=audit_155_section_iterator(
+            &code,0x400000,0x1000).unwrap();
+        assert_eq!(audit.first_entry_va,0x401D06);
+        assert_eq!(audit.next_entry_restore_va,0x401D05);
+        assert_eq!(audit.header_stride_bytes,4);
+        assert_eq!(audit.raw_size_field_offset,0x10);
+        assert_eq!(audit.virtual_size_field_offset,0x08);
+        assert_eq!(audit.characteristics_field_offset,0x24);
+        for &(va,_) in windows {
+            let i=(va-0x401000) as usize;
+            code[i]^=0x80;
+            assert!(audit_155_section_iterator(
+                &code,0x400000,0x1000).is_err());
+            code[i]^=0x80;
+        }
+        let branch=(0x401D4D-0x401000) as usize;
+        code[branch]=0x35;
+        assert!(audit_155_section_iterator(
+            &code,0x400000,0x1000).is_err());
+        assert!(audit_155_section_iterator(
+            &code[..0x100],0x400000,0x1000).is_err());
+    }
+
+    #[test]
+    fn historical_section_window_caps_raw_data_and_preserves_data(){
+        let mut header=[0u8;40];
+        let set=|buf:&mut [u8;40],at:usize,n:u32|{
+            buf[at..at+4].copy_from_slice(&n.to_le_bytes());
+        };
+        set(&mut header,0x08,0x123);
+        set(&mut header,0x0C,0x1000);
+        set(&mut header,0x10,0x200);
+        set(&mut header,0x14,0x200);
+        set(&mut header,0x24,0x60000020);
+        let w=historical_155_section_window(&header,0x500).unwrap();
+        assert_eq!(w.selected_extent,0x123);
+        assert_eq!(w.rva,0x1000);
+        assert_eq!(w.file_offset,0x200);
+        assert!(w.checksum_eligible);
+        // .data can be selected even with no CODE bit: only CRC differs.
+        set(&mut header,0x08,0x300);
+        set(&mut header,0x24,0xC0000040);
+        assert_eq!(historical_155_section_window(&header,0x500)
+                       .unwrap().selected_extent,0x200);
+        assert!(!historical_155_section_window(&header,0x500)
+                        .unwrap().checksum_eligible);
+        set(&mut header,0x08,0);
+        assert_eq!(historical_155_extent(0x200,0),0x200);
+        assert!(historical_155_section_window(&header,0x350).is_err());
+        assert!(historical_155_section_window(&header[..39],0x500).is_err());
+        set(&mut header,0x14,u32::MAX);
+        assert!(historical_155_section_window(&header,0x500).is_err());
     }
 
     #[test]
