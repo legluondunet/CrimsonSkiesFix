@@ -274,6 +274,92 @@ pub fn audit_version_success_dispatch(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+
+/// Independent platform dispatch of the second GetVersionExA caller,
+/// helper 1A9B6. Only a successful API result is classified here.
+/// The fallback entry 1AB34 has obfuscated flag-dependent behavior,
+/// so the pointer value after that entry is deliberately unspecified.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum SecondaryVersionSuccessDispatch {
+    Win9xHelper1c7f0,
+    WinNtHelper1bac7,
+    FallbackEntry1ab34,
+}
+pub fn secondary_version_success_dispatch(
+    platform_id:u32
+)->SecondaryVersionSuccessDispatch {
+    match platform_id {
+        1 => SecondaryVersionSuccessDispatch::Win9xHelper1c7f0,
+        2 => SecondaryVersionSuccessDispatch::WinNtHelper1bac7,
+        _ => SecondaryVersionSuccessDispatch::FallbackEntry1ab34,
+    }
+}
+
+/// Compare original x86 instructions on the restricted nonzero-EAX
+/// branch through 1AA9E and 1AB0F. TEST's CF/ZF/PF/SF flags are
+/// preserved through nonmutating self-MOV/XCHG/NOP detours until the
+/// first CMP of dwPlatformId, and CMP sets the subsequent flags.
+/// Independently, a bounded static interpreter walked EAX inputs
+/// 1, 0x80000000, 0x11223344 on platform IDs 0,1,2,3,0xFFFFFFFF.
+/// No original DLL machine instructions were executed.
+pub fn audit_secondary_version_success_dispatch(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    for (site,bytes) in [
+        (0x1AA35u32,&[0x85,0xC0][..]),
+        (0x1AA37,&[0x0F,0x84,0xF7,0,0,0][..]),
+        (0x1AA3D,&[0x76,0x11][..]),
+        (0x1AA3F,&[0x77,0x0F][..]),
+        (0x1AA50,&[0x78,0xEE][..]),
+        (0x1AA52,&[0x79,0xEC][..]),
+        (0x1AA40,&[0x0F,0x8B,0x0F,0,0,0][..]),
+        (0x1AA46,&[0x8B,0xD2][..]),
+        (0x1AA4A,&[0x7A,0x09][..]),
+        (0x1AA55,&[0x76,0x07][..]),
+        (0x1AA59,&[0x74,0x01][..]),
+        (0x1AA5C,&[0xEB,0x0B][..]),
+        (0x1AA69,&[0xEB,0x07][..]),
+        (0x1AA72,&[0xEB,0xF7][..]),
+        (0x1AA6B,&[0x8B,0xFF][..]),
+        (0x1AA6D,&[0x73,0x06][..]),
+        (0x1AA75,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x01][..]),
+        (0x1AA7C,&[0x75,0x48][..]),
+        (0x1AA7E,&[0xEB,0x07][..]),
+        (0x1AA87,&[0xEB,0xF7][..]),
+        (0x1AA80,&[0x8B,0xED][..]),
+        (0x1AA82,&[0x7F,0x06][..]),
+        (0x1AA85,&[0x7E,0x03][..]),
+        (0x1AA8A,&[0x78,0x09][..]),
+        (0x1AA8F,&[0x7F,0x09][..]),
+        (0x1AA93,&[0x7E,0x05][..]),
+        (0x1AA9A,&[0x8B,0x4D,0x08,0x51][..]),
+        (0x1AAC6,&[0x78,0x09][..]),
+        (0x1AACB,&[0x7F,0x09][..]),
+        (0x1AAD6,&[0x83,0xBD,0x7C,0xFF,0xFF,0xFF,0x02][..]),
+        (0x1AADD,&[0x75,0x55][..]),
+        (0x1AADF,&[0x76,0x05][..]),
+        (0x1AAE6,&[0x74,0x06][..]),
+        (0x1AAEE,&[0x76,0xF1][..]),
+        (0x1AAE4,&[0xEB,0x0D][..]),
+        (0x1AAF3,&[0x75,0x11][..]),
+        (0x1AAF5,&[0x74,0x0F][..]),
+        (0x1AB06,&[0x73,0xEE][..]),
+        (0x1AAF6,&[0x0F,0x86,0x0F,0,0,0][..]),
+        (0x1AB0B,&[0x8B,0x55,0x08,0x52][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (site,target) in [
+        (0x1AA9Eu32,0x1C7F0u32),
+        (0x1AB0F,0x1BAC7),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!("1A9B6 original OS platform helper call mismatch at 0x{site:05X}"));
+        }
+    }
+    Ok(())
+}
+
 /// Audit only original file-backed instruction sites and PE geometry.
 /// The caller enforces the canonical dplayerx.dll SHA-256 first.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
@@ -380,6 +466,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     audit_version_failure_fallback(dll,pe)?;
     audit_version_success_dispatch(dll,pe)?;
     audit_secondary_version_failure_fallback(dll,pe)?;
+    audit_secondary_version_success_dispatch(dll,pe)?;
     let imports=dll_import_bindings(dll,pe)?;
     if !imports.iter().any(|imp|imp.iat_rva==iat_slot &&
         imp.symbol=="GetVersionExA" &&
@@ -573,6 +660,22 @@ mod tests {
         // The model does not guess any output for platform=1 or 2:
         // each executes a different, opaque original helper.
         assert_ne!(version_success_dispatch(1),version_success_dispatch(2));
+    }
+
+    #[test]
+    fn second_successful_version_probe_uses_distinct_helpers() {
+        assert_eq!(secondary_version_success_dispatch(1),
+                   SecondaryVersionSuccessDispatch::Win9xHelper1c7f0);
+        assert_eq!(secondary_version_success_dispatch(2),
+                   SecondaryVersionSuccessDispatch::WinNtHelper1bac7);
+        for other in [0,3,4,0xFFFF_FFFF] {
+            assert_eq!(secondary_version_success_dispatch(other),
+                       SecondaryVersionSuccessDispatch::FallbackEntry1ab34);
+        }
+        // Do not conflate the fallback entry with the low-byte mask
+        // of the DIFFERENT 1A77F helper.
+        assert_ne!(secondary_version_success_dispatch(0),
+                   SecondaryVersionSuccessDispatch::WinNtHelper1bac7);
     }
 
     #[test]
