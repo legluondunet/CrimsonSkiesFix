@@ -428,3 +428,66 @@ This considerably strengthens the **local null-vs-nonnull guard**
 and state effect. It does **not** prove a path from entry of
 \`0x1C7F0\` to \`0x1D26A\`, or show whether other branches modify the
 pointed-to DWORD before/after it.
+
+
+### Verified Win9x HELPER ENTRY to keyboard gate (2026-10-28)
+
+**Stronger than the earlier local 1CD16 proof:** the user-provided,
+SHA-256-pinned retail \`dplayerx.dll\` was extracted and inspected
+read-only. An independent Python static x86 branch walker begins at
+RVA **\`0x1C806\`**, immediately after the original entry prologue of
+the \`0x1C7F0\` Windows-9x helper:
+
+\`\`\`asm
+1C7F0  PUSH EBP
+1C7F1  MOV EBP,ESP
+1C7F3  SUB ESP,0x9C
+1C7F9  PUSH EBX
+1C7FA  PUSH ESI
+1C7FB  PUSH EDI
+1C7FC  MOV DWORD [EBP-0x98],0
+1C806  JL 1C819       ; start of obfuscated flag-only network
+\`\`\`
+
+Although \`SUB ESP,0x9C\` modifies arithmetic flags, the analysis
+requires **no assumption whatsoever** about their values: it
+enumerates every possible \`CF,ZF,PF,SF,OF\` assignment at \`0x1C806\`.
+
+All **32/32** assignments traverse exclusively safe, recognized
+instruction forms before reaching the existing and independently
+verified \`CALL 0x1D42F\` at RVA **\`0x1CD46\`**:
+
+- \`Jcc rel8\` and \`Jcc rel32\` with their *actual original*
+  signed displacements and x86 condition-code meanings;
+- \`JMP rel8/rel32\`, ordinary NOPs, and register **self-MOV/
+  self-XCHG** (the exact original paths contain no JMP);
+- no original memory read, memory write, API call, arithmetic
+  flag modification, opaque instruction or cycle was encountered
+  in the reachable prefix.
+
+There are exactly **32 distinct static routes**, with **210–395
+visited instruction boundaries** each, terminating at the same
+\`0x1CD46\` callsite. The union covers **464 distinct, original
+instruction boundaries** across the obfuscated block.
+
+Rust now independently recomputes these results in
+\`audit_win9x_entry_to_keyboard_gate\`, by reading the original
+file-backed executable bytes and failing closed on *any* unexpected
+opcode, out-of-bounds target, loop, or changed topology. It checks
+the actual 1C7F0 prologue and all 32 flag combinations. The pure
+\`branch_from_eflags\` test checks all 16 x86 Jcc conditions in
+complementary pairs for all 32 flag assignments. The original-image
+audit runs under \`inspect --modifier-research\`, where the existing
+original-file SHA-256 gate must already have passed.
+
+**Conclusion:** *if* a caller enters the **original helper 0x1C7F0**
+and its prologue executes normally, the program **must** encounter
+the keyboard-gate call at **0x1CD46** before any other observed
+side-effecting instruction in this path (the prologue's local
+initialization is itself a write). In contrast, **DLL entrypoint
+reachability to 0x1C7F0** remains a separate question, as do the
+behavior of imported Windows APIs, potential INT 68h semantics,
+and a complete path from the gate to the subsequent pointer-state
+addition at \`0x1D26A\`. The protected \`0x65BE\` and \`0x6621\`
+EAX modifiers are still not recovered, and no \`unpack\` operation
+has been enabled.
