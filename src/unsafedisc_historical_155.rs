@@ -228,6 +228,9 @@ pub fn hypothetical_155_one_word<F>(
     first:FirstModifierReturn,second:F,
 )->Result<u32,String>
 where F:FnOnce(u32)->u32 {
+    if index>=byte_length>>2 {
+        return Err("historical modifier index is outside full-DWORD loop".into());
+    }
     let trace=trace_first_modifier_return(
         source,index,dll_base,cursor,byte_length,first);
     if !trace.core_contract_holds(){
@@ -461,6 +464,11 @@ mod tests {
         bad=good;bad.esi=cursor+4;
         assert!(hypothetical_155_one_word(
             source,index,base,cursor,48,bad,second_function).is_err());
+        // Three bytes cannot enter the original whole-DWORD loop.
+        assert!(hypothetical_155_one_word(
+            source,0,base,cursor,3,good,second_function).is_err());
+        assert!(hypothetical_155_one_word(
+            source,12,base,cursor,48,good,second_function).is_err());
     }
 
     #[test]
