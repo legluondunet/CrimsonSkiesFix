@@ -3972,6 +3972,15 @@ fn inspect(options: Options) -> Result<()> {
         println!("No DLL code was executed or decrypted.");
     }
     if options.modifier_research {
+        let loader_profile=unsafedisc_dll_bootstrap::audit_original_loader_header(&loader)?;
+        println!("  Separate main-executable header profile: original on-disk CRIMSON.EXE, NOT reconstructed CRIMSON.ICD or observed runtime memory.");
+        println!("    Original loader A140 source-directory size guards: {:?} (IAT, imports, resources, exports, TLS).",
+            loader_profile.size_guard_eligible);
+        for walk in &loader_profile.class_iterators {
+            println!("    Original loader category {}: {} candidate section(s), {} filtered directory-start section(s), initial selection {}.",
+                walk.category,walk.matching_first_stage,walk.skipped_directory_starts,
+                walk.selected_section.as_deref().unwrap_or("none"));
+        }
         print_modifier_research(&dll)?;
     }
     if options.startup_research {
