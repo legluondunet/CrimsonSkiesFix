@@ -5042,3 +5042,23 @@ agree there. This improves our static analysis and fail-closed design,
 not our knowledge of actual memory buffers or encrypted code. No
 protected bytes are dumped or modified; the original DLL remains
 non-executable input data. The native CLI's behavior is unchanged.
+
+
+### Conditional failure-side write can precede a skipped mixer iteration
+
+Combining individually byte-verified original call/epilogue sites gives
+a useful **conditional**, never automatically reached, control chain:
+
+`196AE -> A310 -> BED0 -> BDD0`, where **if** BDD0 reaches its
+failure epilogue at `BE52`, it writes the selected pointee as
+`(third_argument - 1) mod 2^32` while returning `AX=0`.
+`BED0` still writes its two output DWORDs; `A310` returns that
+AX without replacing it; and the caller's low-16-bit test bypasses
+this iteration's `19C78` byte mixer. Thus **a skipped mixer
+iteration does not imply that its predecessor left every range
+output unchanged**.
+
+The synthetic cross-module regression tests this composition,
+including the selected-pointer side effect and the zero-AX gate.
+It **does not** claim a real `BE52` event, actual selected-pointer
+validity, DLL entrypoint reachability or recovered protected plaintext.
