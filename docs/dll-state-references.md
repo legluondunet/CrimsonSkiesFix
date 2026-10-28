@@ -491,3 +491,52 @@ and a complete path from the gate to the subsequent pointer-state
 addition at \`0x1D26A\`. The protected \`0x65BE\` and \`0x6621\`
 EAX modifiers are still not recovered, and no \`unpack\` operation
 has been enabled.
+
+
+### Keyboard-accepted helper path reaches GetVersionExA (2026-10-28)
+
+A further read-only original-image analysis follows the **accepted**
+keyboard test (the **conditional** \`AX=1\` result of \`CALL 0x1D42F\`),
+not the path taking the unresolved \`INT 0x68\`:
+
+1. \`1CD4B AND EAX,FFFFh; 1CD50 TEST EAX,EAX; 1CD52 JNE\` enters
+   \`0x1CD7B\`. All 32 five-flag assignments through the subsequent
+   *flag-preserving* source-level maze end at **\`0x1CE3B\`**
+   (**32 distinct paths of 30–58 instruction boundaries**).
+   The actual flags from \`TEST EAX,EAX\` with return AX=1 are a
+   *single* subset of those 32 checked assignments.
+2. Two ordinary, original stack-local stores set
+   \`[EBP-0x9C]=0x4300\` at \`0x1CE3B\` and
+   \`[EBP-0x98]=0\` at \`0x1CE45\`. Both preserve EFLAGS.
+   From **\`0x1CE4F\`**, all 32 assignments reach **\`0x1CFFF\`**
+   (**32 distinct paths, 68–125 instruction boundaries**).
+3. The original \`0x1CFFF\` instruction sets local
+   \`OSVERSIONINFOA.dwOSVersionInfoSize\` at
+   \`[EBP-0x94]=0x94\`. From \`0x1D009\`, all 32 flag
+   assignments converge at \`0x1D051\` (**32 distinct paths,
+   12–25 instruction boundaries**).
+4. The verified original instructions at \`0x1D051\`,
+   \`0x1D057\` and \`0x1D058\` load the address of the
+   \`OSVERSIONINFOA\` stack local, push it and invoke the genuine
+   **\`KERNEL32.dll!GetVersionExA\`**, imported through IAT
+   RVA **\`0x1E058\`** (\`FF 15 58 E0 8F 00\`).
+   The subsequent \`TEST EAX,EAX; JE 0x1D19D\` distinguishes
+   API failure from success. No API return value is guessed.
+
+All six stage-boundary instructions are anchored by exact original
+bytes. \`trace_original_flag_segment\` and
+\`audit_win9x_gate_success_to_version_api\` are fail-closed
+Rust source-level readers in the same inspector module. They reject
+unexpected opcodes, loops, out-of-range jumps and mismatched path
+statistics; this audit runs **only after** retail-file SHA-256 and
+PE geometry verification. No Windows function is executed.
+
+**Consequence:** for an entry into helper \`0x1C7F0\` and a
+successful \`GetKeyboardType\` predicate, the code **must reach its
+own GetVersionExA call** without passing through the adjacent
+\`INT 0x68\`. This *conditional* chain is distinct from the earlier
+\`GetVersionExA\` call in \`0x1A9B6\` which selected the platform
+helper in the first place. Effects of the nested version query
+and the resulting path to \`0x1D26A\` still require research.
+In particular, **no unconditional \`+0x34F\` state effect is
+asserted** for this helper.
