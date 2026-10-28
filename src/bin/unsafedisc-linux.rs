@@ -5074,9 +5074,31 @@ fn inspect_historical_155_cli() -> Result<()> {
     let startup=unsafedisc_historical_155::analyze_155_dll_startup(
         backed,base,code.virtual_address
     )?;
+    // Do not rely on the recovered import's name from a comment:
+    // resolve the actual FF 25 trampoline through the user's
+    // SHA-verified PE32 import descriptors. No DLL is loaded.
+    let import_trampoline_rva=startup.loadlibrary_thunk_va
+        .checked_sub(base).ok_or("historical DLL-load thunk precedes PE base")?;
+    let trampoline_at=executable_rva_to_file_offset(
+        &pe,import_trampoline_rva,6)?;
+    if image.get(trampoline_at..trampoline_at+2)!=Some(&[0xFF,0x25][..]) {
+        return Err("historical LoadLibraryExA trampoline is not FF 25".into());
+    }
+    let imported_iat_va=read_u32(&image,trampoline_at+2)?;
+    let imported_iat_rva=imported_iat_va.checked_sub(base)
+        .ok_or("historical DLL-load IAT VA precedes PE base")?;
+    let import_bindings=dll_import_bindings(&image,&pe)?;
+    let matching:Vec<_>=import_bindings.iter()
+        .filter(|b|b.iat_rva==imported_iat_rva).collect();
+    if matching.len()!=1 ||
+       !matching[0].library.eq_ignore_ascii_case("KERNEL32.dll") ||
+       matching[0].symbol!="LoadLibraryExA" {
+        return Err("historical DLL-load thunk does not resolve to KERNEL32!LoadLibraryExA".into());
+    }
     println!("Historical original unSafedisc.exe 1.5.5: exact SHA-256 and CODE opcode audit PASSED.");
     println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
         startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
+    println!("  Validated from original PE import metadata: KERNEL32!LoadLibraryExA IAT RVA 0x{imported_iat_rva:08X}.");
     match startup.attach_branch {
         unsafedisc_historical_155::HistoricalAttachBranch::AlwaysSkipManualAttach=>
             println!("  DLL entrypoint: unconditional skip to 0x{:08X} (no explicit attach from 402D98).",startup.skip_target_va),
