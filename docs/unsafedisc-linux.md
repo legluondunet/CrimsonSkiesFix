@@ -3878,3 +3878,56 @@ This is still **not a runtime execution trace**, and neither
 the two original encrypted EAX functions at `0x65BE` /
 `0x6621` nor the full protected `.txt` byte restoration
 is yet reconstructed. The source originals remain private.
+
+
+### Complete ordered A140 bootstrap: final category-4 .txt registration candidate (2026-10-28)
+
+Beyond the five now-classified data-directory-specific helpers,
+the exact original DLL `A140` invokes three additional
+**section class iterators** after them, in the following order:
+
+| A140 call RVA | Iterator | Original selector | Category registered | Original DLL outcome |
+| --- | --- | ---: | ---: | --- |
+| `0xA1D4` | `0xAB80` | 1 (CODE+EXECUTE) | 4 | First matching section: **`.txt`** |
+| `0xA1DD` | `0xAAF0` | 2 (writable DATA) | 5 | **`.data`** |
+| `0xA1E6` | `0xAA60` | 10 (read-only initialized DATA) | 6 | **None**, after two PE-directory-start exclusions |
+
+The exact selector and category PUSH immediates, helper E8 targets,
+and downstream `A2A0` category-update E8 calls were checked against
+the original SHA-256-pinned DLL's executable instructions.
+The section choices are independently reconstructed from the
+verified original `IMAGE_SECTION_HEADER.Characteristics` flags:
+
+- Selector **1** matches the three code/executable sections
+  `.txt`, `.text`, and `.txt2`; the iterator takes **the first**,
+  `.txt` at RVA `0x1000`. This is the **encrypted**
+  section containing the EAX functions, **not a plaintext dump**.
+- Selector **2** matches one writable initialized DATA section
+  `.data`, at RVA `0x20000`; it is not a PE directory start,
+  so the directory-exclusion rule does not remove it.
+- Selector **10** initially matches `.rdata` and `.reloc`,
+  but both have RVA equal to a nonzero PE data-directory
+  starting RVA (`0x1E000` is IAT, `0x27000` is
+  base relocations). The iterator excludes both and finds
+  **no** surviving section in this original build.
+
+**Combined with the five directory-specific helpers**, this
+gives an eight-step attach initialization order, plus a later
+direct call into protected `.txt` at original RVA `0x989F
+-> 0x7212`. The ordered discovery focuses our next analysis
+on the category-4 registry/segment mechanisms (`A2A0` and
+helpers `B850`, `B880`, `B8E0`), and on what, if
+anything, makes the protected code executable prior to this
+direct call. **Section registration is not decryption**;
+the original module loader's reachability and actual
+runtime state remain unproven.
+
+The read-only Rust module now verifies the A140 final
+three E8 calls, each selector/category immediate, all
+six downstream original targets and the exact section
+matching/exclusion totals, then prints the outcomes
+from `--modifier-research`. Two synthetic unit tests
+cover the real original-like section table and a
+counterexample where a later section survives the
+directory-start filter. Neither original protected
+code nor generated decrypted data is committed.
