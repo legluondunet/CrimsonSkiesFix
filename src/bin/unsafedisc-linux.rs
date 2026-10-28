@@ -2828,6 +2828,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
         a140.directory_helpers_called,a140.class_iterators_called);
     println!("  A140 does not branch on individual handler outcomes; downstream A2A0 handlers still have their own early exits.");
     println!("  Additional .txt2 direct references to A140: RVAs 0x1A137 and 0x1A299 (stack-local descriptor pointers).");
+    println!("  .txt2 0x1A137 prepares a process descriptor: GetCurrentProcess + GetModuleHandleA(NULL) (main executable), then mode 0x67/A550.");
+    println!("  Main-module result is conditional on the original OS API calls; no module base address is assumed.");
     println!("  Direct readable caller 0x9821 -> .txt2 0x1A20D passes original encoded module label dplayerx.dll (verified RVA 0x20030).");
     println!("  .txt2 caller 0x1A299: caller-supplied module-name pointer -> E25C decoder -> GetModuleHandleA -> mode 0x67 -> A550 -> A140.");
     println!("  Their actual descriptor contents and runtime reachability are NOT established by these static E8 references.");
