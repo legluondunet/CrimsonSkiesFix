@@ -165,6 +165,25 @@ mod tests {
     }
 
     #[test]
+    fn state_wrap_at_u32_max_is_represented_by_high16_modular_add(){
+        let desired=[80u8,120,9,13,77,8];
+        let initial=0xFFFF_FFF8u32;
+        let (destination,secondary)=generate(initial,&desired);
+        let exact=hypothetical_exact_mixer_initial_states(
+            &destination,&secondary,&desired,12).unwrap();
+        assert!(exact.compatible_initial_states>0);
+        assert!(exact.distinct_low16_carry_patterns>=2);
+        for candidate in exact.example_initial_states {
+            let mut state=candidate;
+            for i in 0..desired.len() {
+                let (out,next)=conditional_byte_step(destination[i],secondary[i],state);
+                assert_eq!(out,desired[i]);
+                state=next;
+            }
+        }
+    }
+
+    #[test]
     fn two_inconsistent_zero_output_measurements_have_no_solution(){
         let result=hypothetical_exact_mixer_initial_states(
             &[0,0],&[7,9],&[0,0],5).unwrap();
