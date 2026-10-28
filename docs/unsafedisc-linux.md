@@ -4319,3 +4319,70 @@ The **remaining** A140 invocation at 0x1A137
 requires independent tracing before any further
 module-specific generalization. All research is
 offline and read-only.
+
+
+### First .txt2 A140 caller uses the process's main executable module (2026-10-28)
+
+The remaining direct A140 call, at `.txt2:0x1A137`,
+has now been traced to a distinct descriptor initialization.
+Unlike the other caller, which receives the encoded
+literal `dplayerx.dll`, this first `.txt2` routine
+constructs a **process-main-module descriptor**.
+
+The independent local original-PE import parser maps
+the following **real KERNEL32.dll import bindings**:
+
+| DLL RVA | Original instruction | Import / effect |
+| --- | --- | --- |
+| `1A0CE` | `CALL DWORD PTR [0x008FE004]` | `GetCurrentProcess` |
+| `1A0D4` | `MOV [EBP-0xC],EAX` | Save process pseudo-handle in descriptor field 0 |
+| `1A0F7` | `PUSH 0` | NULL module-name argument |
+| `1A0F9` | `CALL DWORD PTR [0x008FE098]` | `GetModuleHandleA(NULL)`, main executable module |
+| `1A0FF` | `MOV [EBP-8],EAX` | Save executable image base in descriptor field +4 |
+| `1A116` | `PUSH 0x67` | Mode 0x67 |
+| `1A118` | `LEA EAX,[EBP-0xC]; PUSH EAX` | Pass descriptor to A550 |
+| `1A11C` | `CALL A550` | Initialize descriptor's mode |
+| `1A133` | `LEA ECX,[EBP-0xC]; PUSH ECX` | Pass descriptor to A140 |
+| `1A137` | `CALL A140` | Register the process-main-module descriptor |
+
+**Important distinction:** `GetCurrentProcess`
+returns a process **pseudo-handle**, not a module
+base address. `GetModuleHandleA(NULL)` provides
+the loaded executable module handle/base if the API
+call succeeds. The original descriptor fields are
+therefore two separate kinds of Win32 handles and
+must not be conflated.
+
+This resolves the prior uncertainty about **both
+visible `.txt2` A140 call sites**:
+
+- `0x1A137` initializes a descriptor that targets
+  the process main executable module via
+  `GetModuleHandleA(NULL)`.
+- `0x1A299` receives the `dplayerx.dll`
+  name from its caller `.text:0x9821` and
+  resolves that DLL's module handle.
+
+Both paths still contain opaque control-flow sections,
+so static caller/argument evidence is **not** proof
+that both actually execute in every Windows attach
+scenario. In particular, the main executable may be a
+SafeDisc launcher image or may have undergone other
+initialization by the time the call runs; no unprotected
+game-code RVA can be inferred from the API identity
+alone.
+
+The native inspector verifies both original IAT
+operands, resolves the *import symbols by name* from
+the PE import directory, checks argument setup and
+exact `A550/A140` E8 targets, and includes a
+synthetic test that distinguishes process and module
+handle roles. No executable is run or changed.
+
+**Next major question:** given the main executable's
+actual PE section directory at that point in the
+startup sequence, which of the A140 registration
+paths and categories would act on the protected
+sections? This is the strongest current lead toward
+understanding the transition from module registration
+to the protected code at `.txt:0x65BE/0x6621`.
