@@ -299,6 +299,23 @@ pub fn first_case_has_more_offsets(offset:u32,limit:u32)->bool {
     offset<limit
 }
 
+/// The original first-case 189F0 gate compares only the
+/// UNSIGNED START offset against the limit before requesting a
+/// fixed 0x28-byte A810 read. It does NOT first check whether
+/// offset+0x28 fits inside the limit. An actual A810 backend may
+/// reject an overrun, but original 189F0 then fails to test AX.
+///
+/// This SEPARATE future-safe geometry check rejects short tails
+/// and 32-bit offset overflow; it is not the historical x86 rule.
+pub fn first_case_checked_record_window(
+    offset:u32,limit:u32
+)->Option<(u32,u32)> {
+    if !first_case_has_more_offsets(offset,limit) {return None;}
+    let end=offset.checked_add(0x28)?;
+    if end>limit {return None;}
+    Some((offset,end))
+}
+
 /// Anchor only exact original source bytes for the first case
 /// matcher; no semantic assumption is made about the called
 /// 0xA810 memory-reading helper beyond the CALL target.
@@ -623,6 +640,26 @@ mod tests {
         assert!(!first_case_has_more_offsets(10,10));
         assert!(first_case_has_more_offsets(9,10));
         assert!(!first_case_has_more_offsets(u32::MAX,1));
+    }
+
+    #[test]
+    fn original_scan_accepts_short_trailing_record_start() {
+        // Historical 189F0 checks only start < limit, so even
+        // one remaining byte triggers a full 0x28-byte read.
+        assert!(first_case_has_more_offsets(0x27,0x28));
+        assert_eq!(first_case_checked_record_window(0x27,0x28),None);
+        assert_eq!(first_case_checked_record_window(0,0x28),Some((0,0x28)));
+        assert_eq!(first_case_checked_record_window(8,47),None);
+        assert_eq!(first_case_checked_record_window(8,48),Some((8,48)));
+    }
+
+    #[test]
+    fn safe_scan_rejects_unsigned_offset_wrap_before_fixed_read() {
+        assert!(first_case_has_more_offsets(0xFFFF_FFF0,u32::MAX));
+        assert!(first_case_advance_offset(0xFFFF_FFF0)<0xFFFF_FFF0);
+        assert_eq!(first_case_checked_record_window(0xFFFF_FFF0,u32::MAX),None);
+        assert_eq!(first_case_checked_record_window(u32::MAX,u32::MAX),None);
+        assert_eq!(first_case_checked_record_window(1,0),None);
     }
 
     #[test]
