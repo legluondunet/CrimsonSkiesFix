@@ -4490,6 +4490,8 @@ fn inspect(options: Options) -> Result<()> {
             }
             println!("  F1-only constraints are conditional: injectivity of F2 on unseen values remains UNPROVEN.");
             println!("  F2-only test makes NO affine assumption about the still-unknown F1.");
+            println!("  HISTORICAL x86 CONTRACT CAVEAT: this F2-only mathematical model assumes the FIRST encrypted DLL modifier preserves ECX (mask) and EDX (second CALL target).");
+            println!("  The first helper's register effects are NOT yet recovered; therefore 13/8/5 differential contradictions reject an affine F2 under that ASSUMPTION, not unconditionally for the real DLL.");
             println!("  This 64-feature test is a necessary condition only if BOTH original EAX modifiers are bit-affine.");
             println!("  A fitted hypothesis describes ONLY the observed pairs, not unseen inputs or the two original EAX functions.");
             println!("  CONFIRMED: the first-DWORD composite modifier acts consistently and injectively on 31,799 observed inputs.");
