@@ -41,6 +41,9 @@ mod unsafedisc_dll_byte_mix;
 #[path = "../unsafedisc_dll_state_provenance.rs"]
 mod unsafedisc_dll_state_provenance;
 
+#[path = "../unsafedisc_dll_keyboard_probe.rs"]
+mod unsafedisc_dll_keyboard_probe;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2831,6 +2834,10 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     print_dll_memory_patch_research(dll,&pe)?;
     unsafedisc_dll_category_dispatch::verify_original(dll,&pe)?;
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
+    unsafedisc_dll_keyboard_probe::audit_original(dll,&pe)?;
+    println!("  Verified original .txt2 keyboard probe: RVA 0x1D42F calls USER32!GetKeyboardType(0/1), accepts type=7 and subtype 0xD01..0xD07 (AX=1).");
+    println!("    An original E8 at RVA 0x1CD46 targets this predicate. The adjacent TEST/JNE forks around a literal INT 0x68 with AX=0x4300 when the gate returns zero.");
+    println!("    This is STATIC x86 source evidence only: entrypoint reachability, Windows interrupt semantics, and any relation to a real compatibility failure remain UNKNOWN.");
     // Relocation-backed references are a bounded address-level audit, not
     // a disassembly or a proof that all aliases to the state are covered.
     let state_refs=unsafedisc_dll_state_provenance::scan_original_state_relocations(dll,&pe)?;
