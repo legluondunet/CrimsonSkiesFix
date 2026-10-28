@@ -3224,6 +3224,43 @@ fn pe_relocation_blocks(image: &[u8], pe: &Pe32) -> Result<(Vec<RelocBlock>, usi
     parse_relocation_blocks(bytes)
 }
 
+// Independently count the original directory's ZERO ABSOLUTE entries
+// versus nonzero ABSOLUTE entries. The historical 1.5.5 x86 checks
+// whether the *whole* 16-bit word is zero and can therefore treat
+// nonzero type-0 padding differently from a modern HIGHLOW parser.
+// This reads only SHA-256-verified original on-disk ICD bytes.
+fn historical_icd_reloc_word_profile(
+    image:&[u8],pe:&Pe32,
+)->Result<unsafedisc_historical_155_reloc_builder::HistoricalRelocWordProfile>{
+    let nt=read_u32(image,0x3C)? as usize;
+    let opt_at=nt.checked_add(24).ok_or("reloc profile optional header offset overflow")?;
+    let opt_len=read_u16(image,nt+20)? as usize;
+    let dir_offset=96+5*8;
+    if opt_len<dir_offset+8 {
+        return Err("reloc profile optional header lacks relocation directory".into());
+    }
+    let rva=read_u32(image,opt_at+dir_offset)?;
+    let len=read_u32(image,opt_at+dir_offset+4)? as usize;
+    if rva==0 || len==0 || len>1_048_576 {
+        return Err("reloc profile directory missing or too large".into());
+    }
+    let section=pe.section(b".reloc")?;
+    let relative=rva.checked_sub(section.virtual_address)
+        .ok_or("reloc profile RVA before .reloc section")? as usize;
+    let end_relative=relative.checked_add(len)
+        .ok_or("reloc profile directory section span overflow")?;
+    if end_relative>section.raw_len {
+        return Err("reloc profile beyond original .reloc raw length".into());
+    }
+    let start=section.raw_offset.checked_add(relative)
+        .ok_or("reloc profile raw offset overflow")?;
+    let end=start.checked_add(len)
+        .ok_or("reloc profile raw end overflow")?;
+    let data=image.get(start..end)
+        .ok_or("reloc profile exceeds original file")?;
+    unsafedisc_historical_155_reloc_builder::historical_155_reloc_word_profile(data)
+}
+
 // Historical unSafeDisc 1.5.5 static branch evidence:
 // 0x401FCF calls 0x402257 before the checksum phase.
 // 0x402505 stores IMAGE_DIRECTORY_ENTRY_BASERELOC.VirtualAddress
@@ -4224,6 +4261,25 @@ fn inspect(options: Options) -> Result<()> {
     let source_pe = parse_pe32(&loader)?;
     let protected_pe = parse_pe32(&icd)?;
     let (relocs, reloc_padding) = pe_relocation_blocks(&icd, &protected_pe)?;
+    if options.historical_selection || options.checksum_research || options.key_research {
+        let historic=historical_icd_reloc_word_profile(&icd,&protected_pe)?;
+        let modern_highlow:usize=relocs.iter()
+            .map(|block|block.highlow_offsets.len()).sum();
+        if historic.highlow_words!=modern_highlow ||
+           historic.zero_padding_words+historic.nonzero_type_zero_words!=reloc_padding ||
+           historic.blocks!=relocs.len() {
+            return Err("independent historical and PE relocation WORD profile disagree".into());
+        }
+        println!("Original ICD historical relocation WORD audit (read-only, no DLL execution):");
+        println!("  {} PE relocation blocks; {} HIGHLOW WORDs; {} zero ABSOLUTE words; {} nonzero type-0 ABSOLUTE words; {} odd-sized WORD blocks.",
+            historic.blocks,historic.highlow_words,
+            historic.zero_padding_words,historic.nonzero_type_zero_words,
+            historic.odd_word_blocks);
+        println!("  Public historical unSafeDisc 1.5.5 checks entire relocation WORD for zero, then masks low 12 bits. Native HIGHLOW-only checksum hypotheses may differ if nonzero type-0 entries exist.");
+        if historic.odd_word_blocks!=0 {
+            println!("  WARNING: archived DWORD-pair relocation consumer can read beyond odd-sized WORD blocks; no unsafe historical reads are attempted.");
+        }
+    }
     if options.historical_selection {
         let (selected,total)=audit_original_icd_historical_section_list(
             &icd,&protected_pe)?;
