@@ -20,6 +20,12 @@ pub struct SecondStageAudit {
     pub multi_mask_inputs: usize,
     pub differential_observations: usize,
     pub differential_rank: usize,
+    /// Independent XOR rank of the associated output differences.
+    pub output_differential_rank: usize,
+    /// Conditional necessary test for an INJECTIVE and GF(2)-affine F2:
+    /// a linear map cannot lose rank on the observed mask subspace.
+    /// Not a claim that the opaque original F2 is affine or bijective.
+    pub injective_affine_rank_deficit: usize,
     pub differential_contradictions: usize,
     pub distinct_mask_difference_classes: usize,
     pub repeated_mask_difference_classes: usize,
@@ -60,6 +66,7 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
     // (output XOR output0). A 32-vector basis checks consistency
     // of all such equations without recovering/publishing F2.
     let mut pivots:[Option<(u32,u32)>;32]=[None;32];
+    let mut output_basis=[0u32;32];
     // An especially readable F2-only counterexample is when two
     // observations use the same mask difference but DIFFERENT output
     // differences. Such an equality conflict alone refutes an affine
@@ -91,6 +98,16 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
             report.differential_observations+=1;
             let delta_mask=mask ^ base_mask;
             let delta_out=output ^ base_output;
+            let mut output_vector=delta_out;
+            for bit in (0..32).rev(){
+                if output_vector & (1u32<<bit)==0 {continue;}
+                if output_basis[bit]!=0{output_vector^=output_basis[bit];}
+                else {
+                    output_basis[bit]=output_vector;
+                    report.output_differential_rank+=1;
+                    break;
+                }
+            }
             if let Some(&prior_out)=seen_delta.get(&delta_mask) {
                 repeated_delta.insert(delta_mask);
                 if prior_out!=delta_out {
@@ -116,6 +133,10 @@ pub fn diagnose(samples: &HashMap<(u32, u32), u32>) -> SecondStageAudit {
             }
             if !independent && dy!=0 {report.differential_contradictions+=1;}
         }
+    }
+    if report.differential_contradictions==0 {
+        report.injective_affine_rank_deficit=report.differential_rank
+            .saturating_sub(report.output_differential_rank);
     }
     report.distinct_mask_difference_classes=seen_delta.len();
     report.repeated_mask_difference_classes=repeated_delta.len();
@@ -223,6 +244,38 @@ mod tests {
         assert_eq!(r.repeated_mask_difference_classes,1);
         assert_eq!(r.conflicting_mask_difference_classes,0);
         assert_eq!(r.differential_contradictions,0);
+    }
+
+    #[test]
+    fn rank_deficit_excludes_affine_bijective_f2_without_output_collisions(){
+        // Three independent mask deltas mapped to rank-two output
+        // deltas. All four observed outputs remain DISTINCT and the
+        // affine consistency equations are satisfiable. This rules
+        // out an injective affine F2 even though a simple duplicate-
+        // output collision test would miss the problem.
+        let pairs=HashMap::from([
+            ((0u32,9u32),0u32), ((1,9),1),
+            ((2,9),2), ((4,9),3),
+        ]);
+        let report=diagnose(&pairs);
+        assert_eq!(report.differential_rank,3);
+        assert_eq!(report.output_differential_rank,2);
+        assert_eq!(report.injective_affine_rank_deficit,1);
+        assert_eq!(report.differential_contradictions,0);
+        assert_eq!(report.distinct_mask_output_collisions,0);
+    }
+
+    #[test]
+    fn bijective_affine_second_stage_retains_mask_subspace_rank(){
+        let mut pairs=HashMap::new();
+        for index in 0..64u32 {
+            pairs.insert((index,1234),index_mask(index).rotate_left(9)^0xABCD_1234);
+        }
+        let report=diagnose(&pairs);
+        assert_eq!(report.differential_rank,6);
+        assert_eq!(report.output_differential_rank,6);
+        assert_eq!(report.injective_affine_rank_deficit,0);
+        assert_eq!(report.differential_contradictions,0);
     }
 
     #[test]
