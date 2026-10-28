@@ -143,87 +143,107 @@ fully determine the `0x19C78` entry state.
 
 A deliberately **bounded, static x86 branch interpreter**, restricted to
 the verified original instruction bytes, followed the
-\`TEST EAX,EAX\` at RVA \`0x1A7B6\` under the condition that
-\`GetVersionExA\` returned nonzero. The apparently looping
-\`1A7BE -> 1A7D1 -> 1A7C1 -> 1A7C9 -> 1A7D6\` overlapping-instruction
+`TEST EAX,EAX` at RVA `0x1A7B6` under the condition that
+`GetVersionExA` returned nonzero. The apparently looping
+`1A7BE -> 1A7D1 -> 1A7C1 -> 1A7C9 -> 1A7D6` overlapping-instruction
 detour is finite with the documented x86 TEST flags (ZF=0, CF=0);
-\`JBE\` is not taken and \`JA\` is taken. The code then compares the
-OSVERSIONINFOA platform field \`[EBP-0x84]\` with 1 and 2.
+`JBE` is not taken and `JA` is taken. The code then compares the
+OSVERSIONINFOA platform field `[EBP-0x84]` with 1 and 2.
 
 Five original-DLL inputs were independently walked:
 
-| Successful API, \`dwPlatformId\` | Conditional destination |
+| Successful API, `dwPlatformId` | Conditional destination |
 | --- | --- |
-| \`0\` | \`0x1A854\` low-byte mask |
-| \`1\` (VER_PLATFORM_WIN32_WINDOWS) | \`0x1BEEE\` helper |
-| \`2\` (VER_PLATFORM_WIN32_NT) | \`0x1AE3F\` helper |
-| \`3\` | \`0x1A854\` low-byte mask |
-| \`0xFFFFFFFF\` | \`0x1A854\` low-byte mask |
+| `0` | `0x1A854` low-byte mask |
+| `1` (VER_PLATFORM_WIN32_WINDOWS) | `0x1BEEE` helper |
+| `2` (VER_PLATFORM_WIN32_NT) | `0x1AE3F` helper |
+| `3` | `0x1A854` low-byte mask |
+| `0xFFFFFFFF` | `0x1A854` low-byte mask |
 
-The \`0x1A7F3\` and \`0x1A828\` direct calls forward the original
-\`[EBP+8]\` state-pointer argument. At each helper, a separate
+The `0x1A7F3` and `0x1A828` direct calls forward the original
+`[EBP+8]` state-pointer argument. At each helper, a separate
 original-byte check finds an actual imported
-\`KERNEL32!GetModuleHandleA\` call through **IAT RVA 0x1E098**
-(\`0x1AEC3\` in NT helper \`0x1AE3F\`;
-\`0x1BF52\` in Windows-9x helper \`0x1BEEE\`).
+`KERNEL32!GetModuleHandleA` call through **IAT RVA 0x1E098**
+(`0x1AEC3` in NT helper `0x1AE3F`;
+`0x1BF52` in Windows-9x helper `0x1BEEE`).
 This proves a common imported dependency but **not** a common
 algorithm or runtime success of that API.
 
-The new \`version_success_dispatch\` Rust helper is a small classifier
+The new `version_success_dispatch` Rust helper is a small classifier
 of *dispatch destinations only*: it does not run either helper or
 predict the output for Windows-9x/NT, and it does not assert that
-\`GetVersionExA\` can be substituted with an arbitrary platform ID on
+`GetVersionExA` can be substituted with an arbitrary platform ID on
 real Windows. Static full-branch original-byte and import-name checks
-are attached to \`inspect --modifier-research\`. The two synthetic
+are attached to `inspect --modifier-research`. The two synthetic
 unit tests cover routing and prevent treating either helper as a
 known low-byte transform.
 
 **Next unresolved point:** inspect the pointer writes and return
-conditions in \`0x1AE3F\` and \`0x1BEEE\` (or establish that they do not
+conditions in `0x1AE3F` and `0x1BEEE` (or establish that they do not
 write) before concluding the successful OS-probe effect on the global
-state. \`0x1A9B6\`'s success path is separately unresolved.
+state. The separate `0x1A9B6` platform dispatch is documented below.
 
 ### Successful GetVersionExA dispatch in the OTHER helper (1A9B6)
 
 A separate bounded x86 branch interpreter now follows the original
-\`0x1AA35\` nonzero-EAX path (distinct from the \`0x1A77F\` path).
+`0x1AA35` nonzero-EAX path (distinct from the `0x1A77F` path).
 For **each** of three nonzero API-result examples
-(\`0x1\`, \`0x80000000\`, \`0x11223344\`), original PE bytes and x86
+(`0x1`, `0x80000000`, `0x11223344`), original PE bytes and x86
 flag conditions (ZF/CF/PF/SF/OF) yielded the same conditional
 platform-class destinations:
 
-| Successful API, \`dwPlatformId\` | First helper call or fallback entry |
+| Successful API, `dwPlatformId` | First helper call or fallback entry |
 | --- | --- |
-| \`1\` (Windows 9x) | \`0x1AA9E\` calls \`0x1C7F0\` |
-| \`2\` (Windows NT) | \`0x1AB0F\` calls \`0x1BAC7\` |
-| \`0\`, \`3\`, \`0xFFFFFFFF\` | falls into \`0x1AB34\` |
+| `1` (Windows 9x) | `0x1AA9E` calls `0x1C7F0` |
+| `2` (Windows NT) | `0x1AB0F` calls `0x1BAC7` |
+| `0`, `3`, `0xFFFFFFFF` | falls into `0x1AB34` |
 
 The program begins with a deliberately obfuscated chain of
-overlapping instruction boundaries at \`0x1AA3D..0x1AA75\`,
+overlapping instruction boundaries at `0x1AA3D..0x1AA75`,
 then compares the same **OSVERSIONINFOA.dwPlatformId**
-at \`[EBP-0x84]\` to 1 and 2. The modeled 9x/NT call sites both push
-the original \`[EBP+8]\` argument pointer to their helper. Each
+at `[EBP-0x84]` to 1 and 2. The modeled 9x/NT call sites both push
+the original `[EBP+8]` argument pointer to their helper. Each
 actual E8 call destination and the path's anchoring instruction
 bytes are asserted in the separate Rust diagnostic.
 
-**Important distinction:** the \`0x1AB34\` entry for an unsupported
-platform is also involved in the API-*failure* path, but arrives with
-**different EFLAGS** after a preceding CMP. It cannot be assumed to
-behave identically, let alone preserve the state DWORD. Therefore the
-model reports **FallbackEntry1ab34**, *not* "unchanged" and not "low
-byte masked." The behavior of the \`0x1C7F0\` and \`0x1BAC7\`
-helpers also remains unresolved.
+**Important distinction:** an unsupported platform enters
+`0x1AB34` with different EFLAGS from the API-*failure* path. Instead
+of assuming identical behavior, an independently checked bounded
+five-flag model explored **all 32 possible combinations** of
+ZF/CF/PF/SF/OF in the original `0x1AB34..0x1AB77` branch graph.
+Every combination reaches `MOV AX,1` and the epilogue without any
+argument-pointer load/store or helper call. The branch therefore
+**leaves the passed DWORD unchanged**, whether it was entered after
+GetVersionExA failure or from a successful query for another platform.
+This conclusion is limited to the verified original control-flow
+path, not the behavior of `GetVersionExA` itself. The platform-specific
+helper bodies `0x1C7F0` and `0x1BAC7` remain unresolved.
 
 Combined original static dispatch map under successful Windows version
 queries:
 
 | Helper calling GetVersionExA | Windows 9x, platform 1 | Windows NT, platform 2 | Other platform |
 | --- | --- | --- | --- |
-| \`0x1A77F\` | \`0x1BEEE\` | \`0x1AE3F\` | low-byte mask |
-| \`0x1A9B6\` | \`0x1C7F0\` | \`0x1BAC7\` | fallback entry \`0x1AB34\` (unknown effect) |
+| `0x1A77F` | `0x1BEEE` | `0x1AE3F` | low-byte mask |
+| `0x1A9B6` | `0x1C7F0` | `0x1BAC7` | `0x1AB34` returns without changing passed DWORD |
 
 These are **conditional static routing claims only**. They do not
 demonstrate real runtime reachability, successful execution of any
 platform-specific helpers or identification of the mixer-entry state,
 and do not recover the protected EAX modifiers at
-\`0x65BE\` and \`0x6621\`.
+`0x65BE` and `0x6621`.
+
+### Complete static analysis of the shared 1AB34 fallback
+
+The original code at `0x1AB34` is a flag-only detour through
+Jcc/JMP, NOP and self-MOV/XCHG instructions, followed by
+`MOV AX,1` at `0x1AB64` and the epilogue at `0x1AB77`.
+A bounded conditional traversal of all **32** combinations of
+ZF, CF, PF, SF and OF found **no** pointer dereference, memory
+write or helper call, with paths between **15 and 26** visited
+instruction positions. Rust independently encodes these transitions
+in `secondary_fallback_steps`, checks all 26 relevant original
+instruction groups in `audit_secondary_fallback_all_flags`, and
+tests all flag combinations without running Windows DLL code.
+This establishes a *local branch's* state preservation only;
+it does not recover the four platform-specific helper bodies.
