@@ -304,10 +304,89 @@ pub fn audit_original_first_case_record_matcher(
     Ok(())
 }
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum OriginalIoDispatch {
+    ImmediateAxZeroType64,
+    InitializationFailedAxZero,
+    BackendA560Type65,
+    BackendA620OtherType,
+}
+
+/// Exact-original A810 branch rules, modeled without running
+/// Win32 APIs. The original input is a pointer to a structure
+/// with DWORD type field at offset +8. If this field is 0x64,
+/// A810 returns with AX=0 before any external read. Otherwise
+/// it checks an independent WORD flag at preferred VA 904AE4;
+/// if not one, it calls A870 and requires nonzero AX. This is
+/// NOT the decoder mixer-state at 905010. The 0x65 type takes
+/// A560; all other non-0x64 types take A620.
+/// Both backend implementations remain out of scope.
+pub fn io_backend_branch(
+    field_type:u32,
+    initialization_flag:u16,
+    initialization_probe_ax:u16,
+)->OriginalIoDispatch {
+    if field_type==0x64 {
+        OriginalIoDispatch::ImmediateAxZeroType64
+    } else if initialization_flag!=1 && initialization_probe_ax==0 {
+        OriginalIoDispatch::InitializationFailedAxZero
+    } else if field_type==0x65 {
+        OriginalIoDispatch::BackendA560Type65
+    } else {
+        OriginalIoDispatch::BackendA620OtherType
+    }
+}
+
+/// Anchor the early return, shared initialization test and two
+/// genuine original IO backend calls. Original preferred-base
+/// addresses are byte-checked; no function is actually invoked.
+pub fn audit_original_a810_backend_dispatch(
+    dll:&[u8],pe:&Pe32
+)->Result<()> {
+    for (site,bytes) in [
+        (0xA810u32,&[0x56,0x8B,0x74,0x24,0x08][..]),
+        (0xA815,&[0x83,0x7E,0x08,0x64,0x75,0x05][..]),
+        (0xA81B,&[0x66,0x33,0xC0,0x5E,0xC3][..]),
+        (0xA820,&[0x66,0x83,0x3D,0xE4,0x4A,0x90,0,0x01][..]),
+        (0xA828,&[0x74,0x0C,0xE8,0x41,0,0,0,
+                    0x66,0x85,0xC0,0x75,0x02,0x5E,0xC3][..]),
+        (0xA836,&[0x8B,0x46,0x08,0x8B,0x4C,0x24,0x10,
+                    0x8B,0x54,0x24,0x0C][..]),
+        (0xA841,&[0x83,0xF8,0x65,0x8B,0x44,0x24,0x14,
+                    0x50,0x51,0x52,0x56,0x74,0x0A][..]),
+        (0xA84E,&[0xE8,0xCD,0xFD,0xFF,0xFF,
+                    0x83,0xC4,0x10,0x5E,0xC3][..]),
+        (0xA858,&[0xE8,0x03,0xFD,0xFF,0xFF,
+                    0x83,0xC4,0x10,0x5E,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (site,target) in [
+        (0x18A15u32,0xA810u32),
+        (0xA82A,0xA870),
+        (0xA84E,0xA620),
+        (0xA858,0xA560),
+    ] {
+        if dll_relative_call_target(dll,pe,site)?!=target {
+            return Err(format!(
+                "original A810 data-source CALL at 0x{site:05X} changed"
+            ));
+        }
+    }
+    if 0xA819u32+2+5!=0xA820 ||
+       0xA828+2+0x0C!=0xA836 ||
+       0xA832+2+2!=0xA836 ||
+       0xA84C+2+0x0A!=0xA858 {
+        return Err("original A810 conditional backend branch changed".into());
+    }
+    Ok(())
+}
+
 /// Audit the true first worker call chain, not a guessed entrypoint
 /// route. The two known callers are proven CALL targets but their
 /// reachability from DllMain is NOT established by this check.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_original_a810_backend_dispatch(dll,pe)?;
     audit_original_first_case_record_matcher(dll,pe)?;
     audit_initial_worker_fixed_selector(dll,pe)?;
     audit_first_dispatch_return_branch(dll,pe)?;
@@ -430,6 +509,36 @@ mod tests {
         let negative=cmp_zero_eflags(0x8000_0000);
         assert!(negative.sf && !negative.zf && !negative.cf && !negative.of);
         assert_eq!(cmp_zero_eflags(0x10000).zf,false);
+    }
+
+    #[test]
+    fn original_a810_type_64_always_takes_ax_zero_early_return() {
+        for init in [0u16,1,u16::MAX] {
+            for ax in [0u16,1,u16::MAX] {
+                assert_eq!(io_backend_branch(0x64,init,ax),
+                    OriginalIoDispatch::ImmediateAxZeroType64);
+            }
+        }
+    }
+    #[test]
+    fn original_a810_type_65_selects_a560_if_initialized() {
+        assert_eq!(io_backend_branch(0x65,1,0),
+            OriginalIoDispatch::BackendA560Type65);
+        assert_eq!(io_backend_branch(0x65,0,1),
+            OriginalIoDispatch::BackendA560Type65);
+        assert_eq!(io_backend_branch(0x65,0,0),
+            OriginalIoDispatch::InitializationFailedAxZero);
+    }
+    #[test]
+    fn original_a810_non64_non65_type_selects_a620_when_ready() {
+        for typ in [0u32,1,0x66,0xFFFF_FFFF] {
+            assert_eq!(io_backend_branch(typ,1,0),
+                OriginalIoDispatch::BackendA620OtherType);
+            assert_eq!(io_backend_branch(typ,0,1),
+                OriginalIoDispatch::BackendA620OtherType);
+            assert_eq!(io_backend_branch(typ,0,0),
+                OriginalIoDispatch::InitializationFailedAxZero);
+        }
     }
 
     #[test]
