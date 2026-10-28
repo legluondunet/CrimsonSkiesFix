@@ -203,9 +203,158 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     Ok(())
 }
 
+
+// A PE HIGHLOW relocation on a DWORD equal to STATE_PREFERRED_VA is
+// stronger evidence of an absolute state reference than a raw byte-pattern
+// search. It still does not establish instruction boundaries, reachability,
+// or indirect aliases derived from the pointer at runtime.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum StateRefKind {
+    KnownRead,
+    KnownWrite,
+    KnownAddressPass,
+    Unclassified,
+}
+
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct StateRelocationRef {
+    pub operand_rva:u32,
+    pub section:String,
+    pub kind:StateRefKind,
+}
+
+/// Classify only byte operands whose surrounding original instruction
+/// bytes are independently anchored by audit_original or
+/// unsafedisc_dll_byte_mix::audit_original.
+pub fn classify_state_operand(operand_rva:u32)->StateRefKind {
+    match operand_rva {
+        0x1989A | 0x19A85 | 0x19D50 | 0x19D64 | 0x19D8D |
+        0x19DA9 | 0x19DDB | 0x19E73 | 0x19F11 =>
+            StateRefKind::KnownRead,
+        0x198A2 | 0x19A8D | 0x19DE3 | 0x19E7B | 0x19F19 |
+        0x1A362 | 0x1A3C2 => StateRefKind::KnownWrite,
+        0x1987E | 0x19A49 | 0x19E2C =>
+            StateRefKind::KnownAddressPass,
+        _ => StateRefKind::Unclassified,
+    }
+}
+
+/// Operates on an arbitrary SYNTHETIC file-backed section. Only relocation
+/// operand sites are considered, and DWORDs may straddle 4-KiB pages.
+/// They may not straddle the end of the supplied file-backed section.
+pub fn scan_state_reloc_section(
+    section_bytes:&[u8],section_rva:u32,relocation_sites:&[u32],
+)->Result<Vec<u32>> {
+    let mut hits=Vec::new();
+    for &operand_rva in relocation_sites {
+        let Some(local)=operand_rva.checked_sub(section_rva) else {continue};
+        let local=usize::try_from(local)
+            .map_err(|_|"state reference RVA is too large")?;
+        let Some(bytes)=section_bytes.get(local..local.saturating_add(4)) else {continue};
+        if u32::from_le_bytes(bytes.try_into().unwrap())==STATE_PREFERRED_VA {
+            hits.push(operand_rva);
+        }
+    }
+    hits.sort_unstable();
+    hits.dedup();
+    Ok(hits)
+}
+
+/// Run the above test on the *already exact-hash-verified* retail DLL.
+/// All sections are examined, including non-executable pointer tables.
+/// A ref is a statically relocated absolute DWORD, not necessarily code.
+pub fn scan_original_state_relocations(
+    dll:&[u8],pe:&Pe32,
+)->Result<Vec<StateRelocationRef>> {
+    let (blocks,_)=super::pe_relocation_blocks(dll,pe)?;
+    let mut relocation_sites=Vec::new();
+    for block in &blocks {
+        for &offset in &block.highlow_offsets {
+            relocation_sites.push(block.page_rva.checked_add(u32::from(offset))
+                .ok_or("state relocation RVA overflow")?);
+        }
+    }
+    relocation_sites.sort_unstable();
+    relocation_sites.dedup();
+    let mut refs=Vec::new();
+    for section in &pe.sections {
+        let backed=section.raw_len.min(if section.virtual_size==0 {
+            section.raw_len
+        } else {
+            section.virtual_size as usize
+        });
+        if backed==0 {continue}
+        let end=section.raw_offset.checked_add(backed)
+            .ok_or("state scan section offset overflow")?;
+        let section_bytes=dll.get(section.raw_offset..end)
+            .ok_or("state scan section extends beyond verified DLL")?;
+        let name=String::from_utf8_lossy(
+            section.name.split(|&b|b==0).next().unwrap_or(&[])
+        ).to_string();
+        for operand_rva in scan_state_reloc_section(
+            section_bytes,section.virtual_address,&relocation_sites
+        )? {
+            refs.push(StateRelocationRef {
+                operand_rva,
+                section:name.clone(),
+                kind:classify_state_operand(operand_rva),
+            });
+        }
+    }
+    refs.sort_unstable_by_key(|r|r.operand_rva);
+    Ok(refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn relocation_state_scan_ignores_nonrelocated_decoys_and_is_deterministic() {
+        let mut bytes=vec![0x90u8;0x1030];
+        let va=STATE_PREFERRED_VA.to_le_bytes();
+        bytes[5..9].copy_from_slice(&va);       // literal decoy, not relocated
+        bytes[0xFFE..0x1002].copy_from_slice(&va); // across a 4KiB page
+        bytes[0x102D..0x1031.min(bytes.len())].fill(0); // no valid four-byte slot
+        let relocs=[0x7FFEu32,0x7005,0x7FFE,0x7020,0x8030,0x6FFF];
+        assert_eq!(scan_state_reloc_section(&bytes,0x7000,&relocs).unwrap(),
+                   vec![0x7FFE]);
+    }
+
+    #[test]
+    fn relocated_state_pointer_must_match_exact_preferred_va() {
+        let mut section=vec![0u8;32];
+        section[7..11].copy_from_slice(&STATE_PREFERRED_VA.to_le_bytes());
+        assert_eq!(scan_state_reloc_section(&section,0x18000,&[0x18007]).unwrap(),
+                   vec![0x18007]);
+        section[7]+=1;
+        assert!(scan_state_reloc_section(&section,0x18000,&[0x18007]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn all_nineteen_known_state_operands_have_distinct_classes() {
+        let reads=[0x1989A,0x19A85,0x19D50,0x19D64,0x19D8D,
+                   0x19DA9,0x19DDB,0x19E73,0x19F11];
+        let writes=[0x198A2,0x19A8D,0x19DE3,0x19E7B,0x19F19,
+                    0x1A362,0x1A3C2];
+        let passed=[0x1987E,0x19A49,0x19E2C];
+        let mut all=std::collections::HashSet::new();
+        for operand in reads {
+            assert_eq!(classify_state_operand(operand),StateRefKind::KnownRead);
+            assert!(all.insert(operand));
+        }
+        for operand in writes {
+            assert_eq!(classify_state_operand(operand),StateRefKind::KnownWrite);
+            assert!(all.insert(operand));
+        }
+        for operand in passed {
+            assert_eq!(classify_state_operand(operand),StateRefKind::KnownAddressPass);
+            assert!(all.insert(operand));
+        }
+        assert_eq!(all.len(),19);
+        assert_eq!(classify_state_operand(0x1A9B6),StateRefKind::Unclassified);
+    }
 
     #[test]
     fn original_state_is_in_unbacked_virtual_data() {
