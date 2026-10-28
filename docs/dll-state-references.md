@@ -69,3 +69,43 @@ Never infer this from file offsets or PE zero-fill alone.
 All synthetic tests operate on invented section buffers. The actual
 original DLL is supplied locally by the user and is **never** included
 in a source commit, test fixture, workflow artifact or patch.
+
+## Verified original-image results (2026-10-28)
+
+User-supplied original files were extracted locally and all four SHA-256
+fingerprints matched the pinned Crimson Skies 1.0.2.0 profile. An
+independent Python PE relocation walk of the genuine **138,752-byte**
+`dplayerx.dll` reported **1,694 HIGHLOW relocation sites** and exactly
+**19 relocation-backed DWORDs** equal to the preferred address
+`0x00905010`. All 19 sites are in `.txt2` and exactly match the
+nine known read, seven known write and three known pointer-pass operands.
+There are **zero additional unclassified matching relocation sites**.
+These are actual private-file inspection results, NOT synthetic fixture
+results. No game bytes or original executable content is committed.
+
+### Conditional GetVersionExA failure transition
+
+A further original-byte static audit of the routine `0x1A77F` verified:
+
+1. `0x1A7B0` calls the genuine `KERNEL32!GetVersionExA` import via
+   IAT slot `0x1E058`; `TEST EAX,EAX` at `0x1A7B6` leads via
+   `JE` at `0x1A7B8` to `0x1A840` if the API fails.
+2. On this particular **EAX == 0** path, the flag-preserving
+   `MOV ECX,ECX` and NOP instructions leave ZF=1. The `JE`
+   at `0x1A846` enters `0x1A849`, whose unconditional jump
+   enters the original instruction boundary `0x1A854`.
+3. The instructions at `0x1A854..0x1A867` load the DWORD at the
+   argument pointer `[EBP+8]`, mask it with `0x000000FF`, **store
+   the DWORD back to that pointer** and return with `AX=1`.
+
+Thus the **conditional failure-path state transition** is
+`state = state & 0xFF` when the caller passed `0x00905010`. The
+old low byte survives. This is **not** a four-byte reset, and it does
+not describe the success path or prove the value at `0x19C78` entry.
+The separately tested Rust function
+`version_query_failure_state` models just this conditional transition.
+
+The exact original opcode groups, conditional branch targets and
+preservation of flags were verified without running the DLL on Linux.
+The two Windows-dependent success branches and pointer-mediated
+modifications elsewhere still require independent analysis.
