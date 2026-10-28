@@ -45,7 +45,7 @@ pub fn branch_from_eflags(condition:u8,f:GatePredecessorFlags)->Result<bool> {
 /// rel8/rel32, NOP and register SELF-MOV/SELF-XCHG are recognized.
 /// Any flag mutation, memory access, call or unfamiliar opcode fails
 /// closed. This is STATIC flow analysis, NEVER native DLL execution.
-pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->Result<u32> {
+pub fn original_eflags_step_in_range(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags,minimum:u32,maximum:u32)->Result<u32> {
     let idx=super::dll_backed_rva_offset(pe,pc,1)?;
     let opcode=dll[idx];
     let (size,displacement)=if (0x70..=0x7F).contains(&opcode) {
@@ -87,10 +87,97 @@ pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->R
     let next=i64::from(pc)+size+displacement;
     let next=u32::try_from(next)
         .map_err(|_|format!("x86 branch outside 32-bit RVA at 0x{pc:05X}"))?;
-    if !(0x1C806..=CALLSITE_RVA).contains(&next) {
+    if next<minimum || next>maximum {
         return Err(format!("Win9x branch exits vetted block: 0x{pc:05X} -> 0x{next:05X}"));
     }
     Ok(next)
+}
+
+pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->Result<u32> {
+    original_eflags_step_in_range(dll,pe,pc,f,0x1C806,CALLSITE_RVA)
+}
+
+/// Walk a source-only flag-preserving branch segment between two
+/// known original instruction boundaries. Reject side effects and
+/// cycles, *including the expected import CALL at the destination*.
+/// All original instructions are read as data, never executed.
+pub fn trace_original_flag_segment(
+    dll:&[u8],pe:&Pe32,start:u32,target:u32,f:GatePredecessorFlags
+)->Result<Vec<u32>> {
+    if !(0x1C806..=0x1D051).contains(&start) || target<=start ||
+       target>0x1D051 {
+        return Err("Win9x flag-only segment boundaries are invalid".into());
+    }
+    let mut pc=start;
+    let mut path=Vec::new();
+    for _ in 0..512 {
+        if pc==target {
+            path.push(pc);
+            return Ok(path);
+        }
+        if path.contains(&pc) {
+            return Err(format!("Win9x flag-only segment loops at 0x{pc:05X}"));
+        }
+        path.push(pc);
+        pc=original_eflags_step_in_range(dll,pe,pc,f,start,target)?;
+    }
+    Err("Win9x flag-only segment did not converge within 512 boundaries".into())
+}
+
+/// The gate-success branch, when it returns AX=1, avoids INT 68h
+/// and crosses three more flag-only mazes. The intermediate original
+/// instructions initialize stack locals; the first following API
+/// call is the real GetVersionExA import at original RVA 1D058.
+/// No result of that API or subsequent DWORD state is inferred.
+pub fn audit_win9x_gate_success_to_version_api(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (rva,expected) in [
+        (0x1CD46u32,&[0xE8,0xE4,0x06,0,0,0x25,0xFF,0xFF,0,0,0x85,0xC0,0x75,0x27][..]),
+        (0x1CE3B,&[0xC7,0x85,0x64,0xFF,0xFF,0xFF,0,0x43,0,0][..]),
+        (0x1CE45,&[0xC7,0x85,0x68,0xFF,0xFF,0xFF,0,0,0,0][..]),
+        (0x1CFFF,&[0xC7,0x85,0x6C,0xFF,0xFF,0xFF,0x94,0,0,0][..]),
+        (0x1D051,&[0x8D,0x85,0x6C,0xFF,0xFF,0xFF,0x50][..]),
+        (0x1D058,&[0xFF,0x15,0x58,0xE0,0x8F,0][..]),
+        (0x1D05E,&[0x85,0xC0,0x0F,0x84,0x37,0x01,0,0][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,rva,expected)?;
+    }
+    let nt=read_u32(dll,0x3C)? as usize;
+    let base=read_u32(dll,nt+24+28)?;
+    let (_,slot)=dll_indirect_import_call(dll,pe,0x1D058,base)?;
+    let imports=dll_import_bindings(dll,pe)?;
+    if slot!=0x1E058 || !imports.iter().any(|imp|
+        imp.iat_rva==slot && imp.symbol=="GetVersionExA" &&
+        imp.library.eq_ignore_ascii_case("KERNEL32.dll")) {
+        return Err("original Win9x gate-success GetVersionExA binding changed".into());
+    }
+    let stages=[
+        (0x1CD7Bu32,0x1CE3Bu32,30usize,58usize),
+        (0x1CE4F,0x1CFFF,68,125),
+        (0x1D009,0x1D051,12,25),
+    ];
+    for (start,end,min_expected,max_expected) in stages {
+        let mut distinct=std::collections::HashSet::new();
+        let mut observed_min=usize::MAX;
+        let mut observed_max=0usize;
+        for bits in 0u8..32 {
+            let flags=GatePredecessorFlags {
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let trace=trace_original_flag_segment(dll,pe,start,end,flags)?;
+            observed_min=observed_min.min(trace.len());
+            observed_max=observed_max.max(trace.len());
+            distinct.insert(trace);
+        }
+        if distinct.len()!=32 || observed_min!=min_expected ||
+           observed_max!=max_expected {
+            return Err(format!(
+                "original gate-success segment 0x{start:05X}..0x{end:05X} changed: \
+                 {} paths {observed_min}..{observed_max}",distinct.len()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Starting after the original 1C7F0 prologue, prove that the
@@ -296,6 +383,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
     audit_win9x_entry_to_keyboard_gate(dll,pe)?;
+    audit_win9x_gate_success_to_version_api(dll,pe)?;
     audit_gate_predecessor_original(dll,pe)?;
     for (site,bytes) in [
         (0x1D42Fu32,&[0x55,0x8B,0xEC,0x51,0x6A,0x00][..]),
@@ -415,6 +503,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn downstream_original_flag_only_segments_are_bounded_and_ordered() {
+        for (a,b) in [(0x1CD7B,0x1CE3B),(0x1CE4F,0x1CFFF),(0x1D009,0x1D051)] {
+            assert!(a<b);
+            assert!(b<=0x1D051);
+        }
+        assert_eq!(0x1CD7B,0x1CD52+2+0x27);
+        assert_eq!(0x1CE4F,0x1CD76+5+0xD4);
     }
 
     #[test]
