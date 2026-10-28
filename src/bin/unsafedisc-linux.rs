@@ -2843,6 +2843,9 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Conditional keyboard PASS (AX=1) skips INT 0x68, then all 32 flags reach stack-local init at 1CE3B (30..58 steps), OSVERSIONINFOA size init 1CFFF (68..125), and LEA at 1D051 (12..25).");
     println!("    Original 1D058 FF15 imports KERNEL32!GetVersionExA at IAT 1E058; its return and platform ID are runtime-dependent.");
     println!("    Conditional nested Win9x query SUCCESS with dwPlatformId != 1 -> original stack-local 0x0F at 1D133 -> 1D19D -> pointer guard 1D26A.");
+    println!("    Keyboard REJECTED: hypothetical NORMAL return from original INT 0x68 -> full EAX comparison with 0x4300. Return != 0x4300 sets stack-local [EBP-0x98]=1; equal retains zero.");
+    println!("    Keyboard accepted or rejected paths join the same nested version test. If nested version fails or platform=1, 1D19D reaches the pointer guard only when the rejected interrupt's returned EAX differed from 0x4300.");
+    println!("    If nested version succeeds on platform !=1, stack-local becomes 15 and reaches pointer guard independently of interrupt. Interrupt availability/return on Windows/Wine is UNKNOWN.");
     println!("    All four intervening flag-only networks converge for 32/32 flags; only a nonnull passed pointer causes original DWORD +0x34F. Outer vs inner Windows platform reports must not be assumed inconsistent.");
     println!("    This is STATIC x86 source evidence only: entrypoint reachability, Windows interrupt semantics, and any relation to a real compatibility failure remain UNKNOWN.");
     // Relocation-backed references are a bounded address-level audit, not
