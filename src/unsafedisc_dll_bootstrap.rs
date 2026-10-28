@@ -201,6 +201,64 @@ fn check_call(dll:&[u8],pe:&Pe32,site:u32,dest:u32)->Result<()> {
     Ok(())
 }
 
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct LoaderRegistrationProfile {
+    pub source_directory_sizes:[u32;5],
+    pub size_guard_eligible:[bool;5],
+    pub class_iterators:[SectionWalk;3],
+}
+
+/// Inspect only the pinned, ON-DISK Crimson SafeDisc loader PE header.
+/// GetModuleHandleA(NULL) designates this process module when mapped,
+/// but SafeDisc may have modified its in-memory header by this point.
+/// Never equate this offline header profile with an observed runtime
+/// category registry or with the unwrapped CRIMSON.ICD image.
+pub fn audit_original_loader_header(loader:&[u8])->Result<LoaderRegistrationProfile> {
+    let pe=super::parse_pe32(loader)?;
+    let nt=read_u32(loader,0x3C)? as usize;
+    let image_base=read_u32(loader,nt+24+28)?;
+    if image_base!=0x0040_0000 {
+        return Err("expected the original SafeDisc loader preferred image base".into());
+    }
+    let source_directory_sizes=[
+        read_u32(loader,nt+0x78+12*8+4)?,
+        read_u32(loader,nt+0x78+1*8+4)?,
+        read_u32(loader,nt+0x78+2*8+4)?,
+        read_u32(loader,nt+0x78+0*8+4)?,
+        read_u32(loader,nt+0x78+9*8+4)?,
+    ];
+    if source_directory_sizes!=[0x1DC,0x64,0x7AA,0,0] {
+        return Err("original loader A140 source-directory sizes differ from pinned disk header".into());
+    }
+    let size_guard_eligible=source_directory_sizes.map(|size|size!=0);
+    let secs:Vec<(String,u32,u32)>=pe.sections.iter().map(|sec|{
+        let name=String::from_utf8_lossy(sec.name.split(|&b|b==0).next().unwrap_or(&[])).to_string();
+        (name,sec.virtual_address,sec.characteristics)
+    }).collect();
+    let directory_starts:Vec<u32>=(0..16usize).map(|i|
+        read_u32(loader,nt+0x78+i*8)
+    ).collect::<Result<_>>()?;
+    let class_iterators=[
+        select_section(1,&secs,&directory_starts),
+        select_section(2,&secs,&directory_starts),
+        select_section(10,&secs,&directory_starts),
+    ];
+    let expected=[
+        SectionWalk{category:4,selector:1,matching_first_stage:3,
+            skipped_directory_starts:0,selected_section:Some(".txt".into())},
+        SectionWalk{category:5,selector:2,matching_first_stage:1,
+            skipped_directory_starts:0,selected_section:Some(".data".into())},
+        SectionWalk{category:6,selector:10,matching_first_stage:3,
+            skipped_directory_starts:3,selected_section:None},
+    ];
+    if class_iterators!=expected {
+        return Err("original SafeDisc loader's on-disk section selector results changed".into());
+    }
+    Ok(LoaderRegistrationProfile{
+        source_directory_sizes,size_guard_eligible,class_iterators
+    })
+}
+
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWalk;3])> {
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
@@ -488,6 +546,30 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthetic_loader_registers_resources_not_exports() {
+        let sections=vec![
+            (".txt".into(),0x1000,0x6000_0020),
+            (".text".into(),0x10000,0x6000_0020),
+            (".txt2".into(),0x23000,0x6000_0020),
+            (".rdata".into(),0x29000,0x4000_0040),
+            (".data".into(),0x2B000,0xC000_0040),
+            (".rsrc".into(),0x34000,0x4000_0040),
+            (".reloc".into(),0x58000,0x4200_0040),
+        ];
+        let starts=[0x29000u32,0x34000,0x58000];
+        assert_eq!(select_section(1,&sections,&starts).selected_section.as_deref(),
+            Some(".txt"));
+        assert_eq!(select_section(2,&sections,&starts).selected_section.as_deref(),
+            Some(".data"));
+        let ro=select_section(10,&sections,&starts);
+        assert_eq!(ro.matching_first_stage,3);
+        assert_eq!(ro.skipped_directory_starts,3);
+        assert_eq!(ro.selected_section,None);
+        let source_sizes=[0x1DCu32,0x64,0x7AA,0,0];
+        assert_eq!(source_sizes.map(|size|size!=0),[true,true,true,false,false]);
+    }
 
     #[test]
     fn process_descriptor_initializer_has_distinct_api_roles() {
