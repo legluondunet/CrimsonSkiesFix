@@ -24,6 +24,8 @@ mod unsafedisc_historical_155_reloc_builder;
 mod unsafedisc_historical_155_reloc_consumer;
 #[path = "../unsafedisc_historical_155_reloc_hazards.rs"]
 mod unsafedisc_historical_155_reloc_hazards;
+#[path = "../unsafedisc_historical_155_page_fragments.rs"]
+mod unsafedisc_historical_155_page_fragments;
 
 #[path = "../unsafedisc_second_stage.rs"]
 mod unsafedisc_second_stage;
@@ -4823,6 +4825,20 @@ fn audit_original_pretea_fragments(pe:&Pe32,relocs:&[RelocBlock])->Result<()>{
     }
     slots.sort_unstable();
     let result=pretea_fragment_geometry(len,&slots)?;
+    // Independent interval-based algorithm (not the bitmap used by
+    // pretea_fragment_geometry) checks the same SHA-verified ICD
+    // section geometry. Neither approach loads or decrypts the DLL.
+    let independent=unsafedisc_historical_155_page_fragments::
+        independent_page_fragment_geometry(len,&slots)?;
+    if independent.relocations!=result.highlow_slots ||
+       independent.excluded_bytes!=result.highlow_bytes ||
+       independent.complete_dwords!=result.modified_dwords ||
+       independent.incomplete_tail_bytes!=result.skipped_tail_bytes ||
+       independent.fragment_calls!=result.calls ||
+       independent.unaligned_calls!=result.unaligned_calls ||
+       independent.unaligned_dwords!=result.unaligned_dwords {
+        return Err(format!("independent interval and bitmap pre-TEA fragment geometry disagree: {independent:?} vs {result:?}"));
+    }
     if result!=(PreTeaFragmentGeometry{
         highlow_slots:61_743,highlow_bytes:246_972,
         modified_dwords:440_422,skipped_tail_bytes:93_801,
@@ -4839,6 +4855,8 @@ fn audit_original_pretea_fragments(pe:&Pe32,relocs:&[RelocBlock])->Result<()>{
     println!("  unchanged HIGHLOW bytes: {}; sub-DWORD gap tails: {}",
         result.highlow_bytes,result.skipped_tail_bytes);
     println!("  Fragment-local word mask restarts at 0; these are structural counts, not decoded content.");
+    println!("  Independent 4KiB interval walker agrees: {} cross-page HIGHLOWs, max {} complete DWORDs in one fragment, then local index restarts at 0.",
+        independent.crossing_relocations,independent.max_fragment_dwords);
     Ok(())
 }
 
