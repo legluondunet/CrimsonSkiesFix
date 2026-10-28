@@ -1462,3 +1462,88 @@ read from the external process; original loader entrypoint
 reachability and the final global mixer-state sequence.
 No DLL code, SafeDisc driver, Windows API or executable
 decryption was run or enabled by this research.
+
+
+### First worker case is a PE32 executable-section locator (2026-10-28)
+
+The previously reconstructed first worker invocation always supplies
+selector **1** to the 11-case `0x181E0` dispatcher, conditional on
+its preparatory helper returning normally. Its case-1 RVA `0x183C2`
+is now identified as a **PE executable-code section finder**.
+
+#### The original PE header and section-table checks
+
+The genuine code at **RVA `0x18940`** makes two original
+`A810` reads: a **0x40-byte DOS header** at offset zero and
+a **0xF8-byte NT header** at the DWORD `e_lfanew`
+at DOS-header offset `+0x3C`. It then compares the NT
+header's first DWORD against `0x00004550` (the `PE\0\0`
+signature), returning a one-byte boolean in AL.
+
+**Important limitation:** the historical code does not check
+the success return of either `A810` read in this short routine.
+Nor does it explicitly verify `MZ` there. For security, the
+new *independent* Rust metadata parser **does** require MZ,
+PE32, valid section-header extents and bounded section counts.
+That parser is intentionally stricter than the original x86
+implementation. No live game source, disk handle or process
+memory is read by the new code.
+
+The genuine dispatcher at **`0x18204..0x1822C`** extracts
+`SizeOfOptionalHeader` and `NumberOfSections` as unsigned
+16-bit quantities from the NT header and calculates a
+section-table start and end, using **0x18 bytes for the
+PE signature + COFF file header**, and **0x28 (40) bytes
+per section header**.
+
+Case **`0x183C2`** invokes the original record scanner
+`0x189F0` with mask **`0x20000020`** and expected value
+**`0x20000020`**. In PE section flags, these bits are
+`IMAGE_SCN_CNT_CODE` (`0x20`) and
+`IMAGE_SCN_MEM_EXECUTE` (`0x20000000`). Hence the first
+matching section is one which is simultaneously marked
+as **code and executable**. Other characteristics bits
+(including IMAGE_SCN_MEM_READ) are deliberately ignored.
+
+From the selected 40-byte section header, original case 1
+writes **PointerToRawData** (header +0x14) and
+**VirtualAddress** (header +0x0C) to its output pointers.
+Its call to `0x18B90` selects a length using
+`min(VirtualSize, SizeOfRawData)` if VirtualSize is nonzero,
+otherwise SizeOfRawData. The original selected length is
+metadata, not a reconstructed or decrypted code section.
+
+#### Reproduced on all four SHA-256-verified original files
+
+The independent stdlib-only local checker
+`verify_pe_section_case1.py` read all four exact-original
+uploaded inputs and applied the section predicate. Results:
+
+| Original file | First executable code section | Header file offset | Raw data file offset | RVA | Original selected length |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `CRIMSON.EXE` | `.txt` | `0x1A8` | `0x400` | `0x1000` | `0xEA00` |
+| `CRIMSON.ICD` | `.text` | `0x1F0` | `0x1000` | `0x1000` | `0x2014BD` |
+| `testme.exe` | `.text` | `0x1F0` | `0x1000` | `0x1000` | `0x2014BD` |
+| `dplayerx.dll` | `.txt` | `0x1A8` | `0x400` | `0x1000` | `0x7671` |
+
+The checker also verifies **13 exact opcode groups** of
+original `dplayerx.dll` and **six original E8 rel32 call
+targets** (`0x18951/0x18968 -> A810`, `0x181FF -> 18940`,
+`0x183D4 -> 189F0`, `0x18405 -> 18B90`,
+`0x18A15 -> A810`). A standalone synthetic parser test
+covers combined/individual flag masking, the first-match
+rule, length calculation, absent executable sections,
+truncation and invalid PE metadata. The new Rust module
+is `src/unsafedisc_dll_pe_sections.rs`; its original-image
+static audit is SHA-gated under `inspect --modifier-research`.
+
+**Interpretation is deliberately narrow:** these four selected
+sections are reproducible **file-metadata results**, not proof
+which source type or file the running SafeDisc worker really
+opened, what bytes it successfully read, or which data it
+fed to the later byte mixer. In particular, although the
+reference `testme.exe` and protected `CRIMSON.ICD` have the
+same first-section layout, that alone does not decrypt
+their differing code bytes or recover either EAX modifier.
+**No SafeDisc unpacking was enabled and no retail file was
+modified or published.**
