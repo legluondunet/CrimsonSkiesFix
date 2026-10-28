@@ -104,8 +104,8 @@ pub fn original_eflags_step(dll:&[u8],pe:&Pe32,pc:u32,f:GatePredecessorFlags)->R
 pub fn trace_original_flag_segment(
     dll:&[u8],pe:&Pe32,start:u32,target:u32,f:GatePredecessorFlags
 )->Result<Vec<u32>> {
-    if !(0x1C806..=0x1D26A).contains(&start) || target<=start ||
-       target>0x1D26A {
+    if !(0x1C806..=0x1D425).contains(&start) || target<=start ||
+       target>0x1D425 {
         return Err("Win9x flag-only segment boundaries are invalid".into());
     }
     let mut pc=start;
@@ -509,6 +509,101 @@ pub fn audit_rejected_keyboard_interrupt_source(dll:&[u8],pe:&Pe32)->Result<()> 
     Ok(())
 }
 
+/// Caller-provided assumption: an argument is either null or a
+/// valid writable DWORD with a known starting value. No original
+/// pointer is dereferenced during this Rust conditional model.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum Win9xPointer {
+    Null,
+    WritableDword(u32),
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct ConditionalWin9xOutcome {
+    /// The original MOV AX,1 / XOR AX,AX set ONLY low 16 bits.
+    pub ax:u16,
+    /// The value the caller supplied, perhaps incremented.
+    pub pointed_value:Option<u32>,
+    /// True only when original MOV [EAX],EDX was on this path.
+    pub wrote_dword:bool,
+}
+
+/// Conditional composition of the audited source regions. This
+/// presupposes entry to helper 1C7F0, observed kernel API outcomes
+/// (and on rejection, a normally returning INT 68h), and valid
+/// caller memory for any nonnull pointer. It is not DLL execution.
+pub fn conditional_win9x_outcome(
+    keyboard:KeyboardResult,
+    version:NestedVersionResult,
+    pointer:Win9xPointer
+)->ConditionalWin9xOutcome {
+    let gate=conditional_nested_pointer_route(keyboard,version);
+    let before=match pointer {
+        Win9xPointer::Null=>None,
+        Win9xPointer::WritableDword(value)=>Some(value),
+    };
+    match (gate.route,pointer) {
+        (GuardRoute::BypassPointerGuard,_) =>
+            ConditionalWin9xOutcome{ax:0,pointed_value:before,wrote_dword:false},
+        (GuardRoute::ExaminePointerGuard,Win9xPointer::Null) =>
+            ConditionalWin9xOutcome{ax:1,pointed_value:None,wrote_dword:false},
+        (GuardRoute::ExaminePointerGuard,Win9xPointer::WritableDword(value)) =>
+            ConditionalWin9xOutcome {
+                ax:1,
+                pointed_value:Some(
+                    super::unsafedisc_dll_state_provenance::
+                        conditional_win9x_34f_step(value)
+                ),
+                wrote_dword:true,
+            },
+    }
+}
+
+/// Verify that BOTH branches after the local-flag CMP have only
+/// original flag-preserving obfuscated flow to separate return-value
+/// instructions. This does not predict API outcomes or full EAX.
+pub fn audit_win9x_conditional_returns(dll:&[u8],pe:&Pe32)->Result<()> {
+    for (site,bytes) in [
+        (0x1D19Du32,&[0x83,0xBD,0x68,0xFF,0xFF,0xFF,0,0x0F,0x86,0x5B,0x01,0,0][..]),
+        (0x1D2FC,&[0x66,0xB8,0x01,0x00,0xE9,0x23,0x01,0,0][..]),
+        (0x1D425,&[0x66,0x33,0xC0][..]),
+        (0x1D428,&[0x5F,0x5E,0x5B,0x8B,0xE5,0x5D,0xC3][..]),
+    ] {
+        dll_expect_raw_x86(dll,pe,site,bytes)?;
+    }
+    for (start,end,want_distinct,want_min,want_max) in [
+        (0x1D2C7u32,0x1D2FCu32,16usize,10usize,21usize),
+        (0x1D305,0x1D425,32,44,77),
+    ] {
+        let mut paths=std::collections::HashSet::new();
+        let mut shortest=usize::MAX;
+        let mut longest=0usize;
+        for bits in 0u8..32 {
+            let flags=GatePredecessorFlags{
+                cf:bits&1!=0,zf:bits&2!=0,pf:bits&4!=0,
+                sf:bits&8!=0,of:bits&16!=0,
+            };
+            let path=trace_original_flag_segment(dll,pe,start,end,flags)?;
+            shortest=shortest.min(path.len());
+            longest=longest.max(path.len());
+            paths.insert(path);
+        }
+        if paths.len()!=want_distinct ||
+           shortest!=want_min || longest!=want_max {
+            return Err(format!(
+                "original Win9x return segment 0x{start:05X}..0x{end:05X} changed: \
+                {} distinct paths, {shortest}..{longest} boundaries",paths.len()
+            ));
+        }
+    }
+    // Source verified: 1D2FC MOV AX,1; 1D300 JMP 1D428.
+    // The 1D305-guard-bypass path reaches 1D425 XOR AX,AX,
+    // followed by the same 1D428 function epilogue.
+    if 0x1D300u32+5+0x123!=0x1D428 {
+        return Err("original Win9x MOV AX,1 return jump changed".into());
+    }
+    Ok(())
+}
+
 /// Original helper 1D42F returns AX=1 only if GetKeyboardType(0)
 /// returns 7 and GetKeyboardType(1) returns 0xD01..=0xD07.
 /// Purely synthetic evaluation; does not call USER32.
@@ -541,6 +636,7 @@ pub fn local_interrupt_probe_transition(prior:u32,returned_eax:u32)->u32 {
 
 /// Caller first checks exact original DLL SHA-256 and PE32 format.
 pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<()> {
+    audit_win9x_conditional_returns(dll,pe)?;
     audit_rejected_keyboard_interrupt_source(dll,pe)?;
     audit_win9x_entry_to_keyboard_gate(dll,pe)?;
     audit_win9x_gate_success_to_version_api(dll,pe)?;
@@ -680,6 +776,61 @@ mod tests {
                     GuardRoute::ExaminePointerGuard
                 });
             }
+        }
+    }
+
+    #[test]
+    fn bypass_guard_returns_ax_zero_and_preserves_writable_dword() {
+        for keyboard in [
+            KeyboardResult::Accepted,
+            KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+        ] {
+            for pointer in [Win9xPointer::Null,
+                            Win9xPointer::WritableDword(0),
+                            Win9xPointer::WritableDword(u32::MAX)] {
+                let outcome=conditional_win9x_outcome(
+                    keyboard,NestedVersionResult::Succeeded{platform_id:1},
+                    pointer
+                );
+                assert_eq!(outcome.ax,0);
+                assert!(!outcome.wrote_dword);
+                assert_eq!(outcome.pointed_value,match pointer {
+                    Win9xPointer::Null=>None,
+                    Win9xPointer::WritableDword(v)=>Some(v),
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn reached_guard_with_null_pointer_returns_ax_one_without_write() {
+        for keyboard in [
+            KeyboardResult::Accepted,
+            KeyboardResult::RejectedInterruptReturned{eax:0x4300},
+            KeyboardResult::RejectedInterruptReturned{eax:0x4301},
+        ] {
+            let outcome=conditional_win9x_outcome(
+                keyboard,NestedVersionResult::Succeeded{platform_id:2},
+                Win9xPointer::Null
+            );
+            assert_eq!(outcome,ConditionalWin9xOutcome{
+                ax:1,pointed_value:None,wrote_dword:false
+            });
+        }
+    }
+
+    #[test]
+    fn reached_guard_with_writable_pointer_wraps_and_returns_ax_one() {
+        for before in [0u32,1,0xFFFF_FF00,u32::MAX] {
+            let outcome=conditional_win9x_outcome(
+                KeyboardResult::RejectedInterruptReturned{eax:0x4301},
+                NestedVersionResult::Succeeded{platform_id:1},
+                Win9xPointer::WritableDword(before)
+            );
+            assert_eq!(outcome,ConditionalWin9xOutcome{
+                ax:1,pointed_value:Some(before.wrapping_add(0x34F)),
+                wrote_dword:true
+            });
         }
     }
 
