@@ -5165,7 +5165,8 @@ fn inspect_historical_155_cli() -> Result<()> {
     println!("  Historical NT -> PE section-table origin: stored NT header at [0x{:08X}], MOV CX from NT+0x{:X} to full ECX global [0x{:08X}], section table at NT+0x{:X}.",
         provenance.nt_header_save_va,provenance.section_count_field_offset,
         provenance.section_count_global_va,provenance.fixed_section_table_delta);
-    println!("  Important: MOV CX does NOT zero ECX high16; actual prior ECX state is not recovered. Native PE parser uses explicit u16 NumberOfSections and bounded optional-header length.");
+    println!("  Verified upstream XOR ECX,ECX at 0x4024A5 clears high16 on the audited normal path, despite MOV CX only updating low16. Historical e_lfanew is also read as a WORD (16 bits).");
+    println!("  Native PE parser correctly reads 32-bit e_lfanew, 16-bit NumberOfSections and the actual optional-header length; it does not replicate legacy truncation.");
     println!("  Historical selection: eight exact four-byte section-name exclusions; skipped branches converge at 0x{:08X}.",
         builder.skip_header_va);
     // Advisory static DATA inspection; the owner's original 1.5.5
