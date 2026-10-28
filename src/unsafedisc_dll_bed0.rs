@@ -145,6 +145,42 @@ pub fn original_c550_range_predicate(
     query_low<range_start.wrapping_add(range_len)
 }
 
+/// Strict SYNTHETIC interval interpretation for future safe tooling.
+/// This intentionally differs from original_c550_range_predicate:
+/// it rejects empty, reversed and 32-bit wrapping intervals.
+/// The original SafeDisc x86 does NOT perform these checks.
+/// Endpoints are inclusive at the public API, and the internal
+/// exclusive upper bound uses u64 to represent 0x1_0000_0000.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum CheckedRangeIntersection {
+    InvalidGeometry,
+    Disjoint,
+    Overlap { start:u32, len:u32 },
+}
+
+pub fn checked_contiguous_intersection(
+    range_start:u32, range_len:u32, query_low:u32, query_high:u32,
+)->CheckedRangeIntersection {
+    if range_len==0 || query_low>query_high {
+        return CheckedRangeIntersection::InvalidGeometry;
+    }
+    let end_exclusive=u64::from(range_start)+u64::from(range_len);
+    let address_space_end=u64::from(u32::MAX)+1;
+    if end_exclusive>address_space_end {
+        return CheckedRangeIntersection::InvalidGeometry;
+    }
+    let first=u64::from(range_start.max(query_low));
+    let last=end_exclusive.min(u64::from(query_high)+1);
+    if first>=last {
+        CheckedRangeIntersection::Disjoint
+    } else {
+        CheckedRangeIntersection::Overlap {
+            start:first as u32,
+            len:(last-first) as u32,
+        }
+    }
+}
+
 /// The original at RVA C550 contains this exact standalone,
 /// side-effect-free unsigned x86 range test. BDD0 uses it
 /// to decide whether a candidate node can participate in
@@ -345,6 +381,57 @@ mod tests {
             0xFFFF_FFF0,0x20,0xFFFF_FFF8,u32::MAX));
         assert!(original_c550_range_predicate(10,0,0,20));
         assert!(!original_c550_range_predicate(0,0,1,2));
+    }
+
+    #[test]
+    fn checked_interval_exposes_x86_predicate_false_positives() {
+        use CheckedRangeIntersection::*;
+        // C550 treats an empty candidate as a hit if its start is
+        // inside the requested bounds; it is not a safe interval.
+        assert!(original_c550_range_predicate(10,0,0,20));
+        assert_eq!(checked_contiguous_intersection(10,0,0,20),InvalidGeometry);
+        // A reversed query is also accepted on one original branch.
+        assert!(original_c550_range_predicate(0,10,9,3));
+        assert_eq!(checked_contiguous_intersection(0,10,9,3),InvalidGeometry);
+        // Original x86 wrapping on the end DWORD can discard a
+        // geometrically intended overlap; checked mode rejects it.
+        assert!(!original_c550_range_predicate(
+            0xFFFF_FFF0,0x20,0xFFFF_FFF8,u32::MAX));
+        assert_eq!(checked_contiguous_intersection(
+            0xFFFF_FFF0,0x20,0xFFFF_FFF8,u32::MAX),InvalidGeometry);
+    }
+
+    #[test]
+    fn checked_interval_keeps_last_u32_address_without_wrapping() {
+        use CheckedRangeIntersection::*;
+        assert_eq!(checked_contiguous_intersection(
+            u32::MAX,1,u32::MAX,u32::MAX),
+            Overlap{start:u32::MAX,len:1});
+        assert_eq!(checked_contiguous_intersection(10,10,12,15),
+            Overlap{start:12,len:4});
+        assert_eq!(checked_contiguous_intersection(10,10,20,30),
+            Disjoint);
+        assert_eq!(checked_contiguous_intersection(10,10,0,9),
+            Disjoint);
+    }
+
+    #[test]
+    fn x86_predicate_agrees_with_checked_overlap_on_valid_small_intervals() {
+        // Compare independently organized logic on more than 30k
+        // ordinary, nonwrapping candidates. Deliberately do NOT
+        // assert equivalence on the invalid geometry tested above.
+        for start in 0..16u32 {
+            for len in 1..16u32 {
+                for low in 0..16u32 {
+                    for high in low..16u32 {
+                        let safe=checked_contiguous_intersection(start,len,low,high);
+                        let expected=matches!(safe,CheckedRangeIntersection::Overlap{..});
+                        assert_eq!(original_c550_range_predicate(start,len,low,high),
+                            expected,"start={start},len={len},low={low},high={high}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
