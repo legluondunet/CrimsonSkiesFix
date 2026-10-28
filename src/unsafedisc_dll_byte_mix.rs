@@ -96,7 +96,7 @@ pub struct NoCarryMixerAudit {
 /// second buffer contents or the true encrypted .txt decode schedule.
 pub fn hypothetical_no_carry_initial_states(
     destination:&[u8],second_buffer:&[u8],known_output:&[u8],
-)->Result<NoCarryMixerAudit,String>{
+)->Result<NoCarryMixerAudit>{
     if destination.len()!=second_buffer.len() ||
        destination.len()!=known_output.len(){
         return Err("byte-mixer observations have different lengths".into());
