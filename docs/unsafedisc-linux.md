@@ -370,6 +370,39 @@ This is an analysis of **static x86 structure and nominal
 control flow**, not a dynamic trace or a claim about every
 error path.
 
+### Three independent chunk paths all reach the same helper
+
+The public archived 1.5.5 executable has **three distinct**
+relative CALL instructions that all resolve to
+`401F01`, where the CODE-bit checksum gate resides and
+where both CODE and non-CODE paths subsequently converge
+at the independently DLL-size-gated extra layer:
+
+| Calling mode | CALL site | Encoded `E8 rel32` | Destination |
+| --- | --- | --- | --- |
+| Ordinary full 4-KiB page | `401D62` | `E8 9A 01 00 00` | `401F01` |
+| Ordinary final partial page | `401D72` | `E8 8A 01 00 00` | `401F01` |
+| Relocation-aware fragment | `401ED8` | `E8 24 00 00 00` | `401F01` |
+
+This is particularly useful because Crimson's mode `4`
+takes the **relocation-aware** walker rather than the ordinary
+full-page loop: the actual relocation walker still calls
+the very same helper that conditionally skips the CRC for
+non-CODE sections while preserving the extra-layer size gate.
+It is therefore incorrect to assume the extra layer is
+restricted to either whole pages or the checksum-eligible
+`.text` section.
+
+`audit_155_crc_helper_callers` now verifies all three
+instruction windows, decodes their real rel32 targets
+and fails closed when any caller's opcode or displacement
+differs. It is linked to the owner's exact-SHA-256
+`inspect-historical` inspection, with negative tests
+restricted to synthetic code buffers. The original private
+binary has not been freshly executed or re-verified
+in this session; the evidence here is from the public
+archive variant.
+
 The size calculation is precisely:
 
 ```text
