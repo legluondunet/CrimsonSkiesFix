@@ -4386,3 +4386,65 @@ paths and categories would act on the protected
 sections? This is the strongest current lead toward
 understanding the transition from module registration
 to the protected code at `.txt:0x65BE/0x6621`.
+
+
+### The on-disk CRIMSON.EXE main-module registration profile differs from dplayerx.dll (2026-10-28)
+
+With the new exact-original `.txt2` caller proof,
+`GetModuleHandleA(NULL)` refers to the process main
+executable module, not the DLL. A separate read-only
+parser therefore evaluated the **original on-disk
+SafeDisc loader `CRIMSON.EXE`**, verified by the
+pre-existing exact SHA-256 and PE32 size gates.
+
+The five original A140 directory-specific helper inputs,
+in the established order **IAT (12), Imports (1),
+Resources (2), Exports (0), TLS (9)**, differ:
+
+| Input source directory | `dplayerx.dll` Size | `CRIMSON.EXE` loader Size | Initial nonzero guard |
+| --- | ---: | ---: | --- |
+| IAT (12) | `0x11C` | **`0x1DC`** | Both pass |
+| Import (1) | `0x3C` | **`0x64`** | Both pass |
+| Resource (2) | `0` | **`0x7AA`** | **Loader only** |
+| Export (0) | **`0x60`** | `0` | **DLL only** |
+| TLS (9) | `0` | `0` | Neither passes |
+
+The final three section-class selectors, evaluated
+against each original image's **own on-disk** section
+headers and data-directory starts, give:
+
+| Registered category / selector | DLL profile | Main SafeDisc loader profile |
+| --- | --- | --- |
+| 4 / selector 1 (code+execute) | `.txt` (3 matching) | `.txt` (3 matching) |
+| 5 / selector 2 (writable data, excluding directory starts) | `.data` (1 matching) | `.data` (1 matching) |
+| 6 / selector 10 (read-only data, excluding directory starts) | None (2/2 excluded) | **None (3/3 excluded)** |
+
+For the loader, the three read-only candidates
+`.rdata`, `.rsrc` and `.reloc` are all
+eliminated by their exact directory-start RVAs
+respectively IAT `0x29000`, resources
+`0x34000` and base relocations `0x58000`.
+
+**Strict limit:** these are PE header values from
+`CRIMSON.EXE` as stored on disk, not a runtime
+dump of `GetModuleHandleA(NULL)`. SafeDisc could
+have altered the mapped main executable or its
+headers before the registry call. They are also
+**not** the corresponding fields of
+`CRIMSON.ICD`, whose unwrapped layout is
+different. A class selector finding a section
+is not proof that subsequent A2A0 registration
+or any code transform succeeded.
+
+A new native `audit_original_loader_header`
+routine in `src/unsafedisc_dll_bootstrap.rs`
+is called only after the native CLI independently
+hash-verifies the protected loader input. It checks
+the original five source directory sizes, constructs
+the section list, applies the same static selector
+and directory-start exclusions as for the DLL,
+and asserts the expected **loader-specific**
+results. A synthetic unit test covers category
+selection and the resource-versus-export difference.
+The CLI labels these results as **on-disk-only**.
+The game/DLL files are neither executed nor modified.
