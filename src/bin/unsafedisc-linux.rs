@@ -5071,6 +5071,10 @@ fn inspect_historical_155_cli() -> Result<()> {
     unsafedisc_historical_155::audit_155_entry_to_modifier_loop(
         backed,base,code.virtual_address
     )?;
+    let checksum_bridge=
+        unsafedisc_historical_155::audit_155_codebit_crc_modifier_bridge(
+            backed,base,code.virtual_address
+        )?;
     let startup=unsafedisc_historical_155::analyze_155_dll_startup(
         backed,base,code.virtual_address
     )?;
@@ -5096,6 +5100,11 @@ fn inspect_historical_155_cli() -> Result<()> {
         return Err("historical DLL-load thunk does not resolve to KERNEL32!LoadLibraryExA".into());
     }
     println!("Historical original unSafedisc.exe 1.5.5: exact SHA-256 and CODE opcode audit PASSED.");
+    println!("  Historical CRC and extra layer: CODE bit 0x{:X} gates checksum only; non-code JZ -> 0x{:08X}, code path CALL -> 0x{:08X}.",
+        checksum_bridge.codebit,
+        checksum_bridge.bypass_checksum_target_va,
+        checksum_bridge.after_checksum_call_target_va);
+    println!("  Both code/non-code paths converge on DLL-size-gated pre-TEA modifier; section selection is a separate gate.");
     println!("  Original DLL loading strategy: LoadLibraryExA dwFlags={} (call wrapper VA 0x{:08X}).",
         startup.loadlibrary_flags,startup.loadlibrary_thunk_va);
     println!("  Validated from original PE import metadata: KERNEL32!LoadLibraryExA IAT RVA 0x{imported_iat_rva:08X}.");
