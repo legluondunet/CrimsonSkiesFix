@@ -341,3 +341,49 @@ entry \`0x1C7F0\` to \`0x1CD16\`. It does not execute x86 or any
 Windows API and does not reveal the actual values of the processor
 flags or the global state at the game's startup. The wider
 \`0x1C7F0\` body remains partially opaque.
+
+
+### Conditional direct DWORD mutation inside the Win9x helper (2026-10-28)
+
+A newly audited **separate** block of the original, file-backed
+\`dplayerx.dll\` executable section begins at **RVA \`0x1D28F\`**,
+inside the code span attributed to the successful Windows-9x platform
+helper **\`0x1C7F0\`**, which is the independently verified target of
+\`0x1AA9E\` in \`0x1A9B6\`.
+
+Two complementary original conditional branches establish a **local**
+convergence: \`0x1D28F JNE 0x1D2A4\`, or on ZF=1 the intervening
+flag-preserving \`MOV EDX,EDX\` and \`0x1D297 JE 0x1D2A4\`.
+The code at \`0x1D2A4..0x1D2B3\` then does:
+
+\`\`\`asm
+1D2A4  MOV ECX, [EBP+8]
+1D2A7  MOV EDX, [ECX]
+1D2A9  ADD EDX, 0x34F
+1D2AF  MOV EAX, [EBP+8]
+1D2B2  MOV [EAX], EDX
+\`\`\`
+
+The original \`JNE\` at \`0x1D2B4\` and \`JE\` at \`0x1D2B6\`
+also converge at \`0x1D2C7\`; the ordinary MOV instructions between
+ADD and these branches do not alter ZF. Thus **if execution enters
+0x1D28F** with a valid writable pointer argument, the conditional
+local effect on that pointed-to DWORD is exactly
+**\`value = (value + 0x34F) mod 2^32\`** and the store occurs once
+before joining the next block.
+
+The recovered rule is deliberately isolated as
+\`conditional_win9x_34f_step\` in
+\`src/unsafedisc_dll_state_provenance.rs\`. Synthetic tests cover
+32-bit wraparound and both entry/exit ZF conditions; a dedicated
+original-byte audit validates all ten instruction groups and four
+original Jcc displacement targets on the exact SHA-256-pinned
+private DLL, without executing Windows code.
+
+**Limitations:** no path from the entry of \`0x1C7F0\` to the
+\`0x1D28F\` block has been verified. The Windows-9x helper may contain
+other pointer-mediated mutations, and \`GetVersionExA\` success does
+not by itself prove that this branch executes. The rule does not
+identify the input state or the *final* state passed to \`0x19C78\`,
+and neither protected EAX modifier at \`0x65BE\` / \`0x6621\` is
+recovered. The user-owned original DLL is never committed.
