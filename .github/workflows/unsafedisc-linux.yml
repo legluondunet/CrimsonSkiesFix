@@ -42,6 +42,44 @@ jobs:
             echo "ERROR: missing historical executable unexpectedly accepted"
             exit 1
           fi
+      - name: Temporary archived original-tool SHA audit (no execution or artifact)
+        shell: bash
+        run: |
+          set -euo pipefail
+          zipfile="${RUNNER_TEMP}/unsfd155-source.zip"
+          if ! curl --location --fail --silent --show-error --retry 2 --max-time 20 \
+             "https://sta.c64.org/winprg/unsfd155.zip" --output "$zipfile"; then
+            echo "Historic archive host not reachable; no original-file verification possible."
+            exit 0
+          fi
+          python3 - "$zipfile" "${RUNNER_TEMP}/verified_unsafedisc155.exe" <<'PY'
+          import hashlib,sys,zipfile
+          archive,output=sys.argv[1:]
+          expected="e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f"
+          try:
+              with zipfile.ZipFile(archive) as zf:
+                  for name in zf.namelist():
+                      metadata=zf.getinfo(name)
+                      if metadata.is_dir() or metadata.file_size>100000:
+                          continue
+                      data=zf.read(name)
+                      sha=hashlib.sha256(data).hexdigest()
+                      print("Archived entry:",repr(name),"size",len(data),"SHA256",sha)
+                      if len(data)==20480 and sha==expected:
+                          with open(output,"wb") as f: f.write(data)
+                          print("EXACT OWNER-ORIGINAL HISTORICAL TOOL MATCHED")
+          except (zipfile.BadZipFile,OSError) as e:
+              print("Unable to parse historical archive:",e)
+          PY
+          if test -f "${RUNNER_TEMP}/verified_unsafedisc155.exe"; then
+            echo "Read-only original historical CLI audit:"
+            ./target/release/unsafedisc-linux inspect-historical \
+              --unsafedisc "${RUNNER_TEMP}/verified_unsafedisc155.exe" || \
+              echo "Original historical audit rejected one or more exact opcode windows."
+          else
+            echo "No exact SHA-pinned 20480-byte tool in historical archive."
+          fi
+          rm -f -- "$zipfile" "${RUNNER_TEMP}/verified_unsafedisc155.exe"
       - name: Upload experimental Linux executable
         uses: actions/upload-artifact@v4
         with:
