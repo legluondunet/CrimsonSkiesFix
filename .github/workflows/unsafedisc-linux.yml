@@ -42,6 +42,21 @@ jobs:
             echo "ERROR: missing historical executable unexpectedly accepted"
             exit 1
           fi
+      - name: Temporary public historical x86 continuation probe (no binary artifact)
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/unsafedisc155_public.exe"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://raw.githubusercontent.com/nckstwrt/SafeDiscLoader/4d1dc33e6e63a4ddca77bbcfa44a7ff98180e064/UnSafeDisc%20and%20SafeDisc2Cleaner/unSafedisc155_version.exe" \
+            --output "$archive"
+          test "$(stat -c%s "$archive")" = 18944
+          test "$(git hash-object "$archive")" = 825c467b6b403e1c85a5875ede5696dedfe17652
+          echo "Historical public variant: exact pinned Git blob / 18944 bytes."
+          objdump -h "$archive"
+          objdump -D -Mintel --start-address=0x402240 --stop-address=0x402360 "$archive"
+          objdump -D -Mintel --start-address=0x401cf0 --stop-address=0x401d20 "$archive"
+          rm -- "$archive"
       - name: Upload experimental Linux executable
         uses: actions/upload-artifact@v4
         with:
