@@ -2833,7 +2833,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_state_provenance::audit_original(dll,&pe)?;
     println!("  Original global mixer state: preferred VA 0x00905010, RVA 0x25010, .data virtual zero-fill before initial runtime writes.");
     println!("    Seven verified direct x86 writes: conditional +0x4F3, twice +argument_low16, +output_byte, +stack_local, and two explicit resets.");
-    println!("    1A77F called with state pointer from .txt2 0x19A4D and 0x19E30, uses KERNEL32!GetVersionExA and branches on OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
+    println!("    Three pointer-passing state callsites: .txt2 0x19882 -> 0x1A9B6, 0x19A4D -> 0x1A77F, 0x19E30 -> 0x1A77F.");
+    println!("    Both 1A9B6 and 1A77F use KERNEL32!GetVersionExA; 1A77F additionally checks OSVERSIONINFOA.dwPlatformId == 2 (Windows NT).");
     println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
     println!("    Two exact .txt2 E8 sources call shared worker 0x18F81: process path 0x1A1B2, DLL path 0x1A39C.");
     println!("    DLL path has reset / worker / reset instructions at 0x1A360 / 0x1A39C / 0x1A3C0 IN STATIC SOURCE ORDER ONLY; reachability remains unproven.");
