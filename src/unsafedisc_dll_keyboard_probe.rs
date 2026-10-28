@@ -255,9 +255,9 @@ mod tests {
             longest=longest.max(path.len());
             variants.insert(path);
         }
-        assert_eq!(shortest,5);
-        assert!(longest<=24);
-        assert!(variants.len()>3);
+        assert_eq!(shortest,8);
+        assert_eq!(longest,18);
+        assert_eq!(variants.len(),16);
     }
 
     #[test]
