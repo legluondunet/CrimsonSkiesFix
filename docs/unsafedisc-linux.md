@@ -6231,3 +6231,50 @@ The verified synthetic Rust candidate preflight now refuses
 `--key-research` when source relocation WORDs contain nonzero
 ABSOLUTE values, odd-entry blocks or empty blocks. This is a
 necessary fail-closed guard, NOT proof of a valid checksum or key.
+
+### Additional original relocation-word ordering guard (2026-10-28)
+
+The independently SHA-verified original unSafeDisc 1.5.5 contains
+two distinct operations that should not be conflated. The source
+relocation cutpoint builder at 0x4023A7 ignores a WORD only when
+all 16 bits are zero. The relocation consumer's packed offsets at
+0x401DFF are type-masked, and the body at 0x401E0F..0x401E55
+has a special case for an initial zero offset plus a further
+conditional branch from 0x401E35 to the block-tail path 0x401E52
+when a following offset WORD is zero. In particular a zero
+padding WORD before further nonzero entries is not necessarily
+equivalent to a standards-aware full HIGHLOW list walk.
+
+The native read-only profile now independently counts:
+
+- Nonterminal zero-padding WORDs (a zero followed later in the
+  same PE relocation block by a nonzero WORD).
+- Nonempty blocks containing only exact-zero WORD entries.
+- Previously established nonzero ABSOLUTE WORDs, odd-entry
+  blocks, zero-entry blocks and HIGHLOW entries.
+
+The necessary HIGHLOW-only key-candidate preflight now refuses
+either nonterminal padding or zero-only blocks, in addition to
+the earlier disqualifying conditions. The normal analysis CLI
+prints the counts, even when key research is not requested.
+Positive synthetic tests include trailing-only zeros as an
+eligible **necessary** case; negative tests cover leading or
+interior zeros and all-zero blocks. An expanded opcode audit
+pins 0x401E0F..0x401E55 including the exact JE/CALL/JMP
+destinations. Thus the fail-closed behavior is anchored to
+historical bytecode, not to a guess about how PE should work.
+
+An early description by r!sc/Krobar
+(https://gbppr.net/cracking/krobar/other/com26.html)
+independently documents SafeDisc 1.50.20's extra DWORD layer
+as an index-dependent XOR/opaque EAX modifier/XOR/second modifier
+pipeline, and explicitly notes that the modifier implementation
+varies with the particular dplayerx.dll. Our original opcode
+audit confirms the caller instruction sequence but proves
+neither encrypted modifier body nor that ECX/EDX survive the
+first indirect call; the existing register-contract guard
+continues to require independent evidence.
+
+IMPORTANT: these additions do NOT recover a key or the game's
+encrypted machine code. The original retail ICD has not been
+freshly read from this session to establish the ordering counts.

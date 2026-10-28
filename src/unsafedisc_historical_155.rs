@@ -15,9 +15,10 @@
 /// unless the first callee preserves EDX. The x86 caller also reuses
 /// the mask in ECX after the first call, and EBX/ESI/EDI in its loop.
 ///
-/// The owner-supplied, unmodified 20,480-byte release was examined in
-/// earlier research and has the same core address layout, but it is
-/// NOT present for fresh byte comparison in this module.
+/// The exact owner-original 20,480-byte release (SHA-256 gated) has
+/// since passed the same read-only opcode audits in ephemeral CI on
+/// 2026-10-28. This source file embeds no executable bytes beyond
+/// the narrowly anchored instruction windows below.
 pub const FIRST_MODIFIER_RVA:u32=0x65BE;
 pub const SECOND_OFFSET_FROM_FIRST:u32=0x63;
 pub const EXPECTED_SECOND_MODIFIER_RVA:u32=0x6621;
@@ -248,7 +249,8 @@ where F:FnOnce(u32)->u32 {
 /// `PUSH 0` flags for LoadLibraryExA and a `JMP +0x1C` that
 /// ALWAYS skips the explicit DLL entrypoint call. Earlier private
 /// original-file disassembly reported flags=1 and a DS-selector
-/// guarded entrypoint call. It is NOT available for recheck here.
+/// guarded entrypoint call. The original SHA-256-pinned 20,480-byte
+/// release was independently rechecked in read-only CI on 2026-10-28.
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum HistoricalAttachBranch {
     AlwaysSkipManualAttach,
