@@ -2866,7 +2866,10 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    Verified GetVersionExA failure route in 1A77F: conditional JE 1A7B8 -> 1A840 -> 1A849 -> 1A854, where *[passed state pointer] &= 0xFF and AX=1.");
     println!("    This is a proven conditional LOW-BYTE MASK, NOT a full 32-bit reset, successful-version path, or established mixer-entry state.");
     println!("    Independently verified GetVersionExA failure route in the other helper 1A9B6: EAX=0 -> 1AB34 -> original parity/flag detour -> AX=1 and return; no argument-pointer DWORD store on this path.");
-    println!("    The two failure branches differ: 1A77F masks the low byte; 1A9B6 keeps the passed DWORD unchanged. Neither success path has been reconstructed.");
+    println!("    The two failure branches differ: 1A77F masks the low byte; 1A9B6 keeps the passed DWORD unchanged.");
+    println!("    1A77F GetVersionExA-SUCCESS dispatch, original conditional x86 path verified: dwPlatformId=1 -> 1BEEE (Win9x), =2 -> 1AE3F (NT), other -> low-byte mask at 1A854.");
+    println!("    Both platform-specific helper bodies invoke the actual KERNEL32!GetModuleHandleA import through IAT 0x1E098; their later state effects are NOT recovered.");
+    println!("    1A9B6 SUCCESS route and both 1A77F platform helper transformations remain unresolved; dispatch alone does not determine the state at 19C78.");
     println!("    Initial PE zero-fill is NOT necessarily the state at 19C78 entry: different paths may modify/reset it beforehand.");
     println!("    Two exact .txt2 E8 sources call shared worker 0x18F81: process path 0x1A1B2, DLL path 0x1A39C.");
     println!("    DLL path has reset / worker / reset instructions at 0x1A360 / 0x1A39C / 0x1A3C0 IN STATIC SOURCE ORDER ONLY; reachability remains unproven.");
