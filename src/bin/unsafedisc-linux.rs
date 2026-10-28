@@ -4224,6 +4224,9 @@ fn inspect(options: Options) -> Result<()> {
                 first_stage.augmented_rank-first_stage.affine_input_rank);
             println!("  Conditional F1 direct XOR differences: {} repeated input-delta classes, {} incompatible mask-delta classes.",
                 first_stage.repeated_input_delta_classes,first_stage.contradictory_input_delta_classes);
+            println!("  Conditional F1 modular-rotation screening (LSB necessary conditions only): rotl(x,r)+k {} / 32; rotl(x+k,r) {} / 32.",
+                first_stage.rotate_then_add_lsb_candidates,
+                first_stage.add_then_rotate_lsb_candidates);
             if first_stage!=(unsafedisc_first_stage::FirstStageAudit{
                 raw_observations:361_480,canonical_observations:361_346,
                 canonical_conflicts:0,multi_context_outputs:11_857,
@@ -4233,6 +4236,8 @@ fn inspect(options: Options) -> Result<()> {
                 affine_input_rank:32,augmented_rank:42,
                 repeated_input_delta_classes:299,
                 contradictory_input_delta_classes:52,
+                rotate_then_add_lsb_candidates:0,
+                add_then_rotate_lsb_candidates:0,
             }) {
                 return Err("pinned retail/reference F1-only equal-output graph signature mismatch".into());
             }
