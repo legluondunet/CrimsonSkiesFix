@@ -29,14 +29,14 @@ pub fn conditional_byte_step(
 /// The actual original code after XOR has a complementary JNP/JP
 /// split and a PUSH/CALL-to-single-RET/POP no-op detour. Both parity
 /// outcomes rejoin at the exact executable boundary RVA 0x19D85.
-pub fn converges_after_parity_xor(pf:bool)->bool {
+pub fn parity_resume_rva(pf:bool)->u32 {
     if !pf {
-        // 19D78 JNP +0x0B to 19D85
-        true
+        // 19D78 JNP +0x0B
+        0x19D78 + 2 + 0x0B
     }else{
         // 19D7A PUSH EDX; 19D7B CALL 19CE0 (RET);
-        // 19D80 POP EDX; 19D81 JP +2 to 19D85.
-        true
+        // 19D80 POP EDX; 19D81 JP +2
+        0x19D81 + 2 + 0x02
     }
 }
 
@@ -118,7 +118,7 @@ mod tests {
         for x in 0..=255u16 {
             let byte=x as u8;
             let pf=byte.count_ones()%2==0;
-            assert!(converges_after_parity_xor(pf));
+            assert_eq!(parity_resume_rva(pf),0x19D85);
         }
     }
 
@@ -148,5 +148,8 @@ mod tests {
         let (output,updated)=conditional_byte_step(0xFF,0xFF,0xFFFF_FFFE);
         assert_eq!(output,0x01);
         assert_eq!(updated,u32::MAX);
+        let (output,updated)=conditional_byte_step(0xFF,0,0xFFFF_FFFF);
+        assert_eq!(output,0xFF);
+        assert_eq!(updated,0xFE);
     }
 }
