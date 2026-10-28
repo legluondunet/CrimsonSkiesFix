@@ -161,6 +161,92 @@ mod tests {
         assert_eq!(r.unaligned_calls,1);
         assert_eq!(r.unaligned_dwords,1);
     }
+    // Independent test oracle with one flag per BYTE. Unlike the
+    // production interval walker, it never scans (start,end) pairs.
+    // It is synthetic only, not the original game's input.
+    fn bitmap_reference(extent:usize,slots:&[usize])->PageFragmentAudit{
+        let mut excluded=vec![false;extent];
+        for &start in slots {excluded[start..start+4].fill(true);}
+        let mut out=PageFragmentAudit{
+            relocations:slots.len(),
+            excluded_bytes:slots.len()*4,
+            ..PageFragmentAudit::default()
+        };
+        for page_start in (0..extent).step_by(4096){
+            let stop=extent.min(page_start+4096);
+            let mut i=page_start;
+            while i<stop{
+                if excluded[i] {i+=1;continue;}
+                let start=i;
+                while i<stop && !excluded[i] {i+=1;}
+                let len=i-start;
+                out.included_bytes+=len;
+                out.incomplete_tail_bytes+=len%4;
+                let dw=len/4;
+                out.complete_dwords+=dw;
+                if dw>0{
+                    out.fragment_calls+=1;
+                    out.max_fragment_dwords=out.max_fragment_dwords.max(dw);
+                    if (start-page_start)%4!=0{
+                        out.unaligned_calls+=1;
+                        out.unaligned_dwords+=dw;
+                    }
+                }
+            }
+        }
+        out.crossing_relocations=slots.iter()
+            .filter(|&&start|start/4096!=(start+3)/4096).count();
+        out
+    }
+
+    #[test]
+    fn synthetic_boundary_positions_match_independent_bitmap_model(){
+        for extent in [4096usize,4097,4100,8192,8197]{
+            // Include the legitimate offset-zero slot, 4-byte
+            // adjacent pairs and starts crossing each 4KiB edge.
+            let starts:Vec<_>=(0..extent).filter(|&at|
+                at+4<=extent &&
+                (at<=8 || (4090..=4103).contains(&at) ||
+                 (8187..=8193).contains(&at))
+            ).collect();
+            for &at in &starts{
+                let list=[at];
+                assert_eq!(independent_page_fragment_geometry(extent,&list).unwrap(),
+                    bitmap_reference(extent,&list),"extent={extent} at={at}");
+            }
+            for (i,&a) in starts.iter().enumerate(){
+                for &b in &starts[i+1..]{
+                    if b<a+4 {continue;}
+                    let list=[a,b];
+                    assert_eq!(independent_page_fragment_geometry(extent,&list).unwrap(),
+                        bitmap_reference(extent,&list),"extent={extent} pair={a},{b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn synthetic_deterministic_fuzz_matches_byte_bitmap(){
+        let mut state=0xA5B1_C7D9u32;
+        for trial in 0..240{
+            state=state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let extent=[5usize,16,31,4095,4096,4097,4100,8192,8193,12288]
+                [(state as usize)%10];
+            let mut slots=Vec::new();
+            let mut cursor=0usize;
+            loop{
+                state=state.wrapping_mul(1664525).wrapping_add(1013904223);
+                cursor=cursor.saturating_add((state as usize)%21);
+                if cursor.checked_add(4).is_none_or(|end|end>extent){break;}
+                slots.push(cursor);
+                cursor+=4;
+            }
+            let actual=independent_page_fragment_geometry(extent,&slots).unwrap();
+            let expected=bitmap_reference(extent,&slots);
+            assert_eq!(actual,expected,"synthetic trial {trial}, extent {extent}");
+        }
+    }
+
     #[test]
     fn malformed_overlapping_or_out_of_bounds_relocations_fail_closed(){
         for bad in [&[8,4][..],&[3,5][..],&[4094][..]]{
