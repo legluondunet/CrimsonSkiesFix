@@ -243,6 +243,99 @@ where F:FnOnce(u32)->u32 {
     Ok(second(trace.second_call_eax))
 }
 
+/// Static, NON-EXECUTING comparison of the two 1.5.5 DLL-startup
+/// strategies. The PUBLIC 18,944-byte version.dll-adapted archive has
+/// `PUSH 0` flags for LoadLibraryExA and a `JMP +0x1C` that
+/// ALWAYS skips the explicit DLL entrypoint call. Earlier private
+/// original-file disassembly reported flags=1 and a DS-selector
+/// guarded entrypoint call. It is NOT available for recheck here.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum HistoricalAttachBranch {
+    AlwaysSkipManualAttach,
+    SkipWhenDsBit2Clear,
+    SkipWhenDsBit2Set,
+}
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalDllStartup {
+    pub loadlibrary_flags:u8,
+    pub loadlibrary_thunk_va:u32,
+    pub attach_branch:HistoricalAttachBranch,
+    pub manual_dll_entry_call_va:u32,
+    pub skip_target_va:u32,
+}
+
+/// Decode only separately anchored, short original x86 windows.
+/// The returned fields are independent of any actual Windows loader.
+/// Distinguishes LoadLibraryExA(dll,0,0) plus unconditional skip
+/// (archived compatibility variant), from LoadLibraryExA(dll,0,1)
+/// plus a DS-selector dependent manual DLL_PROCESS_ATTACH (original
+/// research note); neither route is executed in this program.
+pub fn analyze_155_dll_startup(
+    code:&[u8],image_base:u32,code_rva:u32,
+)->Result<HistoricalDllStartup,String>{
+    let code_va=image_base.checked_add(code_rva)
+        .ok_or("historical CODE VA overflow")?;
+    if code_va!=0x401000 {
+        return Err("historical CODE virtual base is not 0x401000".into());
+    }
+    let at=|va:u32,n:usize|->Result<&[u8],String>{
+        let i=va.checked_sub(code_va)
+            .ok_or("historical startup instruction precedes CODE")?
+            as usize;
+        code.get(i..i.checked_add(n)
+            .ok_or("historical startup instruction length overflow")?)
+            .ok_or_else(||format!("truncated historical startup opcode at 0x{va:08X}"))
+    };
+    // MOV EAX, name-VA; PUSH imm8 flags; PUSH imm8 hFile;
+    // PUSH EAX name; CALL the imported LoadLibraryExA trampoline.
+    if at(0x402D50,1)?!=[0xB8] ||
+       at(0x402D55,1)?!=[0x6A] ||
+       at(0x402D57,2)?!=[0x6A,0] ||
+       at(0x402D59,1)?!=[0x50] ||
+       at(0x402D5A,1)?!=[0xE8] {
+        return Err("historical DLL load argument setup changed".into());
+    }
+    let flags=at(0x402D56,1)?[0];
+    if flags!=0 && flags!=1 {
+        return Err("historical LoadLibraryExA flags are not 0 or 1".into());
+    }
+    let load_thunk=historical_155_branch_target(
+        code,code_va,0x402D5A)?;
+    // Validate cached HMODULE, PE e_lfanew/AddressOfEntryPoint
+    // selection, the DS test and the original manual call block.
+    for (va,pattern) in [
+        (0x402D5Fu32,&[0xA3,0x5C,0xCD,0x70,0][..]),
+        (0x402D6C,&[0x8B,0xD8,0x03,0x5B,0x3C][..]),
+        (0x402D71,&[0x8B,0x5B,0x28,0x03,0xD8][..]),
+        (0x402D76,&[0x66,0x8C,0xD9,0xF6,0xC1,0x04][..]),
+        (0x402D93,&[0x6A,0,0x6A,1,0x50,0xFF,0xD3,0xC3][..]),
+    ] {
+        if at(va,pattern.len())?!=pattern {
+            return Err(format!(
+                "historical DLL startup opcode mismatch at 0x{va:08X}"
+            ));
+        }
+    }
+    let attach_branch=match at(0x402D7C,1)?[0] {
+        0xEB=>HistoricalAttachBranch::AlwaysSkipManualAttach,
+        0x74=>HistoricalAttachBranch::SkipWhenDsBit2Clear,
+        0x75=>HistoricalAttachBranch::SkipWhenDsBit2Set,
+        _=>return Err("unknown historical DS-test branch form".into()),
+    };
+    let skip=historical_155_branch_target(code,code_va,0x402D7C)?;
+    if skip!=0x402D9A {
+        return Err("historical manual DLL attach skip target changed".into());
+    }
+    Ok(HistoricalDllStartup{
+        loadlibrary_flags:flags,
+        loadlibrary_thunk_va:load_thunk,
+        attach_branch,
+        manual_dll_entry_call_va:0x402D98,
+        skip_target_va:skip,
+    })
+}
+
 /// The original static length gate at 401F43 is exactly 0x21E00.
 /// This says the helper stage is *selected for execution* if its
 /// caller reached that gate, not that title-specific callees are
@@ -317,6 +410,61 @@ mod tests {
             &code,0x1000,0x0FFF).is_err());
         assert!(historical_155_branch_target(
             &[0xEB,0x7F],u32::MAX-1,u32::MAX-1).is_err());
+    }
+
+    #[test]
+    fn archived_loader_strategy_is_not_original_manual_attach() {
+        let mut code=vec![0u8;0x2000];
+        let mut put=|va:u32,bytes:&[u8]|{
+            let i=(va-0x401000) as usize;
+            code[i..i+bytes.len()].copy_from_slice(bytes);
+        };
+        put(0x402D50,&[0xB8,0x41,0x37,0x40,0,0x6A,0,
+                      0x6A,0,0x50,0xE8,0xAD,0x00,0,0]);
+        put(0x402D5F,&[0xA3,0x5C,0xCD,0x70,0]);
+        put(0x402D6C,&[0x8B,0xD8,0x03,0x5B,0x3C,0x8B,
+                      0x5B,0x28,0x03,0xD8]);
+        put(0x402D76,&[0x66,0x8C,0xD9,0xF6,0xC1,0x04,
+                      0xEB,0x1C]);
+        put(0x402D93,&[0x6A,0,0x6A,1,0x50,0xFF,0xD3,0xC3]);
+        let archived=analyze_155_dll_startup(
+            &code,0x400000,0x1000).unwrap();
+        assert_eq!(archived,HistoricalDllStartup{
+            loadlibrary_flags:0,loadlibrary_thunk_va:0x402E0C,
+            attach_branch:HistoricalAttachBranch::AlwaysSkipManualAttach,
+            manual_dll_entry_call_va:0x402D98,skip_target_va:0x402D9A,
+        });
+        // Synthetic original-style flags=1 and conditional guard.
+        code[(0x402D56-0x401000) as usize]=1;
+        code[(0x402D7C-0x401000) as usize]=0x74;
+        let original_style=analyze_155_dll_startup(
+            &code,0x400000,0x1000).unwrap();
+        assert_eq!(original_style.loadlibrary_flags,1);
+        assert_eq!(original_style.attach_branch,
+                   HistoricalAttachBranch::SkipWhenDsBit2Clear);
+        code[(0x402D7C-0x401000) as usize]=0x75;
+        assert_eq!(analyze_155_dll_startup(
+            &code,0x400000,0x1000).unwrap().attach_branch,
+            HistoricalAttachBranch::SkipWhenDsBit2Set);
+        // Fail closed for unsupported and mutated control flows.
+        code[(0x402D7C-0x401000) as usize]=0x90;
+        assert!(analyze_155_dll_startup(&code,0x400000,0x1000).is_err());
+        code[(0x402D7C-0x401000) as usize]=0xEB;
+        code[(0x402D7D-0x401000) as usize]=0x1B;
+        assert!(analyze_155_dll_startup(&code,0x400000,0x1000).is_err());
+        code[(0x402D7D-0x401000) as usize]=0x1C;
+        code[(0x402D56-0x401000) as usize]=2;
+        assert!(analyze_155_dll_startup(&code,0x400000,0x1000).is_err());
+    }
+
+    #[test]
+    fn startup_decoder_rejects_truncation_and_wrong_pe_base() {
+        assert!(analyze_155_dll_startup(
+            &[0u8;4],0x400000,0x1000).is_err());
+        assert!(analyze_155_dll_startup(
+            &[0u8;0x2000],0x400001,0x1000).is_err());
+        assert!(analyze_155_dll_startup(
+            &[0u8;0x2000],u32::MAX,0x1000).is_err());
     }
 
     #[test]
