@@ -180,7 +180,7 @@ fn check_call(dll:&[u8],pe:&Pe32,site:u32,dest:u32)->Result<()> {
     Ok(())
 }
 
-pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
+pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<(Vec<BootstrapStep>,[SectionWalk;3])> {
     let nt=read_u32(dll,0x3C)? as usize;
     let base=read_u32(dll,nt+24+28)?;
     if base!=0x008E_0000 {return Err("unexpected original DLL preferred image base".into());}
@@ -336,7 +336,7 @@ pub fn audit_original(dll:&[u8],pe:&Pe32)->Result<Vec<BootstrapStep>> {
                 actual.selector));
         }
     }
-    Ok(output)
+    Ok((output,expected_walks))
 }
 
 #[cfg(test)]
