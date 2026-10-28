@@ -2849,6 +2849,8 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     println!("    If nested version succeeds on platform !=1, stack-local becomes 15 and reaches pointer guard independently of interrupt. Interrupt availability/return on Windows/Wine is UNKNOWN.");
     println!("    Final Win9x conditional returns: bypass pointer guard -> XOR AX,AX at 1D425 (AX=0, no write); guard with NULL pointer -> MOV AX,1 at 1D2FC (no write); nonnull pointer -> exactly one +0x34F DWORD store, then AX=1.");
     println!("    Final flag-only suffixes proven for all 32 assignments: 1D2C7 -> 1D2FC (16 distinct, 10..21 steps, safe backward branches), 1D305 -> 1D425 (32 distinct, 44..77 steps). Upper 16 EAX bits are NOT determined.");
+    println!("    Original pointer provenance also verified: 1987D PUSH global 0x00905010 -> 19882 CALL 1A9B6 -> Win9x branch 1AA9E CALL 1C7F0, which forwards the same address to the conditional +0x34F store.");
+    println!("    This may perturb the REAL global mixer state under the conditional historical anti-SoftICE path, but 1987D startup reachability, actual interrupt return and final 19C78 state remain UNPROVEN.");
     println!("    All four intervening flag-only networks converge for 32/32 flags; only a nonnull passed pointer causes original DWORD +0x34F. Outer vs inner Windows platform reports must not be assumed inconsistent.");
     println!("    This is STATIC x86 source evidence only: entrypoint reachability, Windows interrupt semantics, and any relation to a real compatibility failure remain UNKNOWN.");
     // Relocation-backed references are a bounded address-level audit, not
