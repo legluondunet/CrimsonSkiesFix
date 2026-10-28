@@ -72,6 +72,11 @@ use std::process;
 
 type Result<T> = std::result::Result<T, String>;
 
+// Exact, unmodified 20,480-byte historical user-supplied release.
+// The publicly archived version.dll variant is a DIFFERENT 18,944-byte
+// file and MUST NOT pass this hash gate.
+const HISTORICAL_155_SHA: &str = "e484c9aadf8b3b5bf0db58b26cb9ecfcaba0fd971fb1bb66216f558f0f1eaa9f";
+const HISTORICAL_155_LEN: usize = 20_480;
 const LOADER_SHA: &str = "675a3c768c3676a525240d365f6d225b2886f51cf81fd24c271ce1c0a8afa736";
 const ICD_SHA: &str = "0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b";
 const DLL_SHA: &str = "dc43dbae45a8bfc39299ab0d1d5dbc72302f3bc37faf7c3b41e8ffdf4c6838ff";
@@ -3903,6 +3908,7 @@ fn help() {
 Usage:\n\
   unsafedisc-linux inspect --loader CRIMSON.EXE --icd CRIMSON.ICD \\\n\
       --dplayerx dplayerx.dll [--reference TESTME.EXE] [--reported-key 0x7496538F] [--layout] [--checksum-research] [--sections] [--key-research] [--modifier-research] [--startup-research] [--attach-research] [--xref-research] [--literal-research] [--reference-audit] [--historical-selection] [--strings]\n\
+  unsafedisc-linux inspect-historical --unsafedisc unSafedisc.exe\n\
   unsafedisc-linux --help\n\
 \n\
 The --key-research first word defaults to the exact-version 0x7496538F;\n\
@@ -5033,7 +5039,56 @@ fn tea_decrypt(mut v0: u32, mut v1: u32, k: [u32; 4]) -> (u32, u32) {
     (v0, v1)
 }
 
+/// Standalone, read-only, exact SHA-256-gated disassembly audit of
+/// the OWNER's unmodified historical tool. It does not require
+/// CRIMSON.EXE, CRIMSON.ICD, dplayerx.dll or TESTME.EXE.
+/// A public compatibility-modified build is deliberately rejected.
+fn inspect_historical_155_cli() -> Result<()> {
+    let mut args=env::args().skip(2);
+    if args.next().as_deref()!=Some("--unsafedisc") {
+        return Err("usage: inspect-historical --unsafedisc unSafedisc.exe".into());
+    }
+    let path=args.next().map(PathBuf::from)
+        .ok_or("missing historical unSafedisc.exe path")?;
+    if args.next().is_some() {
+        return Err("unexpected extra inspect-historical argument".into());
+    }
+    let image=read_original(&path,HISTORICAL_155_LEN,HISTORICAL_155_SHA)?;
+    let pe=parse_pe32(&image)?;
+    let nt=read_u32(&image,0x3C)? as usize;
+    let base=read_u32(&image,nt+24+28)?;
+    let code=pe.section(b"CODE")?;
+    if code.characteristics&0x2000_0000==0 {
+        return Err("historical CODE section is not executable".into());
+    }
+    let code_end=code.raw_offset.checked_add(
+        code.raw_len.min(code.virtual_size as usize)
+    ).ok_or("historical CODE raw range overflow")?;
+    let backed=image.get(code.raw_offset..code_end)
+        .ok_or("historical CODE section exceeds executable")?;
+    unsafedisc_historical_155::audit_155_entry_to_modifier_loop(
+        backed,base,code.virtual_address
+    )?;
+    println!("Historical original unSafedisc.exe 1.5.5: exact SHA-256 and CODE opcode audit PASSED.");
+    println!("  DLL size 0x21E00 -> 401F43 guarded trampoline -> 401F62 extra-DWORD-layer loop.");
+    println!("  401F56: EBX buffer -> ESI, EAX length -> EDI; loop processes EDI>>2 DWORDs.");
+    println!("  401F96: CALL [DLL base+0x65BE] via EDX.");
+    println!("  401F98: XOR EAX,ECX uses post-first-call ECX.");
+    println!("  401F9A/401F9D: ADD EDX,0x63; CALL EDX uses post-first-call EDX.");
+    println!("  Exact 0x6621 second entry assumes first helper preserved EDX; same mask assumes ECX.");
+    println!("  The original title-specific modifier bodies remain encrypted/unrecovered.");
+    println!("  The file was read only. No legacy Windows execution, DLL load or game decryption.");
+    Ok(())
+}
+
 fn main() {
+    if env::args().nth(1).as_deref()==Some("inspect-historical") {
+        if let Err(e)=inspect_historical_155_cli() {
+            eprintln!("ERROR: {e}");
+            process::exit(1);
+        }
+        return;
+    }
     let outcome = parse_args().and_then(|o| match o {
         Some(args) => inspect(args),
         None => Ok(()),
