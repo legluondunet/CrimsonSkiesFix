@@ -105,7 +105,30 @@ With the verified Win98 capture present, the following command now
 
 This prints only aggregate match counts, never raw retail/reference
 pairs. A mismatch refuses the verification instead of pretending the
-capture solved full SafeDisc decryption. The owner must keep all four
+capture solved full SafeDisc decryption.
+
+A second, independently synthesized **forward** oracle now executes the
+bounded **F1/F2 -> TEA** transformation on transient copies of each
+non-HIGHLOW .text fragment and compares only **aggregate** byte totals.
+It covers the historically overlapping 8-byte TEA blocks, all
+page-boundary-crossing relocation gaps, and the fragment-local
+index-mask resets.
+
+Expected input geometry for the exact title/version:
+
+| Property | Count |
+| --- | ---: |
+| Non-HIGHLOW byte positions | 1,855,489 |
+| HIGHLOW bytes excluded | 246,972 |
+| Fragment-local complete F1/F2 DWORDs | 440,422 |
+| Fragments with at least one DWORD | 48,149 |
+
+The full **1,855,489/1,855,489** matching result is NOT claimed until
+the exact private retail/reference and Win98 snapshot files are
+executed together. GitHub Actions uses synthetic fixtures only.
+Even an exact matching non-HIGHLOW audit would **not** restore the 245
+site-specific relocation/IAT pointer changes or prove a complete
+playable replacement executable. The owner must keep all four
 canonical originals and the mapped memory capture private.
 
 **Not yet established:** whether the runtime-captured F1/F2 functions
