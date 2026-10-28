@@ -407,6 +407,122 @@ pub fn audit_155_codebit_crc_modifier_bridge(
     })
 }
 
+/// The historical 1.5.5 section selection routine builds a
+/// list of 32-bit POINTERS to PE section headers, later consumed by
+/// 401D06. Its count is read from [403B3B], source section-table
+/// address from [403B17], destination pointer list from [403957].
+/// No historical process pointers are dereferenced by this model.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct HistoricalSectionListBuilder {
+    pub source_header_pointer_va:u32,
+    pub section_count_va:u32,
+    pub pointer_list_destination_va:u32,
+    pub first_name_comparison_va:u32,
+    pub skip_header_va:u32,
+    pub append_pointer_va:u32,
+    pub advance_header_va:u32,
+    pub iteration_back_va:u32,
+    pub section_header_stride:u32,
+    pub pointer_list_stride:u32,
+}
+/// Recheck the actual archived x86 instructions at 402257..4022B2
+/// including all eight 4-byte name-prefix compares, skip branches,
+/// source 40-byte stride and destination 4-byte pointer append.
+/// This proves the bytecode's filter, not that any particular source
+/// file was processed through it.
+pub fn audit_155_section_list_builder(
+    code:&[u8],image_base:u32,code_rva:u32,
+)->Result<HistoricalSectionListBuilder,String>{
+    let base=image_base.checked_add(code_rva)
+        .ok_or("historical section list CODE address overflow")?;
+    if base!=0x401000 {
+        return Err("historical section list CODE base mismatch".into());
+    }
+    let checked=|va:u32,bytes:&[u8]|->Result<(),String>{
+        let i=va.checked_sub(base)
+            .ok_or("section list instruction before CODE")? as usize;
+        let end=i.checked_add(bytes.len())
+            .ok_or("section list instruction extent overflow")?;
+        if code.get(i..end)!=Some(bytes) {
+            return Err(format!("historical section list opcode mismatch at 0x{va:08X}"));
+        }
+        Ok(())
+    };
+    checked(0x402257,&[
+        0xA1,0x17,0x3B,0x40,0x00, // EAX = section table
+        0x8B,0x0D,0x3B,0x3B,0x40,0x00, // ECX = number of sections
+        0x8B,0x3D,0x57,0x39,0x40,0x00, // EDI = pointer-list destination
+    ])?;
+    const EXCLUDED:[[u8;4];8]=[
+        *b".rsr",*b".bss",*b"BSS\0",*b".tls",
+        *b".ida",*b".rda",*b".eda",*b".rel",
+    ];
+    for (i,prefix) in EXCLUDED.iter().enumerate() {
+        let va=0x402268u32+(i as u32)*8;
+        // CMP DWORD PTR [EAX],imm32; JE 4022AD
+        let pattern=[0x81,0x38,prefix[0],prefix[1],
+                     prefix[2],prefix[3]];
+        checked(va,&pattern)?;
+        let dest=historical_155_branch_target(code,base,va+6)?;
+        if dest!=0x4022AD {
+            return Err(format!("historical section skip JE at 0x{:08X} targets 0x{dest:08X}",va+6));
+        }
+    }
+    checked(0x4022A8,&[
+        0x89,0x07,            // MOV [EDI],EAX
+        0x83,0xC7,0x04,      // ADD EDI,4
+        0x83,0xC0,0x28,      // ADD EAX,40
+        0xE2,0xB6,           // LOOP 402268
+    ])?;
+    // LOOP rel8 (E2) is outside the generic rel8 Jcc decoder:
+    // explicitly verify the two's-complement delta and target.
+    let loop_at=0x4022B0u32;
+    let i=(loop_at-base) as usize;
+    let tail=code.get(i..i+2)
+        .ok_or("historical section LOOP truncated")?;
+    if tail[0]!=0xE2 ||
+       (i64::from(loop_at)+2+i64::from(tail[1] as i8))!=0x402268 {
+        return Err("historical section LOOP does not return to first name filter".into());
+    }
+    Ok(HistoricalSectionListBuilder{
+        source_header_pointer_va:0x403B17,
+        section_count_va:0x403B3B,
+        pointer_list_destination_va:0x403957,
+        first_name_comparison_va:0x402268,
+        skip_header_va:0x4022AD,
+        append_pointer_va:0x4022A8,
+        advance_header_va:0x4022AD,
+        iteration_back_va:0x4022B0,
+        section_header_stride:40,
+        pointer_list_stride:4,
+    })
+}
+/// Native, bounds-checked model of the historical eight-prefix filter.
+/// Returns indexes of selected headers IN ORIGINAL ORDER; unlike the
+/// old x86 routine it neither stores 32-bit host pointers nor relies
+/// on an implicitly initialized termination cell.
+pub fn historical_155_selected_section_indices(
+    headers:&[u8],number_of_headers:usize,
+)->Result<Vec<usize>,String>{
+    const EXCLUDED:[[u8;4];8]=[
+        *b".rsr",*b".bss",*b"BSS\0",*b".tls",
+        *b".ida",*b".rda",*b".eda",*b".rel",
+    ];
+    let size=number_of_headers.checked_mul(40)
+        .ok_or("section header byte length overflow")?;
+    if number_of_headers>96 || headers.len()!=size {
+        return Err("bounded historical section headers must be exactly 40*N bytes (N<=96)".into());
+    }
+    let mut selected=Vec::new();
+    for (i,record) in headers.chunks_exact(40).enumerate(){
+        let first:&[u8]=&record[..4];
+        if !EXCLUDED.iter().any(|candidate|&candidate[..]==first){
+            selected.push(i);
+        }
+    }
+    Ok(selected)
+}
+
 /// The archived x86 iterator has a compact PUSHAD/POPAD
 /// trampoline: first entry jumps past POPAD; every completed section
 /// jumps BACK to POPAD before reading the next pointer. The input to
@@ -734,6 +850,73 @@ mod tests {
             &[0u8;0x2000],0x400001,0x1000).is_err());
         assert!(analyze_155_dll_startup(
             &[0u8;0x2000],u32::MAX,0x1000).is_err());
+    }
+
+    #[test]
+    fn historical_pointer_list_builder_matches_eight_exact_name_prefixes(){
+        let mut code=vec![0u8;0x2000];
+        let windows:&[(u32,&[u8])]=&[
+            (0x402257,&[0xA1,0x17,0x3B,0x40,0,
+                0x8B,0x0D,0x3B,0x3B,0x40,0,
+                0x8B,0x3D,0x57,0x39,0x40,0]),
+            (0x402268,&[0x81,0x38,0x2E,0x72,0x73,0x72,0x74,0x3D]),
+            (0x402270,&[0x81,0x38,0x2E,0x62,0x73,0x73,0x74,0x35]),
+            (0x402278,&[0x81,0x38,0x42,0x53,0x53,0x00,0x74,0x2D]),
+            (0x402280,&[0x81,0x38,0x2E,0x74,0x6C,0x73,0x74,0x25]),
+            (0x402288,&[0x81,0x38,0x2E,0x69,0x64,0x61,0x74,0x1D]),
+            (0x402290,&[0x81,0x38,0x2E,0x72,0x64,0x61,0x74,0x15]),
+            (0x402298,&[0x81,0x38,0x2E,0x65,0x64,0x61,0x74,0x0D]),
+            (0x4022A0,&[0x81,0x38,0x2E,0x72,0x65,0x6C,0x74,0x05]),
+            (0x4022A8,&[0x89,0x07,0x83,0xC7,0x04,0x83,0xC0,0x28,0xE2,0xB6]),
+        ];
+        for &(va,bytes) in windows{
+            let i=(va-0x401000) as usize;
+            code[i..i+bytes.len()].copy_from_slice(bytes);
+        }
+        let result=audit_155_section_list_builder(&code,0x400000,0x1000).unwrap();
+        assert_eq!(result.section_header_stride,40);
+        assert_eq!(result.pointer_list_stride,4);
+        assert_eq!(result.source_header_pointer_va,0x403B17);
+        assert_eq!(result.section_count_va,0x403B3B);
+        assert_eq!(result.pointer_list_destination_va,0x403957);
+        for &(va,_) in windows{
+            let i=(va-0x401000) as usize;
+            code[i]^=1;
+            assert!(audit_155_section_list_builder(&code,0x400000,0x1000).is_err());
+            code[i]^=1;
+        }
+        // A modified skip displacement must fail even if the opcode holds.
+        let i=(0x40226F-0x401000) as usize;
+        code[i]^=1;
+        assert!(audit_155_section_list_builder(&code,0x400000,0x1000).is_err());
+        code[i]^=1;
+        let i=(0x4022B1-0x401000) as usize;
+        code[i]^=1;
+        assert!(audit_155_section_list_builder(&code,0x400000,0x1000).is_err());
+        assert!(audit_155_section_list_builder(&code[..0x500],0x400000,0x1000).is_err());
+        assert!(audit_155_section_list_builder(&code,0x400001,0x1000).is_err());
+    }
+
+    #[test]
+    fn historical_bounded_section_filter_keeps_order_and_four_byte_aliases(){
+        let names=[
+            b".text\0\0\0",b".rsrc\0\0\0",b".data\0\0\0",
+            b".idata\0\0",b".reloc\0\0",b".bss\0\0\0",
+            b"ABCDE123",b"BSS\0NAME",b".rdata\0\0",
+            b".rsrtest",b".edata\0\0",b".tls\0\0\0\0",
+        ];
+        let mut records=vec![0u8;40*names.len()];
+        for (i,name) in names.iter().enumerate(){
+            records[i*40..i*40+8].copy_from_slice(&name[..]);
+        }
+        assert_eq!(
+            historical_155_selected_section_indices(&records,names.len()).unwrap(),
+            vec![0,2,6]);
+        // The filter is exactly four bytes, not an 8-byte name match:
+        // \".rsrtest\" and \".rsrc\" both compare equal to \".rsr\".
+        assert!(historical_155_selected_section_indices(&records[..39],1).is_err());
+        assert!(historical_155_selected_section_indices(&records,97).is_err());
+        assert!(historical_155_selected_section_indices(&[],0).unwrap().is_empty());
     }
 
     #[test]
