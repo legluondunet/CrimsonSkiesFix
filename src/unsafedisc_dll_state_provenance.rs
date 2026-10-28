@@ -317,7 +317,7 @@ mod tests {
         bytes[5..9].copy_from_slice(&va);       // literal decoy, not relocated
         bytes[0xFFE..0x1002].copy_from_slice(&va); // across a 4KiB page
         // 0x8030 points exactly beyond the file-backed section.
-        let relocs=[0x7FFEu32,0x7005,0x7FFE,0x7020,0x8030,0x6FFF];
+        let relocs=[0x7FFEu32,0x7006,0x7FFE,0x7020,0x8030,0x6FFF];
         assert_eq!(scan_state_reloc_section(&bytes,0x7000,&relocs).unwrap(),
                    vec![0x7FFE]);
     }
