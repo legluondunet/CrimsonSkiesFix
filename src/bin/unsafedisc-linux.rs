@@ -53,6 +53,9 @@ mod unsafedisc_dll_worker_entry;
 #[path = "../unsafedisc_dll_io_backends.rs"]
 mod unsafedisc_dll_io_backends;
 
+#[path = "../unsafedisc_dll_pe_sections.rs"]
+mod unsafedisc_dll_pe_sections;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2847,6 +2850,11 @@ fn print_modifier_research(dll: &[u8]) -> Result<()> {
     unsafedisc_dll_worker_finalizer::audit_original(dll,&pe)?;
     unsafedisc_dll_worker_entry::audit_original(dll,&pe)?;
     unsafedisc_dll_io_backends::audit_original(dll,&pe)?;
+    unsafedisc_dll_pe_sections::audit_original(dll,&pe)?;
+    println!("  Original first worker case is a PE32 section finder: 18940 reads 0x40 DOS + 0xF8 NT header bytes via A810 and compares DWORD PE signature.");
+    println!("    At 18204 the dispatcher derives the section-header range from NumberOfSections (40 bytes each) and SizeOfOptionalHeader.");
+    println!("    Original case 183C2 calls 189F0 with mask 0x20000020 (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE); first matching section's raw offset and RVA are returned as outputs.");
+    println!("    18B90 selects section length min(VirtualSize,SizeOfRawData), or raw size when VirtualSize is zero; this is section metadata, not decoded code.");
     println!("  Original .text IO backends: type 0x65 -> A560 SetFilePointer/ReadFile with exact byte count; type 0x66 -> A620 dynamic ReadProcessMemory; type 0x67 -> A620 in-process memcpy (mapped or direct fallback).");
     println!("    Matching WRITE gateway AA00: type 0x65 -> A5C0 SetFilePointer/WriteFile (exact byte count); type 0x66 -> A720 dynamic WriteProcessMemory (exact byte count); type 0x67 -> A720 memory copy using VirtualProtect.");
     println!("    B5D0 source map lookup scans exactly five virtual .data descriptors: 0xD0 stride, active WORD=1, 12-byte exact key; runtime records are NOT available in the file.");
