@@ -817,6 +817,49 @@ it never runs the DLL. The independent offline Python verifier also
 checks these exact opcode groups and their original targets.
 
 
+### Stronger worker-exit precondition: unsigned sum and no-op RET trampoline
+
+A newly audited **earlier** source block at `0x197D4..0x197DD` computes:
+
+```asm
+197D4  MOV EAX,[EBP-0x0C]
+197D7  ADD EAX,[EBP-0x08]
+197DA  MOV [EBP-0x0C],EAX
+```
+
+Across **all 32** CF/ZF/PF/SF/OF combinations after this addition,
+the original obfuscated control flow between `0x197DD` and `0x197FA`
+converges: **8 distinct paths, 5–13 instruction boundaries**.
+Sixteen flag configurations go directly to `0x197FA`; the other sixteen
+pass through `0x197EF PUSH EDX; 0x197F0 CALL 0x1965A`, where
+`0x1965A` is exactly an original **RET** byte, then
+`0x197F5 POP EDX; 0x197F6 JGE 0x197FA`. This detour
+is selected only when **SF==OF**, so its JGE is always taken.
+The apparent early `RET` at `0x197F8` is unreachable along these
+original-byte-backed paths.
+
+The continuation copies `[EBP-0x04]` to `[EBP-0x14]` at
+`0x197FA..0x197FF`; the separately audited backward flag-only maze
+then reaches `0x19686` and its unsigned `JAE` to `0x19819`.
+The exact local counter/limit rule is therefore:
+
+```text
+updated_cursor = (old_cursor + increment) mod 2^32
+finalizer = (updated_cursor >= limit)  // UNSIGNED comparison
+```
+
+The original-byte auditor `audit_original_worker_counter_exit`, bounded
+`trace_original_pre_exit` and pure `unsigned_worker_exit` Rust model
+verify this. An independent SHA-pinned Python reader of the original
+DLL checked **17 opcode windows**, the RET trampoline, and all
+32 flag combinations. No protected DLL code was executed.
+
+This is NOT proof that the real DLL initializer calls into the
+`0x197D4` block, nor that the unsigned counter condition is met.
+On a failed JAE the worker continues along unmodeled code. The
+combined state delta below remains **conditional** on the original
+worker reaching this loop-exit branch.
+
 ### Worker finalizer and conditional combined state delta (2026-10-28)
 
 An independent, **exact SHA-256 pinned**, read-only inspection of the
