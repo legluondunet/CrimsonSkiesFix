@@ -436,6 +436,66 @@ earlier stages, the private owner's original **has not been
 rechecked in this session**, and the archived variant is
 not byte-identical to that original.
 
+### Exact eight-name skip loop now linked to selected section pointers (2026-10-28)
+
+The archived public, compatibility-modified unSafeDisc 1.5.5
+assembler has a fully identifiable **section-list builder**
+starting at `0x402257`:
+
+```asm
+402257  MOV EAX,[403B17]      ; first PE section header pointer
+40225C  MOV ECX,[403B3B]      ; PE NumberOfSections
+402262  MOV EDI,[403957]      ; output pointer-list cursor
+402268  CMP DWORD [EAX],'.rsr'
+40226E  JE 4022AD            ; skip this name prefix
+       ; seven more CMP DWORD [EAX],imm32; JE 4022AD
+4022A8  MOV [EDI],EAX        ; append a POINTER to a selected header
+4022AA  ADD EDI,4            ; sizeof(uint32_t)
+4022AD  ADD EAX,0x28         ; sizeof(IMAGE_SECTION_HEADER) = 40
+4022B0  LOOP 402268          ; ECX decremented for every source header
+```
+
+The eight excluded **exact four-byte prefixes**, in source
+order, are `.rsr`, `.bss`, `BSS\\0`, `.tls`,
+`.ida`, `.rda`, `.eda` and `.rel`. Each of the
+eight short JE instructions targets **`0x4022AD`**,
+which still advances to the next 40-byte header, whereas
+accepted headers are recorded as 32-bit **pointers** and
+advance the destination cursor by four. `LOOP rel8` is
+independently checked to return to `0x402268`.
+This closes the previously missing connection between
+the section-name filter and the downstream
+`401D06 MOV ESI,[EDI]` pointer-list iterator.
+
+The native `audit_155_section_list_builder` checks 10
+instruction windows, all eight real branch destinations
+and the loop-back displacement. The separate pure,
+bounded `historical_155_selected_section_indices`
+function models inclusion and ordering by returning
+**indexes**, not unsafe 32-bit host pointers. It imposes
+a 96-section limit and complete 40-byte records, and
+does not assume the old program safely appends an explicit
+NULL sentinel; a matching zero-terminator store has
+**not yet been established**.
+
+The `inspect-historical` command verifies this x86
+builder only on the owner's exact hash-approved original.
+Separately, `inspect --historical-selection` reads the
+original retail `CRIMSON.ICD` section table *directly*
+after the already-established original-file SHA-256
+gate, compares the selected name indexes with the
+existing Rust selection function and checks that the
+two independent PE section-header parsers agree.
+That runtime cross-check will require the owner's
+original private game files and is not claimed to have
+been executed in this session.
+
+This establishes the **structural production and
+consumption** of the selected-pointer list in the
+public modified binary; it does not recover the
+encrypted DLL modifier or prove execution of all
+possible branches in the original private binary.
+
 ## Independent offline comparison of the exact original binaries (2026-10-27)
 
 The user provided a private 7z archive containing all four required retail/research binaries.
