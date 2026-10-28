@@ -3824,3 +3824,57 @@ tests** cover directory offset mapping, correct virtual
 section bounds, raw-size fallback when VirtualSize=0, and
 the original-like candidate distribution. No game or DLL
 binary data is committed or executed.
+
+
+### Clarification: A140's input-directory size guards eliminate two helpers, not four (2026-10-28)
+
+Following the previous five-selector analysis, the exact
+SHA-256-confirmed original x86 provides a more precise distinction
+between **a helper's source inputs** and **the separate PE section
+that helper later searches**.
+
+At `0xA162`, `A140` computes a destination pointer
+`record + 0x44`, then calls DLL `.txt2` routine `0x18770`
+at `0xA167`. The latter calls the validated NT-header reader
+`0x18940` and performs `MOV ECX,0x20; REP MOVSD`, copying
+exactly **32 DWORDs = 128 bytes = 16 IMAGE_DATA_DIRECTORY
+RVA/Size pairs** into the module record. Both the source PE
+directory and record destination are instruction-backed.
+
+This lets us trace which **source directory** each helper
+receives, independently of its later internal section-selector
+result:
+
+| Helper | Registered category | Input from record+0x44 | Original source RVA | Original source size | Helper's first size guard | Later selector result |
+| --- | ---: | --- | ---: | ---: | --- | --- |
+| `B3D0` | 1 | directory 12 (IAT) | `0x1E000` | `0x11C` | Nonzero: continues | Selector 11 → none |
+| `B1C0` | 1 | directory 1 (Import) | `0x1ED14` | `0x3C` | Nonzero: continues | Selector 6 → none |
+| `AFB0` | 2 | directory 2 (Resource) | 0 | 0 | **Immediate zero-size exit** | Selector 5 would yield none |
+| `AE10` | 0 | directory 0 (Export) | `0x1F350` | `0x60` | Nonzero: continues | Selector 7 → `.rdata` |
+| `AC10` | 7 | directory 9 (TLS) | 0 | 0 | **Immediate zero-size exit** | Selector 9 would yield none |
+
+**Crucial correction:** Four selectors returning zero **does not
+mean four initializer helpers do nothing**. `B3D0` and `B1C0`
+both receive **nonzero source lengths**, call `A2A0` to update
+a category-tracking structure **before** performing their later
+section lookup, and may have effects even if that lookup returns
+no section. Only `AFB0` and `AC10` are statically gated
+off before their `A2A0` calls due to zero source lengths.
+Consequently this particular five-helper path leaves **three
+candidate active helpers**, conditional on reaching `A140`
+with the expected initialized record.
+
+The extra Rust `src/unsafedisc_dll_bootstrap.rs` assertions now
+check the actual `A140` loads from record offsets
+`0xA4/0xA8`, `0x4C/0x50`, `0x54/0x58`,
+`0x44/0x48`, and `0x8C/0x90`;
+the `0x18770` copy instructions; each helper's `TEST`
+on the input Size; and exact directory values read from
+the verified original PE headers. Two synthetic tests verify
+record-slot geometry and zero-size early exits, independent
+of the local original executable.
+
+This is still **not a runtime execution trace**, and neither
+the two original encrypted EAX functions at `0x65BE` /
+`0x6621` nor the full protected `.txt` byte restoration
+is yet reconstructed. The source originals remain private.
