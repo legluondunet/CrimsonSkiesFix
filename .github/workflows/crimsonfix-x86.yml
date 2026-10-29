@@ -1,0 +1,45 @@
+name: Experimental CrimsonFix DirectDraw DLL x86
+
+on:
+  push:
+    paths:
+      - 'crimsonfix/**'
+      - '.github/workflows/crimsonfix-x86.yml'
+  pull_request:
+    paths:
+      - 'crimsonfix/**'
+      - '.github/workflows/crimsonfix-x86.yml'
+  workflow_dispatch:
+
+jobs:
+  windows-x86:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crimsonfix
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust i686 MSVC target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Unit tests in 32-bit mode
+        run: cargo test --target i686-pc-windows-msvc
+      - name: Compile release DirectDraw proxy
+        run: cargo build --release --target i686-pc-windows-msvc
+      - name: Verify PE machine is Intel x86
+        shell: pwsh
+        run: |
+          $dll = 'target/i686-pc-windows-msvc/release/ddraw.dll'
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x014C) { throw "Not an i686 DLL: 0x$($machine.ToString('X'))" }
+          Write-Host "Verified PE machine: IMAGE_FILE_MACHINE_I386 (0x014C)"
+      - name: Publish experimental x86 proxy with INI
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonFix-ddraw-Windows-x86-EXPERIMENTAL
+          path: |
+            crimsonfix/target/i686-pc-windows-msvc/release/ddraw.dll
+            crimsonfix/CrimsonFix.ini
+            crimsonfix/README.md
+          if-no-files-found: error
