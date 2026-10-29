@@ -3,7 +3,7 @@
 //! (GPL-3.0-or-later). Never acquire a gamepad, create a D3D device,
 //! set vibration or enumerate private device paths.
 
-use std::{ffi::{c_char,c_void,CStr}, mem,ptr};
+use std::{ffi::{c_char,c_void}, mem,ptr};
 use crate::diagnostics::clean_label;
 
 #[repr(C)]
@@ -199,7 +199,7 @@ mod tests {
     fn verify_dx_ffi_layouts(){
         if cfg!(target_pointer_width="32"){
             assert_eq!(mem::size_of::<Guid>(),16);
-            assert_eq!(mem::size_of::<D3dIdentifier>(),1100);
+            assert_eq!(mem::size_of::<D3dIdentifier>(),1104);
             assert_eq!(mem::size_of::<XinputCapabilities>(),20);
             assert_eq!(mem::size_of::<DInputDeviceInstanceA>(),580);
         }
