@@ -1,0 +1,248 @@
+//! Experimental x86 DirectDraw proxy for the locally unpacked Crimson Skies 1.0.2.0.
+//! Place this built DLL under the name ddraw.dll beside CRIMSON.EXE.
+#![cfg(windows)]
+mod config;
+mod win32;
+
+use config::Config;
+use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
+          ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock}};
+use win32::Hwnd;
+
+type Hr=i32;
+type CreateFn=unsafe extern "system" fn(*const c_void,*mut *mut c_void,*mut c_void)->Hr;
+type EnumerateFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
+type CreateExFn=unsafe extern "system" fn(*const c_void,*mut *mut c_void,*const c_void,*mut c_void)->Hr;
+type CooperativeFn=unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr;
+type DisplayModeFn=unsafe extern "system" fn(*mut c_void,u32,u32,u32)->Hr;
+type SurfaceFn=unsafe extern "system" fn(*mut c_void,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
+type FlipFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
+type BltFn=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut c_void)->Hr;
+type GetCapsFn=unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
+
+const S_OK:Hr=0;
+const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
+const DDSCL_NORMAL:u32=0x0000_0008;
+const DDSCAPS_PRIMARYSURFACE:u32=0x0000_0200;
+const DLL_PROCESS_ATTACH:u32=1;
+// IDirectDraw v1 slots. Surface Flip/Blt/GetCaps slots are also stable in
+// later surface interface versions; QueryInterface interception is TODO.
+const DD_CREATE_SURFACE:usize=6;
+const DD_SET_COOPERATIVE:usize=20;
+const DD_SET_DISPLAY_MODE:usize=21;
+const SURFACE_BLT:usize=5;
+const SURFACE_FLIP:usize=11;
+const SURFACE_GET_CAPS:usize=14;
+
+static MODULE:AtomicUsize=AtomicUsize::new(0);
+static CONFIG:OnceLock<Config>=OnceLock::new();
+static LOG:OnceLock<Mutex<File>>=OnceLock::new();
+static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
+static ORIGINALS:OnceLock<Mutex<HashMap<(usize,usize),usize>>>=OnceLock::new();
+static LAST_FRAME:Mutex<i64>=Mutex::new(0);
+static FREQUENCY:OnceLock<i64>=OnceLock::new();
+
+fn log(message:&str) {
+    if let Some(log)=LOG.get() {
+        if let Ok(mut file)=log.lock(){let _=writeln!(file,"{message}");}
+    }
+}
+
+fn cfg()->Config {
+    *CONFIG.get_or_init(|| {
+        let module=MODULE.load(Ordering::SeqCst) as *mut c_void;
+        let ini=win32::path_next_to(module,"CrimsonFix.ini");
+        let parsed=ini.as_ref().and_then(|p|fs::read_to_string(p).ok())
+            .map(|s|config::parse(&s)).unwrap_or_default();
+        if let Some(path)=win32::path_next_to(module,"CrimsonFix.log") {
+            if let Ok(file)=OpenOptions::new().create(true).append(true).open(path) {
+                let _=LOG.set(Mutex::new(file));
+            }
+        }
+        log(&format!("CrimsonFix 0.1.0 x86 - init; config={parsed:?}; DirectDraw proxy"));
+        parsed
+    })
+}
+
+fn real_module()->Option<*mut c_void> {
+    (*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
+        .map(|x|x as *mut c_void)
+}
+
+unsafe fn symbol(name:&[u8])->*const c_void {
+    let _=cfg();
+    let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
+    win32::system_export(real,name)
+}
+
+fn originals()->&'static Mutex<HashMap<(usize,usize),usize>> {
+    ORIGINALS.get_or_init(||Mutex::new(HashMap::new()))
+}
+
+unsafe fn method(object:*mut c_void,index:usize)->usize {
+    if object.is_null(){return 0;}
+    let table=*(object as *const *const usize);
+    if table.is_null(){return 0;}
+    *table.add(index)
+}
+
+unsafe fn orig(object:*mut c_void,index:usize)->Option<usize> {
+    if object.is_null(){return None;}
+    let table=*(object as *const *const usize);
+    if table.is_null(){return None;}
+    originals().lock().ok()?.get(&(table as usize,index)).copied()
+}
+
+unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->bool {
+    if object.is_null(){return false;}
+    let table=*(object as *const *mut usize);
+    if table.is_null(){return false;}
+    let slot=table.add(index);
+    let Ok(mut map)=originals().lock() else {return false};
+    if map.contains_key(&(table as usize,index)){return true;}
+    let original=*slot;
+    if original==0 || original==hook{return false;}
+    // Publish the original before changing the pointer to avoid a hook
+    // seeing an uninitialized trampoline on another thread.
+    map.insert((table as usize,index),original);
+    if !win32::patch_vtable_slot(slot,hook) {
+        map.remove(&(table as usize,index));
+        return false;
+    }
+    true
+}
+
+fn pace_frame() {
+    let fps=cfg().fps_limit;
+    let frequency=*FREQUENCY.get_or_init(|| unsafe {
+        let mut value=0;
+        if win32::QueryPerformanceFrequency(&mut value)==0 || value<=0 {0}else{value}
+    });
+    if frequency<=0 {return;}
+    let Ok(mut previous)=LAST_FRAME.lock() else {return};
+    let mut now=0;
+    if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{return;}
+    let interval=(frequency/fps as i64).max(1);
+    if *previous>0 && now<*previous+interval {
+        let deadline=*previous+interval;
+        while now<deadline {
+            let ticks=deadline-now;
+            let millis=ticks.saturating_mul(1000)/frequency;
+            if millis>2 {unsafe {win32::Sleep((millis-1).min(50) as u32)};}
+            else {std::hint::spin_loop();}
+            if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{break;}
+        }
+    }
+    *previous=now;
+}
+
+unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
+    let Some(addr)=orig(this,DD_SET_COOPERATIVE) else {return DDERR_GENERIC};
+    let call:CooperativeFn=std::mem::transmute(addr);
+    let settings=cfg();
+    if settings.borderless {
+        // Experimental: DDSCL_NORMAL avoids switching into an exclusive
+        // hardware mode, but legacy flip chains may need further shims.
+        let hr=call(this,hwnd,DDSCL_NORMAL);
+        if hr>=0 {
+            if let Some(monitor)=win32::monitor_from_cursor_or_window(hwnd) {
+                if win32::borderless_window(hwnd,monitor) {
+                    log(&format!("Borderless monitor [{},{},{},{}]",monitor.left,monitor.top,monitor.right,monitor.bottom));
+                } else {log("WARNING: borderless HWND adjustment failed");}
+            }
+            return hr;
+        }
+        log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back"));
+    }
+    call(this,hwnd,flags)
+}
+
+unsafe extern "system" fn set_display_mode(this:*mut c_void,w:u32,h:u32,bpp:u32)->Hr {
+    let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else {return DDERR_GENERIC};
+    let call:DisplayModeFn=std::mem::transmute(addr);
+    let settings=cfg();
+    if settings.borderless && settings.desktop_resolution {
+        // In windowed mode, avoid an exclusive monitor mode switch.
+        // Does not fix internal game viewport and surface sizes yet.
+        log(&format!("Keeping desktop mode; game SetDisplayMode({w},{h},{bpp}) suppressed"));
+        return S_OK;
+    }
+    call(this,w,h,bpp)
+}
+
+unsafe extern "system" fn surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
+    let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
+    pace_frame();
+    let call:FlipFn=std::mem::transmute(addr);
+    call(this,target,flags)
+}
+
+unsafe extern "system" fn surface_blt(this:*mut c_void,dst:*const c_void,source:*mut c_void,src:*const c_void,flags:u32,fx:*mut c_void)->Hr {
+    let Some(addr)=orig(this,SURFACE_BLT) else{return DDERR_GENERIC};
+    pace_frame();
+    let call:BltFn=std::mem::transmute(addr);
+    call(this,dst,source,src,flags,fx)
+}
+
+unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {return DDERR_GENERIC};
+    let call:SurfaceFn=std::mem::transmute(addr);
+    let hr=call(this,desc,out,outer);
+    if hr>=0 && !out.is_null() && !(*out).is_null() {
+        let surface=*out;
+        if replace_method(surface,SURFACE_FLIP,surface_flip as usize) {
+            log("IDirectDrawSurface::Flip paced (1..60 FPS)");
+        }
+        let getcaps_addr=method(surface,SURFACE_GET_CAPS);
+        if getcaps_addr!=0 {
+            let getcaps:GetCapsFn=std::mem::transmute(getcaps_addr);
+            let mut caps=[0u32;4]; // accommodates DDSCAPS and DDSCAPS2
+            if getcaps(surface,caps.as_mut_ptr())>=0 && caps[0]&DDSCAPS_PRIMARYSURFACE!=0 {
+                if replace_method(surface,SURFACE_BLT,surface_blt as usize) {
+                    log("Primary IDirectDrawSurface::Blt paced (1..60 FPS)");
+                }
+            }
+        }
+    }
+    hr
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    let function=symbol(b"DirectDrawCreate\0");
+    if function.is_null(){return DDERR_GENERIC;}
+    let real:CreateFn=std::mem::transmute(function);
+    let hr=real(guid,out,outer);
+    if hr>=0 && !out.is_null() && !(*out).is_null() {
+        let dd=*out;
+        let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as usize);
+        let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as usize);
+        let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as usize);
+        log(&format!("DirectDrawCreate interception: cooperative={a}, mode={b}, surface={c}"));
+    }
+    hr
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
+    let function=symbol(b"DirectDrawEnumerateA\0");
+    if function.is_null(){return DDERR_GENERIC;}
+    let real:EnumerateFn=std::mem::transmute(function);
+    real(callback,context)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr {
+    let function=symbol(b"DirectDrawCreateEx\0");
+    if function.is_null(){return DDERR_GENERIC;}
+    let real:CreateExFn=std::mem::transmute(function);
+    // Future work: intercept IDirectDraw7 QueryInterface/CreateSurface too.
+    real(guid,out,iid,outer)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*mut c_void)->i32 {
+    if reason==DLL_PROCESS_ATTACH {MODULE.store(module as usize,Ordering::Relaxed);}
+    // No file I/O, DLL loading or hook installation under the loader lock.
+    1
+}
