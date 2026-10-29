@@ -81,11 +81,21 @@ shell command, gamepad `Acquire` or D3D device creation is used.
 Inventory runs at most once, after DirectDraw first initializes,
 **never inside DllMain**. Log files remain local and are not uploaded.
 
-This is adapted (with attribution, under GPL-3.0-or-later) from the
-`system_diagnostics.c` module of
+The inventory is now **100% Rust**:
+`src/diagnostics.rs` gathers Windows/Wine, Proton hints, CPU/RAM and
+monitor/session information; `src/diagnostics_graphics.rs` gathers
+passive Direct3D9 GPU and XInput/DirectInput8 device information using
+Win32/COM FFI. The old C file, C header, build script and `cc`
+dependency have been removed; `ddraw.dll` remains a single x86 Rust
+`cdylib` with no separate native diagnostics module.
+
+This Rust implementation is adapted (with attribution, under
+GPL-3.0-or-later) from the `system_diagnostics.c` source of
 [SpiderMan2k1Fix](https://github.com/legluondunet/SpiderMan2k1Fix),
 developed in PR #83 and included in the working branch used by PR #80.
 The isolated installation layout follows SpiderMan2k1Fix PR #81.
+The source contains Rust ABI-layout and privacy-oriented tests; actual
+Wine/Windows reporting still needs owner testing.
 
 ## Troubleshooting
 
