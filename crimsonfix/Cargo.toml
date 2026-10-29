@@ -1,0 +1,15 @@
+[package]
+name = "crimson-fix"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Experimental 32-bit DirectDraw proxy for Crimson Skies"
+
+[lib]
+name = "ddraw"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
