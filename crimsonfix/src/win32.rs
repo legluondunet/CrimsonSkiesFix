@@ -1,4 +1,4 @@
-use std::{ffi::{c_char, c_void, OsString}, os::windows::ffi::OsStringExt, path::PathBuf};
+use std::{ffi::{c_char, c_void, OsString}, fs, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
 pub type Hwnd = *mut c_void;
 pub const PAGE_READWRITE: u32 = 0x04;
@@ -29,6 +29,7 @@ extern "system" {
     pub fn QueryPerformanceCounter(value:*mut i64)->i32;
     pub fn QueryPerformanceFrequency(value:*mut i64)->i32;
     pub fn Sleep(ms:u32);
+    fn MoveFileExW(from:*const u16,to:*const u16,flags:u32)->i32;
 }
 #[link(name = "user32")]
 extern "system" {
@@ -42,12 +43,63 @@ extern "system" {
     fn IsWindow(hwnd:Hwnd)->i32;
 }
 
-pub fn path_next_to(module:*mut c_void,name:&str)->Option<PathBuf> {
+// Equivalent to SpiderMan2k1Fix's organized-install path policy:
+// read the executable directory, not the process's mutable working directory.
+// No directory creation, filesystem operation or migration takes place in DllMain.
+fn exe_directory()->Option<PathBuf> {
     let mut buffer=[0u16;32768];
-    let n=unsafe {GetModuleFileNameW(module,buffer.as_mut_ptr(),buffer.len() as u32)} as usize;
+    let n=unsafe {GetModuleFileNameW(std::ptr::null_mut(),buffer.as_mut_ptr(),buffer.len() as u32)} as usize;
     if n==0 || n>=buffer.len(){return None;}
-    let filename=PathBuf::from(OsString::from_wide(&buffer[..n]));
-    Some(filename.parent()?.join(name))
+    let exe=PathBuf::from(OsString::from_wide(&buffer[..n]));
+    Some(exe.parent()?.to_path_buf())
+}
+
+pub fn project_path(name:&str)->Option<PathBuf> {
+    // Fixed internal file names only; never insert user-controlled paths here.
+    Some(exe_directory()?.join("CrimsonFix").join(name))
+}
+
+fn regular_file(path:&Path)->bool {
+    fs::symlink_metadata(path).map(|info|info.is_file() && !info.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn safe_directory(dir:&Path,create:bool)->bool {
+    if create && !dir.exists() && fs::create_dir(dir).is_err(){return false;}
+    fs::symlink_metadata(dir).map(|i|i.is_dir() && !i.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+pub fn ini_path()->Option<PathBuf> {
+    let modern=project_path("CrimsonFix.ini")?;
+    if regular_file(&modern){return Some(modern);}
+    // If a file of an unsupported type exists, do not touch it.
+    if fs::symlink_metadata(&modern).is_ok(){return None;}
+
+    let legacy=exe_directory()?.join("CrimsonFix.ini");
+    if !regular_file(&legacy){return Some(modern);}
+    let directory=modern.parent()?;
+    if !safe_directory(directory,true){return Some(modern);}
+
+    // Exactly-once, non-overwriting migration from the old v0.1 layout.
+    // Always keep the legacy root INI intact.
+    let ticks=SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    let temp=directory.join(format!(".CrimsonFix-migrate-{}-{ticks}.tmp",std::process::id()));
+    if fs::copy(&legacy,&temp).is_ok(){
+        let temp_w:Vec<u16>=temp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let modern_w:Vec<u16>=modern.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        unsafe {MoveFileExW(temp_w.as_ptr(),modern_w.as_ptr(),0x8 /* MOVEFILE_WRITE_THROUGH */);}
+        let _=fs::remove_file(temp);
+    }
+    Some(modern)
+}
+
+pub fn log_path()->Option<PathBuf> {
+    let path=project_path("CrimsonFix.log")?;
+    let directory=path.parent()?;
+    if !safe_directory(directory,true){return None;}
+    if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
+    Some(path)
 }
 
 pub unsafe fn real_ddraw()->Option<*mut c_void> {
