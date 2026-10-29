@@ -48,9 +48,8 @@ jobs:
             throw 'Invalid game-root layout: exactly one ddraw.dll permitted'
           }
           if (-not (Test-Path 'dist/CrimsonFix/CrimsonFix.ini')) { throw 'Missing nested config' }
-          if ((Get-Content 'dist/CrimsonFix/CrimsonFix.ini' -Raw) -notmatch '(?m)^Log=0) {
-            throw 'Default logging must be disabled'
-          }
+          $disabled = @(Get-Content 'dist/CrimsonFix/CrimsonFix.ini' | Where-Object { $_.Trim() -eq 'Log=0' })
+          if ($disabled.Count -ne 1) { throw 'Default logging must be disabled' }
           if (Test-Path 'dist/CrimsonFix/CrimsonFix.log') { throw 'Log must not be bundled' }
       - name: Publish experimental x86 proxy and clean game layout
         uses: actions/upload-artifact@v4
