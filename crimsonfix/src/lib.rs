@@ -3,9 +3,11 @@
 #![cfg(windows)]
 mod config;
 mod win32;
+mod diagnostics;
+mod diagnostics_graphics;
 
 use config::Config;
-use std::{collections::HashMap, ffi::{c_void, c_char, CStr}, fs::{self,File,OpenOptions}, io::Write,
+use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock}};
 use win32::Hwnd;
 
@@ -48,20 +50,7 @@ fn log(message:&str) {
     }
 }
 
-// GPL-3.0-or-later passive system inventory reused from SpiderMan2k1Fix.
-// Calls Windows APIs only after DirectDraw starts; never from DllMain.
-extern "C" {
-    fn CrimsonSystemDiagnostics_Log(callback: Option<extern "C" fn(*const c_char)>);
-}
-
-extern "C" fn diag_line(line:*const c_char) {
-    if line.is_null(){return;}
-    let text=unsafe {CStr::from_ptr(line)}.to_string_lossy();
-    // The inventory's C source sanitizes every external string; never log
-    // raw paths, private environment values, identifiers or registry keys.
-    log(&text);
-}
-
+// All system inventory code now lives in Rust (no C FFI module).
 fn cfg()->Config {
     *CONFIG.get_or_init(|| {
         // No filesystem operations occur until a game DirectDraw import is called.
@@ -77,7 +66,7 @@ fn cfg()->Config {
             if LOG.get().is_some() {
                 log(&format!("CrimsonFix 0.1.0 x86 - init; configuration={parsed:?}; DirectDraw proxy"));
                 // Only one read-only inventory, gated by the explicit opt-in.
-                unsafe {CrimsonSystemDiagnostics_Log(Some(diag_line));}
+                diagnostics::report(log);
             }
         }
         parsed
