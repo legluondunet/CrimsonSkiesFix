@@ -36,12 +36,25 @@ jobs:
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw "Not an i686 DLL: 0x$($machine.ToString('X'))" }
           Write-Host "Verified PE machine: IMAGE_FILE_MACHINE_I386 (0x014C)"
-      - name: Publish experimental x86 proxy with INI
+      - name: Prepare clean game directory layout
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'dist/CrimsonFix' | Out-Null
+          Copy-Item 'target/i686-pc-windows-msvc/release/ddraw.dll' 'dist/ddraw.dll'
+          Copy-Item 'CrimsonFix/CrimsonFix.ini' 'dist/CrimsonFix/CrimsonFix.ini'
+          Copy-Item 'README.md' 'dist/CrimsonFix/README.md'
+          $files = @(Get-ChildItem -LiteralPath dist -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'ddraw.dll') {
+            throw 'Invalid game-root layout: exactly one ddraw.dll permitted'
+          }
+          if (-not (Test-Path 'dist/CrimsonFix/CrimsonFix.ini')) { throw 'Missing nested config' }
+          if ((Get-Content 'dist/CrimsonFix/CrimsonFix.ini' -Raw) -notmatch '(?m)^Log=0) {
+            throw 'Default logging must be disabled'
+          }
+          if (Test-Path 'dist/CrimsonFix/CrimsonFix.log') { throw 'Log must not be bundled' }
+      - name: Publish experimental x86 proxy and clean game layout
         uses: actions/upload-artifact@v4
         with:
           name: CrimsonFix-ddraw-Windows-x86-EXPERIMENTAL
-          path: |
-            crimsonfix/target/i686-pc-windows-msvc/release/ddraw.dll
-            crimsonfix/CrimsonFix.ini
-            crimsonfix/README.md
+          path: crimsonfix/dist/
           if-no-files-found: error
