@@ -5,6 +5,9 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Experimental 32-bit DirectDraw proxy for Crimson Skies"
 
+[build-dependencies]
+cc = "1.2"
+
 [lib]
 name = "ddraw"
 crate-type = ["cdylib"]
