@@ -65,8 +65,13 @@ fn cfg()->Config {
 }
 
 fn real_module()->Option<*mut c_void> {
-    (*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
-        .map(|x|x as *mut c_void)
+    let result=(*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
+        .map(|x|x as *mut c_void);
+    if result.map(|x|x as usize)==Some(MODULE.load(Ordering::Relaxed)) {
+        log("ERROR: loading the system DirectDraw resolved back to CrimsonFix proxy; aborting to avoid recursion");
+        return None;
+    }
+    result
 }
 
 unsafe fn symbol(name:&[u8])->*const c_void {
