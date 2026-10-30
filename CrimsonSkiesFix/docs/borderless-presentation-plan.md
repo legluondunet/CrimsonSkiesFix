@@ -682,6 +682,24 @@ game frame integration, or an actual borderless game.
 A failed step will identify the backend capability to
 address next before attempting runtime redirection.
 
+## v0.1.26 — clean standalone probe file logging
+
+The Windows x86 windowed DirectDraw resource probe opens
+`windowed_ddraw_probe.log` beside its **own EXE**, not beside
+the game or in Wine's current working directory. It starts
+before any COM initialization and writes each HRESULT,
+success/failure and final verdict immediately to disk.
+Wine stderr/stdout remain separate, so extensive Wine
+diagnostics cannot obscure the probe's output.
+
+Each invocation truncates the previous probe-specific
+log. A missing/unwritable directory causes an explicit
+startup failure before any DirectDraw API call.
+The game DLL and its existing `CrimsonSkiesFix.log`
+remain unchanged, as do the user's INI and the
+three-file game DLL distribution artifact. The standalone
+probe artifact still contains only the executable.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

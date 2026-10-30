@@ -10,7 +10,56 @@
 //! The probe is NOT a replacement IDirectDrawSurface implementation and
 //! does not claim to provide Crimson Skies borderless yet.
 #![cfg(windows)]
-use std::{ffi::c_void,ptr};
+use std::{
+    ffi::c_void,
+    fs::{File,OpenOptions},
+    io::Write,
+    path::{Path,PathBuf},
+    ptr,
+    sync::{Mutex,OnceLock},
+};
+
+const LOG_FILE_NAME:&str="windowed_ddraw_probe.log";
+static PROBE_LOG:OnceLock<Mutex<File>>=OnceLock::new();
+
+/// The log belongs to the standalone executable's directory, not the
+/// shell working directory (which may be Crimson Skies' game folder).
+fn log_path_for_executable(executable:&Path)->Result<PathBuf,String>{
+    let directory=executable.parent().filter(|p|!p.as_os_str().is_empty())
+        .ok_or_else(||"Cannot find probe executable directory".to_owned())?;
+    Ok(directory.join(LOG_FILE_NAME))
+}
+
+/// Open a fresh log for every invocation, before any DirectDraw API call.
+/// Only the probe's own lines go into this file: Wine's stderr stays out.
+fn init_probe_log()->Result<PathBuf,String>{
+    let exe=std::env::current_exe()
+        .map_err(|e|format!("Cannot locate probe executable: {e}"))?;
+    let path=log_path_for_executable(&exe)?;
+    let file=OpenOptions::new().create(true).write(true).truncate(true)
+        .open(&path)
+        .map_err(|e|format!("Cannot create {}: {e}",path.display()))?;
+    PROBE_LOG.set(Mutex::new(file))
+        .map_err(|_|"Probe logger was already initialized".to_string())?;
+    Ok(path)
+}
+
+/// Write and flush each line immediately. An early HRESULT failure thus
+/// leaves a usable report; do not depend on stdout/Wine stderr redirection.
+fn probe_line(line:&str){
+    if let Some(log)=PROBE_LOG.get(){
+        match log.lock(){
+            Ok(mut file)=>{
+                if let Err(err)=writeln!(file,"{line}").and_then(|_|file.flush()){
+                    eprintln!("PROBE LOG WRITE ERROR: {err}");
+                }
+            },
+            Err(_)=>eprintln!("PROBE LOG LOCK ERROR"),
+        }
+    }
+    println!("{line}");
+}
+
 
 type Ptr=*mut c_void;
 type Hr=i32;
@@ -103,7 +152,7 @@ unsafe fn slot(object:Ptr,index:usize)->usize{
     *vtable.add(index)
 }
 fn check(label:&str,hr:Hr)->Result<(),String>{
-    println!("{label}: HRESULT={:#010x} {}",hr as u32,if hr>=0{"OK"}else{"FAIL"});
+    probe_line(&format!("{label}: HRESULT={:#010x} {}",hr as u32,if hr>=0{"OK"}else{"FAIL"}));
     if hr<0{Err(format!("{label} returned {:#010x}",hr as u32))}else{Ok(())}
 }
 /// Windows x86 DDSURFACEDESC2: 31 DWORDs, with DDPIXELFORMAT at 18,
@@ -143,7 +192,7 @@ fn run()->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    println!("WINDOWED-DDRAW-PROBE v0.1.25; standalone test; desktop={}x{}",before.0,before.1);
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.26; standalone test; desktop={}x{}",before.0,before.1));
     let class=wide("STATIC");
     let title=wide("CrimsonSkiesFix windowed DirectDraw test (not the game)");
     let hwnd=unsafe {
@@ -236,17 +285,28 @@ fn run()->Result<(),String>{
     let _device=Com(device);
     let after=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
     if before!=after{return Err(format!("Desktop changed unexpectedly: {:?} -> {:?}",before,after));}
-    println!("PASS: windowed primary + clipper + RGB565 3D target + Z32 + Blt + D3D3 HAL; desktop preserved");
+    probe_line("PASS: windowed primary + clipper + RGB565 3D target + Z32 + Blt + D3D3 HAL; desktop preserved");
     // Show the owned test window briefly to confirm visible Blt. No game
     // objects, input interception, or persistence is involved.
     unsafe{Sleep(1000);}
     Ok(())
 }
 fn main(){
+    let path=match init_probe_log(){
+        Ok(path)=>path,
+        Err(e)=>{
+            eprintln!("PROBE LOG INITIALIZATION FAILED: {e}");
+            std::process::exit(2);
+        }
+    };
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.26");
+    probe_line(&format!("Log file: {}",path.display()));
+    probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     if let Err(e)=run(){
-        eprintln!("PROBE FAILED: {e}");
+        probe_line(&format!("PROBE FAILED: {e}"));
         std::process::exit(1);
     }
+    probe_line("PROBE COMPLETED: PASS");
 }
 #[cfg(test)]
 mod tests{
@@ -271,6 +331,14 @@ mod tests{
         assert_eq!(d[21],32);
         assert_eq!((d[22],d[23],d[24]),(0,0,0));
         assert_eq!(d[26],0x24000);
+    }
+    #[test]
+    fn log_is_always_next_to_exe_not_current_working_directory(){
+        let exe=Path::new(r"C:\Test-Probe\windowed_ddraw_probe.exe");
+        let log=log_path_for_executable(exe).unwrap();
+        assert_eq!(log.parent(),exe.parent());
+        assert_eq!(log.file_name().unwrap(),"windowed_ddraw_probe.log");
+        assert!(log_path_for_executable(Path::new("")).is_err());
     }
     #[test]
     fn normal_cooperative_mode_is_not_exclusive(){

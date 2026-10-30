@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.25 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.26 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,29 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.26 — standalone probe writes a clean diagnostic log
+
+The standalone Windows x86 `windowed_ddraw_probe.exe` now
+creates **`windowed_ddraw_probe.log` next to the executable**
+at the start of each run. The file is overwritten on the next
+run so that old results cannot be confused with new ones.
+
+Every probe step, DirectDraw/Direct3D **HRESULT (including
+failures)**, desktop-size check and final PASS/FAIL status is
+written and flushed immediately. Wine's noisy messages
+to the terminal are **not** copied to this log, while the
+probe's own messages remain visible in the terminal.
+
+Extract the **separate standalone probe artifact** outside
+the game folder, run the EXE normally under Wine or
+GE-Proton and send `windowed_ddraw_probe.log`.
+There is **no need to redirect the terminal output**.
+
+If log creation fails (for example, the EXE directory is
+read-only), the probe prints a specific startup error and
+exits *before* running any DirectDraw test. The game
+`ddraw.dll` and its `CrimsonSkiesFix.log` are unaffected.
 
 ## v0.1.25 — standalone real windowed DirectDraw3D resource probe
 
