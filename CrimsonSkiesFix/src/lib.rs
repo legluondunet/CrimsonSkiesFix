@@ -8,6 +8,7 @@ mod diagnostics_graphics;
 mod presentation;
 mod rgb565_present;
 mod win32_present;
+mod scene_correlation;
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
@@ -135,6 +136,11 @@ static D3D3_END_START:OnceLock<Instant>=OnceLock::new();
 static D3D3_BEGIN_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
 static D3D3_END_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
 static FIRST_D3D3_SCENE:Once=Once::new();
+// Diagnostic-only snapshot groups exactly 120 successful primary Flips.
+// Mode changes reset the grouping; no frame timing or simulation changes.
+static SCENE_FLIP_GROUP:Mutex<scene_correlation::SceneCorrelation>=
+    Mutex::new(scene_correlation::SceneCorrelation::new());
+static SCENE_FLIP_GROUP_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -349,6 +355,13 @@ unsafe extern "system" fn modern_set_display_mode(
     if hr>=0 {
         if let Ok(mut session)=PRESENTATION_SESSION.lock(){
             session.begin_mode(presentation::Mode{width:w,height:h,bpp});
+            if cfg().log_enabled {
+                if let Ok(mut group)=SCENE_FLIP_GROUP.lock(){
+                    group.reset(session.epoch,
+                        D3D3_BEGIN_EVENTS.load(Ordering::Relaxed),
+                        D3D3_END_EVENTS.load(Ordering::Relaxed));
+                }
+            }
             if cfg().log_enabled{
                 log(&format!("CHAIN-EPOCH: generation={} new_mode={w}x{h}x{bpp}; previous chain invalidated",
                     session.epoch));
@@ -604,7 +617,28 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
         }
     }
     let call:FlipFn=std::mem::transmute(addr);
-    call(this,target,flags)
+    let result=call(this,target,flags);
+    // This code runs AFTER the original Flip and only counts successful
+    // calls on the real primary surface. It never modifies the HRESULT.
+    if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
+        if let Ok(mut group)=SCENE_FLIP_GROUP.lock(){
+            let sample=group.observe_flip(
+                D3D3_BEGIN_EVENTS.load(Ordering::Relaxed),
+                D3D3_END_EVENTS.load(Ordering::Relaxed));
+            if let Some(sample)=sample {
+                // Limit to 12 correlated windows over the whole session.
+                if SCENE_FLIP_GROUP_LOGS.fetch_add(1,Ordering::Relaxed)<12 {
+                    log(&format!(
+                        "SCENE-CORRELATION: generation={} successful_primary_flips={} successful_begin_scene={} successful_end_scene={} begins_per_flip={:.2} ends_per_flip={:.2} (same Flip group; COM calls NOT displayed frames)",
+                        sample.generation,sample.flips,sample.successful_begins,
+                        sample.successful_ends,
+                        sample.successful_begins as f64/sample.flips as f64,
+                        sample.successful_ends as f64/sample.flips as f64));
+                }
+            }
+        }
+    }
+    result
 }
 unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
     src:*mut c_void,src_rect:*const c_void,flags:u32,fx:*mut c_void)->Hr {
