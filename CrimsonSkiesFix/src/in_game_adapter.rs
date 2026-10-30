@@ -120,7 +120,11 @@ unsafe fn prove_hal(dd4:*mut c_void,back:&Com)->Result<(),String>{
     require(qi(dd4,&IID_D3D3,&mut result),"IDirect3D3 QueryInterface")?;
     let d3d=Com::from_out(result)?;
     type Create=unsafe extern "system" fn(*mut c_void,*const Guid,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
-    let create:Create=std::mem::transmute(slot(d3d.ptr(),8));
+    // The game-facing D3D3 vtable may already be diagnostic-hooked.
+    // A synchronous preflight while RUNTIME is locked must call the
+    // ORIGINAL CreateDevice directly, never reenter the game's hooks.
+    let create:Create=std::mem::transmute(
+        crate::orig(d3d.ptr(),8).unwrap_or_else(||slot(d3d.ptr(),8)));
     let mut device=ptr::null_mut();
     require(create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut()),"D3D3 HAL CreateDevice")?;
     let _device=Com::from_out(device)?;
