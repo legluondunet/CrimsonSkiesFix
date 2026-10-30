@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.14 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.15 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,17 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.15 — log branding consistency
+
+The runtime log uses **CrimsonSkiesFix**, not the older project name.
+One remaining recursion-guard error message had still mentioned
+"CrimsonFix proxy"; it now uses the same centralized project name as
+the startup header. A regression test checks both log identifiers.
+
+Historical migration paths mentioning `CrimsonFix/CrimsonFix.ini`
+are intentionally retained to copy old user settings. They are not
+the names of newly generated logs or of the current project.
 
 ## v0.1.14 — observe Direct3D3 scenes and render-target switching
 
@@ -498,7 +509,7 @@ Runtime behavior requires testing under Wine/Windows.
 
 ```powershell
 rustup target add i686-pc-windows-msvc
-cd crimsonfix
+cd CrimsonSkiesFix
 cargo test --target i686-pc-windows-msvc
 cargo build --release --target i686-pc-windows-msvc
 ```
