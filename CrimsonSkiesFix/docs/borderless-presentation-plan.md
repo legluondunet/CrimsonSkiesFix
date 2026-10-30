@@ -785,6 +785,40 @@ selection of a genuine 32-bit depth format.
 Reference: https://github.com/wine-mirror/wine/blob/master/include/ddraw.h
 and https://github.com/wine-mirror/wine/blob/master/include/d3d.h.
 
+## Stage B3j — v0.1.29 live PASS and v0.1.30 presentation-scene probe
+
+The owner's `windowed_ddraw_probe(4).log` confirms
+a complete **PASS** on v0.1.29 under Wine. Relevant results:
+
+- DirectDraw7, QueryInterface(DirectDraw4), DDSCL_NORMAL,
+  windowed primary and clipper: all S_OK.
+- `RGB565 offscreen 3D target`: S_OK.
+- `IDirect3D3::EnumZBufferFormats(HAL)`: S_OK, four
+  returned formats, including one pure 32-bit
+  DDPF_ZBUFFER with 24 active Z bits and no declared
+  stencil: `dwZBitMask=0x00ffffff`.
+- Z32 allocation in **explicit video memory**: S_OK.
+  Its `GetSurfaceDesc` reports caps `0x10024000`,
+  32-bit depth and `dwZBitMask=0x00ffffff`.
+- Z attachment to render target, Z DEPTHFILL,
+  RGB565 COLORFILL, primary windowed Blt and D3D3 HAL
+  CreateDevice: all S_OK. Desktop 1920x1080 preserved.
+
+Therefore the required **real** windowed DirectDraw
+resource architecture is available under this owner's
+Wine configuration. This does not prove the actual
+Crimson Skies COM flip chain can be virtualized safely.
+
+Next v0.1.30 standalone proof uses the same resources
+to call `IDirect3DDevice3::BeginScene/EndScene`, then
+clear a temporary 960x540 16:9 window client to black
+via clipped primary COLORFILL, and stretch the 640x480
+offscreen RGB565 surface into a centered 720x540 4:3
+viewport (x=120) using a *real* DirectDraw4 Blt.
+All HRESULTs and the actual geometry are logged.
+A real game borderless/Flip adapter is not yet
+implemented; no game DLL behavior changes.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

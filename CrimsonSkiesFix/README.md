@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.29 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.30 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,42 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.30 — verify real windowed D3D scenes and 4:3 stretched presentation
+
+The owner's standalone v0.1.29 log reports **PASS** for
+the complete windowed resource chain on Wine 11.0,
+GE-Proton11-11: IDirectDraw7/4, DDSCL_NORMAL, primary
+and HWND clipper, RGB565 offscreen `DDSCAPS_3DDEVICE`,
+32-bit video-memory Z buffer with **24 active Z bits**
+(`dwZBitMask=0x00ffffff`), Z attachment, Z DEPTHFILL,
+RGB COLORFILL, windowed primary Blt, and
+`IDirect3D3::CreateDevice(HAL, RGB565 target)`.
+The desktop remains 1920x1080. This validates resources
+and API call completion, not actual game borderless.
+
+To test the next prerequisites, the **standalone probe only**
+now creates a private temporary window with a requested
+**960x540 client area** (16:9), exercises real
+`IDirect3DDevice3::BeginScene/EndScene`, clears the
+window to black via window-clipper-constrained
+`primary.Blt(COLORFILL)`, and attempts to **stretch**
+the 640x480 RGB565 offscreen surface into a centered
+720x540 (4:3) viewport: x=120, y=0, black pillarboxes.
+Logs report the *actual* client dimensions, integer
+aspect-fit viewport and all DirectDraw/Direct3D HRESULTs.
+
+This is a temporary diagnostic window, **not fullscreen
+and not the actual game's HWND**. A successful Blt HRESULT
+does not independently verify displayed pixels or user
+input behavior. The production COM virtual primary/Flip
+adapter is still pending.
+
+Download the separate `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL`
+artifact, extract it **outside the game directory**, run
+under Wine and attach `windowed_ddraw_probe.log`.
+No change to the game DLL, INI, graphics paths or original
+game executable.
 
 ## v0.1.29 — correct the actual Z mask field and enumerate HAL Z formats
 

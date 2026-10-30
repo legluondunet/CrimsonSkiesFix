@@ -110,6 +110,7 @@ const CLSID_D3D_HAL:Guid=Guid{
 #[derive(Default)]
 struct Point{x:i32,y:i32}
 #[repr(C)]
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
 struct Rect{left:i32,top:i32,right:i32,bottom:i32}
 #[link(name="ddraw")]
 extern "system" {
@@ -124,6 +125,7 @@ extern "system" {
     fn GetSystemMetrics(index:i32)->i32;
     fn ClientToScreen(hwnd:Ptr,point:*mut Point)->i32;
     fn GetClientRect(hwnd:Ptr,rect:*mut Rect)->i32;
+    fn AdjustWindowRect(rect:*mut Rect,style:u32,has_menu:i32)->i32;
     fn UpdateWindow(hwnd:Ptr)->i32;
 }
 #[link(name="kernel32")]
@@ -131,6 +133,20 @@ extern "system" {
     fn Sleep(ms:u32);
 }
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
+
+/// Integer aspect fit; source must not be stretched out of proportion.
+fn letterbox(src_w:u32,src_h:u32,dst_w:u32,dst_h:u32)->Option<Rect>{
+    if src_w==0||src_h==0||dst_w==0||dst_h==0{return None;}
+    let sw=u64::from(src_w);let sh=u64::from(src_h);
+    let dw=u64::from(dst_w);let dh=u64::from(dst_h);
+    let (w,h)=if dw*sh <= dh*sw {(dw,(dw*sh/sw).max(1))}
+              else {((dh*sw/sh).max(1),dh)};
+    let x=(dw-w)/2;let y=(dh-h)/2;
+    Some(Rect{
+        left:i32::try_from(x).ok()?,top:i32::try_from(y).ok()?,
+        right:i32::try_from(x+w).ok()?,bottom:i32::try_from(y+h).ok()?
+    })
+}
 
 /// Owns one COM reference and releases it exactly once when leaving scope.
 /// No virtual surface is advertised and no borrowed COM pointer is retained.
@@ -276,12 +292,20 @@ fn run()->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.29; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.30; standalone test; desktop={}x{}",before.0,before.1));
+    // Request an exact 16:9 *client* rectangle for a reproducible
+    // pillarbox test. AdjustWindowRect compensates for the frame.
+    // This creates a temporary window and never alters display mode.
+    let style=WS_VISIBLE|WS_OVERLAPPEDWINDOW;
+    let mut outer=Rect{left:0,top:0,right:960,bottom:540};
+    if unsafe{AdjustWindowRect(&mut outer,style,0)}==0 {
+        return Err("AdjustWindowRect failed".into());
+    }
     let class=wide("STATIC");
-    let title=wide("CrimsonSkiesFix windowed DirectDraw test (not the game)");
+    let title=wide("CrimsonSkiesFix 4:3-in-16:9 DirectDraw probe (not the game)");
     let hwnd=unsafe {
-        CreateWindowExW(0,class.as_ptr(),title.as_ptr(),
-            WS_VISIBLE|WS_OVERLAPPEDWINDOW,80,80,920,720,
+        CreateWindowExW(0,class.as_ptr(),title.as_ptr(),style,
+            80,80,outer.right-outer.left,outer.bottom-outer.top,
             ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())
     };
     if hwnd.is_null(){return Err("CreateWindowExW failed".into());}
@@ -398,20 +422,6 @@ fn run()->Result<(),String>{
         check("RGB565 offscreen ColorFill",blt(target.0,ptr::null(),ptr::null_mut(),
                 ptr::null(),DDBLT_COLORFILL|DDBLT_WAIT,fill.as_mut_ptr()))?;
     }
-    let mut origin=Point::default();
-    let mut client=Rect{left:0,top:0,right:0,bottom:0};
-    if unsafe{GetClientRect(window.0,&mut client)}==0{return Err("GetClientRect failed".into());}
-    if unsafe{ClientToScreen(window.0,&mut origin)}==0{return Err("ClientToScreen failed".into());}
-    // Deliberately no stretch: direct 640x480 RGB565->desktop format Blt.
-    // The clipper limits drawing to our own test window's client rectangle.
-    let dst=Rect{left:origin.x+10,top:origin.y+10,
-                 right:origin.x+650,bottom:origin.y+490};
-    unsafe{
-        let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
-            std::mem::transmute(slot(primary.0,5));
-        check("primary.Blt(RGB565 target, window clipper)",
-             blt(primary.0,&dst,target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))?;
-    }
     let mut device=ptr::null_mut();
     unsafe{
         let create:unsafe extern "system" fn(Ptr,*const Guid,Ptr,*mut Ptr,Ptr)->Hr=
@@ -420,10 +430,58 @@ fn run()->Result<(),String>{
             create(d3d.0,&CLSID_D3D_HAL,target.0,&mut device,ptr::null_mut()))?;
     }
     if device.is_null(){return Err("CreateDevice returned NULL".into());}
-    let _device=Com(device);
+    let device=Com(device);
+    // In-game Crimson Skies repeatedly uses BeginScene/EndScene on the
+    // same Direct3D3 device. Exercise the real HAL scene API in normal mode.
+    unsafe{
+        let begin:unsafe extern "system" fn(Ptr)->Hr=
+            std::mem::transmute(slot(device.0,9));
+        let end:unsafe extern "system" fn(Ptr)->Hr=
+            std::mem::transmute(slot(device.0,10));
+        check("IDirect3DDevice3.BeginScene",begin(device.0))?;
+        check("IDirect3DDevice3.EndScene",end(device.0))?;
+    }
+
+    let mut origin=Point::default();
+    let mut client=Rect{left:0,top:0,right:0,bottom:0};
+    if unsafe{GetClientRect(window.0,&mut client)}==0{return Err("GetClientRect failed".into());}
+    if unsafe{ClientToScreen(window.0,&mut origin)}==0{return Err("ClientToScreen failed".into());}
+    let client_w=u32::try_from(client.right-client.left).map_err(|_|"Bad client width")?;
+    let client_h=u32::try_from(client.bottom-client.top).map_err(|_|"Bad client height")?;
+    let viewport=letterbox(640,480,client_w,client_h)
+        .ok_or_else(||"Invalid 4:3-in-16:9 geometry".to_owned())?;
+    probe_line(&format!("WINDOW-CLIENT: {}x{} expected=960x540",client_w,client_h));
+    probe_line(&format!(
+        "ASPECT-VIEWPORT: source=640x480 window={}x{} viewport=x{},y{},{}x{} letterbox=4:3-in-16:9",
+        client_w,client_h,viewport.left,viewport.top,
+        viewport.right-viewport.left,viewport.bottom-viewport.top));
+    // The primary is in desktop coordinates, not window-client coordinates.
+    // First paint the *entire client* black, then stretch the 640x480
+    // RGB565 surface into the centered 4:3 viewport. The clipper restricts
+    // drawing to our own window, leaving the rest of the desktop untouched.
+    let full=Rect {
+        left:origin.x,top:origin.y,
+        right:origin.x+client_w as i32,bottom:origin.y+client_h as i32
+    };
+    let dst=Rect{
+        left:origin.x+viewport.left,top:origin.y+viewport.top,
+        right:origin.x+viewport.right,bottom:origin.y+viewport.bottom
+    };
+    let mut black=[0u32;25];black[0]=100;black[20]=0;
+    unsafe{
+        let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+            std::mem::transmute(slot(primary.0,5));
+        check("primary.Blt(COLORFILL black 16:9 window with clipper)",
+              blt(primary.0,&full,ptr::null_mut(),ptr::null(),
+                  DDBLT_COLORFILL|DDBLT_WAIT,black.as_mut_ptr()))?;
+        check("primary.Blt(STRETCH RGB565 640x480 to 4:3 centered viewport)",
+              blt(primary.0,&dst,target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))?;
+    }
+    // A windowed primary Blt success means the DirectDraw backend accepted
+    // the operation, but does not independently measure displayed pixels.
     let after=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
     if before!=after{return Err(format!("Desktop changed unexpectedly: {:?} -> {:?}",before,after));}
-    probe_line("PASS: windowed primary + clipper + RGB565 3D target + Z32 + Blt + D3D3 HAL; desktop preserved");
+    probe_line("PASS: windowed primary+clipper, RGB565+Z32, D3D3 HAL BeginScene/EndScene, black bars and 4:3 stretched Blt; desktop preserved");
     // Show the owned test window briefly to confirm visible Blt. No game
     // objects, input interception, or persistence is involved.
     unsafe{Sleep(1000);}
@@ -437,7 +495,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.29");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.30");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     if let Err(e)=run(){
@@ -523,6 +581,23 @@ mod tests{
         assert_eq!(d[26],DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY);
         assert_eq!(select_pure_z32(&[z24stencil]),None);
         assert_eq!(make_z32_desc(DDSCAPS_ZBUFFER,None)[23],0xffff_ffff);
+    }
+    #[test]
+    fn integer_pillarbox_for_4_3_sources_in_16_9_window(){
+        assert_eq!(letterbox(640,480,960,540),
+            Some(Rect{left:120,top:0,right:840,bottom:540}));
+        assert_eq!(letterbox(800,600,1920,1080),
+            Some(Rect{left:240,top:0,right:1680,bottom:1080}));
+        assert_eq!(letterbox(640,480,1440,1080),
+            Some(Rect{left:0,top:0,right:1440,bottom:1080}));
+    }
+    #[test]
+    fn invalid_or_extreme_geometry_is_rejected(){
+        assert!(letterbox(0,480,960,540).is_none());
+        assert!(letterbox(640,0,960,540).is_none());
+        assert!(letterbox(640,480,0,540).is_none());
+        assert!(letterbox(640,480,960,0).is_none());
+        assert!(letterbox(640,480,u32::MAX,u32::MAX).is_none());
     }
     #[test]
     fn directdrawcreateex_requires_v7_then_legacy_v4_query(){
