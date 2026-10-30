@@ -79,6 +79,13 @@ fn probe_line(line:&str){
     println!("{line}");
 }
 
+// The shared virtual Surface4 module expects a crate-level logger.
+// In the DLL this writes CrimsonSkiesFix.log; the standalone x86 probe
+// deliberately records the same diagnostics only to its OWN probe log.
+fn log(message:&str){
+    probe_line(message);
+}
+
 
 type Ptr=*mut c_void;
 type Hr=i32;
