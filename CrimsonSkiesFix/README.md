@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.13 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.14 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,42 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.14 — observe Direct3D3 scenes and render-target switching
+
+After moving the SafeDisc Rust/Python research under `SafeDisc/`,
+the new DLL source is isolated at `CrimsonSkiesFix/`. Its log file
+`CrimsonSkiesFix.log` is written **beside the loaded `ddraw.dll`**,
+while the persistent INI is
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`. Old
+`CrimsonFix/CrimsonFix.ini` settings are copied once if needed.
+
+This version extends the passive IDirect3D3::CreateDevice hook:
+once the real `IDirect3DDevice3` has been created successfully, it
+installs read-only monitoring on these *original* COM calls (indices
+verified against the Microsoft/DirectX6 `d3d.h`):
+
+- `BeginScene` (slot 9) and `EndScene` (slot 10):
+  `RENDER-SAMPLE` and `RENDER-WINDOW` report bounded 120-call
+  intervals for the **successful Direct3D scene API calls**
+- `SetRenderTarget` (slot 14): a maximum of 16
+  `D3D3-DEVICE` lines report whether the engine switches the
+  graphics target from the backbuffer to some other surface
+- `D3D3-DEVICE: hooks ...` reports the interception status;
+  `D3D3-TRACE: CreateDevice ...` continues to describe the initial
+  render target and the actual legacy device type
+
+These are COM API call counts, **not guaranteed unique screen FPS**.
+They do not introduce any additional frame pacing or alter render
+targets, textures, the Z-buffer, COM ownership, fullscreen mode or
+the game's window. If device creation fails, the invalid target is
+not inspected. This instrumentation is opt-in with `[Debug] Log=1`.
+The pre-existing `ModernFPSPacing` default remains 0, so a 120Hz
+desktop can still have ~120 Flip calls/s; use `ModernFPSPacing=1`
+only for a separate test of 60 calls/s.
+
+The experimental BGRA output helper remains unused until a complete
+windowed DDraw/D3D3 presentation backend is implemented.
 
 ## v0.1.12 — RGB565 image composer (backend foundation only)
 
