@@ -25,6 +25,8 @@ const DD_CAPS_3D:u32=0x0000_2000;
 const DD_CAPS_VIDEOMEM:u32=0x0000_4000;
 const DD_CAPS_Z:u32=0x0002_0000;
 const DDSD_BACKBUFFERCOUNT:u32=0x20;
+const DDSD_HEIGHT:u32=0x2;
+const DDSD_WIDTH:u32=0x4;
 const DDSD_PIXELFORMAT:u32=0x1000;
 const DDSCL_NORMAL:u32=8;
 const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
@@ -347,6 +349,59 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_back:real_back,physical_depth:real_depth,clipper})
 }
+// Give the game its *logical* DD4 mode, not the desktop's physical mode.
+// Crimson Skies requests 640x480x16 (or 800x600x16), while our real
+// fullscreen-sized HWND is windowed at the monitor's native resolution.
+// Native GetDisplayMode in DDSCL_NORMAL reports the desktop and may cause a
+// post-CreateDevice video-initialization check to reject the adapter.
+fn logical_display_desc(words:&mut [u32;31], mode:Mode)->bool{
+    if words[0]!=124 || mode.bpp!=16{return false;}
+    words[1]|=DDSD_HEIGHT|DDSD_WIDTH|DDSD_PIXELFORMAT;
+    words[2]=mode.height;
+    words[3]=mode.width;
+    words[18]=32; // DDPIXELFORMAT.dwSize
+    words[19]=0x40; // DDPF_RGB
+    words[20]=0;
+    words[21]=16;
+    words[22]=0xf800;
+    words[23]=0x07e0;
+    words[24]=0x001f;
+    words[25]=0;
+    true
+}
+/// Called only after native IDirectDraw4::GetDisplayMode succeeds.
+pub unsafe fn rewrite_display_mode(dd4:*mut c_void,d:*mut c_void)->bool {
+    if d.is_null(){return false;}
+    let Ok(guard)=RUNTIME.lock() else{return false;};
+    let Some(runtime)=guard.as_ref() else{return false;};
+    if runtime.dd4!=dd4 as usize{return false;}
+    let Some(epoch)=runtime.epoch.as_ref() else{return false;};
+    let words=&mut *(d.cast::<[u32;31]>());
+    let (native_w,native_h,native_bpp)=(words[3],words[2],words[21]);
+    if !logical_display_desc(words,epoch.mode){return false;}
+    log(&format!("WINDOWED-GAME: DD4 GetDisplayMode virtualized: physical={native_w}x{native_h}x{native_bpp} logical={}x{}x{} (desktop untouched)",
+        epoch.mode.width,epoch.mode.height,epoch.mode.bpp));
+    true
+}
+#[cfg(test)]
+mod logical_mode_tests{
+    use super::*;
+    #[test]
+    fn get_display_mode_reports_exact_game_rgb565_without_touching_other_fields(){
+        let mut native=[0u32;31];
+        native[0]=124;native[1]=0x80001;native[2]=1080;native[3]=1920;
+        native[18]=32;native[19]=0x40;native[21]=32;
+        native[26]=0x200;native[27]=0xdeadbeef;
+        assert!(logical_display_desc(&mut native,Mode{width:640,height:480,bpp:16}));
+        assert_eq!((native[2],native[3],native[21]),(480,640,16));
+        assert_eq!((native[22],native[23],native[24]),(0xf800,0x07e0,0x001f));
+        assert_eq!((native[26],native[27]),(0x200,0xdeadbeef));
+        let mut invalid=[0u32;31];invalid[0]=108;
+        assert!(!logical_display_desc(&mut invalid,Mode{width:640,height:480,bpp:16}));
+        assert_eq!(invalid[0],108);
+    }
+}
+
 /// Called before the native DD4 CreateSurface. Only replace the exact
 /// one-backbuffer primary (or explicit matching Z32) on the game DD4.
 pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
