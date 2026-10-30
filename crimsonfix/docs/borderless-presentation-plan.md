@@ -59,6 +59,38 @@ Do not log raw pointer addresses, HWND values, filenames, screen
 pixels, window titles or other-process windows. Bound instrumentation
 and keep all logs opt-in under `[Debug] Log=1`.
 
+## Stage A results — confirmed 2026-10-30
+
+The owner's `CrimsonFix(20261030-083017).log` from v0.1.9
+provides the following repeatable positive matches on both 640x480
+and 800x600 video modes:
+
+| Association | Requested capability | Parent DDSCAPS | Returned DDSCAPS |
+|---|---|---|---|
+| Primary -> backbuffer | `DDSCAPS_BACKBUFFER=0x4` | `0x1000e238` | `0x1000601c` |
+| Backbuffer -> Z-buffer | `DDSCAPS_ZBUFFER=0x20000` | `0x1000601c` | `0x10024000` |
+| Texture -> mipmap | `DDSCAPS_TEXTURE | DDSCAPS_MIPMAP = 0x401000` | `0x00401808` | `0x00401808` |
+
+The first and second associations prove the primary flip chain's
+required 3D depth attachment. Texture/mipmap attachments are separate
+and must never be redirected as visible backbuffers. Existing texture
+`GetSurfaceDesc` requests confirmed DDSURFACEDESC2=124 bytes; 8x8,
+128x16 and 16x16 texture sizes were observed.
+
+v0.1.10 includes a **tested, pure-Rust preflight** in
+`src/presentation.rs`. It recognizes the successful front/back/Z
+attachments and refuses incomplete or unsupported 3D chains. A
+pre-exclusive monitor snapshot prevents exclusive-mode resolution
+changes from corrupting the saved target desktop dimensions. A
+centered aspect-fit plan for 640x480x16 or 800x600x16 on 1920x1080 is
+1440x1080 at x=240, y=0, with 240-pixel side bars. The result is
+reported to logs as `BORDERLESS-PREFLIGHT`, with
+`requires_virtual_primary=true` and `applied=false`.
+
+**Stage A's topology validation is complete. Stage B implementation
+is not complete.** Do not convert to normal cooperative mode or
+claim that the game renders at 1920x1080 yet.
+
 ## Stage B — prototype an explicit windowed presentation adapter
 
 Only after Stage A is reproduced in gameplay, implement behind a
