@@ -41,15 +41,29 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force 'dist/CrimsonFix' | Out-Null
           Copy-Item 'target/i686-pc-windows-msvc/release/ddraw.dll' 'dist/ddraw.dll'
-          Copy-Item 'CrimsonFix/CrimsonFix.ini' 'dist/CrimsonFix/CrimsonFix.ini'
+          Copy-Item 'CrimsonFix/CrimsonFix.ini.example' 'dist/CrimsonFix/CrimsonFix.ini.example'
           Copy-Item 'README.md' 'dist/CrimsonFix/README.md'
           $files = @(Get-ChildItem -LiteralPath dist -File)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'ddraw.dll') {
             throw 'Invalid game-root layout: exactly one ddraw.dll permitted'
           }
-          if (-not (Test-Path 'dist/CrimsonFix/CrimsonFix.ini')) { throw 'Missing nested config' }
-          $disabled = @(Get-Content 'dist/CrimsonFix/CrimsonFix.ini' | Where-Object { $_.Trim() -eq 'Log=0' })
-          if ($disabled.Count -ne 1) { throw 'Default logging must be disabled' }
+          if (Test-Path 'dist/CrimsonFix/CrimsonFix.ini') {
+            throw 'Release archive must never ship an active user INI'
+          }
+          if (-not (Test-Path 'dist/CrimsonFix/CrimsonFix.ini.example')) {
+            throw 'Missing non-overwriting INI template'
+          }
+          $defaults = @(Get-Content 'dist/CrimsonFix/CrimsonFix.ini.example' |
+            Where-Object { $_.Trim() -eq 'Log=0' })
+          if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
+          $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
+            ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
+            Sort-Object)
+          $expectedFiles = @('CrimsonFix/CrimsonFix.ini.example', 'CrimsonFix/README.md', 'ddraw.dll') |
+            Sort-Object
+          if (Compare-Object $actualFiles $expectedFiles) {
+            throw 'Unexpected files in the game update archive'
+          }
           if (Test-Path 'dist/CrimsonFix/CrimsonFix.log') { throw 'Log must not be bundled' }
       - name: Publish experimental x86 proxy and clean game layout
         uses: actions/upload-artifact@v4
