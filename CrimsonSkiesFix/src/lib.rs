@@ -9,6 +9,7 @@ mod presentation;
 mod rgb565_present;
 mod win32_present;
 mod scene_correlation;
+mod borderless_contract; // pure, inactive COM/windowed-surface contract (Stage B2)
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,

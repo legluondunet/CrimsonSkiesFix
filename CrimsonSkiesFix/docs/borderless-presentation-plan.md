@@ -419,6 +419,44 @@ References:
 - https://github.com/elishacloud/dxwrapper/wiki/DirectDraw-to-Direct3D9-Conversion
 - https://github.com/narzoul/DDrawCompat/blob/master/README.md
 
+## Stage B2 implementation — v0.1.19 pure COM contract model
+
+A new isolated `src/borderless_contract.rs` file contains a
+testable model of the planned façade. It does not install COM hooks or
+allocate resources and is not reachable from active gameplay.
+
+The model enforces:
+- All required windowed backend capabilities must be validated prior
+  to surface exposure. CPU copies of pixels cannot substitute for
+  the **real RGB565 IDirectDrawSurface4** that Direct3D3 requires.
+- Failures during preparation abort without altering the original
+  exclusive path; once the façade has exposed a replacement object,
+  switching silently back to exclusive is forbidden.
+- Logical COM IUnknown identity survives QueryInterface across
+  Surface1/2/3/4/7 interface versions, with explicit error handling
+  for unsupported interfaces and stale mode epochs.
+- Queries and GetAttachedSurface acquire client references; attachment
+  ownership keeps backbuffer/depth alive while the parent exists.
+  Release cascades when final owner and client references disappear.
+- Per-surface descriptors mirror *observed* primary (RGB565 +
+  backbuffer count 1), RGB565 backbuffer and 32-bit Z-buffer. A
+  missing or mismatched topology cannot satisfy preflight.
+
+This model intentionally **does not implement real COM vtables or
+claim to validate any GPU surfaces**. A future Stage B3 must give
+every logical identity a stable physical IUnknown pointer, conform
+to DirectDraw/Direct3D interface method ABI, obey actual implicit
+vs explicit attachment lifetimes, and verify resource handles
+before committing. It must route all unsupported cases to a
+safe *pre-exposure* fallback. Do not enable Borderless based on
+this module alone.
+
+Microsoft COM and DirectDraw contracts:
+- https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface
+- https://learn.microsoft.com/en-us/windows/win32/com/implementing-reference-counting
+- https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-idirectdrawsurface7-getattachedsurface
+- https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-idirectdrawsurface7-addattachedsurface
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.18 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.19 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,32 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.19 — Stage B2: isolated COM surface/lifecycle model
+
+The new **inactive** `src/borderless_contract.rs` module models a
+future DirectDraw3D-compatible borderless adaptor without modifying
+the game's exclusive DirectDraw or Direct3D runtime calls.
+
+- Declares an explicit opt-in backend readiness contract: game-owned
+  HWND, normal DirectDraw mode, real RGB565 DirectDrawSurface4 3D
+  render target, real 32-bit Z-buffer, windowed primary/clipper,
+  functioning Blt and complete COM interface handling.
+- Refuses incomplete backend evidence **before** any replacement
+  surface is exposed. Once exposed, the model forbids silently
+  falling back to exclusive mode.
+- Models stable logical COM object identity across DirectDrawSurface
+  versions, reference increments on QueryInterface/GetAttachedSurface,
+  AddRef/Release and attachment ownership on primary/backbuffer/depth.
+- Provides the observed 640x480/800x600 descriptor/caps contract and
+  rejects unsupported attachment requests, dead or stale-epoch objects.
+
+Nine new Rust unit tests validate these invariants; the Windows x86
+CI still builds the same unmodified graphic hooks and deploys the
+same three-file ZIP layout. **There is no actual virtual COM object
+or rendering adapter yet.** Real IUnknown pointer identity, ABI
+dispatch, GPU surface creation and windowed presentation are still
+Stage B3 engineering work, not achievements of this release.
 
 ## v0.1.18 — individual inter-Flip Direct3D3 scene distribution
 
