@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.47 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.48 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -66,16 +66,16 @@ Borderless=1
 DesktopResolution=1
 FPSLimit=60
 ModernFPSPacing=0
+ExperimentalWindowedAdapter=0
 
 [Debug]
 Log=0
 ```
 
-- `Borderless=1`: currently changes only the legacy DirectDraw v1
-  initialization behavior. **It does not convert Crimson Skies' real
-  DirectDraw4 exclusive 16-bit flip chain to borderless.** The actual
-  borderless adapter is not yet active; this option is not proof that
-  the game is windowed.
+- `Borderless=1`: legacy DirectDraw v1 behavior. On its own, this does
+  **not** convert the game's DirectDraw4 flip chain to borderless.
+  The experimental DirectDraw4 integration is controlled separately by
+  `ExperimentalWindowedAdapter` (off by default).
 - `DesktopResolution=1`: preserve desktop mode, choose the display
   under the cursor at DirectDraw initialization. The game render target
   and FOV **are not yet automatically resized**.
@@ -86,6 +86,17 @@ Log=0
 - `ModernFPSPacing=0`: modern primary Flip pacing **disabled by default**;
   set `1` only for a controlled experimental FPS test. This does not
   change full-screen mode or the in-game rendering resolution.
+- `ExperimentalWindowedAdapter=0`: experimental DirectDraw4 windowed
+  3D surface adapter; enabling `1` keeps the actual 1920x1080 desktop
+  mode while the game sees its own 640x480/800x600 RGB565 rendering
+  mode. In v0.1.48, `GetDisplayMode` also reports that logical mode
+  and RGB565 backbuffer/Z32 `Lock` forwards to its equivalent native
+  surface. This remains **not gameplay-validated**: the first real
+  v0.1.47 run reached successful `D3D3::CreateDevice` but the game
+  reported `Failed to initialize video` before its first 3D scene.
+  v0.1.48 adds bounded diagnostics on rejected virtual COM operations.
+  Turn this option back to `0` to return to the previous exclusive
+  rendering path if initialization fails.
 - `[Debug] Log=0`: logging is **fully disabled by default**; no
   log file is created or modified. Set `Log=1` to create/overwrite
   `CrimsonSkiesFix.log` at the next game startup.
