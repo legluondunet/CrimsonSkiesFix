@@ -607,7 +607,7 @@ pub(crate) mod tests {
             }
         }
         #[test]
-        fn vtable_flip_only_acks_after_two_blts_and_latches_fault(){
+        fn vtable_flip_clears_once_then_latches_stretch_failure(){
             let rig=Rig::new();let v=rig.v();
             let p=rig.ptr(SurfaceRole::Primary);
             let back=rig.ptr(SurfaceRole::Backbuffer);
@@ -618,7 +618,7 @@ pub(crate) mod tests {
             }
             {
                 let s=rig.state.borrow();
-                assert_eq!(s.backend.steps,["black","stretch","black","stretch"]);
+                assert_eq!(s.backend.steps,["black","stretch","stretch"]);
                 assert_eq!(s.bridge.stats().complete_frames,2);
             }
             rig.state.borrow_mut().backend.fail_stretch=Some(-42);
@@ -628,7 +628,7 @@ pub(crate) mod tests {
             }
             let s=rig.state.borrow();
             assert_eq!(s.bridge.stats().complete_frames,2);
-            assert_eq!(s.backend.steps.len(),6);
+            assert_eq!(s.backend.steps.len(),4);
         }
     }
 
