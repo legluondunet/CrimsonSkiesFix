@@ -112,6 +112,7 @@ static RENDER_CHAIN:Mutex<presentation::Chain>=Mutex::new(presentation::Chain{
 static LAST_RENDER_MODE:Mutex<presentation::Mode>=Mutex::new(
     presentation::Mode{width:0,height:0,bpp:0});
 static PRESENTATION_PLAN_LOGGED:AtomicUsize=AtomicUsize::new(0);
+static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -289,6 +290,18 @@ fn surface_iface(iid:*const Guid)->Option<&'static str> {
 unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
+    if !hwnd.is_null() && cfg().log_enabled && PRE_EXCLUSIVE_DESKTOP.get().is_none(){
+        // Critical: capture monitor dimensions BEFORE exclusive DirectDraw
+        // SetDisplayMode shrinks the Wine mode and game HWND to 640/800.
+        if let Some(area)=win32::monitor_for_game_window(hwnd){
+            let w=area.right.saturating_sub(area.left) as u32;
+            let h=area.bottom.saturating_sub(area.top) as u32;
+            if w>0 && h>0 {
+                let _=PRE_EXCLUSIVE_DESKTOP.set((w,h));
+                log(&format!("BORDERLESS-PREFLIGHT: captured pre-exclusive monitor={w}x{h} (read-only)"));
+            }
+        }
+    }
     let hr=call(this,hwnd,flags); // OBSERVATION ONLY: keep original HWND and flags
     if !hwnd.is_null() && cfg().log_enabled {
         // Never print the numeric HWND. A stale HWND is checked before use.
@@ -384,13 +397,10 @@ fn log_render_chain_preflight(request:u32,parent:u32,child:u32) {
     };
     let previous=PRESENTATION_PLAN_LOGGED.fetch_or(bit,Ordering::Relaxed);
     if previous&bit!=0{return;}
-    let hwnd=LAST_GAME_HWND.load(Ordering::Relaxed) as Hwnd;
-    let Some(monitor)=win32::monitor_for_game_window(hwnd) else{
-        log("BORDERLESS-PREFLIGHT: monitor unavailable, keeping original exclusive renderer");
+    let Some(&(desktop_width,desktop_height))=PRE_EXCLUSIVE_DESKTOP.get() else{
+        log("BORDERLESS-PREFLIGHT: original desktop bounds unavailable, keeping exclusive renderer");
         return;
     };
-    let desktop_width=monitor.right.saturating_sub(monitor.left) as u32;
-    let desktop_height=monitor.bottom.saturating_sub(monitor.top) as u32;
     if let Some(plan)=presentation::preflight(mode,desktop_width,desktop_height,snapshot){
         log(&format!(
             "BORDERLESS-PREFLIGHT: complete 3D front->back->Z chain; internal={}x{}x{}; monitor={}x{}; aspect_viewport=x{},y{},{}x{}; requires_virtual_primary=true; applied=false",
