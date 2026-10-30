@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.7 — experimental DirectDraw proxy
+# CrimsonFix 0.1.8 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -140,6 +140,40 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.8 — interval call rates and surface/viewport observation
+
+The user's in-game v0.1.7 log confirms the game supplies a visible,
+game-owned `HWND` at 1920x1080 **before** entering exclusive DirectDraw
+mode. It later switches between 640x480 and 800x600 at 16 bpp.
+The new sampling data shows `Flip` and `Blt` call rates near 30/s
+in some intervals, while a burst of `Unlock` calls reaches more than
+1,000/s; the whole-session averages are misleading. These call rates
+are **not** validated display FPS.
+
+v0.1.8 adds:
+- Bounded `RENDER-WINDOW:` entries every 120 calls, showing calls/s
+  over each short interval rather than since the program started
+- `SURFACE-CREATE:` details (descriptor size, explicitly specified
+  width/height and post-creation capability bits) for up to 24 surfaces;
+  read-only, no pixel readback or changes to surfaces
+- `SURFACE-TRACE:` with the capability bits on the first modern
+  `Flip` and `Blt` destinations, allowing confirmation of
+  `DDSCAPS_PRIMARYSURFACE` and flip-chain usage
+- `WIN-TRACE:` dimensions/style of the actual game HWND **after**
+  successful or failed modern SetDisplayMode calls (up to 12 samples)
+
+All these diagnostics are opt-in behind `[Debug] Log=1`. The game
+is still launched with its original DirectDraw display-mode behavior.
+`ModernFPSPacing=0` remains the safest default; modern primary Flip
+pacing is still an optional experiment pending classification of the
+actual first Flip surface.
+
+**Important:** DirectDraw's exclusive/fullscreen flip chains cannot
+be made truly borderless just by removing a window border or replacing
+`DDSCL_EXCLUSIVE` with `DDSCL_NORMAL`. A successful future patch must
+maintain a compatible presentation chain and decouple game resolution
+from desktop resolution. Nothing in v0.1.8 changes this yet.
 
 ## v0.1.7 — confirmed modern render calls and guarded FPS experiment
 
