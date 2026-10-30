@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.44 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.45 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -1186,3 +1186,19 @@ Run in an independent writable test directory under the same Wine/GE-Proton setu
 wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
 ```
 Return the adjacent `windowed_ddraw_probe.log`, including `COM-TRANSITION-EPOCH-START`, `COM-TRANSITION-EPOCH-END`, and `COM-TRANSITION-FINAL` lines. Each of the three epochs should report `COM-VFLIP-RESULT: requested=120 successful=120`. This is not a gameplay FPS test.
+
+## Standalone v0.1.45: irreversible COM presenter retirement at a mode switch
+
+The owner-supplied `windowed_ddraw_probe(20261030-172205).log` confirms full success for the standalone v0.1.44 **800×600 → 640×480 → 800×600** test: 120/120 virtual Surface4 Flip→two native windowed DirectDraw Blts in **each** of three resource epochs (360/360), all with real RGB565/Z32 HAL D3D3 resources and one unchanged 1920×1080 desktop. Elapsed 1504/1505/1508 ms measures only the standalone test.
+
+A remaining safety risk is the game keeping an **old COM primary interface reference after changing resolution**. The disabled-in-game `com_surface4_forward` implementation now offers `retire_graph_primary_flip`, which synchronizes with in-flight virtual Flip using the existing per-primary mutex, drops the old native presentation session, and permanently marks that old primary as **retired** (rearming fails). Its valid COM identity remains reference-counted until the last Release, but future Flip returns `E_NOTIMPL` without native/exclusive fallback.
+
+The updated `--com-virtual-flip-transition` standalone test now retires the old primary after each 120-frame epoch, verifies rejection of stale Flip, intentionally holds **one extra client AddRef** for the old COM primary while building the next epoch's new physical target and virtual chain, verifies the still-live stale pointer cannot present, then releases it. It verifies the final epoch's retirement too. Rust unit tests also reject rearming retired primary objects. All changes are test-only or in the inactive COM facade; **the active game proxy, config and existing options are unchanged**.
+
+From the separate Windows x86 probe artifact, run under Wine in an independently writable folder:
+
+```bash
+wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
+```
+
+Send the adjacent `windowed_ddraw_probe.log`. Expected: three `COM-TRANSITION-RETIRE`, two `COM-TRANSITION-STALE` and one `COM-TRANSITION-LAST-STALE`, then `COM-TRANSITION-FINAL: PASS` and `PROBE COMPLETED: PASS`. This still does not activate game borderless or prove all real game COM methods are implemented.
