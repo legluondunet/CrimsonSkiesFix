@@ -854,6 +854,48 @@ in-game borderless and does not implement
 a virtual DirectDraw primary/flip chain.
 Retain PR #6 as draft until game validation.
 
+## Stage B4a — v0.1.31 borderless probe PASS and inactive Flip-to-Blt transaction
+
+The owner supplied \`windowed_ddraw_probe(7).log\`
+from the *correct* \`--borderless\` run of the
+v0.1.31 probe. Every recorded HRESULT is S_OK:
+normal DirectDraw4, HWND clipper, RGB565+Z32
+Direct3D3 HAL with BeginScene/EndScene, three
+RGB565 color-bar fills, and both primary Blts.
+The test window was exactly 1920x1080 at 0,0;
+the 640x480 source was presented into x=240,
+y=0,w=1440,h=1080 with black sidebars.
+Host desktop remained unchanged. Pixel-level
+visual correctness still requires owner feedback.
+
+The next engineering gap is genuine in-game
+IDirectDrawSurface4::Flip virtualization.
+The new \`borderless_flip.rs\` implements an
+**inert pure contract** for a deterministic
+Flip-to-Blt sequence and catches stale mode
+generations, mixed 640x480/800x600 calls,
+partial-presentation failures, and false
+success or implicit post-exposure fallback.
+It tests both black full-client clear and
+RGB565 viewport stretch, successful only as
+a paired transaction.
+
+This module has no real COM object, HWND
+or DirectDraw method call: using it alone
+cannot activate borderless in the game. A
+future opt-in runtime must first create
+a **complete virtual IDirectDrawSurface4**
+primary/backbuffer/Z interface, preserve
+IUnknown physical identity and attachment
+reference counts, provide the real RGB565
+3D-capable target to IDirect3D3::CreateDevice,
+and only then route Flip through this
+transaction backed by actual windowed
+DirectDraw4 Blts.
+
+No existing game rendering path or INI
+setting is changed by v0.1.32.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.31 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.32 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,53 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.32 — first inactive Flip-to-Blt bridge contract, owner borderless PASS
+
+The owner-provided **v0.1.31** standalone log confirms
+\`--borderless\` ran successfully under Wine: private
+\`WS_POPUP\` test HWND exactly \`1920x1080\` at screen
+origin \`x=0,y=0\`; genuine RGB565 640x480 and video-
+memory Z32 surfaces; real Direct3D3 HAL BeginScene/
+EndScene; red/green/blue RGB565 fills; and successful
+clipped windowed primary black COLORFILL followed by
+scaled Blt to \`x=240,y=0,1440x1080\`. The desktop
+mode was preserved. This is API-level confirmation,
+not captured-pixel verification.
+
+**Stage B4a** introduces \`src/borderless_flip.rs\`,
+a *pure, inactive and test-driven* model of converting
+one logical game's Flip into precisely **two** required
+windowed DirectDraw operations: first clear black,
+then stretch the real RGB565 backbuffer into the
+centered 4:3 viewport. The new
+\`WindowedBlt\` trait defines the eventual backend
+interface; no Win32, COM, game DLL hook, or real
+GPU call is made by the new module.
+
+Crucially, the bridge can be created only after
+\`AdapterContract\` has reached \`Phase::Exposed\`
+(which will itself require a complete COM
+implementation in the future). It rejects stale
+display-mode generations and wrong source sizes,
+reports a successful logical Flip only after
+**both** Blts complete, and latches any failed
+step without silently switching an already
+exposed virtual primary back to exclusive mode.
+
+Eight regression tests cover 640x480 and 800x600
+at 1920x1080, 120 back-to-back logical frames,
+black-clear or stretch failure, wrong generation,
+changed mode and counter overflow.
+
+This is a necessary bridge contract but **not yet
+the in-game borderless feature**. The runtime's
+real virtual primary/backbuffer/Z chain and
+physical COM ownership/attachments must be
+implemented and tested before any opt-in game
+activation. The existing \`ddraw.dll\` rendering,
+modern Flip pacing, configuration and probe
+behavior remain exactly as before.
 
 ## v0.1.31 — optional real-size borderless DirectDraw presentation test
 
