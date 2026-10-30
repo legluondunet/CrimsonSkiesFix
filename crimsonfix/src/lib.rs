@@ -108,6 +108,7 @@ static SURFACE_DESC_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_FIRST_PRIMARY_ATTACH:Once=Once::new();
 static PRESENTATION_SESSION:Mutex<presentation::Session>=Mutex::new(presentation::Session::new());
 static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
+static SURFACE_FORMAT_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -339,6 +340,47 @@ unsafe extern "system" fn modern_set_display_mode(
     hr
 }
 
+// A strictly read-only GetSurfaceDesc probe of the *existing* DirectDraw
+// object. No Lock/Unlock, new surfaces, pixel copying, or COM ownership changes.
+// Only modern 124-byte DDSURFACEDESC2 objects can be safely probed.
+unsafe fn probe_modern_surface_layout(surface:*mut c_void,reason:&str) {
+    if surface.is_null() || !cfg().log_enabled{return;}
+    if SURFACE_FORMAT_PROBE_COUNT.fetch_add(1,Ordering::Relaxed)>=20{return;}
+    let Some(caps)=modern_surface_caps(surface) else{return;};
+    if caps&(presentation::PRIMARY|presentation::BACKBUFFER|presentation::ZBUFFER)==0{
+        return;
+    }
+    // Query original GetSurfaceDesc to avoid going through our own logging
+    // hook. A method already patched on this vtable has an original mapping.
+    let address=orig(surface,SURFACE_GET_DESC).or_else(||{
+        let addr=method(surface,SURFACE_GET_DESC);
+        (addr!=0 && addr!=modern_get_surface_desc as usize).then_some(addr)
+    });
+    let Some(address)=address else{return;};
+    let call:GetSurfaceDescFn=std::mem::transmute(address);
+    let mut desc=[0u32;31]; // 124-byte DDSURFACEDESC2, 32-bit Win32 ABI
+    desc[0]=124;
+    let hr=call(surface,desc.as_mut_ptr().cast());
+    if hr<0{
+        log(&format!("SURFACE-FORMAT: source={reason} role={} GetSurfaceDesc failed hr={hr:#x} (unchanged)",
+            surface_roles(caps)));
+        return;
+    }
+    let Some(info)=presentation::parse_surface_desc2(&desc) else{
+        log(&format!("SURFACE-FORMAT: source={reason} unexpected descriptor size={} (unchanged)",desc[0]));
+        return;
+    };
+    // A 16-bit game may use RGB565, RGB555 or an unusual format. Never
+    // assume it is RGB565 without confirming the returned masks.
+    let masks=info.color_masks.map(|m|format!("R={:#06x},G={:#06x},B={:#06x},A={:#06x}",
+        m[0],m[1],m[2],m[3])).unwrap_or_else(||"not-RGB-or-unreported".into());
+    let pixel=info.pixel_flags.map(|x|format!("{x:#x}")).unwrap_or_else(||"Unavailable".into());
+    let bpp=info.bits_per_pixel.map(|x|x.to_string()).unwrap_or_else(||"Unavailable".into());
+    let buffers=info.backbuffer_count.map(|x|x.to_string()).unwrap_or_else(||"Unavailable".into());
+    log(&format!("SURFACE-FORMAT: source={reason} role={} dimensions={}x{} backbuffers={} pf_flags={} bits={} masks={} (read-only)",
+        surface_roles(caps),info.width,info.height,buffers,pixel,bpp,masks));
+}
+
 // Named status based entirely on the public DirectDraw DDSCAPS flags.
 // We deliberately do not log raw COM pointer addresses or identifiers.
 fn surface_roles(caps:u32)->String {
@@ -436,6 +478,9 @@ unsafe extern "system" fn modern_get_attached_surface(
                 }
                 // The requested caps pointer is game-owned, not modified.
                 if !caps.is_null(){log_render_chain_preflight(*caps,a,b);}
+                if !caps.is_null() && (*caps&(presentation::BACKBUFFER|presentation::ZBUFFER))!=0 {
+                    probe_modern_surface_layout(*out,"GetAttachedSurface");
+                }
             }
         }
     }
@@ -474,6 +519,9 @@ unsafe extern "system" fn modern_create_surface(
             hr>=0 && !out.is_null() && !(*out).is_null()));
     }
     if hr>=0 && !out.is_null() && !(*out).is_null(){
+        if !desc.is_null() && *(desc as *const u32)==124 {
+            probe_modern_surface_layout(*out,"CreateSurface");
+        }
         if cfg().log_enabled && SURFACE_CREATE_DETAIL_COUNT.fetch_add(1,Ordering::Relaxed)<24 {
             // Read-only DWORD prefix of a valid DDSURFACEDESC / DDSURFACEDESC2.
             // Both structures begin: dwSize, dwFlags, dwHeight, dwWidth.
