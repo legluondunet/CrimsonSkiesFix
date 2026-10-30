@@ -72,3 +72,19 @@ jobs:
           name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
           path: CrimsonSkiesFix/dist/
           if-no-files-found: error
+      - name: Verify standalone windowed probe PE machine is Intel x86
+        shell: pwsh
+        run: |
+          $exe = 'target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe'
+          if (-not (Test-Path $exe)) { throw 'Standalone windowed DirectDraw probe EXE is missing' }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x014C) { throw "Windowed probe is not i686: 0x$($machine.ToString('X'))" }
+          Write-Host 'Standalone windowed probe verified x86'
+      - name: Publish standalone windowed DirectDraw resource probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL
+          path: CrimsonSkiesFix/target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe
+          if-no-files-found: error

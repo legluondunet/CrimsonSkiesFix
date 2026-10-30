@@ -631,6 +631,57 @@ Original DirectDraw flags (Wine include/ddraw.h):
 `DDBLT_DEPTHFILL=0x02000000`,
 `DDBLT_WAIT=0x01000000`.
 
+## v0.1.24 owner gameplay log — real fills confirmed
+
+The owner-provided `CrimsonSkiesFix(5).log` is a successful
+v0.1.24 run on Wine 11.0 / GE-Proton11-11 with
+`SurfaceUsageTrace=1` and `ModernFPSPacing=0`.
+It contains twelve complete groups of 120 successful primary
+Flips (five 800x600; seven 640x480), with **zero failures**.
+
+| Receiver | Exact Blt DWORD flags | src pointer | DX6 meaning |
+|---|---|---|---|
+| RGB565 backbuffer | 0x01000400 | NULL | DDBLT_WAIT \| DDBLT_COLORFILL |
+| Z-buffer 32 bits | 0x02000000 | NULL | DDBLT_DEPTHFILL |
+| backbuffer startup copy | 0x01000000 | provided | DDBLT_WAIT |
+| backbuffer startup copy | 0x00000000 | provided | no extra flags |
+| backbuffer startup copy | 0x01000200 | provided | DDBLT_WAIT \| DDBLT_ASYNC |
+
+**Correction:** 0x00000200 is DDBLT_ASYNC, not a source
+color-key override. Wine ddraw.h specifies
+DDBLT_KEYSRCOVERRIDE=0x00010000.
+
+In a stable 640x480 gameplay group the game makes exactly
+120 RGB565 backbuffer COLORFILL Blts and **240 Z32 DEPTHFILL
+Blts** per 120 successful primary Flips; these are real
+depth fills, not Z-buffer image copies. Lock/Unlock call
+counts remain paired by role in every measured group.
+This establishes a useful requirement for a real windowed
+DirectDraw3D adapter. It does not imply 120 displayed FPS
+or independently validate simulated game timing.
+
+## Stage B3f — v0.1.25 independent Windows x86 windowed capability probe
+
+A separate `src/bin/windowed_ddraw_probe.rs` executable
+now tests the real host DirectDraw4 and Direct3D3 APIs
+**outside** the game and without injecting the proxy.
+It uses a private test HWND, DDSCL_NORMAL, primary/clipper,
+RGB565 DDSCAPS_3DDEVICE offscreen target, Z32 attachment,
+color-fill and presentation Blt, and D3D3 HAL CreateDevice.
+It prints real HRESULTs and verifies host desktop dimensions
+have not been changed. No exclusive mode or SetDisplayMode
+is called. Three x86 tests validate descriptor layout and
+critical constants; GitHub Actions builds the probe into
+an **independent artifact** while preserving the game
+DLL's existing exact three-file release layout.
+
+A successful result would validate native/Wine resource
+creation and basic presentation only. It would **not**
+provide a virtual primary/flip chain, COM identity,
+game frame integration, or an actual borderless game.
+A failed step will identify the backend capability to
+address next before attempting runtime redirection.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

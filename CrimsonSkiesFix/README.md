@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.24 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.25 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,38 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.25 — standalone real windowed DirectDraw3D resource probe
+
+A new separate **Windows x86 console executable**
+`windowed_ddraw_probe.exe` tests whether the host's real
+DirectDraw backend can build the resource chain needed for
+future Crimson Skies borderless support. It is **NOT** injected
+into the game and is packaged as a **separate GitHub artifact**.
+
+It creates its **own** Win32 test window, requests
+`DDSCL_NORMAL` (never exclusive), creates a real windowed
+primary plus attached clipper, and attempts to create a
+640x480 RGB565 video-memory offscreen surface with
+`DDSCAPS_3DDEVICE`, a 32-bit Z-buffer, their attachment,
+a color-fill Blt, a clipper-constrained Blt to the visible
+window, and an `IDirect3D3::CreateDevice` targeting that
+offscreen surface. It checks the desktop resolution remains
+unchanged. All actual COM HRESULTs are printed to the console.
+
+**How to test** (under Wine/GE-Proton or native Windows):
+extract the `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL`
+artifact into a **separate directory**, *not* the Crimson Skies
+game directory, to avoid loading the game's `ddraw.dll` proxy.
+Run `windowed_ddraw_probe.exe` directly from that directory
+and send its full console output. A failed HRESULT is useful
+compatibility evidence, not necessarily a bug in the game DLL.
+
+The existing three-file game DLL release artifact remains
+unchanged; `Borderless=1` is **still a preflight only**.
+This proof of actual normal-mode DirectDraw support does
+not yet virtualize COM surfaces or implement the final
+game-window borderless presentation.
 
 ## v0.1.24 — inspect Z-buffer Blt flags (opt-in)
 
