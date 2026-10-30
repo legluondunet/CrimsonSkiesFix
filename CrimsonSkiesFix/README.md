@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.40 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.41 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,18 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.41 — real three-surface COM attachment graph with fail-closed operations
+
+The owner-confirmed 0.1.40 `--com-device-roundtrip` log reports **PASS** for the one-target native RGB565 HAL CreateDevice, physical GetRenderTarget -> original COM-wrapper identity mapping, scenes and 4:3 borderless presentation, without changing the desktop.
+
+Stage B4j adds an **opt-in graph-enabled variant of our full 45-slot Surface4 COM forwarding object**. It creates three independent game-facing COM pointers representing **Primary -> Backbuffer -> Z32** over genuine Windows/Wine DirectDraw4 primary, 640x480 RGB565 3D target and attached 32-bit Z surface. The wrappers expose game-sized virtual GetCaps, GetSurfaceDesc, GetPixelFormat; actual `IDirectDrawSurface4::GetAttachedSurface` vtable calls return the correct stable child wrapper with a separate client-owned AddRef, while the parent owns an independent strong attachment reference. Role-restricted Primary->Backbuffer and Backbuffer->Z edges are acyclic and release their child COM refs on final parent Release.
+
+Safety restriction: graph wrappers *explicitly reject* virtual `Flip`, `Blt`, `Lock`, and attachment mutations as not implemented, rather than calling Wine's native/exclusive operations with incompatible virtual pointers. Ordinary non-graph forwarding remains unchanged; the original game's DLL and INI are not modified.
+
+Two additional Windows x86 mock-COM tests cover real typed 45-slot GetAttachedSurface/QI/refs/desc/format dispatch and cascade child lifetime, rejecting unsupported calls without invoking physical Flip/Blt. The new standalone `--com-surface-chain` mode repeats these calls with **genuine live DirectDraw4 COM objects**, passes only the **unwrapped native RGB565 backbuffer** to HAL CreateDevice, maps native GetRenderTarget back to the virtual backbuffer COM pointer, then runs D3D3 BeginScene/EndScene and the original physical black-clear + scaled viewport Blt.
+
+This is the first **actual COM attachment topology test** under Wine, not a complete game replacement: virtual Flip and Blt are still fail-closed. Owner test: use the separately built `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL` executable from the next successful Windows x86 run, execute `wine ./windowed_ddraw_probe.exe --com-surface-chain`, then send adjacent `windowed_ddraw_probe.log`.
 
 ## v0.1.40 — round-trip COM identity across the native D3D3 boundary
 

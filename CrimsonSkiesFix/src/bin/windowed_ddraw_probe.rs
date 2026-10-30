@@ -155,9 +155,9 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip, ComSurfaceChain }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip|Self::ComSurfaceChain)}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -169,7 +169,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [arg] if arg=="--com-device" => Ok(ProbeMode::ComDevice),
         [arg] if arg=="--com-device-bridge" => Ok(ProbeMode::ComDeviceBridge),
         [arg] if arg=="--com-device-roundtrip" => Ok(ProbeMode::ComDeviceRoundtrip),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip]".to_owned())
+        [arg] if arg=="--com-surface-chain" => Ok(ProbeMode::ComSurfaceChain),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip|--com-surface-chain]".to_owned())
     }
 }
 
@@ -191,7 +192,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip|ProbeMode::ComSurfaceChain=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -491,12 +492,128 @@ unsafe fn test_real_surface4_forwarder(ddraw:&Com,target:&Com)->Result<(),String
     Ok(())
 }
 
+
+/// Stage B4j: test three real native Surface4 objects against three
+/// distinct virtual COM Surface4 wrappers, then call their ACTUAL
+/// GetAttachedSurface, GetSurfaceDesc, QI and fail-closed Flip vtable slots.
+/// This intentionally does NOT activate a game Flip presenter or pass a
+/// virtual primary to Wine's device creation.
+unsafe fn test_real_virtual_surface_chain(
+    primary:&Com,backbuffer:&Com,depth:&Com
+)->Result<(Com,Com,Com),String>{
+    use borderless_contract::SurfaceRole;
+    use com_surface4_abi::Surface4VTable;
+    probe_line("COM-CHAIN-START: native primary/RGB565/Z32 -> separate virtual Surface4 COM objects");
+    let mode=presentation::Mode{width:640,height:480,bpp:16};
+    let create=|real:Ptr,role:SurfaceRole,label:&str|->Result<Com,String>{
+        let raw=com_surface4_forward::new_graph_surface4(real,role,mode)
+            .map_err(|hr|format!("{label}: graph wrapper failed {:#010x}",hr as u32))?;
+        if raw.is_null() || raw==real {
+            return Err(format!("{label}: invalid/aliased wrapper pointer"));
+        }
+        Ok(Com(raw))
+    };
+    let gp=create(primary.0,SurfaceRole::Primary,"COM-CHAIN.PRIMARY")?;
+    let gb=create(backbuffer.0,SurfaceRole::Backbuffer,"COM-CHAIN.BACKBUFFER")?;
+    let gz=create(depth.0,SurfaceRole::Depth,"COM-CHAIN.DEPTH")?;
+    if gp.0==gb.0 || gb.0==gz.0 || gp.0==gz.0{
+        return Err("COM-CHAIN: virtual identity collision".into());
+    }
+    com_surface4_forward::attach_graph_surface4(gp.0,gb.0)
+        .map_err(|hr|format!("COM-CHAIN.Primary->Backbuffer failed {:#010x}",hr as u32))?;
+    com_surface4_forward::attach_graph_surface4(gb.0,gz.0)
+        .map_err(|hr|format!("COM-CHAIN.Backbuffer->Z failed {:#010x}",hr as u32))?;
+    probe_line("COM-CHAIN-ATTACH: Primary->Backbuffer->Z32 strong COM edges established");
+    for (name,com,expected_bits,expected_caps) in [
+        ("primary",&gp,16u32,0x1000_e238u32),
+        ("backbuffer",&gb,16u32,0x1000_601cu32),
+        ("depth",&gz,32u32,0x1002_4000u32),
+    ]{
+        let v=&**com.0.cast::<*const Surface4VTable>();
+        let mut caps=[0u32;4];
+        check(&format!("COM-CHAIN.{name}.GetCaps"),
+            (v.get_caps)(com.0,caps.as_mut_ptr().cast()))?;
+        if caps[0]!=expected_caps{
+            return Err(format!("COM-CHAIN.{name} bad caps={:#010x}",caps[0]));
+        }
+        let mut d=[0u32;31];d[0]=124;
+        check(&format!("COM-CHAIN.{name}.GetSurfaceDesc"),
+            (v.get_surface_desc)(com.0,d.as_mut_ptr().cast()))?;
+        if (d[2],d[3],d[21],d[26])!=(480,640,expected_bits,expected_caps){
+            return Err(format!("COM-CHAIN.{name} wrong virtual descriptor"));
+        }
+        let mut pf=[0u32;8];pf[0]=32;
+        check(&format!("COM-CHAIN.{name}.GetPixelFormat"),
+            (v.get_pixel_format)(com.0,pf.as_mut_ptr().cast()))?;
+        if pf[3]!=expected_bits{
+            return Err(format!("COM-CHAIN.{name} wrong virtual pixel format"));
+        }
+        if name=="depth" && pf[5]!=0x00ff_ffff{
+            return Err("COM-CHAIN: virtual Z32 mask differs from real HAL Z32".into());
+        }
+    }
+    let primary_vt=&**gp.0.cast::<*const Surface4VTable>();
+    let back_vt=&**gb.0.cast::<*const Surface4VTable>();
+    let z_vt=&**gz.0.cast::<*const Surface4VTable>();
+    let mut caps=[0x4u32,0,0,0];
+    let mut p=ptr::null_mut();
+    check("COM-CHAIN.Primary.GetAttachedSurface(BACKBUFFER)",
+        (primary_vt.get_attached_surface)(gp.0,caps.as_mut_ptr().cast(),&mut p))?;
+    if p!=gb.0{return Err("COM-CHAIN: primary did not return same backbuffer COM pointer".into());}
+    let obtained_back=Com(p);
+    caps[0]=0x20000;
+    p=ptr::null_mut();
+    check("COM-CHAIN.Backbuffer.GetAttachedSurface(ZBUFFER)",
+        (back_vt.get_attached_surface)(obtained_back.0,caps.as_mut_ptr().cast(),&mut p))?;
+    if p!=gz.0{return Err("COM-CHAIN: backbuffer did not return same depth COM pointer".into());}
+    let obtained_depth=Com(p);
+    let mut incorrect=gp.0;
+    check_expected_failure(
+        "COM-CHAIN.Primary.GetAttachedSurface(ZBUFFER) rejected",
+        (primary_vt.get_attached_surface)(gp.0,caps.as_mut_ptr().cast(),&mut incorrect))?;
+    if !incorrect.is_null(){return Err("COM-CHAIN: rejected attachment did not clear output".into());}
+    let unknown=Guid{d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]};
+    let mut qi=ptr::null_mut();
+    check("COM-CHAIN.Depth.QueryInterface(IUnknown)",
+        (z_vt.query_interface)(obtained_depth.0,&unknown,&mut qi))?;
+    if qi!=gz.0{return Err("COM-CHAIN: depth IUnknown identity mismatch".into());}
+    drop(Com(qi));
+    drop(obtained_depth);
+    drop(obtained_back);
+    probe_line("COM-CHAIN-IUNKNOWN: stable distinct Primary/Backbuffer/Z32 COM identities");
+
+    // Primary virtual Flip and Blt MUST NOT be forwarded to the actual
+    // normal-mode DirectDraw primary before a production presenter exists.
+    let flip=(primary_vt.flip)(gp.0,gb.0,0);
+    if flip!=0x8000_4001u32 as i32{
+        return Err(format!("COM-CHAIN: unsafe virtual Flip returned {:#010x}",flip as u32));
+    }
+    let blt=(primary_vt.blt)(gp.0,ptr::null_mut(),gb.0,
+                           ptr::null_mut(),0,ptr::null_mut());
+    if blt!=0x8000_4001u32 as i32{
+        return Err(format!("COM-CHAIN: unsafe virtual Blt returned {:#010x}",blt as u32));
+    }
+    probe_line("COM-CHAIN-GUARD: virtual Flip and Blt fail closed; no native exclusive Flip");
+    if com_surface4_forward::try_borrow_real_surface4(gb.0)!=Some(backbuffer.0){
+        return Err("COM-CHAIN: backbuffer cannot unwrap its native RGB565".into());
+    }
+    probe_line("COM-CHAIN-UNWRAP: game-facing virtual backbuffer resolves native RGB565 for D3D3 only");
+    probe_line("COM-CHAIN-RESULT: PASS (real three-surface COM ABI, attachments, refcounts, virtual descriptors)");
+    Ok((gp,gb,gz))
+}
+fn check_expected_failure(label:&str,hr:Hr)->Result<(),String>{
+    probe_line(&format!("{label}: HRESULT={:#010x} {}",
+        hr as u32,if hr<0{"expected-failure"}else{"UNEXPECTED-SUCCESS"}));
+    if hr>=0{Err(format!("{label}: expected failure, got {:#010x}",hr as u32))}
+    else{Ok(())}
+}
+
 fn run(mode:ProbeMode)->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.40; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.41; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -512,7 +629,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         ProbeMode::ComForward=>"com-forward-borderless-opt-in",
         ProbeMode::ComDevice=>"com-device-borderless-opt-in",
         ProbeMode::ComDeviceBridge=>"com-device-bridge-borderless-opt-in",
-        ProbeMode::ComDeviceRoundtrip=>"com-device-roundtrip-borderless-opt-in"};
+        ProbeMode::ComDeviceRoundtrip=>"com-device-roundtrip-borderless-opt-in",
+        ProbeMode::ComSurfaceChain=>"com-surface-chain-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -643,6 +761,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // obtain its *own internal* ddraw_surface, not a generic COM proxy.
     // New opt-in --com-device-bridge explicitly borrows the physical
     // Surface4 at the D3D boundary while keeping wrapper alive.
+    let surface_chain=if mode==ProbeMode::ComSurfaceChain{
+        Some(unsafe{test_real_virtual_surface_chain(&primary,&target,&depth)?})
+    }else{None};
     let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip);
     let wrapped_device_target=if needs_wrapper{
         probe_line(if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip) {
@@ -666,7 +787,10 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-ROUNDTRIP-REGISTER: one owned wrapper reference and native target registered");
         Some(map)
     }else{None};
-    let device_target=if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip){
+    let device_target=if let Some((_,back,_))=surface_chain.as_ref(){
+        unsafe{com_surface4_forward::try_borrow_real_surface4(back.0)}
+            .ok_or_else(||"COM-CHAIN: native backbuffer missing".to_owned())?
+    }else if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip){
         let wrapped=wrapped_device_target.as_ref()
             .ok_or_else(||"COM-DEVICE-BRIDGE: no live wrapper".to_owned())?;
         let native=if let Some(map)=roundtrip.as_ref(){
@@ -697,6 +821,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             ProbeMode::ComDevice=>"COM-DEVICE.CreateDevice(HAL, forwarded RGB565 Surface4)",
             ProbeMode::ComDeviceBridge=>"COM-DEVICE-BRIDGE.CreateDevice(HAL, ORIGINAL RGB565 Surface4)",
             ProbeMode::ComDeviceRoundtrip=>"COM-ROUNDTRIP.CreateDevice(HAL, original physical RGB565 Surface4)",
+            ProbeMode::ComSurfaceChain=>"COM-CHAIN.CreateDevice(HAL, physical graph Backbuffer)",
             _=>"IDirect3D3.CreateDevice(HAL, RGB565 target)"
         };
         check(label,create(d3d.0,&CLSID_D3D_HAL,device_target,&mut device,ptr::null_mut()))?;
@@ -739,6 +864,25 @@ fn run(mode:ProbeMode)->Result<(),String>{
                 drop(virtual_result);
                 probe_line("COM-ROUNDTRIP-RESULT: native GetRenderTarget remapped to original game-facing Surface4 identity");
             }
+        }
+    }
+    if mode==ProbeMode::ComSurfaceChain{
+        let (_,ref back,_)=surface_chain.as_ref().unwrap();
+        unsafe{
+            let get:unsafe extern "system" fn(Ptr,*mut Ptr)->Hr=
+                std::mem::transmute(slot(device.0,15));
+            let mut raw=ptr::null_mut();
+            check("COM-CHAIN.GetRenderTarget(native)",get(device.0,&mut raw))?;
+            if raw.is_null(){return Err("COM-CHAIN: native D3D3 target NULL".into());}
+            let physical=Com(raw);
+            if physical.0!=target.0{return Err("COM-CHAIN: different native HAL target".into());}
+            let map=com_surface4_roundtrip::Surface4RoundTrip::new(back.0)
+                .map_err(|hr|format!("COM-CHAIN: roundtrip map failed {:#010x}",hr as u32))?;
+            let restored=map.map_native_result(physical.0)
+                .map_err(|hr|format!("COM-CHAIN: native target mapping failed {:#010x}",hr as u32))?;
+            let restored=Com(restored);
+            if restored.0!=back.0{return Err("COM-CHAIN: wrong virtual backbuffer returned".into());}
+            probe_line("COM-CHAIN-RENDERTARGET: native HAL surface restored to exact virtual backbuffer COM identity");
         }
     }
     if mode==ProbeMode::ComForward{
@@ -878,6 +1022,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-DEVICE-BRIDGE-RESULT: PASS (wrapper identity retained, D3D3 receives native target, scene, Blt)");
     }else if mode==ProbeMode::ComDeviceRoundtrip{
         probe_line("COM-ROUNDTRIP-FINAL: PASS (wrapper -> native D3D3 -> wrapper identity, scene, 4:3 Blt)");
+    }else if mode==ProbeMode::ComSurfaceChain{
+        probe_line("COM-CHAIN-FINAL: PASS (virtual Primary->Backbuffer->Z32, physical HAL D3D3, 4:3 Blt)");
     }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
@@ -894,7 +1040,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.40");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.41");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -1015,6 +1161,7 @@ mod tests{
         assert_eq!(parse_mode(&["--com-device".to_owned()]),Ok(ProbeMode::ComDevice));
         assert_eq!(parse_mode(&["--com-device-bridge".to_owned()]),Ok(ProbeMode::ComDeviceBridge));
         assert_eq!(parse_mode(&["--com-device-roundtrip".to_owned()]),Ok(ProbeMode::ComDeviceRoundtrip));
+        assert_eq!(parse_mode(&["--com-surface-chain".to_owned()]),Ok(ProbeMode::ComSurfaceChain));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -1040,6 +1187,7 @@ mod tests{
         assert!(ProbeMode::ComDeviceBridge.borderless());
         let roundtrip_plan=plan_test_window(ProbeMode::ComDeviceRoundtrip,1920,1080).unwrap();
         assert_eq!(roundtrip_plan,plan);
+        assert_eq!(plan_test_window(ProbeMode::ComSurfaceChain,1920,1080).unwrap(),plan);
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);

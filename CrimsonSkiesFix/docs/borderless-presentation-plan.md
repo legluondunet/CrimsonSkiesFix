@@ -990,6 +990,11 @@ Stage B4h introduces `try_borrow_real_surface4` to resolve only our own live for
 After the owner confirmed v0.1.39 `--com-device-bridge` PASS, the next unresolved requirement is not merely successful CreateDevice but returning **the same game-facing COM identity** when the game asks the device for its render target. `com_surface4_roundtrip.rs` implements a deliberately small, inactive one-target map that owns a real AddRef to the wrapper, exposes the borrowed native Surface4 to the HAL only, and remaps a matching physical GetRenderTarget result back to that original wrapper with its own AddRef. It rejects unrelated native pointers and preserves independent ownership of physical GetRenderTarget results.
 
 The standalone v0.1.40 `--com-device-roundtrip` performs the real native HAL CreateDevice, GetRenderTarget and IUnknown round trip before the already validated scene and borderless Blt. This is still not a full game-facing primary/backbuffer/Z graph or active D3D3 intercept; those require explicit mapping and lifecycle management for each logical surface role.
+## Stage B4j — v0.1.41 graph-specific COM attachment ABI
+
+Confirmed v0.1.40 owner log: 1920x1080 borderless, native RGB565 D3D3 HAL, `GetRenderTarget` mapped from genuine Surface4 to identical game-facing forwarding object, `COM-ROUNDTRIP-FINAL: PASS`.
+
+Version 0.1.41 adds graph-specific `IDirectDrawSurface4` forwarding mode with three distinct native-backed wrapper identities, strong acyclic parent->child attachment refs, valid virtual 640x480/800x600 RGB565/Z32 descriptors, caps, pixel formats and actual typed GetAttachedSurface vtable behavior. Native/unwrapped surfaces remain solely for Wine's HAL. Unsafe virtual `Flip`/`Blt`/`Lock` and unimplemented attachment mutation paths return `E_NOTIMPL` instead of accidentally forwarding to physical exclusive operations. The standalone `--com-surface-chain` tests graph construction, client-ref lifetimes, parent/back/depth identity, native renderer creation and existing physical windowed presentation. This is a separate host validation, not an active runtime game hook.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
