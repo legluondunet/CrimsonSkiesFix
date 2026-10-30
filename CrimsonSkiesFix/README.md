@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.45 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.46 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -1202,3 +1202,18 @@ wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
 ```
 
 Send the adjacent `windowed_ddraw_probe.log`. Expected: three `COM-TRANSITION-RETIRE`, two `COM-TRANSITION-STALE` and one `COM-TRANSITION-LAST-STALE`, then `COM-TRANSITION-FINAL: PASS` and `PROBE COMPLETED: PASS`. This still does not activate game borderless or prove all real game COM methods are implemented.
+
+  
+## Standalone v0.1.46: virtual backbuffer RGB565 / depth Z32 null-source Blts
+
+The owner's `windowed_ddraw_probe(20261030-173553).log` confirms **v0.1.45 PASS** under Wine: 800×600→640×480→800×600, 3×120 virtual Flip presentations (360/360); two held stale COM primary references independently reject Flip with `E_NOTIMPL`, and final primary rejects Flip at retirement. Desktop mode stays 1920×1080. None of these are actual game frames.
+
+The inactive Surface4 graph facade now forwards exactly **backbuffer RGB565 `DDBLT_COLORFILL`** and **depth Z32 `DDBLT_DEPTHFILL`** with a NULL source to each role's own real native Surface4, optionally with `DDBLT_WAIT`. It requires a correctly sized Win32-x86 100-byte DDBLTFX, validates any supplied destination rectangle against the corresponding 640×480/800×600 native surface, and explicitly refuses virtual primary Blt, source-copy Blt, wrong fill/flags and retired backbuffer/Z32 operations. The three graph roles are tombstoned together when the prior primary presenter is retired. Other graph-specific Surface4 methods, including Lock and BltFast, remain unsupported or unvalidated for game use.
+
+The existing **`--com-virtual-flip-transition`** EXE test now performs the two fills by calling the actual **virtual Surface4 vtable**, then validates primary and source-copy Blts fail closed, *for each real surface epoch*. After each retirement, and again while the old primary remains COM-alive into the next epoch, the test verifies stale backbuffer and Z32 fills also return `E_NOTIMPL`. This checks specific single-threaded Wine behavior; it does **not** prove full concurrent race safety or in-game rendering.
+
+After a successful Actions build, from a writable directory outside the game:
+```bash
+wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
+```
+Return the adjacent `windowed_ddraw_probe.log`. Expect 3× successful `COM-GRAPH-BLT.backbuffer.ColorFill` and `COM-GRAPH-BLT.depth.DepthFill`, 3×120 `COM-VFLIP` successes, and `COM-TRANSITION-FINAL: PASS`. The game DLL's active hooks/INI/default pacing are unchanged. No PR merge or real borderless activation.
