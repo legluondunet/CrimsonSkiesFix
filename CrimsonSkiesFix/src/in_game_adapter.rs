@@ -208,11 +208,46 @@ struct Runtime {
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 
+// The game can repeat its *same* DDSCL_EXCLUSIVE|DDSCL_FULLSCREEN
+// request after our windowed graph has already been exposed. That is an
+// idempotent request from the game's perspective; do NOT forward it to
+// native DirectDraw, which must remain in DDSCL_NORMAL. Any changed HWND,
+// DD4 identity or flags must still fail closed.
+fn identical_game_cooperative_request(
+    runtime_dd4:usize,runtime_hwnd:usize,exposed:bool,has_epoch:bool,
+    dd4:usize,hwnd:usize,flags:u32
+)->bool{
+    exposed && has_epoch && runtime_dd4==dd4 && runtime_hwnd==hwnd &&
+        hwnd!=0 && flags==DDSCL_EXCLUSIVE_FULLSCREEN
+}
+
 /// Called from the real game's IDirectDraw4::SetCooperativeLevel hook.
 /// The original game's normal/exclusive path is left alone if opt-in is 0.
 /// Only accept a valid process-owned HWND and standard exclusive request.
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
+    // A second identical game-exclusive request is expected during video
+    // startup, after the virtual PRIMARY and HAL device have been created.
+    // Keep the native DD4 in NORMAL, and preserve the live virtual COM graph.
+    // A different mode, HWND or interface is NOT silently acknowledged.
+    {
+        let Ok(guard)=RUNTIME.lock() else{return Some(E_FAIL)};
+        if let Some(runtime)=guard.as_ref(){
+            if runtime.exposed {
+                let same=identical_game_cooperative_request(
+                    runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
+                    dd4 as usize,hwnd as usize,flags);
+                let expected=(0,0,runtime.monitor.right as u32,runtime.monitor.bottom as u32);
+                if same && win32::game_client_geometry(hwnd)==Some(expected){
+                    log("WINDOWED-GAME: repeated identical game DD4 exclusive cooperative request acknowledged; native DDSCL_NORMAL and virtual graph preserved");
+                    return Some(0);
+                }
+                log(&format!("WINDOWED-GAME: changed/invalid cooperative request after graph exposure rejected (same_request={same}, flags={flags:#x}, geometry_ok={})",
+                    same && win32::game_client_geometry(hwnd)==Some(expected)));
+                return Some(E_FAIL);
+            }
+        }
+    }
     if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
         // Do not allow an old active graph to silently revert to native
         // DDSCL_EXCLUSIVE or DDSCL_NORMAL through another cooperative call.
@@ -518,6 +553,22 @@ pub unsafe fn remap_render_target(native:*mut c_void)->Option<*mut c_void>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){
+        let original_dd4=0x1234usize;
+        let hwnd=0x4321usize;
+        let accept=|dd4,window,flags,exposed,epoch|
+            identical_game_cooperative_request(original_dd4,hwnd,exposed,epoch,
+                dd4,window,flags);
+        assert!(accept(original_dd4,hwnd,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd,0x13,false,true));
+        assert!(!accept(original_dd4,hwnd,0x13,true,false));
+        assert!(!accept(original_dd4+1,hwnd,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd+1,0x13,true,true));
+        assert!(!accept(original_dd4,0,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd,0x8,true,true));
+        assert!(!accept(original_dd4,hwnd,0x33,true,true));
+        assert!(!accept(original_dd4,hwnd,0,true,true));
+    }
     #[test] fn descriptors_remain_native_124_byte_surface4(){
         let p=desc(DD_CAPS_PRIMARY,0,0,None);
         assert_eq!((p[0],p[1],p[26]),(124,1,0x200));
