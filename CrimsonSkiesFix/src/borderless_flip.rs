@@ -134,9 +134,21 @@ impl FlipToBltBridge {
                 return Err(FlipBridgeError::FrameCounterOverflow);
             },
         };
-        if let Err(failure)=execute_windowed_blt_pair(
-            backend,self.internal,self.desktop,self.viewport
-        ){
+        // Repainting the whole primary black before EVERY Flip makes
+        // compositor-visible black frames possible between the clear and
+        // the second Blt, perceived as intense flicker on Wine. Window
+        // bounds and the pillarbox viewport are fixed for this epoch.
+        // Clear once on the first frame, then update only the viewport.
+        // Each new mode has its own freshly initialized bridge.
+        let outcome=if self.complete_frames==0{
+            execute_windowed_blt_pair(
+                backend,self.internal,self.desktop,self.viewport
+            )
+        }else{
+            backend.stretch_rgb565_into_viewport(self.internal,self.viewport)
+                .map_err(FlipBridgeError::StretchFailed)
+        };
+        if let Err(failure)=outcome{
             self.fault=Some(failure);
             return Err(failure);
         }
@@ -224,7 +236,7 @@ mod tests {
             Err(FlipBridgeError::BackendNotExposed)));
     }
     #[test]
-    fn flip_is_two_real_operations_before_success_is_reported(){
+    fn first_flip_clears_pillarbox_once_then_only_stretches_to_avoid_flicker(){
         let m=mode640();
         let contract=ready(m);
         let mut bridge=FlipToBltBridge::from_exposed(&contract,3).unwrap();
@@ -234,11 +246,27 @@ mod tests {
             assert_eq!(bridge.present(3,m,&mut backend),Ok(frame));
         }
         assert_eq!(bridge.stats(),FlipStats{complete_frames:120,fault:None});
-        assert_eq!(backend.events.len(),240);
+        assert_eq!(backend.events.len(),121); // 1 clear and 120 stretches
         assert_eq!(backend.events[0],Event::Black(1920,1080));
         assert_eq!(backend.events[1],Event::Stretch(m,bridge.viewport()));
-        assert_eq!(backend.events[238],Event::Black(1920,1080));
-        assert_eq!(backend.events[239],Event::Stretch(m,bridge.viewport()));
+        assert_eq!(backend.events[2],Event::Stretch(m,bridge.viewport()));
+        assert_eq!(backend.events[120],Event::Stretch(m,bridge.viewport()));
+        assert_eq!(backend.events.iter().filter(|x|matches!(x,Event::Black(_, _))).count(),1);
+    }
+    #[test]
+    fn later_stretch_error_is_latched_without_black_clear_or_frame_ack(){
+        let m=mode640();let c=ready(m);
+        let mut bridge=FlipToBltBridge::from_exposed(&c,81).unwrap();
+        let mut backend=FakeBlt::default();
+        assert_eq!(bridge.present(81,m,&mut backend),Ok(1));
+        backend.fail_stretch=Some(-51);
+        assert_eq!(bridge.present(81,m,&mut backend),
+            Err(FlipBridgeError::StretchFailed(-51)));
+        assert_eq!(bridge.stats().complete_frames,1);
+        assert_eq!(backend.events.len(),3);
+        assert_eq!(backend.events[2],Event::Stretch(m,bridge.viewport()));
+        assert_eq!(bridge.present(81,m,&mut backend),Err(FlipBridgeError::AlreadyFaulted));
+        assert_eq!(backend.events.len(),3);
     }
     #[test]
     fn eight_hundred_by_six_hundred_remains_fully_pillarboxed(){
