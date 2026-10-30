@@ -85,6 +85,12 @@ const SM_CYSCREEN:i32=1;
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct Guid {d1:u32,d2:u16,d3:u16,d4:[u8;8]}
+// DirectDrawCreateEx MUST receive IID_IDirectDraw7 (Microsoft ddraw.h).
+// Retrieve the legacy DD4 interface by QueryInterface afterwards.
+const IID_IDIRECTDRAW7:Guid=Guid{
+    d1:0x15e65ec0,d2:0x3b9c,d3:0x11d2,
+    d4:[0xb9,0x2f,0x00,0x60,0x97,0x97,0xea,0x5b],
+};
 const IID_IDIRECTDRAW4:Guid=Guid{
     d1:0x9c59509a,d2:0x39bd,d3:0x11d1,
     d4:[0x8c,0x4a,0x00,0xc0,0x4f,0xd9,0x30,0xc5],
@@ -192,7 +198,7 @@ fn run()->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.26; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.27; standalone test; desktop={}x{}",before.0,before.1));
     let class=wide("STATIC");
     let title=wide("CrimsonSkiesFix windowed DirectDraw test (not the game)");
     let hwnd=unsafe {
@@ -203,11 +209,29 @@ fn run()->Result<(),String>{
     if hwnd.is_null(){return Err("CreateWindowExW failed".into());}
     let window=Window(hwnd);
     unsafe{let _=UpdateWindow(hwnd);}
-    let mut dd=ptr::null_mut();
-    unsafe{check("DirectDrawCreateEx(IDirectDraw4)",
-        DirectDrawCreateEx(ptr::null(),&mut dd,&IID_IDIRECTDRAW4,ptr::null_mut()))?;}
-    if dd.is_null(){return Err("DirectDrawCreateEx returned NULL".into());}
-    let ddraw=Com(dd);
+    // DirectDrawCreateEx accepts ONLY IID_IDirectDraw7, even when the
+    // rest of this probe needs the older DirectDraw4 COM interface.
+    // The previous probe incorrectly passed IID_IDirectDraw4 here,
+    // which Wine rejects with E_INVALIDARG (0x80070057).
+    let mut dd7=ptr::null_mut();
+    unsafe{
+        check("DirectDrawCreateEx(IDirectDraw7)",
+            DirectDrawCreateEx(ptr::null(),&mut dd7,&IID_IDIRECTDRAW7,ptr::null_mut()))?;
+    }
+    if dd7.is_null(){return Err("DirectDrawCreateEx returned NULL IDirectDraw7".into());}
+    let directdraw7=Com(dd7);
+    let mut dd4=ptr::null_mut();
+    unsafe {
+        let query:unsafe extern "system" fn(Ptr,*const Guid,*mut Ptr)->Hr=
+            std::mem::transmute(slot(directdraw7.0,0));
+        check("IDirectDraw7.QueryInterface(IDirectDraw4)",
+            query(directdraw7.0,&IID_IDIRECTDRAW4,&mut dd4))?;
+    }
+    if dd4.is_null(){return Err("QueryInterface returned NULL IDirectDraw4".into());}
+    let ddraw=Com(dd4);
+    // IDirectDraw4 owns its own COM reference. The initial IDirectDraw7
+    // pointer is no longer used; release it exactly once before testing.
+    drop(directdraw7);
     unsafe{
         let cooperative:unsafe extern "system" fn(Ptr,Ptr,u32)->Hr=
             std::mem::transmute(slot(ddraw.0,20));
@@ -299,7 +323,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.26");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.27");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     if let Err(e)=run(){
@@ -339,6 +363,15 @@ mod tests{
         assert_eq!(log.parent(),exe.parent());
         assert_eq!(log.file_name().unwrap(),"windowed_ddraw_probe.log");
         assert!(log_path_for_executable(Path::new("")).is_err());
+    }
+    #[test]
+    fn directdrawcreateex_requires_v7_then_legacy_v4_query(){
+        assert_eq!(IID_IDIRECTDRAW7.d1,0x15e65ec0);
+        assert_eq!(IID_IDIRECTDRAW7.d2,0x3b9c);
+        assert_eq!(IID_IDIRECTDRAW7.d3,0x11d2);
+        assert_eq!(IID_IDIRECTDRAW7.d4,[0xb9,0x2f,0x00,0x60,0x97,0x97,0xea,0x5b]);
+        assert_ne!(IID_IDIRECTDRAW7.d1,IID_IDIRECTDRAW4.d1);
+        assert_eq!(IID_IDIRECTDRAW4.d1,0x9c59509a);
     }
     #[test]
     fn normal_cooperative_mode_is_not_exclusive(){

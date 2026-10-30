@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.26 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.27 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,29 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.27 — fix standalone probe DirectDraw initialization
+
+The owner-provided v0.1.26 `windowed_ddraw_probe.log`
+shows `DirectDrawCreateEx(IDirectDraw4): HRESULT=0x80070057`.
+That error is **not evidence that windowed DirectDraw or
+Direct3D3 cannot work**. It comes from an invalid interface
+identifier: Microsoft documents that `DirectDrawCreateEx`
+accepts **only `IID_IDirectDraw7`**.
+
+The probe now uses `DirectDrawCreateEx(IDirectDraw7)`,
+then `IDirectDraw7::QueryInterface(IDirectDraw4)`. Both
+stages are recorded in the same adjacent
+`windowed_ddraw_probe.log`, with their actual HRESULTs.
+The initial IDirectDraw7 reference is safely released
+after IDirectDraw4 is obtained. A new unit test asserts
+the exact v7 and v4 interface identifiers.
+
+Only the standalone test program has changed. The game
+`ddraw.dll`, its INI and rendering path are untouched.
+Download the newer **windowed probe artifact** into the
+separate test directory, run it under Wine, and attach the
+new `windowed_ddraw_probe.log`.
 
 ## v0.1.26 — standalone probe writes a clean diagnostic log
 

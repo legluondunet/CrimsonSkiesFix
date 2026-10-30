@@ -700,6 +700,27 @@ remain unchanged, as do the user's INI and the
 three-file game DLL distribution artifact. The standalone
 probe artifact still contains only the executable.
 
+## Stage B3g — v0.1.27 fix verified from the owner's probe log
+
+The owner's first logged v0.1.26 standalone probe exited at:
+`DirectDrawCreateEx(IDirectDraw4) HRESULT=0x80070057`.
+This is the result of a **bug in our probe**, not a demonstrated
+Wine windowed-backend limitation. The official
+`DirectDrawCreateEx` contract mandates
+`IID_IDirectDraw7`, and rejects all other requested IIDs.
+
+In v0.1.27 the probe first creates `IDirectDraw7`, logs
+the return status, then calls `IDirectDraw7::QueryInterface`
+for the original needed `IDirectDraw4` interface and logs
+that separate status. The original v7 COM reference is
+released after the successful QueryInterface. The existing
+normal-cooperative-level, primary+clipper, RGB565 offscreen,
+Z32 attachment, Blt and Direct3D3 CreateDevice capability
+checks remain intact. There is no modification to the
+game DLL or to the active DirectDraw hook path.
+
+Reference: https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-directdrawcreateex
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
