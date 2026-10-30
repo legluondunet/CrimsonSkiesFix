@@ -71,6 +71,13 @@ fn c_array(value:&[c_char])->String {
     String::from_utf8_lossy(&buf).to_string()
 }
 
+// Wine and DXVK sometimes return a reserved all-ones / INT64_MAX
+// DriverVersion instead of the real Linux graphics driver version.
+// Do not present that sentinel as an actual version number.
+fn is_placeholder_driver_version(version:i64)->bool {
+    version==i64::MAX || version==-1
+}
+
 pub fn log_graphics(emit:&mut dyn FnMut(&str)){
     unsafe {
         type Direct3DCreate9=unsafe extern "system" fn(u32)->*mut c_void;
@@ -100,8 +107,13 @@ pub fn log_graphics(emit:&mut dyn FnMut(&str)){
                         i,device,id.vendor_id,id.device_id));
                     let hi=(id.driver_version as u64>>32) as u32;
                     let lo=id.driver_version as u32;
-                    emit(&format!("SYS-GRAPHICS-DRIVER: D3D9 adapter={} reported_module={} reported_version={}.{}.{}.{} (may be Wine/DXVK wrapper, NOT Linux kernel/Mesa driver)",
-                        i,driver,hi>>16,hi&0xffff,lo>>16,lo&0xffff));
+                    if is_placeholder_driver_version(id.driver_version) {
+                        emit(&format!("SYS-GRAPHICS-DRIVER: D3D9 adapter={} reported_module={} reported_version=Unavailable (Wine/DXVK placeholder, NOT host Linux driver)",
+                            i,driver));
+                    } else {
+                        emit(&format!("SYS-GRAPHICS-DRIVER: D3D9 adapter={} reported_module={} reported_version={}.{}.{}.{} (may be Wine/DXVK wrapper, NOT Linux kernel/Mesa driver)",
+                            i,driver,hi>>16,hi&0xffff,lo>>16,lo&0xffff));
+                    }
                 }
             }else{
                 emit("SYS-GPU: D3D9 adapter=Unavailable (COM method lookup)");
@@ -203,6 +215,12 @@ mod tests {
             assert_eq!(mem::size_of::<XinputCapabilities>(),20);
             assert_eq!(mem::size_of::<DInputDeviceInstanceA>(),580);
         }
+    }
+    #[test]
+    fn wine_driver_version_sentinel_is_not_a_version(){
+        assert!(is_placeholder_driver_version(i64::MAX));
+        assert!(is_placeholder_driver_version(-1));
+        assert!(!is_placeholder_driver_version(0x000a_0001_0002_0003));
     }
     #[test]
     fn sanitize_driver_paths(){
