@@ -219,6 +219,65 @@ over **119 within-group primary Flip intervals**. The result
 will distinguish uniform counts from bursts. No game state
 or presentation behavior changes.
 
+## v0.1.18 Wine test — scene counts per successive primary Flip verified
+
+Owner-supplied v0.1.18 log (`CrimsonSkiesFix(1).log`; Wine 11.0,
+GE-Proton11-11, AMD Radeon RX 6600M, 1920x1080 at 120Hz,
+`ModernFPSPacing=1`, `FPSLimit=60`, `Log=1`) validates the new
+`SCENE-INTERFLIP` histogram in the real Direct3D3 path:
+
+| Mode / stage | Complete groups | 119-interval within-group distribution | Begin/End mismatches | Counter regressions |
+|---|---:|---|---:|---:|
+| Generation 2, 800x600 | 4 | 476 intervals with exactly 1 BeginScene and EndScene each | 0 | 0 |
+| Generation 3, 640x480 entry | 1 | 110 intervals with 4, 8 with 11, 1 with 22 | 0 | 0 |
+| Generation 3, 640x480 stable | 5 | **595 observed intervals with exactly 11** successful BeginScene/EndScene calls each | 0 | 0 |
+| Generation 3, transition out | 1 | 95 intervals with 4, 24 with 11 | 0 | 0 |
+| Generation 3, later transition | 1 | 31 intervals with 1, 87 with 4, 1 with 5 | 0 | 0 |
+
+There are 12 complete groups in the file. Five consecutive
+stable 120-primary-Flip groups each contain 1320 successful
+BeginScene and 1320 successful EndScene events, with
+119 within-group intervals each at 11. Four *unmeasured*
+intervals cross the boundaries between those five groups;
+therefore 595 **observed** intervals must not be described
+as 595 uninterrupted adjacent intervals.
+
+Stable successful primary Flip COM completion rates were
+approximately 59.89–60.01 calls/s in these five groups.
+In the 800x600 generation, the four complete groups all
+show 1:1 inter-Flip scene activity, despite startup/transition
+rate variation (13.07–58.05 calls/s, then 36.04).
+The scene count varies between phases, including within
+generation 3: this is not evidence that resolution alone
+determines the number of scenes.
+
+The observed 11 calls per primary-Flip interval is **real at
+the COM API level**, not a window-average artifact.
+It is **not evidence of 11 presented images** or 11 engine
+simulation steps per interval. There is no proof that each
+scene contains geometry draw calls. The log's successful
+`CreateDevice` still targets RGB565 backbuffer with attached
+32-bit Z-buffer; the borderless preflight reports
+`applied=false`.
+
+### Next controlled comparison — with modern primary Flip pacing disabled
+
+Before adding further COM hooks, repeat **the same short 640x480
+gameplay phase** with the same v0.1.18 DLL and `[Debug] Log=1`,
+but change **only** `[Graphics] ModernFPSPacing=0`.
+Leave `FPSLimit=60` unchanged to isolate the pacing switch.
+Compare new `SCENE-INTERFLIP`, `SCENE-CORRELATION` and
+successful primary Flip API completion rates to the paced
+session. An unpaced 120Hz refresh may produce up to about
+120 Flip API calls/s, but it is not a guaranteed rate.
+
+Stop if game simulation becomes visibly too fast or unstable.
+This test cannot establish real display FPS or simulation speed
+without independent in-game observations. Re-enable
+`ModernFPSPacing=1` afterward if pacing is desired.
+Do not change the renderer, COM interface hooks, windowing
+or 3D surface ownership based solely on these scene counts.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
