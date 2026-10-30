@@ -429,6 +429,8 @@ The model enforces:
 - All required windowed backend capabilities must be validated prior
   to surface exposure. CPU copies of pixels cannot substitute for
   the **real RGB565 IDirectDrawSurface4** that Direct3D3 requires.
+  The real target also must have the `DDSCAPS_3DDEVICE` capability,
+  because `IDirect3D3::CreateDevice` requires a 3D-device surface.
 - Failures during preparation abort without altering the original
   exclusive path; once the façade has exposed a replacement object,
   switching silently back to exclusive is forbidden.
@@ -437,6 +439,7 @@ The model enforces:
   for unsupported interfaces and stale mode epochs.
 - Queries and GetAttachedSurface acquire client references; attachment
   ownership keeps backbuffer/depth alive while the parent exists.
+  Combined client-plus-attachment counts must not overflow `u32`.
   Release cascades when final owner and client references disappear.
 - Per-surface descriptors mirror *observed* primary (RGB565 +
   backbuffer count 1), RGB565 backbuffer and 32-bit Z-buffer. A
@@ -450,6 +453,9 @@ vs explicit attachment lifetimes, and verify resource handles
 before committing. It must route all unsupported cases to a
 safe *pre-exposure* fallback. Do not enable Borderless based on
 this module alone.
+
+Microsoft DirectX 6 `IDirect3D3::CreateDevice` ABI/caps reference:
+- https://library.thedatadungeon.com/directx6/devdoc/live/directx/imref_992c.content.htm
 
 Microsoft COM and DirectDraw contracts:
 - https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface

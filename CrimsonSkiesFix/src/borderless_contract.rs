@@ -11,6 +11,10 @@
 
 use crate::presentation::{preflight,Chain,Mode,WindowedPresentationPlan};
 
+// Direct3D3::CreateDevice requires DDSCAPS_3DDEVICE on its real
+// IDirectDrawSurface4 render target (original DirectX 6 contract).
+const DDSCAPS_3DDEVICE:u32=0x0000_2000;
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Phase {Preparing,Exposed,Aborted}
 
@@ -19,6 +23,8 @@ pub enum Requirement {
     ProcessOwnedWindow,
     NormalDirectDrawCooperativeMode,
     RealRgb565Direct3dSurface4,
+    Direct3dDeviceSurfaceCapability,
+    Rgb565PixelFormat,
     Real32BitZBuffer,
     WindowedPrimaryWithClipper,
     WorkingWindowedBlt,
@@ -36,6 +42,8 @@ pub struct BackendEvidence {
     pub process_owned_window:bool,
     pub normal_directdraw:bool,
     pub render_target:RenderTarget,
+    pub render_target_caps:u32,
+    pub render_target_is_rgb565:bool,
     pub real_zbuffer_32:bool,
     pub primary_with_clipper:bool,
     pub working_blt:bool,
@@ -48,6 +56,12 @@ impl BackendEvidence {
         if !self.normal_directdraw {return Some(Requirement::NormalDirectDrawCooperativeMode);}
         if self.render_target!=RenderTarget::RealDirectDrawSurface4 {
             return Some(Requirement::RealRgb565Direct3dSurface4);
+        }
+        if self.render_target_caps&DDSCAPS_3DDEVICE==0 {
+            return Some(Requirement::Direct3dDeviceSurfaceCapability);
+        }
+        if !self.render_target_is_rgb565 {
+            return Some(Requirement::Rgb565PixelFormat);
         }
         if !self.real_zbuffer_32 {return Some(Requirement::Real32BitZBuffer);}
         if !self.primary_with_clipper {return Some(Requirement::WindowedPrimaryWithClipper);}
@@ -208,6 +222,9 @@ impl SurfaceContract {
     fn new_client_ref(&mut self,idx:usize)->Result<(),ContractError>{
         let node=&mut self.nodes[idx];
         if !node.alive {return Err(ContractError::DeadObject);}
+        // COM's reference count is a u32. Check the *combined* count,
+        // including attachment-owned refs, before incrementing.
+        node.count().checked_add(1).ok_or(ContractError::ReferenceOverflow)?;
         node.client_refs=node.client_refs.checked_add(1)
             .ok_or(ContractError::ReferenceOverflow)?;
         Ok(())
@@ -296,6 +313,8 @@ mod tests {
         BackendEvidence {
             process_owned_window:true,normal_directdraw:true,
             render_target:RenderTarget::RealDirectDrawSurface4,
+            render_target_caps:0x1000_601c,
+            render_target_is_rgb565:true,
             real_zbuffer_32:true,primary_with_clipper:true,
             working_blt:true,complete_surface_com:true,
         }
@@ -423,5 +442,29 @@ mod tests {
                    Err(ContractError::WrongObject));
         assert_eq!(chain.release(stale),Err(ContractError::WrongObject));
         assert!(chain.descriptor(p).is_ok());
+    }
+    #[test]
+    fn requires_true_direct3d_device_caps_and_rgb565_target_format(){
+        let mode=Mode{width:640,height:480,bpp:16};
+        let mut c=AdapterContract::prepare(mode,(1920,1080),chain()).unwrap();
+        let mut e=evidence();
+        e.render_target_caps&=!DDSCAPS_3DDEVICE;
+        assert_eq!(c.expose(e),Err(ContractError::Missing(
+            Requirement::Direct3dDeviceSurfaceCapability)));
+        let mut c=AdapterContract::prepare(mode,(1920,1080),chain()).unwrap();
+        let mut e=evidence();
+        e.render_target_is_rgb565=false;
+        assert_eq!(c.expose(e),Err(ContractError::Missing(
+            Requirement::Rgb565PixelFormat)));
+        assert_ne!(0x1000_601c&DDSCAPS_3DDEVICE,0);
+    }
+    #[test]
+    fn overflowing_combined_client_and_attachment_refs_is_rejected(){
+        let (mut c,p)=ready();
+        c.nodes[SurfaceRole::Backbuffer.index()].client_refs=u32::MAX-1;
+        // One attachment-owned ref already exists; no room for another.
+        assert_eq!(c.get_attached(p,Attachment::Backbuffer),
+                   Err(ContractError::ReferenceOverflow));
+        assert_eq!(c.nodes[SurfaceRole::Backbuffer.index()].count(),u32::MAX);
     }
 }

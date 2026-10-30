@@ -160,8 +160,8 @@ future DirectDraw3D-compatible borderless adaptor without modifying
 the game's exclusive DirectDraw or Direct3D runtime calls.
 
 - Declares an explicit opt-in backend readiness contract: game-owned
-  HWND, normal DirectDraw mode, real RGB565 DirectDrawSurface4 3D
-  render target, real 32-bit Z-buffer, windowed primary/clipper,
+  HWND, normal DirectDraw mode, real RGB565 DirectDrawSurface4 target
+  with mandatory `DDSCAPS_3DDEVICE`, real 32-bit Z-buffer, primary/clipper,
   functioning Blt and complete COM interface handling.
 - Refuses incomplete backend evidence **before** any replacement
   surface is exposed. Once exposed, the model forbids silently
@@ -172,7 +172,8 @@ the game's exclusive DirectDraw or Direct3D runtime calls.
 - Provides the observed 640x480/800x600 descriptor/caps contract and
   rejects unsupported attachment requests, dead or stale-epoch objects.
 
-Nine new Rust unit tests validate these invariants; the Windows x86
+Eleven new Rust unit tests validate these invariants, including
+combined COM reference-count overflow protection and Direct3D3 target caps; the Windows x86
 CI still builds the same unmodified graphic hooks and deploys the
 same three-file ZIP layout. **There is no actual virtual COM object
 or rendering adapter yet.** Real IUnknown pointer identity, ABI
