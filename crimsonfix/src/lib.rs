@@ -106,12 +106,7 @@ static SURFACE_CREATE_DETAIL_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_ATTACH_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_DESC_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_FIRST_PRIMARY_ATTACH:Once=Once::new();
-static RENDER_CHAIN:Mutex<presentation::Chain>=Mutex::new(presentation::Chain{
-    front_to_back:false,back_to_depth:false,mipmaps:false,
-});
-static LAST_RENDER_MODE:Mutex<presentation::Mode>=Mutex::new(
-    presentation::Mode{width:0,height:0,bpp:0});
-static PRESENTATION_PLAN_LOGGED:AtomicUsize=AtomicUsize::new(0);
+static PRESENTATION_SESSION:Mutex<presentation::Session>=Mutex::new(presentation::Session::new());
 static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
 
 fn log(message:&str) {
@@ -325,8 +320,12 @@ unsafe extern "system" fn modern_set_display_mode(
     let call:ModernDisplayModeFn=std::mem::transmute(addr);
     let hr=call(this,w,h,bpp,refresh,flags); // 5 arguments since IDirectDraw2
     if hr>=0 {
-        if let Ok(mut mode)=LAST_RENDER_MODE.lock(){
-            *mode=presentation::Mode{width:w,height:h,bpp};
+        if let Ok(mut session)=PRESENTATION_SESSION.lock(){
+            session.begin_mode(presentation::Mode{width:w,height:h,bpp});
+            if cfg().log_enabled{
+                log(&format!("CHAIN-EPOCH: generation={} new_mode={w}x{h}x{bpp}; previous chain invalidated",
+                    session.epoch));
+            }
         }
     }
     if MODERN_DISPLAY_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
@@ -375,35 +374,29 @@ fn describe_surface_layout(desc:*const c_void)->String{
 // Final preflight only: this never changes the DirectDraw cooperative
 // mode, surfaces, HWND or desktop. Until an actual adapter implements
 // virtualized front/back/Z surfaces, log the safe 4:3 viewport as a plan.
+// The per-mode state is independent of display-resolution labels: a new
+// successful SetDisplayMode invalidates *all* earlier front/back/Z evidence,
+// even if it switches to the same game resolution.
 fn log_render_chain_preflight(request:u32,parent:u32,child:u32) {
-    let Ok(mut model)=RENDER_CHAIN.lock() else{return;};
-    let changed=model.observe(request,parent,child);
-    let snapshot=*model;
-    drop(model);
+    let Ok(mut session)=PRESENTATION_SESSION.lock() else{return;};
+    let (changed,ready)=session.observe(request,parent,child);
+    let mode=session.mode;
+    let epoch=session.epoch;
+    let snapshot=session.chain;
+    drop(session);
     if changed{
-        log(&format!("CHAIN-CLASSIFY: front_to_back={} back_to_depth={} texture_mipmaps={} (non-invasive)",
+        log(&format!("CHAIN-CLASSIFY: generation={epoch} front_to_back={} back_to_depth={} texture_mipmaps={} (non-invasive)",
             snapshot.front_to_back,snapshot.back_to_depth,snapshot.mipmaps));
     }
-    if !snapshot.three_d_ready(){return;}
-    let mode=match LAST_RENDER_MODE.lock(){
-        Ok(guard)=>*guard,
-        Err(_)=>return,
-    };
-    // Log once per observed game resolution; 640 and 800 are independent.
-    let bit=match (mode.width,mode.height,mode.bpp){
-        (640,480,16)=>1usize,
-        (800,600,16)=>2usize,
-        _=>return,
-    };
-    let previous=PRESENTATION_PLAN_LOGGED.fetch_or(bit,Ordering::Relaxed);
-    if previous&bit!=0{return;}
+    if !ready{return;}
+    let Some(mode)=mode else{return;};
     let Some(&(desktop_width,desktop_height))=PRE_EXCLUSIVE_DESKTOP.get() else{
-        log("BORDERLESS-PREFLIGHT: original desktop bounds unavailable, keeping exclusive renderer");
+        log("BORDERLESS-PREFLIGHT: original desktop bounds unavailable; keeping exclusive renderer");
         return;
     };
     if let Some(plan)=presentation::preflight(mode,desktop_width,desktop_height,snapshot){
         log(&format!(
-            "BORDERLESS-PREFLIGHT: complete 3D front->back->Z chain; internal={}x{}x{}; monitor={}x{}; aspect_viewport=x{},y{},{}x{}; requires_virtual_primary=true; applied=false",
+            "BORDERLESS-PREFLIGHT: generation={epoch} complete 3D front->back->Z chain; internal={}x{}x{}; monitor={}x{}; aspect_viewport=x{},y{},{}x{}; requires_virtual_primary=true; applied=false",
             mode.width,mode.height,mode.bpp,plan.desktop_width,plan.desktop_height,
             plan.viewport.x,plan.viewport.y,plan.viewport.width,plan.viewport.height));
     }
