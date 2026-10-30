@@ -1010,3 +1010,10 @@ The owner-confirmed 0.1.41 `--com-surface-chain` log verifies all native DirectD
   `CrimsonSkiesFix.ini.example` template to preserve user settings.
 - x86 Windows CI, tests, and gameplay evidence required before enabling
   any behavior change by default.
+
+
+## Stage B4l — v0.1.43 native 800×600 virtual-Flip parity probe (inactive in the game)
+
+The owner-provided v0.1.42 `--com-virtual-flip` log (`windowed_ddraw_probe(20261030-165232).log`) confirms on the owner's Wine setup: DirectDraw7→DirectDraw4, `DDSCL_NORMAL`, primary+HWND clipper, 640×480 RGB565 target, enumerated pure 32-bit HAL depth format in video memory, native D3D3 HAL scene, physical→virtual backbuffer render-target identity, correct 640×480→1440×1080 centered letterboxing, and **120/120 successful** `IDirectDrawSurface4::Flip`→real two-Blt presentations. Elapsed 1507 ms is a synthetic test timing, **not gameplay FPS**. This evidence does not prove that the real game or 800×600 works.
+
+The opt-in `--com-virtual-flip-800` test now creates a genuine **800×600** RGB565 3D target and same-sized 32-bit Z surface, advertises **800×600** virtual descriptors on three separate Surface4 COM identities, validates attachments and QI, maps the HAL render-target pointer back to the correct game-facing backbuffer identity, and presents through the existing guarded/armed virtual Flip implementation. The 640×480 flag remains available and unchanged. The standalone test does not hook or enable the actual game's exclusive fullscreen path. Once both modes have live owner evidence, the next engineering challenge remains in-game interception, correct surface lifetimes and the transition between 800×600 and 640×480, without silently falling back to native exclusive Flip.
