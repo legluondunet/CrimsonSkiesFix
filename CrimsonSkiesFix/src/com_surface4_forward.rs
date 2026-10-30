@@ -696,6 +696,102 @@ mod tests{
         assert_eq!(real.refs.load(Ordering::SeqCst),1);
     }
     #[test]
+    fn three_real_com_wrappers_form_acyclic_client_visible_attachment_graph(){
+        let table=mock_table();
+        let mut physical=[
+            real_mock(&table),real_mock(&table),real_mock(&table)
+        ];
+        let native=std::array::from_fn::<_,3,_>(|i|
+            (&mut physical[i] as *mut RealMock).cast::<c_void>());
+        let m=Mode{width:640,height:480,bpp:16};
+        unsafe{
+            let p=new_graph_surface4(native[0],SurfaceRole::Primary,m).unwrap();
+            let b=new_graph_surface4(native[1],SurfaceRole::Backbuffer,m).unwrap();
+            let z=new_graph_surface4(native[2],SurfaceRole::Depth,m).unwrap();
+            attach_graph_surface4(p,b).unwrap();
+            attach_graph_surface4(b,z).unwrap();
+            // Graph edges own independent child references after callers
+            // release their original backbuffer and depth pointers.
+            let pv=&**p.cast::<*const Surface4VTable>();
+            let bv=&**b.cast::<*const Surface4VTable>();
+            let zv=&**z.cast::<*const Surface4VTable>();
+            assert_eq!((zv.release)(z),1);
+            assert_eq!((bv.release)(b),1);
+            let mut back=ptr::null_mut();
+            let mut back_cap=[4u32,0,0,0];
+            assert_eq!((pv.get_attached_surface)(p,back_cap.as_mut_ptr().cast(),&mut back),S_OK);
+            assert_eq!(back,b);
+            let mut depth=ptr::null_mut();
+            let mut depth_cap=[0x20000u32,0,0,0];
+            assert_eq!((bv.get_attached_surface)(back,depth_cap.as_mut_ptr().cast(),&mut depth),S_OK);
+            assert_eq!(depth,z);
+            let mut unknown=ptr::null_mut();
+            assert_eq!((zv.query_interface)(depth,&IID_IUNKNOWN,&mut unknown),S_OK);
+            assert_eq!(unknown,z);
+            assert_eq!((zv.release)(unknown),2);
+            for (ptr,expected_caps,expected_bpp) in [
+                (p,0x1000_e238u32,16u32),
+                (back,0x1000_601cu32,16u32),
+                (depth,0x1002_4000u32,32u32)]{
+                let v=&**ptr.cast::<*const Surface4VTable>();
+                let mut caps=[0u32;4];
+                assert_eq!((v.get_caps)(ptr,caps.as_mut_ptr().cast()),S_OK);
+                assert_eq!(caps[0],expected_caps);
+                let mut d=[0u32;31];d[0]=124;
+                assert_eq!((v.get_surface_desc)(ptr,d.as_mut_ptr().cast()),S_OK);
+                assert_eq!((d[2],d[3],d[21],d[26]),(480,640,expected_bpp,expected_caps));
+                let mut fmt=[0u32;8];fmt[0]=32;
+                assert_eq!((v.get_pixel_format)(ptr,fmt.as_mut_ptr().cast()),S_OK);
+                assert_eq!(fmt[3],expected_bpp);
+                if expected_bpp==32{assert_eq!(fmt[5],0x00ff_ffff);}
+            }
+            assert_eq!((zv.release)(depth),1);
+            assert_eq!((bv.release)(back),1);
+            // Cascades ownership edges Primary->Backbuffer->Depth.
+            assert_eq!((pv.release)(p),0);
+        }
+        for phys in &physical{
+            assert_eq!(phys.refs.load(Ordering::SeqCst),1);
+            assert_eq!(phys.flips.load(Ordering::SeqCst),0);
+            assert_eq!(phys.blts.load(Ordering::SeqCst),0);
+        }
+    }
+    #[test]
+    fn virtual_graph_rejects_native_flip_blt_invalid_attachment_and_mutation(){
+        let table=mock_table();
+        let mut real=real_mock(&table);
+        let native=(&mut real as *mut RealMock).cast::<c_void>();
+        unsafe{
+            assert_eq!(new_graph_surface4(native,SurfaceRole::Primary,
+                Mode{width:1920,height:1080,bpp:16}),Err(E_INVALIDARG));
+            let p=new_graph_surface4(native,SurfaceRole::Primary,
+                Mode{width:640,height:480,bpp:16}).unwrap();
+            let vt=&**p.cast::<*const Surface4VTable>();
+            assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
+            assert_eq!((vt.blt)(p,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),0,ptr::null_mut()),E_NOTIMPL);
+            assert_eq!((vt.lock)(p,ptr::null_mut(),ptr::null_mut(),
+                0,ptr::null_mut()),E_NOTIMPL);
+            assert_eq!((vt.add_attached_surface)(p,ptr::null_mut()),E_NOTIMPL);
+            let mut out=p;
+            let mut wrong_caps=[0x20000u32,0,0,0];
+            assert_eq!((vt.get_attached_surface)(p,wrong_caps.as_mut_ptr().cast(),
+                &mut out),E_INVALIDARG);
+            assert!(out.is_null());
+            let mut right_caps=[4u32,0,0,0];
+            assert_eq!((vt.get_attached_surface)(p,right_caps.as_mut_ptr().cast(),
+                &mut out),E_FAIL);
+            assert!(out.is_null());
+            let mut fmt=[0u32;8];fmt[0]=16;
+            assert_eq!((vt.get_pixel_format)(p,fmt.as_mut_ptr().cast()),E_INVALIDARG);
+            assert_eq!((vt.release)(p),0);
+        }
+        assert_eq!(real.refs.load(Ordering::SeqCst),1);
+        assert_eq!(real.flips.load(Ordering::SeqCst),0);
+        assert_eq!(real.blts.load(Ordering::SeqCst),0);
+    }
+
+    #[test]
     fn native_d3d_boundary_can_borrow_only_our_own_live_wrapper(){
         let table=mock_table();
         let mut real=real_mock(&table);
