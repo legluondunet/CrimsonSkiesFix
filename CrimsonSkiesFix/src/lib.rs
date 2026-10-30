@@ -640,6 +640,15 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
                         sample.successful_ends as f64/sample.flips as f64,
                         sample.first_to_last_flip_ms,sample.observed_flip_intervals,
                         successful_flip_rate));
+                    let stats=sample.interflip;
+                    log(&format!(
+                        "SCENE-INTERFLIP: generation={} intervals={} begin_min={} begin_max={} end_min={} end_max={} begin_hist_0_to_12_and_13plus={:?} begin_end_mismatches={} counter_regressions={} (between successful primary Flips; NOT displayed FPS)",
+                        sample.generation,stats.intervals,
+                        if stats.intervals==0{0}else{stats.min_begins},
+                        stats.max_begins,
+                        if stats.intervals==0{0}else{stats.min_ends},
+                        stats.max_ends,stats.histogram,
+                        stats.mismatch_intervals,stats.counter_regressions));
                 }
             }
         }

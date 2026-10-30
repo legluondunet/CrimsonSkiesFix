@@ -9,6 +9,44 @@ use std::time::Instant;
 
 pub const FLIPS_PER_SAMPLE:usize=120;
 
+/// Distribution strictly between consecutive successful primary Flips.
+/// Histogram bins 0..12 are exact; index 13 counts 13 or more scenes.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct InterflipStats {
+    pub intervals:usize,
+    pub histogram:[usize;14],
+    pub min_begins:usize,
+    pub max_begins:usize,
+    pub min_ends:usize,
+    pub max_ends:usize,
+    pub mismatch_intervals:usize,
+    pub counter_regressions:usize,
+}
+
+impl InterflipStats {
+    pub const fn new()->Self {
+        Self { intervals:0, histogram:[0;14], min_begins:usize::MAX,
+               max_begins:0, min_ends:usize::MAX, max_ends:0,
+               mismatch_intervals:0, counter_regressions:0 }
+    }
+
+    fn record(&mut self,previous:(usize,usize),current:(usize,usize)){
+        if current.0<previous.0 || current.1<previous.1 {
+            self.counter_regressions+=1;
+            return; // do not misrepresent a reset as zero-scene interval
+        }
+        let b=current.0-previous.0;
+        let e=current.1-previous.1;
+        self.intervals+=1;
+        self.histogram[b.min(13)]+=1;
+        self.min_begins=self.min_begins.min(b);
+        self.max_begins=self.max_begins.max(b);
+        self.min_ends=self.min_ends.min(e);
+        self.max_ends=self.max_ends.max(e);
+        if b!=e {self.mismatch_intervals+=1;}
+    }
+}
+
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct SceneGroup {
     pub generation:u64,
@@ -21,6 +59,7 @@ pub struct SceneGroup {
     /// Monotonic time from first to last successful primary Flip of the
     /// group. Does not include time before its first successful Flip.
     pub first_to_last_flip_ms:u128,
+    pub interflip:InterflipStats,
 }
 
 impl SceneGroup {
@@ -40,13 +79,16 @@ pub struct SceneCorrelation {
     begin_baseline:usize,
     end_baseline:usize,
     first_flip_at:Option<Instant>,
+    previous_flip_counts:Option<(usize,usize)>,
+    interflip:InterflipStats,
     initialized:bool,
 }
 
 impl SceneCorrelation {
     pub const fn new()->Self {
         Self { generation:0, flips:0, begin_baseline:0,
-               end_baseline:0, first_flip_at:None, initialized:false }
+               end_baseline:0, first_flip_at:None,
+               previous_flip_counts:None, interflip:InterflipStats::new(), initialized:false }
     }
 
     /// Only on successful DirectDraw SetDisplayMode: discard the former
@@ -58,6 +100,8 @@ impl SceneCorrelation {
         self.begin_baseline=begins;
         self.end_baseline=ends;
         self.first_flip_at=None;
+        self.previous_flip_counts=None;
+        self.interflip=InterflipStats::new();
         self.initialized=true;
     }
 
@@ -74,6 +118,10 @@ impl SceneCorrelation {
     {
         if !self.initialized{return None;}
         if self.flips==0 {self.first_flip_at=Some(now);}
+        if let Some(previous)=self.previous_flip_counts {
+            self.interflip.record(previous,(begins,ends));
+        }
+        self.previous_flip_counts=Some((begins,ends));
         self.flips+=1;
         if self.flips<FLIPS_PER_SAMPLE{return None;}
         let first_to_last_flip_ms=self.first_flip_at
@@ -86,11 +134,14 @@ impl SceneCorrelation {
             successful_ends:ends.saturating_sub(self.end_baseline),
             observed_flip_intervals:self.flips.saturating_sub(1),
             first_to_last_flip_ms,
+            interflip:self.interflip,
         };
         self.flips=0;
         self.begin_baseline=begins;
         self.end_baseline=ends;
         self.first_flip_at=None;
+        self.previous_flip_counts=None; // exclude inter-group boundary
+        self.interflip=InterflipStats::new();
         Some(sample)
     }
 }
@@ -210,5 +261,79 @@ mod tests {
         assert_eq!(sample.flips,120);
         assert_eq!(sample.observed_flip_intervals,119);
         assert_eq!(sample.first_to_last_flip_ms,2685);
+    }
+    #[test]
+    fn all_eleven_scene_intervals_are_distinct_from_a_burst_average(){
+        let start=Instant::now();
+        let mut c=SceneCorrelation::new();
+        c.reset(3,0,0);
+        for i in 1..120 {
+            assert!(c.observe_flip_at(i*11,i*11,ms(start,(i as u64-1)*17)).is_none());
+        }
+        let result=c.observe_flip_at(1320,1320,ms(start,119*17)).unwrap();
+        assert_eq!(result.successful_begins,1320);
+        assert_eq!(result.interflip.intervals,119);
+        assert_eq!(result.interflip.histogram[11],119);
+        assert_eq!(result.interflip.min_begins,11);
+        assert_eq!(result.interflip.max_begins,11);
+        assert_eq!(result.interflip.mismatch_intervals,0);
+    }
+    #[test]
+    fn same_group_scene_total_can_hide_one_burst_and_many_idle_flips(){
+        let start=Instant::now();
+        let mut c=SceneCorrelation::new();
+        c.reset(3,0,0);
+        assert!(c.observe_flip_at(0,0,start).is_none());
+        for i in 1..119 {
+            assert!(c.observe_flip_at(1320,1320,ms(start,i as u64)).is_none());
+        }
+        let result=c.observe_flip_at(1320,1320,ms(start,119)).unwrap();
+        assert_eq!(result.successful_begins,1320);
+        assert_eq!(result.interflip.histogram[13],1);
+        assert_eq!(result.interflip.histogram[0],118);
+        assert_eq!(result.interflip.max_begins,1320);
+    }
+    #[test]
+    fn group_and_mode_resets_discard_previous_interflip_state(){
+        let start=Instant::now();
+        let mut c=SceneCorrelation::new();
+        c.reset(1,0,0);
+        for i in 0..120 {
+            let x=i as usize;
+            let result=c.observe_flip_at(x,x,ms(start,i));
+            if i==119 {
+                assert_eq!(result.unwrap().interflip.histogram[1],119);
+            }
+        }
+        for i in 0..120 {
+            let result=c.observe_flip_at(500,500,ms(start,1000+i));
+            if i==119 {
+                let stats=result.unwrap().interflip;
+                assert_eq!(stats.histogram[0],119);
+                assert_eq!(stats.histogram[13],0);
+            }
+        }
+        c.reset(2,500,500);
+        for i in 0..120 {
+            let result=c.observe_flip_at(500,500,ms(start,2000+i));
+            if i==119 {
+                assert_eq!(result.unwrap().interflip.histogram[0],119);
+            }
+        }
+    }
+    #[test]
+    fn regressed_scene_counters_are_excluded_not_treated_as_zero(){
+        let mut c=SceneCorrelation::new();
+        let start=Instant::now();
+        c.reset(1,0,0);
+        assert!(c.observe_flip_at(100,100,start).is_none());
+        assert!(c.observe_flip_at(0,0,ms(start,1)).is_none());
+        for i in 2..119 {
+            assert!(c.observe_flip_at(0,0,ms(start,i)).is_none());
+        }
+        let stats=c.observe_flip_at(0,0,ms(start,119)).unwrap().interflip;
+        assert_eq!(stats.counter_regressions,1);
+        assert_eq!(stats.intervals,118);
+        assert_eq!(stats.histogram[0],118);
     }
 }

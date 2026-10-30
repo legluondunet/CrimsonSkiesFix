@@ -208,6 +208,17 @@ are the prior successful primary Flip group boundary. Neither
 measurement proves on-screen frame rates or frame-to-scene identity.
 The new counters do not enable windowed presentation.
 
+## Stage B1 follow-up — v0.1.18 inter-Flip scene distribution
+
+The v0.1.17 log shows five consecutive 120-Flip samples with
+11 successful BeginScene and EndScene per Flip on average in
+the 640x480 phase, contrasting with 1:1 in the 800x600 phase.
+The diagnostic `SCENE-INTERFLIP` adds exact histogram bins
+0..12 and 13+, per-interval min/max and Begin/End mismatches
+over **119 within-group primary Flip intervals**. The result
+will distinguish uniform counts from bursts. No game state
+or presentation behavior changes.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

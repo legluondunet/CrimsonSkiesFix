@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.17 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.18 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,27 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.18 — individual inter-Flip Direct3D3 scene distribution
+
+The owner's v0.1.17 gameplay log establishes a stable mean of
+**11 successful BeginScene and EndScene calls per primary Flip** in
+five complete 120-Flip groups at 640x480, compared with exactly 1:1
+in five groups at 800x600. This is not the on-screen FPS rate.
+
+The optional `SCENE-INTERFLIP` log now distinguishes 11 calls on
+*each* consecutive successful primary Flip interval from a burst
+that averages 11 over a group. For each of the existing 12 bounded
+groups, it counts **119 intervals** between 120 successful primary
+Flips, recording exact BeginScene bins 0 through 12, a 13+ bin,
+min/max of BeginScene and EndScene, mismatched counts and counter
+regressions. Failed and secondary Flips are not fed into the
+sample; mode switches reset all state. Group totals and interval
+histograms use different initial baselines and need not sum to
+the same values.
+
+There are no alterations to graphics, the FPS limiter, Windows
+focus, renderer state, INI defaults, audio or game files.
 
 ## v0.1.17 — same-group successful Flip timing (diagnostic only)
 
