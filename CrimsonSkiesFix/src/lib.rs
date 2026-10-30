@@ -181,7 +181,7 @@ fn cfg()->Config {
         let ini=win32::ini_path();
         let parsed=ini.as_ref().and_then(|p|fs::read_to_string(p).ok())
             .map(|s|config::parse(&s)).unwrap_or_default();
-        if parsed.log_enabled {
+        if parsed.log_enabled || parsed.experimental_windowed_adapter {
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=OpenOptions::new().create(true).write(true).truncate(true).open(path) {
                     let _=LOG.set(Mutex::new(file));
@@ -850,6 +850,11 @@ unsafe extern "system" fn audit_surface_get_ddinterface(this:*mut c_void,out:*mu
 }
 unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
+    // The experimental virtual Surface4 owns its own vtable. Never patch
+    // its global 45-slot façade through the passive native-vtable tracer.
+    if cfg().experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
+        return;
+    }
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize);
     let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as usize);
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
