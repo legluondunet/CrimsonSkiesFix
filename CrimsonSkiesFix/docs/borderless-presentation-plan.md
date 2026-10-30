@@ -463,6 +463,40 @@ Microsoft COM and DirectDraw contracts:
 - https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-idirectdrawsurface7-getattachedsurface
 - https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-idirectdrawsurface7-addattachedsurface
 
+## Stage B3a — v0.1.20 physical IUnknown prototype (still inactive)
+
+The new standalone `src/com_unknown.rs` is a real native COM
+ABI scaffold: a `#[repr(C)]` object with a vtable pointer at
+offset zero, an `extern "system"` three-method IUnknown
+vtable, real physical pointer identity, atomic AddRef/Release and
+deallocation on the final Release. Seven x86 unit tests call the
+vtable function pointers, verify QueryInterface's reference contract
+and object identity, reject unsupported Surface4 and NULL arguments,
+test reference overflow, and prove single final destruction.
+
+For deliberate correctness, the static set of supported interfaces
+is **only IID_IUnknown**. Exposing an IDirectDrawSurface IID without
+a complete compatible vtable would be a COM contract violation and
+could crash the game. Neither the logical `borderless_contract`
+nor the physical `com_unknown` module is called by a
+DirectDraw hook. They also do not implement COM aggregation or
+thread/apartment marshalling. The release archive and runtime graphics
+pipeline are unchanged.
+
+Next stages:
+1. Enumerate **all used DirectDrawSurface4 and QueryInterface methods**
+   from real game logs/ABI evidence before claiming a surface interface.
+2. Implement a complete method dispatch/facade for each advertised
+   interface (including Release, real attachments, texture/lock/Blts,
+   device-target compatibility) with identity and HRESULT tests.
+3. Construct the actual windowed backend *before* returning a
+   façade to the game. Only then expose an opt-in flag and attempt
+   aspect-correct 4:3 presentation without changing desktop mode.
+4. Validate both Wine and native Windows. Abort safely before
+   exposure if any capability is unsupported.
+
+Reference: https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

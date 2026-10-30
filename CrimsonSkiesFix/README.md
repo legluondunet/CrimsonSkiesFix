@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.19 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.20 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,31 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.20 — Stage B3a: native IUnknown ABI scaffold (inactive)
+
+`src/com_unknown.rs` now defines a **real, heap-allocated Win32
+COM IUnknown object** with a three-method C-layout vtable using
+the x86 `extern "system"` calling convention. It implements:
+
+- `QueryInterface(IID_IUnknown)` returning the **same physical
+  pointer**, with one reference acquired per successful query.
+- `AddRef` and `Release` backed by an atomic 32-bit
+  counter. The final Release frees the heap object exactly once.
+- Proper null output / invalid interface handling; failing queries
+  clear the output pointer and never acquire a reference.
+- A guarded counter that does not wrap at `u32::MAX`, and
+  distinct identities for distinct primary/backbuffer/depth objects.
+
+Seven Windows x86 unit tests exercise the **actual function pointers**
+and object destruction; the prior logical contract remains separate.
+
+**Crucial:** this scaffold advertises **only IID_IUnknown**. It
+must **not** be used as an IDirectDrawSurface1/2/3/4/7, since those
+interfaces require complete, ABI-correct method tables and real
+Direct3D-compatible resources. There is no runtime object creation
+or installation, no windowed adapter, no new configuration switch,
+and no change to current rendering, FPS pacing or input.
 
 ## v0.1.19 — Stage B2: isolated COM surface/lifecycle model
 
