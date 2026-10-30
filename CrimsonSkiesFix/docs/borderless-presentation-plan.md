@@ -896,6 +896,29 @@ DirectDraw4 Blts.
 No existing game rendering path or INI
 setting is changed by v0.1.32.
 
+## Stage B4b — v0.1.33 shared real Win32 backend seam
+
+The pure \`borderless_flip.rs\` now has a reusable
+\`execute_windowed_blt_pair\` API that checks the exact
+internal 640x480 or 800x600 16bpp source geometry
+and integer 4:3 destination viewport, then invokes
+backend black-clear and RGB565-stretch in order.
+The fail-closed \`FlipToBltBridge\` shares this
+same transaction and additionally enforces actual
+virtual COM exposure, display-mode epoch and
+no fallback after a partial frame.
+
+This enables a separate real Win32 DirectDraw4
+standalone probe to implement \`WindowedBlt\`
+and exercise the same two actual Blts, without
+misrepresenting its test objects as a fully
+virtualized game primary/backbuffer/Z chain.
+
+No game-visible new COM objects are exposed
+and no active DirectDraw4 hooks are changed.
+The production virtual COM surface chain
+still requires engineering and verification.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

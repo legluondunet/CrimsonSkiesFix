@@ -10,7 +10,7 @@
 
 use crate::{
     borderless_contract::{AdapterContract,Phase},
-    presentation::{Mode,Viewport},
+    presentation::{fit_viewport,Mode,Viewport},
 };
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -37,6 +37,30 @@ pub trait WindowedBlt {
 
     fn stretch_rgb565_into_viewport(&mut self,source:Mode,viewport:Viewport)
         ->Result<(),i32>;
+}
+
+/// Pure geometry gate shared by game-side contract and standalone probe.
+fn geometry_valid(mode:Mode,desktop:(u32,u32),viewport:Viewport)->bool{
+    mode.bpp==16 &&
+    matches!((mode.width,mode.height),(640,480)|(800,600)) &&
+    fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport)
+}
+
+/// Perform the two windowed Blts on the supplied *real* backend.
+/// This has no COM virtual-object exposure, refcount or game-visible Flip
+/// acknowledgment. The game-side FlipToBltBridge wraps it with an
+/// exposed-adapter requirement, mode/epoch checks and a failure latch.
+pub fn execute_windowed_blt_pair<B:WindowedBlt>(
+    backend:&mut B,mode:Mode,desktop:(u32,u32),viewport:Viewport
+)->Result<(),FlipBridgeError>{
+    if !geometry_valid(mode,desktop,viewport){
+        return Err(FlipBridgeError::InvalidViewport);
+    }
+    backend.clear_full_window_black(desktop.0,desktop.1)
+        .map_err(FlipBridgeError::ClearBlackFailed)?;
+    backend.stretch_rgb565_into_viewport(mode,viewport)
+        .map_err(FlipBridgeError::StretchFailed)?;
+    Ok(())
 }
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -69,12 +93,9 @@ impl FlipToBltBridge {
             return Err(FlipBridgeError::BackendNotExposed);
         }
         let p=contract.plan;
-        let vw=p.viewport.x.checked_add(p.viewport.width);
-        let vh=p.viewport.y.checked_add(p.viewport.height);
-        if p.viewport.width==0 || p.viewport.height==0 ||
-           p.internal.bpp!=16 ||
-           vw.is_none_or(|v|v>p.desktop_width) ||
-           vh.is_none_or(|v|v>p.desktop_height) {
+        if !geometry_valid(
+            p.internal,(p.desktop_width,p.desktop_height),p.viewport
+        ) {
             return Err(FlipBridgeError::InvalidViewport);
         }
         Ok(Self {
@@ -113,13 +134,9 @@ impl FlipToBltBridge {
                 return Err(FlipBridgeError::FrameCounterOverflow);
             },
         };
-        if let Err(hr)=backend.clear_full_window_black(self.desktop.0,self.desktop.1){
-            let failure=FlipBridgeError::ClearBlackFailed(hr);
-            self.fault=Some(failure);
-            return Err(failure);
-        }
-        if let Err(hr)=backend.stretch_rgb565_into_viewport(self.internal,self.viewport){
-            let failure=FlipBridgeError::StretchFailed(hr);
+        if let Err(failure)=execute_windowed_blt_pair(
+            backend,self.internal,self.desktop,self.viewport
+        ){
             self.fault=Some(failure);
             return Err(failure);
         }
@@ -176,6 +193,29 @@ mod tests {
     fn mode640()->Mode{Mode{width:640,height:480,bpp:16}}
     fn mode800()->Mode{Mode{width:800,height:600,bpp:16}}
 
+    #[test]
+    fn pure_backend_pair_is_testable_without_claiming_virtual_com_exposure(){
+        let m=mode640();let vp=Viewport{x:240,y:0,width:1440,height:1080};
+        let mut backend=FakeBlt::default();
+        assert_eq!(execute_windowed_blt_pair(&mut backend,m,(1920,1080),vp),Ok(()));
+        assert_eq!(backend.events,[Event::Black(1920,1080),Event::Stretch(m,vp)]);
+        assert_eq!(execute_windowed_blt_pair(
+            &mut backend,m,(1920,1080),Viewport{x:241,y:0,width:1440,height:1080}
+        ),Err(FlipBridgeError::InvalidViewport));
+        assert_eq!(backend.events.len(),2);
+    }
+    #[test]
+    fn pure_backend_pair_propagates_partial_blt_failures(){
+        let m=mode640();let vp=Viewport{x:240,y:0,width:1440,height:1080};
+        let mut backend=FakeBlt{fail_black:Some(-17),..Default::default()};
+        assert_eq!(execute_windowed_blt_pair(&mut backend,m,(1920,1080),vp),
+                   Err(FlipBridgeError::ClearBlackFailed(-17)));
+        assert_eq!(backend.events,[Event::Black(1920,1080)]);
+        let mut backend=FakeBlt{fail_stretch:Some(-42),..Default::default()};
+        assert_eq!(execute_windowed_blt_pair(&mut backend,m,(1920,1080),vp),
+                   Err(FlipBridgeError::StretchFailed(-42)));
+        assert_eq!(backend.events,[Event::Black(1920,1080),Event::Stretch(m,vp)]);
+    }
     #[test]
     fn inactive_contract_refuses_any_flip_bridge(){
         let contract=prepared(mode640());

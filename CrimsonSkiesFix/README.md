@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.32 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.33 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,39 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.33 — connect Flip-to-Blt transaction to a real standalone backend
+
+The owner confirmed a full API-level **PASS** for the
+1920x1080 borderless DirectDraw test in v0.1.31,
+including the native RGB565-to-1440x1080 4:3
+stretched Blt with the monitor mode unchanged.
+
+The shared \`src/borderless_flip.rs\` now exposes an
+\`execute_windowed_blt_pair\` function: it strictly
+validates internal mode, destination geometry and
+the ordering of black clear followed by RGB565 stretch.
+The existing fail-closed game-side
+\`FlipToBltBridge::present\` calls this same function,
+rather than duplicating its logic. New tests ensure
+a failed clear does not attempt presentation and
+a failed stretch is not counted as a completed frame.
+
+In the accompanying standalone program, the *physical*
+Win32 DirectDraw4 primary and real RGB565 offscreen
+target will implement the \`WindowedBlt\` operations;
+a separate optional \`--borderless-loop\` mode will
+exercise a series of real frames without creating a
+game-facing COM surface or changing the desktop mode.
+The existing default and \`--borderless\` single-frame
+tests are preserved. The game still uses its original
+exclusive/direct Flip chain.
+
+Only a standalone host-level test is presently available.
+A complete game-facing virtual primary/backbuffer/Z COM
+implementation, proper reference ownership and compatible
+GetAttachedSurface/Flip behavior remain required before
+the game's \`Borderless=1\` can be made active.
 
 ## v0.1.32 — first inactive Flip-to-Blt bridge contract, owner borderless PASS
 
