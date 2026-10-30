@@ -636,7 +636,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }
     let sources=probe_source_modes(mode);
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.44; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.45; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -719,6 +719,10 @@ fn run(mode:ProbeMode)->Result<(),String>{
     if mode==ProbeMode::ComVirtualFlipTransition{
         probe_line("COM-TRANSITION-START: one HWND+DirectDraw4+clipper, three isolated 3D surface epochs (800x600 -> 640x480 -> 800x600)");
     }
+    // An intentionally retained client AddRef models a game still holding
+    // the previous mode's primary. Retirement must make every stale Flip
+    // fail closed even while that COM identity remains live.
+    let mut retired_previous:Option<(usize,Com)>=None;
     for (epoch_index,source) in sources.iter().copied().enumerate(){
         if mode==ProbeMode::ComVirtualFlipTransition{
             probe_line(&format!("COM-TRANSITION-EPOCH-START: epoch={}/{} source={}x{} bpp={} (recreate target/Z32/COM graph/D3D3 device)",
@@ -801,6 +805,19 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let surface_chain=if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
         Some(unsafe{test_real_virtual_surface_chain(&primary,&target,&depth,source)?})
     }else{None};
+    if let Some((previous_epoch,old))=retired_previous.take(){
+        // The next mode's physical RGB565/Z32 and virtual graph now exist.
+        // A still-live OLD virtual primary must never present onto either.
+        let vt=unsafe{&**old.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let stale=unsafe{(vt.flip)(old.0,ptr::null_mut(),0)};
+        if stale!=0x8000_4001u32 as i32{
+            return Err(format!("COM-TRANSITION-STALE: old epoch {} Flip returned {:#010x}, expected E_NOTIMPL",
+                previous_epoch,stale as u32));
+        }
+        probe_line(&format!("COM-TRANSITION-STALE: old epoch {} primary remains COM-live but Flip is E_NOTIMPL after new epoch {} target/graph initialization",
+            previous_epoch,epoch_index+1));
+        drop(old); // last deliberate stale AddRef, after verifying fail closed
+    }
     let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip);
     let wrapped_device_target=if needs_wrapper{
         probe_line(if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip) {
@@ -1144,14 +1161,41 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }else if mode.virtual_flip(){
         probe_line("COM-VFLIP-FINAL: PASS (120 real native presentations through virtual Surface4::Flip)");
     }
-        } // Release all per-resolution COM owners, including virtual attachments.
+    if mode==ProbeMode::ComVirtualFlipTransition{
+        let (gp,gb,_)=surface_chain.as_ref().unwrap();
+        let vt=unsafe{&**gp.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let retired=unsafe{com_surface4_forward::retire_graph_primary_flip(gp.0)}
+            .map_err(|hr|format!("COM-TRANSITION-RETIRE: epoch={} failed {:#010x}",epoch_index+1,hr as u32))?;
+        if retired!=u64::from(frames) || unsafe{com_surface4_forward::graph_primary_completed_flips(gp.0)}.is_some(){
+            return Err(format!("COM-TRANSITION-RETIRE: epoch={} incorrect final frame count/armed state",epoch_index+1));
+        }
+        let stale=unsafe{(vt.flip)(gp.0,gb.0,0)};
+        if stale!=0x8000_4001u32 as i32{
+            return Err(format!("COM-TRANSITION-RETIRE: epoch={} stale Flip unexpectedly succeeded {:#010x}",epoch_index+1,stale as u32));
+        }
+        let refcount=unsafe{(vt.add_ref)(gp.0)};
+        if refcount<2{return Err("COM-TRANSITION-RETIRE: failed to hold stale COM reference".into());}
+        retired_previous=Some((epoch_index+1,Com(gp.0)));
+        probe_line(&format!("COM-TRANSITION-RETIRE: epoch={}/{} final_frames={} presenter permanently disarmed; stale Flip rejected; one COM reference retained for next epoch",
+            epoch_index+1,sources.len(),retired));
+    }
+        } // Release this epoch\x27s normal COM owners; one retained stale AddRef is intentional.
         if mode==ProbeMode::ComVirtualFlipTransition{
-            probe_line(&format!("COM-TRANSITION-EPOCH-END: epoch={}/{} source={}x{} finished; previous device/surface owners dropped",
+            probe_line(&format!("COM-TRANSITION-EPOCH-END: epoch={}/{} source={}x{} finished; normal COM owners dropped; retired stale primary retained until checked",
                 epoch_index+1,sources.len(),source.width,source.height));
         }
     }
     if mode==ProbeMode::ComVirtualFlipTransition{
-        probe_line("COM-TRANSITION-FINAL: PASS (3 full 120-Flip epochs; 800x600 -> 640x480 -> 800x600; one HWND/DD4/clipper; desktop preserved)");
+        if let Some((last_epoch,last))=retired_previous.take(){
+            let vt=unsafe{&**last.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+            let hr=unsafe{(vt.flip)(last.0,ptr::null_mut(),0)};
+            if hr!=0x8000_4001u32 as i32{
+                return Err(format!("COM-TRANSITION-LAST-STALE: epoch={} unexpected Flip {:#010x}",last_epoch,hr as u32));
+            }
+            drop(last);
+            probe_line(&format!("COM-TRANSITION-LAST-STALE: final epoch {} old primary rejects Flip and final retained reference is released",last_epoch));
+        }
+        probe_line("COM-TRANSITION-FINAL: PASS (3 full 120-Flip epochs; 800x600 -> 640x480 -> 800x600; retired COM Flip identities never rearm; desktop preserved)");
     }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
@@ -1168,7 +1212,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.44");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.45");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
