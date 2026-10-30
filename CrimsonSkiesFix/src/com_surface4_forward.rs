@@ -84,6 +84,9 @@ struct Surface4Forwarder{
     graph:Option<VirtualGraphNode>, // None retains pure passthrough semantics
     attached:AtomicPtr<c_void>,  // one strong child edge when graph is set
     virtual_flip:Mutex<Option<GraphFlipSession>>, // explicitly armed once; default off
+    // A 640x480/800x600 RGB565 native staging surface for Primary::Lock.
+    // Never return the real 1920x1080 desktop primary's lock pointer to the game.
+    primary_lock_surface:AtomicPtr<c_void>, // one owned COM ref if armed
     retired:AtomicBool, // permanent tombstone after a resolution epoch ends
 }
 
@@ -103,7 +106,8 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         vtable:&SURFACE4_FORWARD_VTABLE,
         real,refs:AtomicU32::new(1),
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
-        virtual_flip:Mutex::new(None),retired:AtomicBool::new(false),
+        virtual_flip:Mutex::new(None),primary_lock_surface:AtomicPtr::new(ptr::null_mut()),
+        retired:AtomicBool::new(false),
     });
     Ok(Box::into_raw(obj).cast())
 }
@@ -125,6 +129,31 @@ pub unsafe fn new_graph_surface4(
     let wrapped=new_forwarding_surface4(real)?;
     (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{role,mode});
     Ok(wrapped)
+}
+
+/// Associate an independently owned, mode-matched native RGB565 staging
+/// surface with the *virtual* primary for its CPU Lock/Unlock operations.
+/// The caller must have verified the staging surface's exact pixel format,
+/// size, and functioning native Lock/Unlock BEFORE exposing any virtual COM.
+/// It must not be the real desktop primary or the 3D render target.
+/// All calls to the game's virtual Surface4::Lock return the staging memory,
+/// never physical desktop pixels. The wrapper owns its own native AddRef.
+pub unsafe fn arm_graph_primary_lock_surface(
+    primary:SurfaceThis,staging:SurfaceThis
+)->Result<(),i32>{
+    if !is_our_forwarder(primary) || staging.is_null(){return Err(E_INVALIDARG);}
+    let p=&*primary.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG);};
+    if node.role!=SurfaceRole::Primary || p.real==staging ||
+       p.retired.load(Ordering::Acquire){return Err(E_INVALIDARG);}
+    let vt=real_vtable(staging);
+    if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
+    if p.primary_lock_surface.compare_exchange(
+        ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (vt.release)(staging);
+        return Err(E_FAIL);
+    }
+    Ok(())
 }
 
 /// Add an explicit, strong and acyclic COM attachment:
@@ -364,6 +393,8 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
                         let child_vt=&**child.cast::<*const Surface4VTable>();
                         (child_vt.release)(child);
                     }
+                    let staging=obj.primary_lock_surface.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !staging.is_null(){(real_vtable(staging).release)(staging);}
                     let real=borrowed_real(this);
                     (real_vtable(real).release)(real);
                     drop(Box::from_raw(this.cast::<Surface4Forwarder>()));
@@ -630,23 +661,36 @@ unsafe extern "system" fn forward_is_lost(this:SurfaceThis)->i32{
 }
 
 unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_void,p3:u32,p4:*mut c_void)->i32{
-    if let Some(node)=graph_node(this){
-        // Native RGB565 backbuffer and Z32 have the SAME dimensions and pixel
-        // format as the game-visible virtual surfaces. The real primary does
-        // not: it belongs to the full desktop, so its Lock cannot be exposed.
-        if node.role==SurfaceRole::Primary {
-            virtual_issue(node.role,"Lock physical desktop primary refused",E_NOTIMPL);
-            return E_NOTIMPL;
-        }
+    let node=graph_node(this);
+    if let Some(n)=node {
         if (*this.cast::<Surface4Forwarder>()).retired.load(Ordering::Acquire){
-            virtual_issue(node.role,"Lock retired surface",E_NOTIMPL);
+            virtual_issue(n.role,"Lock retired surface",E_NOTIMPL);
             return E_NOTIMPL;
         }
     }
-    let real=borrowed_real(this);
-    if real.is_null(){return E_POINTER;}
+    let real=if node.map(|n|n.role)==Some(SurfaceRole::Primary){
+        (*this.cast::<Surface4Forwarder>()).primary_lock_surface.load(Ordering::Acquire)
+    }else{borrowed_real(this)};
+    if real.is_null(){
+        if let Some(n)=node{virtual_issue(n.role,"Lock no verified native target",E_NOTIMPL);}
+        return E_NOTIMPL;
+    }
     let hr=(real_vtable(real).lock)(real,p1,p2,p3,p4);
-    if hr<0 {if let Some(node)=graph_node(this){virtual_issue(node.role,"native Lock failed",hr);}}
+    if hr<0 {if let Some(n)=node{virtual_issue(n.role,"native Lock failed",hr);}}
+    else if let Some(n)=node{
+        if n.role==SurfaceRole::Primary{
+            // Native staging is logically the *primary*. Preserve its
+            // returned pitch and pixel pointer, but expose the game's
+            // expected surface capabilities, never the offscreen caps.
+            if !p2.is_null() && *(p2.cast::<u32>())==124{
+                *p2.cast::<u32>().add(26)=n.caps();
+            }
+            if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40{
+                crate::log(&format!("WINDOWED-GAME: virtual Surface4 Primary Lock via mode-matched RGB565 staging surface {}x{} result=0x0",
+                    n.mode.width,n.mode.height));
+            }
+        }
+    }
     hr
 }
 
@@ -687,10 +731,13 @@ unsafe extern "system" fn forward_set_palette(this:SurfaceThis,p1:*mut c_void)->
 }
 
 unsafe extern "system" fn forward_unlock(this:SurfaceThis,p1:*mut Rect)->i32{
-    let real=borrowed_real(this);
-    if real.is_null(){return E_POINTER;}
+    let node=graph_node(this);
+    let real=if node.map(|n|n.role)==Some(SurfaceRole::Primary){
+        (*this.cast::<Surface4Forwarder>()).primary_lock_surface.load(Ordering::Acquire)
+    }else{borrowed_real(this)};
+    if real.is_null(){return E_NOTIMPL;}
     let hr=(real_vtable(real).unlock)(real,p1);
-    if hr<0 {if let Some(node)=graph_node(this){virtual_issue(node.role,"native Unlock failed",hr);}}
+    if hr<0 {if let Some(n)=node{virtual_issue(n.role,"native Unlock failed",hr);}}
     hr
 }
 
