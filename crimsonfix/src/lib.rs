@@ -30,6 +30,7 @@ type BltFastFn=unsafe extern "system" fn(*mut c_void,u32,u32,*mut c_void,*const 
 type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
 type GetAttachedSurfaceFn=unsafe extern "system" fn(*mut c_void,*const u32,*mut *mut c_void)->Hr;
 type GetSurfaceDescFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
+type D3D3CreateDeviceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -60,6 +61,7 @@ const SURFACE_FLIP:usize=11;
 const SURFACE_GET_ATTACHED:usize=12;
 const SURFACE_GET_CAPS:usize=14;
 const SURFACE_GET_DESC:usize=22;
+const D3D3_CREATE_DEVICE:usize=8; // IUnknown(3) + 5 IDirect3D3 methods
 const DDSCAPS_BACKBUFFER:u32=0x0000_0004;
 const DDSCAPS_FLIP:u32=0x0000_0010;
 const DDSCAPS_COMPLEX:u32=0x0000_0008;
@@ -111,6 +113,8 @@ static SURFACE_FIRST_PRIMARY_ATTACH:Once=Once::new();
 static PRESENTATION_SESSION:Mutex<presentation::Session>=Mutex::new(presentation::Session::new());
 static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
 static SURFACE_FORMAT_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static D3D3_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static D3D3_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -638,6 +642,44 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     }
 }
 
+// Crimson Skies' IDirectDraw4::QueryInterface successfully requests
+// IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
+fn is_d3d3_iid(iid:*const Guid)->bool {
+    guid_label(iid)=="bb223240-e72b-11d0-a9b4-00aa00c0993e"
+}
+
+// In Wine d3d.h, IDirect3D3 vtable slot 8 is
+// CreateDevice(REFCLSID, IDirectDrawSurface4*, IDirect3DDevice3**, IUnknown*).
+// This exact Win32 x86 ABI is observed *without* changing the device.
+unsafe extern "system" fn d3d3_create_device(
+    this:*mut c_void,device_clsid:*const Guid,target:*mut c_void,
+    out:*mut *mut c_void,outer:*mut c_void
+)->Hr {
+    let Some(addr)=orig(this,D3D3_CREATE_DEVICE) else{return DDERR_GENERIC};
+    let call:D3D3CreateDeviceFn=std::mem::transmute(addr);
+    let hr=call(this,device_clsid,target,out,outer);
+    if cfg().log_enabled && D3D3_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        let caps=modern_surface_caps(target);
+        log(&format!(
+            "D3D3-TRACE: CreateDevice clsid={} render_target_caps={} role={} hr={hr:#x} object_returned={} (unchanged)",
+            guid_label(device_clsid),
+            caps.map(|c|format!("{c:#010x}")).unwrap_or_else(||"Unavailable".into()),
+            caps.map(surface_roles).unwrap_or_else(||"unknown".into()),
+            hr>=0 && !out.is_null() && !(*out).is_null()));
+        // Never lock the render target or modify its 3D state.
+        probe_modern_surface_layout(target,"D3D3::CreateDevice target");
+    }
+    hr
+}
+
+unsafe fn observe_d3d3(object:*mut c_void) {
+    if object.is_null() || !cfg().log_enabled{return;}
+    let hooked=replace_method(object,D3D3_CREATE_DEVICE,d3d3_create_device as usize);
+    if D3D3_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        log(&format!("D3D3-TRACE: IDirect3D3 CreateDevice hook_installed={hooked} (passive)"));
+    }
+}
+
 // Read-only interface discovery: the original COM QueryInterface is called
 // without changing IID, return value or output. This identifies whether the
 // 3D renderer uses other DirectDraw/Direct3D interfaces beyond the v1 hooks.
@@ -651,6 +693,7 @@ unsafe extern "system" fn ddraw_query_interface(this:*mut c_void,iid:*const Guid
     }
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         if let Some(version)=ddraw_iface(iid){observe_modern_ddraw(*out,version);}
+        if is_d3d3_iid(iid){observe_d3d3(*out);}
     }
     hr
 }
@@ -836,6 +879,14 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn real_d3d3_interface_guid_and_create_device_slot() {
+        let d3d3=Guid{d1:0xbb223240,d2:0xe72b,d3:0x11d0,
+            d4:[0xa9,0xb4,0x00,0xaa,0x00,0xc0,0x99,0x3e]};
+        assert!(is_d3d3_iid(&d3d3));
+        assert_eq!(D3D3_CREATE_DEVICE,8);
+        assert!(!is_d3d3_iid(ptr::null()));
+    }
     #[test]
     fn surface_capability_roles_include_depth_and_texture_mipmaps(){
         assert_eq!(surface_roles(0x10024000),"z-buffer");
