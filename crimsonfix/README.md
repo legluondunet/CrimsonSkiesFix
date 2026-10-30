@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.3 — experimental DirectDraw proxy
+# CrimsonFix 0.1.4 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -15,8 +15,9 @@ Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
   CrimsonFix/
-    CrimsonFix.ini
+    CrimsonFix.ini.example # shipped with the ZIP; safe to overwrite
     README.md
+    CrimsonFix.ini         # created once on first launch, NEVER shipped
     CrimsonFix.log         # created ONLY when [Debug] Log=1
 ```
 
@@ -25,11 +26,28 @@ Windows or Wine system directories. Both Windows and Wine use the same
 32-bit Windows DLL, not a Linux .so. If Wine loads its own builtin
 ddraw.dll, set `WINEDLLOVERRIDES="ddraw=n,b"`.
 
-If you used the old v0.1 proof of concept that placed CrimsonFix.ini
-at the game root, it is copied **once** into CrimsonFix/ when the new
-nested INI does not already exist. The old root INI is preserved and
-the nested INI takes priority. New archives already contain the nested
-file and do not require migration.
+**Updates preserve user settings.** The ZIP contains
+`CrimsonFix/CrimsonFix.ini.example`, **not** `CrimsonFix/CrimsonFix.ini`.
+Simply extract the ZIP over an existing game installation: only the
+example and DLL may be replaced. Your existing
+`CrimsonFix/CrimsonFix.ini`, including `[Debug] Log=1`, is untouched.
+
+For a **new install**, the Rust DLL creates `CrimsonFix/CrimsonFix.ini`
+with defaults the first time DirectDraw initializes; it uses an atomic
+`create_new` file open, which never truncates or replaces an
+existing INI. If the game directory is read-only, in-memory defaults
+still work but no INI will be created.
+
+If you used the old v0.1 proof of concept that placed
+`CrimsonFix.ini` in the game root, it is migrated **only when the
+nested INI is absent**. The original root file is preserved. If
+migration fails, the old root configuration is still read rather
+than silently dropping the user's settings.
+
+To enable logs for debugging, edit the **active**
+`CrimsonFix/CrimsonFix.ini`, not the `.example` template.
+Set `[Debug] Log=1` and relaunch. Future updates no longer reset
+it to `Log=0`.
 
 ## Configuration
 
