@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.21 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.22 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,38 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.22 — Stage B3c: opt-in passive DirectDraw surface audit
+
+The new `[Debug] SurfaceUsageTrace=1` option (with `Log=1`)
+activates **nine additional original-call forwarding hooks** on the
+actual DirectDrawSurface2/3/4/7 objects: `AddAttachedSurface`,
+`DeleteAttachedSurface`, `GetDC`, `IsLost`, `Lock`, `ReleaseDC`,
+`Restore`, `SetClipper`, `GetDDInterface`.
+
+Each hook forwards the exact original arguments once and records
+only **successful/failed HRESULT counts per surface role** (primary,
+backbuffer, Z-buffer, texture, other). After each group of 120
+successful primary Flips, the log emits one bounded
+`SURFACE-USAGE` summary; samples reset after successful display-mode
+changes. Counters never include raw COM addresses or surface pixels.
+An optional trace does **not** constitute a functioning borderless
+adapter. The current exclusive rendering path remains unchanged.
+
+This audit is **off by default**, including on existing user INI
+files. For a Windows/Wine gameplay experiment, enable it in the
+existing `CrimsonSkiesFix/CrimsonSkiesFix.ini`:
+
+```ini
+[Debug]
+Log=1
+SurfaceUsageTrace=1
+```
+
+Keep `ModernFPSPacing` at your established working value. Run a
+menu and a 3D scene, then attach `CrimsonSkiesFix.log`. Disable the
+audit after collecting evidence; its extra vtable hooks are a
+diagnostic experiment only, not an FPS optimization.
 
 ## v0.1.21 — complete Surface4 COM ABI layout (inactive)
 

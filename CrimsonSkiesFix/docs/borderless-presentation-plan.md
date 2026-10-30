@@ -519,6 +519,31 @@ configuration option is enabled by this commit.
 
 Source: https://github.com/wine-mirror/wine/blob/master/include/ddraw.h
 
+## Stage B3c — v0.1.22 owner-testable passive surface-method audit
+
+The x86 proxy now has a **disabled-by-default**
+`[Debug] SurfaceUsageTrace=1` switch that also requires `Log=1`.
+It installs nine additional pass-through method hooks on observed
+DirectDrawSurface2/3/4/7 interfaces, at the ABI-correct slots.
+Each wrapper calls the original function **exactly once with
+unmodified arguments** and forwards its real HRESULT; no surface
+data or reference ownership is touched.
+
+The `surface_usage.rs` counters classify the destination from
+the existing read-only `GetCaps` result. They separately count
+successful and failing `AddAttachedSurface`, `DeleteAttachedSurface`,
+`GetDC`, `IsLost`, `Lock`, `ReleaseDC`, `Restore`,
+`SetClipper` and `GetDDInterface` calls, then summarize per
+120 successful primary Flips. There are at most 12 sample lines per
+process and mode switches discard incomplete samples. These counts
+can reveal which COM surface operations a full borderless virtualizer
+must implement in game menus and 3D missions.
+
+The default renderer, frame pacing, configuration persistence,
+logging location and release archive layout are unchanged.
+The opt-in audit is **not** a borderless implementation and should
+not be confused with the standalone IUnknown and Surface4 ABI tests.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

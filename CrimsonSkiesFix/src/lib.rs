@@ -12,6 +12,7 @@ mod scene_correlation;
 mod borderless_contract; // pure, inactive COM/windowed-surface contract (Stage B2)
 mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
 mod com_surface4_abi; // inactive, verified 45-slot Surface4 ABI (Stage B3b)
+mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
@@ -66,6 +67,15 @@ const DD_CREATE_SURFACE:usize=6;
 const DD_SET_COOPERATIVE:usize=20;
 const DD_SET_DISPLAY_MODE:usize=21;
 const SURFACE_BLT:usize=5;
+const SURFACE_USAGE_ADD_ATTACHED_SURFACE:usize=3;
+const SURFACE_USAGE_DELETE_ATTACHED_SURFACE:usize=8;
+const SURFACE_USAGE_GET_DC:usize=17;
+const SURFACE_USAGE_IS_LOST:usize=24;
+const SURFACE_USAGE_LOCK:usize=25;
+const SURFACE_USAGE_RELEASE_DC:usize=26;
+const SURFACE_USAGE_RESTORE:usize=27;
+const SURFACE_USAGE_SET_CLIPPER:usize=28;
+const SURFACE_USAGE_GET_DDINTERFACE:usize=36;
 const SURFACE_BLT_FAST:usize=7;
 const SURFACE_UNLOCK:usize=32;
 const SURFACE_FLIP:usize=11;
@@ -144,6 +154,8 @@ static FIRST_D3D3_SCENE:Once=Once::new();
 static SCENE_FLIP_GROUP:Mutex<scene_correlation::SceneCorrelation>=
     Mutex::new(scene_correlation::SceneCorrelation::new());
 static SCENE_FLIP_GROUP_LOGS:AtomicUsize=AtomicUsize::new(0);
+static SURFACE_USAGE_AUDIT:Mutex<surface_usage::Audit>=Mutex::new(surface_usage::Audit::new());
+static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -358,6 +370,11 @@ unsafe extern "system" fn modern_set_display_mode(
     if hr>=0 {
         if let Ok(mut session)=PRESENTATION_SESSION.lock(){
             session.begin_mode(presentation::Mode{width:w,height:h,bpp});
+            if cfg().surface_usage_trace && cfg().log_enabled {
+                if let Ok(mut audit)=SURFACE_USAGE_AUDIT.lock(){
+                    audit.reset(session.epoch);
+                }
+            }
             if cfg().log_enabled {
                 if let Ok(mut group)=SCENE_FLIP_GROUP.lock(){
                     group.reset(session.epoch,
@@ -624,6 +641,15 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
     // This code runs AFTER the original Flip and only counts successful
     // calls on the real primary surface. It never modifies the HRESULT.
     if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
+        if surface_usage_enabled(){
+            if let Ok(mut audit)=SURFACE_USAGE_AUDIT.lock(){
+                if let Some(sample)=audit.observe_primary_flip(){
+                    if SURFACE_USAGE_LOGS.fetch_add(1,Ordering::Relaxed)<12 {
+                        log(&sample.summary());
+                    }
+                }
+            }
+        }
         if let Ok(mut group)=SCENE_FLIP_GROUP.lock(){
             let sample=group.observe_flip(
                 D3D3_BEGIN_EVENTS.load(Ordering::Relaxed),
@@ -690,6 +716,92 @@ unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_v
     call(this,data)
 }
 
+// Separate from normal scene counters: in this *opt-in* path we
+// delegate each DirectDrawSurface2/3/4/7 method exactly once, then
+// observe the HRESULT. We never read or change caller buffer contents,
+// retain COM pointers, or affect the game-owned object lifecycle.
+fn surface_usage_enabled()->bool {
+    let settings=cfg();
+    settings.log_enabled && settings.surface_usage_trace
+}
+unsafe fn record_surface_usage(this:*mut c_void,method:surface_usage::Method,hr:Hr){
+    if !surface_usage_enabled(){return;}
+    let role=surface_usage::classify(modern_surface_caps(this));
+    if let Ok(mut audit)=SURFACE_USAGE_AUDIT.lock(){
+        audit.record(role,method,hr);
+    }
+}
+unsafe extern "system" fn audit_surface_add_attached_surface(this:*mut c_void,attachment:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_ADD_ATTACHED_SURFACE) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,attachment);
+    record_surface_usage(this,surface_usage::Method::AddAttachedSurface,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_delete_attached_surface(this:*mut c_void,flags:u32,attachment:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_DELETE_ATTACHED_SURFACE) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,u32,*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,flags,attachment);
+    record_surface_usage(this,surface_usage::Method::DeleteAttachedSurface,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_get_dc(this:*mut c_void,dc:*mut *mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_GET_DC) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,dc);
+    record_surface_usage(this,surface_usage::Method::GetDC,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_is_lost(this:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_IS_LOST) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this);
+    record_surface_usage(this,surface_usage::Method::IsLost,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_lock(this:*mut c_void,rect:*const c_void,desc:*mut c_void,flags:u32,event:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_LOCK) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,u32,*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,rect,desc,flags,event);
+    record_surface_usage(this,surface_usage::Method::Lock,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_release_dc(this:*mut c_void,dc:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_RELEASE_DC) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,dc);
+    record_surface_usage(this,surface_usage::Method::ReleaseDC,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_restore(this:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_RESTORE) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this);
+    record_surface_usage(this,surface_usage::Method::Restore,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_set_clipper(this:*mut c_void,clipper:*mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_SET_CLIPPER) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,clipper);
+    record_surface_usage(this,surface_usage::Method::SetClipper,hr);
+    hr
+}
+
+unsafe extern "system" fn audit_surface_get_ddinterface(this:*mut c_void,out:*mut *mut c_void)->Hr {
+    let Some(address)=orig(this,SURFACE_USAGE_GET_DDINTERFACE) else {return DDERR_GENERIC;};
+    let original:unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr=std::mem::transmute(address);
+    let hr=original(this,out);
+    record_surface_usage(this,surface_usage::Method::GetDDInterface,hr);
+    hr
+}
 unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize);
@@ -699,6 +811,23 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as usize);
     let attached=replace_method(surface,SURFACE_GET_ATTACHED,modern_get_attached_surface as usize);
     let desc=replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as usize);
+    if surface_usage_enabled(){
+        let installed=[
+            replace_method(surface,SURFACE_USAGE_ADD_ATTACHED_SURFACE,audit_surface_add_attached_surface as usize),
+            replace_method(surface,SURFACE_USAGE_DELETE_ATTACHED_SURFACE,audit_surface_delete_attached_surface as usize),
+            replace_method(surface,SURFACE_USAGE_GET_DC,audit_surface_get_dc as usize),
+            replace_method(surface,SURFACE_USAGE_IS_LOST,audit_surface_is_lost as usize),
+            replace_method(surface,SURFACE_USAGE_LOCK,audit_surface_lock as usize),
+            replace_method(surface,SURFACE_USAGE_RELEASE_DC,audit_surface_release_dc as usize),
+            replace_method(surface,SURFACE_USAGE_RESTORE,audit_surface_restore as usize),
+            replace_method(surface,SURFACE_USAGE_SET_CLIPPER,audit_surface_set_clipper as usize),
+            replace_method(surface,SURFACE_USAGE_GET_DDINTERFACE,audit_surface_get_ddinterface as usize),
+        ];
+        if MODERN_SURFACE_HOOK_TRACE_COUNT.load(Ordering::Relaxed)<24 {
+            log(&format!("SURFACE-USAGE-HOOKS: installed={}/{} methods (opt-in; passive)",
+                installed.iter().filter(|&&yes|yes).count(),installed.len()));
+        }
+    }
     if MODERN_SURFACE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<24 {
         log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} get_attached={attached} get_desc={desc} (observation only)"));
     }

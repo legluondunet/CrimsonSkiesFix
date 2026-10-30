@@ -14,3 +14,5 @@ ModernFPSPacing=0
 ; 0 = no CrimsonSkiesFix.log is created beside ddraw.dll.
 ; 1 = write CrimsonSkiesFix.log beside ddraw.dll.
 Log=0
+; Optional: passive surface-method audit, requires Log=1. No graphic changes.
+SurfaceUsageTrace=0

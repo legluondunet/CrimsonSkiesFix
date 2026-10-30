@@ -11,6 +11,8 @@ pub const DEFAULT_INI: &str = concat!(
     "\n",
     "[Debug]\n",
     "Log=0\n",
+    "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
+    "SurfaceUsageTrace=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,11 +22,12 @@ pub struct Config {
     pub fps_limit: u32,
     pub modern_fps_pacing: bool,
     pub log_enabled: bool,
+    pub surface_usage_trace: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, log_enabled: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, log_enabled: false, surface_usage_trace: false }
     }
 }
 
@@ -60,6 +63,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
+            ("debug", "surfaceusagetrace") =>
+                if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
             _ => {},
@@ -79,7 +84,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, log_enabled:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, log_enabled:false, surface_usage_trace:false });
     }
     #[test]
     fn modern_pacing_is_explicit_opt_in_and_graphics_only(){
@@ -87,6 +92,13 @@ mod tests {
         assert!(!parse("[Debug]\nModernFPSPacing=1").modern_fps_pacing);
         assert!(parse("[Graphics]\nModernFPSPacing=1").modern_fps_pacing);
         assert!(!parse("[Graphics]\nModernFPSPacing=1\nModernFPSPacing=0").modern_fps_pacing);
+    }
+    #[test]
+    fn surface_usage_trace_is_opt_in_and_debug_scoped(){
+        assert!(!Config::default().surface_usage_trace);
+        assert!(!parse("[Graphics]\nSurfaceUsageTrace=1").surface_usage_trace);
+        assert!(parse("[Debug]\nSurfaceUsageTrace=1\nLog=1").surface_usage_trace);
+        assert!(!parse("[Debug]\nSurfaceUsageTrace=1\nSurfaceUsageTrace=0").surface_usage_trace);
     }
     #[test]
     fn cannot_exceed_sixty() {
