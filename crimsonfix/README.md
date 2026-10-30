@@ -167,6 +167,22 @@ Its purpose is to supply the pixel conversion stage for the eventual
 windowed presenter. The module has no Windows API, file IO, COM,
 surface creation or game-hook side effects.
 
+The new `src/win32_present.rs` implements a separate **inactive**
+Win32 GDI output stage using a top-down 32-bit `BI_RGB` DIB and
+`SetDIBitsToDevice`. It validates that the target is an actual
+process-owned HWND with client bounds matching the composed picture,
+checks the buffer size, and always releases the window DC.
+Importantly, it does not alter the game window, DirectDraw mode, or
+input focus. It has independent tests for the 40-byte DIB header,
+negative top-down height, and invalid or short buffers.
+
+**Neither stage is connected to the live game's DirectDraw Flip yet.**
+The GDI presenter is only a future software-output option for a
+compatible *windowed* renderer; drawing GDI over an exclusive
+DirectDraw flip chain would not produce stable, real borderless 3D.
+A later version must supply the necessary COM surface virtualization
+or a compatible DirectDraw/Direct3D translation layer first.
+
 **This compositor is intentionally not wired into the actual Flip
 path yet.** Before presenting any game frame, a future backend must
 virtualize the primary/backbuffer while preserving the Z-buffer and
