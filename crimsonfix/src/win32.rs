@@ -46,6 +46,10 @@ extern "system" {
     fn SetWindowPos(hwnd:Hwnd,insert_after:Hwnd,x:i32,y:i32,width:i32,height:i32,flags:u32)->i32;
     fn IsWindow(hwnd:Hwnd)->i32;
     fn GetWindowThreadProcessId(hwnd:Hwnd,process_id:*mut u32)->u32;
+    fn EnumWindows(callback:unsafe extern "system" fn(Hwnd,isize)->i32,context:isize)->i32;
+    fn IsWindowVisible(hwnd:Hwnd)->i32;
+    fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
+    fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
 }
 
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
@@ -158,6 +162,47 @@ pub fn monitor_from_cursor_or_window(hwnd:Hwnd)->Option<Rect> {
         if GetMonitorInfoW(handle,&mut info)==0{return None;}
         Some(info.monitor)
     }
+}
+
+
+#[derive(Default)]
+struct GameWindowSnapshot {
+    all:u32,
+    visible:u32,
+    top_level_visible:u32,
+    geometry:Vec<String>,
+}
+
+// Diagnostic-only; never expose window titles, HWND values, raw class names
+// or unrelated process windows. Bounded enumeration at DirectDraw setup time.
+unsafe extern "system" fn game_window_callback(hwnd:Hwnd,context:isize)->i32 {
+    let probe=&mut *(context as *mut GameWindowSnapshot);
+    let mut owner_pid=0u32;
+    if GetWindowThreadProcessId(hwnd,&mut owner_pid)==0 || owner_pid!=GetCurrentProcessId(){
+        return 1;
+    }
+    probe.all+=1;
+    if IsWindowVisible(hwnd)==0{return 1;}
+    probe.visible+=1;
+    if !GetWindow(hwnd,4 /* GW_OWNER */).is_null(){return 1;}
+    probe.top_level_visible+=1;
+    if probe.geometry.len()<4{
+        let mut rect=Rect::default();
+        if GetWindowRect(hwnd,&mut rect)!=0{
+            let w=rect.right.saturating_sub(rect.left);
+            let h=rect.bottom.saturating_sub(rect.top);
+            probe.geometry.push(format!("{w}x{h}"));
+        }
+    }
+    1
+}
+
+pub fn game_windows_snapshot()->String {
+    let mut probe=GameWindowSnapshot::default();
+    let result=unsafe{EnumWindows(game_window_callback,&mut probe as *mut _ as isize)};
+    if result==0 {return "EnumWindows failed".into();}
+    format!("process_windows={} visible={} unowned_visible={} sizes=[{}] (observation only; no HWND selected)",
+        probe.all,probe.visible,probe.top_level_visible,probe.geometry.join(","))
 }
 
 // The early Crimson Skies SetCooperativeLevel calls may use a NULL HWND.
