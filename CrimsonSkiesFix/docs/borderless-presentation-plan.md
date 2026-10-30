@@ -945,6 +945,13 @@ physical COM virtual primary/backbuffer/depth
 surface chain and verified IUnknown identities,
 not just this working real backend.
 
+## Stage B4c — v0.1.34 shared real DirectDraw4 physical presenter
+
+The owner's v0.1.33 `--borderless-loop` log confirms exactly `FLIP-BLT-RESULT: requested=120 successful=120 elapsed_ms=1508 (NOT gameplay FPS)` and `PROBE COMPLETED: PASS`. Every real DirectDraw4 windowed primary presentation succeeded. Test window 1920x1080 at 0,0, 4:3 region 1440x1080 at x=240; the desktop mode remained unchanged.
+
+The NativeWindowedBlt implementation has been extracted to an identical shared source module used by the standalone test and **compiled but inactive** inside `ddraw.dll`. The module's unsafe constructor requires physical IDirectDrawSurface4 pointers and caller-maintained COM ownership; geometry and HRESULTs are explicitly checked. Three isolated mock-vtable tests cover flags, actual screen-space viewport rectangles, color fill, propagation of a failing Blt and refusal to dispatch invalid geometry.
+
+No virtual game COM interface, GetAttachedSurface handler or active in-game Flip hook was added; the game path is still exclusive/unchanged. This is a safe engineering prerequisite, not a borderless game feature. Owner follow-up may use the unchanged `--borderless-loop` option with the v0.1.34 separate EXE.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

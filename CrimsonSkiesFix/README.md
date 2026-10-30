@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.33 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.34 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -153,6 +153,17 @@ actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
 
+## v0.1.34 — 120/120 real presentations confirmed; native Blt backend shared
+
+The owner-provided `windowed_ddraw_probe(8).log` from the **v0.1.33 --borderless-loop** test reports **120/120 successful real DirectDraw4 pairs** in a 1920x1080 borderless HWND, each pair comprising black primary clear and RGB565 stretch into x=240, y=0, 1440x1080. Direct3D3 HAL, Z32 and scene calls also pass. The elapsed 1508 ms includes test sleeps and **is not game FPS**. The log cannot alone prove pixel appearance.
+
+Stage B4c creates `src/borderless_native_blt.rs`: a single **real physical DirectDraw4 windowed Blt backend** now compiled in both the standalone test and the DLL. It implements the shared `WindowedBlt` API, validates client/source/viewport rectangles and integer overflow, and calls the actual Surface4 vtable Blt slot 5 with proper DDBLTFX and HRESULT propagation. The code borrows live COM objects, does not AddRef/Release, and may be constructed only by a caller that owns a valid windowed primary with clipper and a real RGB565 offscreen target.
+
+Three x86 tests use a fake 45-slot COM vtable to verify exact black-clear then stretch calls, desktop coordinate translation, flags, DWORD-20 fill and error/invalid-geometry handling.
+
+The **standalone EXE v0.1.34 uses this exact same physical module** with its existing logging and 120-frame optional `--borderless-loop` test. No other standalone behavior is intended to change. The game DLL only compiles the new module; **it does not construct or use it in gameplay**. The full virtual primary/backbuffer/Z-buffer COM interface and safe Flip interception remain pending. The original game graphics, FPS behavior and INI remain unchanged.
+
+To verify the refactor under Wine, run the separate standalone `windowed_ddraw_probe.exe --borderless-loop` (from a writable folder outside the game) and attach its adjacent `windowed_ddraw_probe.log`.
 ## v0.1.33 — connect Flip-to-Blt transaction to a real standalone backend
 
 The owner confirmed a full API-level **PASS** for the
