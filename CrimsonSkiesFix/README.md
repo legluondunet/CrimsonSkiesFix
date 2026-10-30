@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.41 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.42 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,18 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.42 — actual virtual Surface4::Flip dispatch into real windowed DirectDraw Blts
+
+The owner's v0.1.41 `--com-surface-chain` log is a complete **PASS**: three different real-DirectDraw4-backed virtual Surface4 COM pointers, working Primary→Backbuffer→Z32 GetAttachedSurface references, 640x480 logical formats, native D3D3 HAL on the unwrapped RGB565 backbuffer and identity-preserving GetRenderTarget. The windowed native black clear/stretch succeeds at 1920x1080 without changing the desktop resolution.
+
+Stage B4k introduces an explicit, **default-off, one-time `arm_graph_primary_flip` gate** for the virtual-primary COM object's **actual IDirectDrawSurface4::Flip vtable method**. The graph must include Primary→Backbuffer→Depth, an `AdapterContract` at Phase::Exposed backed by successful physical preflight and exactly matched client size/mode. Its `Flip` method rejects wrong target or flags and never forwards virtual Flip to the native exclusive Flip. When armed, a valid Flip calls the existing fail-closed `FlipToBltBridge` and genuine HWND-clipped primary black clear + scaled RGB565 offscreen Blt. A failed Blt propagates the actual HRESULT and latches the bridge's fault: no silent exclusive retry. The virtual primary retains strong child references; the session is destroyed with the wrapper.
+
+New unit tests validate successful COM-vtable Flip dispatch, 2 acknowledged frames / 4 physical native Blts, refusal before arm or with invalid target/flags, and no native `Flip` calls. The existing default-off and passive forwarding tests remain.
+
+Standalone Windows x86 v0.1.42 adds **`--com-virtual-flip`**. It repeats the complete v0.1.41 live COM graph and D3D3 HAL setup, checks the unarmed Flip refuses, preflights real windowed presentation, explicitly arms the graph and runs **120 virtual COM `Flip` calls** with changing RGB565 source colors and D3D3 HAL scene calls. Every acknowledged virtual frame corresponds to two real windowed Blts. It logs groups of 30, exact HRESULT failure and `COM-VFLIP-FINAL: PASS` only when the sequence completes.
+
+The actual game DLL still has **no caller that arms this virtual graph or replaces its original DirectDraw4 interfaces**. This is not yet an in-game borderless release. Owner should run the new separate standalone probe from an isolated folder: `wine ./windowed_ddraw_probe.exe --com-virtual-flip` and share its log.
 
 ## v0.1.41 — real three-surface COM attachment graph with fail-closed operations
 

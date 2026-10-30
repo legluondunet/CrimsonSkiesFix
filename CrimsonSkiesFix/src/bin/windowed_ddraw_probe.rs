@@ -155,9 +155,9 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip, ComSurfaceChain }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip, ComSurfaceChain, ComVirtualFlip }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip|Self::ComSurfaceChain)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip|Self::ComSurfaceChain|Self::ComVirtualFlip)}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -170,7 +170,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [arg] if arg=="--com-device-bridge" => Ok(ProbeMode::ComDeviceBridge),
         [arg] if arg=="--com-device-roundtrip" => Ok(ProbeMode::ComDeviceRoundtrip),
         [arg] if arg=="--com-surface-chain" => Ok(ProbeMode::ComSurfaceChain),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip|--com-surface-chain]".to_owned())
+        [arg] if arg=="--com-virtual-flip" => Ok(ProbeMode::ComVirtualFlip),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip|--com-surface-chain|--com-virtual-flip]".to_owned())
     }
 }
 
@@ -192,7 +193,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip|ProbeMode::ComSurfaceChain=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip|ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -613,7 +614,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.41; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.42; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -630,7 +631,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         ProbeMode::ComDevice=>"com-device-borderless-opt-in",
         ProbeMode::ComDeviceBridge=>"com-device-bridge-borderless-opt-in",
         ProbeMode::ComDeviceRoundtrip=>"com-device-roundtrip-borderless-opt-in",
-        ProbeMode::ComSurfaceChain=>"com-surface-chain-borderless-opt-in"};
+        ProbeMode::ComSurfaceChain=>"com-surface-chain-borderless-opt-in",
+        ProbeMode::ComVirtualFlip=>"com-virtual-flip-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -761,7 +763,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // obtain its *own internal* ddraw_surface, not a generic COM proxy.
     // New opt-in --com-device-bridge explicitly borrows the physical
     // Surface4 at the D3D boundary while keeping wrapper alive.
-    let surface_chain=if mode==ProbeMode::ComSurfaceChain{
+    let surface_chain=if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip){
         Some(unsafe{test_real_virtual_surface_chain(&primary,&target,&depth)?})
     }else{None};
     let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip);
@@ -822,6 +824,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             ProbeMode::ComDeviceBridge=>"COM-DEVICE-BRIDGE.CreateDevice(HAL, ORIGINAL RGB565 Surface4)",
             ProbeMode::ComDeviceRoundtrip=>"COM-ROUNDTRIP.CreateDevice(HAL, original physical RGB565 Surface4)",
             ProbeMode::ComSurfaceChain=>"COM-CHAIN.CreateDevice(HAL, physical graph Backbuffer)",
+            ProbeMode::ComVirtualFlip=>"COM-VFLIP.CreateDevice(HAL, physical virtual-backbuffer target)",
             _=>"IDirect3D3.CreateDevice(HAL, RGB565 target)"
         };
         check(label,create(d3d.0,&CLSID_D3D_HAL,device_target,&mut device,ptr::null_mut()))?;
@@ -866,7 +869,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             }
         }
     }
-    if mode==ProbeMode::ComSurfaceChain{
+    if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip){
         let (_,ref back,_)=surface_chain.as_ref().unwrap();
         unsafe{
             let get:unsafe extern "system" fn(Ptr,*mut Ptr)->Hr=
@@ -968,12 +971,69 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let mut backend=LoggedNativeBlt{
         inner:physical,_primary:&primary,_source:&target,verbose:true,
     };
-    let frames=if mode==ProbeMode::BorderlessLoop{120u32}else{1u32};
-    probe_line(&format!("FLIP-BLT-SEQUENCE: requested_frames={frames} backend=real-DirectDraw4"));
+    if mode==ProbeMode::ComVirtualFlip{
+        use borderless_contract::{AdapterContract,BackendEvidence,RenderTarget};
+        let (gp,gb,gz)=surface_chain.as_ref()
+            .ok_or_else(||"COM-VFLIP: no attached Surface4 graph".to_owned())?;
+        let vt=unsafe{&**gp.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let prearm=unsafe{(vt.flip)(gp.0,gb.0,0)};
+        if prearm!=0x8000_4001u32 as i32{
+            return Err(format!("COM-VFLIP: pre-arm Flip must fail closed, returned {:#010x}",
+                prearm as u32));
+        }
+        probe_line("COM-VFLIP-PREARM: virtual primary Flip rejected safely before activation");
+        // Physical proof precedes exposing the *standalone* graph contract.
+        // No game COM interface is exposed by this program.
+        borderless_flip::execute_windowed_blt_pair(
+            &mut backend,source,(client_w,client_h),view
+        ).map_err(|e|format!("COM-VFLIP: physical presentation preflight failed: {e:?}"))?;
+        probe_line("COM-VFLIP-PREFLIGHT: actual clipped black clear + native RGB565 stretch OK");
+        let mut contract=AdapterContract::prepare(
+            source,(client_w,client_h),
+            presentation::Chain{
+                front_to_back:true,back_to_depth:true,mipmaps:false
+            }
+        ).map_err(|e|format!("COM-VFLIP: invalid graph plan: {e:?}"))?;
+        contract.expose(BackendEvidence{
+            process_owned_window:true,
+            normal_directdraw:true,
+            render_target:RenderTarget::RealDirectDrawSurface4,
+            render_target_caps:DDSCAPS_3DDEVICE,
+            render_target_is_rgb565:true,
+            real_zbuffer_32:true,
+            primary_with_clipper:true,
+            working_blt:true,
+            complete_surface_com:true,
+        }).map_err(|e|format!("COM-VFLIP: adapter refused physical evidence: {e:?}"))?;
+        let generation=1042;
+        unsafe{
+            com_surface4_forward::arm_graph_primary_flip(
+                gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h)
+            ).map_err(|hr|format!("COM-VFLIP: arm failed {:#010x}",hr as u32))?;
+        }
+        if unsafe{com_surface4_forward::graph_primary_completed_flips(gp.0)}!=Some(0){
+            return Err("COM-VFLIP: armed graph has incorrect initial frame count".into());
+        }
+        let invalid_target=unsafe{(vt.flip)(gp.0,gz.0,0)};
+        let invalid_flags=unsafe{(vt.flip)(gp.0,gb.0,1)};
+        if invalid_target!=0x8007_0057u32 as i32||
+           invalid_flags!=0x8007_0057u32 as i32 ||
+           unsafe{com_surface4_forward::graph_primary_completed_flips(gp.0)}!=Some(0){
+            return Err("COM-VFLIP: invalid target/flags touched presentation".into());
+        }
+        probe_line("COM-VFLIP-ARMED: complete COM graph, physical HAL and presenter verified");
+        probe_line("COM-VFLIP-GUARD: wrong target/flags rejected before any physical frame");
+    }
+    let frames=if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip){120u32}else{1u32};
+    probe_line(&format!(
+        "FLIP-BLT-SEQUENCE: requested_frames={frames} backend={}",
+        if mode==ProbeMode::ComVirtualFlip{"virtual-Surface4::Flip -> real DirectDraw4 Blt"}
+        else{"real-DirectDraw4"}
+    ));
     let start=std::time::Instant::now();
     let mut completed=0u32;
     for n in 0..frames{
-        if mode==ProbeMode::BorderlessLoop{
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip){
             // Animate physical RGB565 colors; these are NOT game frames.
             // Keep logs bounded even for 120 consecutive actual Blts.
             let color=[0xf800u32,0x07e0u32,0x001fu32][n as usize%3];
@@ -997,20 +1057,43 @@ fn run(mode:ProbeMode)->Result<(),String>{
                     "FLIP-BLT frame {} EndScene failed: {:#010x}",n+1,hr as u32));}
             }
         }
-        backend.verbose=n==0;
-        borderless_flip::execute_windowed_blt_pair(
-            &mut backend,source,(client_w,client_h),view
-        ).map_err(|e|format!("FLIP-BLT frame {}/{} failed: {e:?}",n+1,frames))?;
-        completed+=1;
-        if mode==ProbeMode::BorderlessLoop && completed%30==0{
-            probe_line(&format!("FLIP-BLT-PROGRESS: successful_frames={completed}/{frames}"));
+        if mode==ProbeMode::ComVirtualFlip{
+            let (gp,gb,_)=surface_chain.as_ref().unwrap();
+            unsafe{
+                let flip=(&**gp.0.cast::<*const com_surface4_abi::Surface4VTable>()).flip;
+                let hr=flip(gp.0,gb.0,0);
+                if hr<0{
+                    return Err(format!("COM-VFLIP frame {}/{} virtual Flip failed: {:#010x}",
+                        n+1,frames,hr as u32));
+                }
+                if n==0{
+                    probe_line("COM-VFLIP.Flip(virtual Primary, virtual Backbuffer): HRESULT=0x00000000 OK");
+                }
+                let count=com_surface4_forward::graph_primary_completed_flips(gp.0);
+                if count!=Some(u64::from(n)+1){
+                    return Err(format!("COM-VFLIP: acknowledged frame counter invalid: {count:?}"));
+                }
+            }
+        }else{
+            backend.verbose=n==0;
+            borderless_flip::execute_windowed_blt_pair(
+                &mut backend,source,(client_w,client_h),view
+            ).map_err(|e|format!("FLIP-BLT frame {}/{} failed: {e:?}",n+1,frames))?;
         }
-        if mode==ProbeMode::BorderlessLoop{
-            unsafe{Sleep(12);} // demo cadence, NEVER measured gameplay FPS
+        completed+=1;
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip) && completed%30==0{
+            probe_line(&format!(
+                "{}: successful_frames={completed}/{frames}",
+                if mode==ProbeMode::ComVirtualFlip{"COM-VFLIP-PROGRESS"}else{"FLIP-BLT-PROGRESS"}
+            ));
+        }
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip){
+            unsafe{Sleep(12);} // visual demo, NEVER measured gameplay FPS
         }
     }
     probe_line(&format!(
-        "FLIP-BLT-RESULT: requested={frames} successful={completed} elapsed_ms={} (NOT gameplay FPS)",
+        "{}: requested={frames} successful={completed} elapsed_ms={} (NOT gameplay FPS)",
+        if mode==ProbeMode::ComVirtualFlip{"COM-VFLIP-RESULT"}else{"FLIP-BLT-RESULT"},
         start.elapsed().as_millis()));
     // A windowed primary Blt success means the DirectDraw backend accepted
     // the operation, but does not independently measure displayed pixels.
@@ -1024,6 +1107,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-ROUNDTRIP-FINAL: PASS (wrapper -> native D3D3 -> wrapper identity, scene, 4:3 Blt)");
     }else if mode==ProbeMode::ComSurfaceChain{
         probe_line("COM-CHAIN-FINAL: PASS (virtual Primary->Backbuffer->Z32, physical HAL D3D3, 4:3 Blt)");
+    }else if mode==ProbeMode::ComVirtualFlip{
+        probe_line("COM-VFLIP-FINAL: PASS (120 real native presentations through virtual Surface4::Flip)");
     }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
@@ -1040,7 +1125,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.41");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.42");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -1162,6 +1247,7 @@ mod tests{
         assert_eq!(parse_mode(&["--com-device-bridge".to_owned()]),Ok(ProbeMode::ComDeviceBridge));
         assert_eq!(parse_mode(&["--com-device-roundtrip".to_owned()]),Ok(ProbeMode::ComDeviceRoundtrip));
         assert_eq!(parse_mode(&["--com-surface-chain".to_owned()]),Ok(ProbeMode::ComSurfaceChain));
+        assert_eq!(parse_mode(&["--com-virtual-flip".to_owned()]),Ok(ProbeMode::ComVirtualFlip));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -1188,6 +1274,7 @@ mod tests{
         let roundtrip_plan=plan_test_window(ProbeMode::ComDeviceRoundtrip,1920,1080).unwrap();
         assert_eq!(roundtrip_plan,plan);
         assert_eq!(plan_test_window(ProbeMode::ComSurfaceChain,1920,1080).unwrap(),plan);
+        assert_eq!(plan_test_window(ProbeMode::ComVirtualFlip,1920,1080).unwrap(),plan);
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);
