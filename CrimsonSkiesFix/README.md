@@ -15,7 +15,7 @@ layout is:
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonSkiesFix.log           # created ONLY when [Debug] Log=1, beside ddraw.dll
+  CrimsonSkiesFix.log           # created when Log=1 or ExperimentalWindowedAdapter=1
   CrimsonSkiesFix/
     CrimsonSkiesFix.ini.example # shipped with the ZIP; safe to overwrite
     README.md
