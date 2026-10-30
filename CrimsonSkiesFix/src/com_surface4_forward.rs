@@ -16,7 +16,7 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex,atomic::{AtomicPtr,AtomicU32,Ordering}},
+    sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,Ordering}},
 };
 use crate::{
     Guid,
@@ -71,6 +71,7 @@ struct Surface4Forwarder{
     graph:Option<VirtualGraphNode>, // None retains pure passthrough semantics
     attached:AtomicPtr<c_void>,  // one strong child edge when graph is set
     virtual_flip:Mutex<Option<GraphFlipSession>>, // explicitly armed once; default off
+    retired:AtomicBool, // permanent tombstone after a resolution epoch ends
 }
 
 /// # Safety
@@ -89,7 +90,7 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         vtable:&SURFACE4_FORWARD_VTABLE,
         real,refs:AtomicU32::new(1),
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
-        virtual_flip:Mutex::new(None),
+        virtual_flip:Mutex::new(None),retired:AtomicBool::new(false),
     });
     Ok(Box::into_raw(obj).cast())
 }
@@ -213,7 +214,7 @@ pub unsafe fn arm_graph_primary_flip(
         p.real,b.real,origin,client,node.mode
     ).map_err(|_|E_INVALIDARG)?;
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
-    if state.is_some(){return Err(E_FAIL);}
+    if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode});
     Ok(())
 }
@@ -229,6 +230,32 @@ pub unsafe fn graph_primary_completed_flips(primary:SurfaceThis)->Option<u64>{
     if p.graph?.role!=SurfaceRole::Primary{return None;}
     let guard=p.virtual_flip.lock().ok()?;
     Some(guard.as_ref()?.bridge.stats().complete_frames)
+}
+
+/// Retire a fully armed virtual primary at a resolution-generation boundary.
+/// This is a permanent fail-closed tombstone: old game-facing COM references
+/// may remain valid until Release, but their Flip cannot reach a physical Blt.
+/// Retirement and in-flight Flip use the SAME mutex, so the old presenter
+/// is dropped only after the last physical Blt call has returned. The same
+/// virtual primary cannot be rearmed for a new generation.
+///
+/// # Safety
+/// primary must be a live game-facing Surface4 COM pointer with a valid
+/// client-owned reference, and callers must serialize external resource
+/// lifetime according to the owning COM references.
+pub unsafe fn retire_graph_primary_flip(primary:SurfaceThis)->Result<u64,i32>{
+    if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
+    let p=&*primary.cast::<Surface4Forwarder>();
+    if p.graph.map(|node|node.role)!=Some(SurfaceRole::Primary){
+        return Err(E_INVALIDARG);
+    }
+    let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
+    if p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
+    let Some(session)=state.take() else{return Err(E_FAIL);};
+    let completed=session.bridge.stats().complete_frames;
+    p.retired.store(true,Ordering::Release);
+    drop(session); // lifetime-owning backend is no longer allowed to present
+    Ok(completed)
 }
 
 /// Borrow the real DirectDraw4 surface only from our OWN Surface4 COM
@@ -896,6 +923,13 @@ mod tests{
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),4);
             assert_eq!(phys[0].flips.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].flips.load(Ordering::SeqCst),0);
+            assert_eq!(retire_graph_primary_flip(p),Ok(2));
+            assert_eq!(graph_primary_completed_flips(p),None);
+            assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
+            assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
+            assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080)),Err(E_FAIL));
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),4); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
             assert_eq!((vt.release)(z),0);
