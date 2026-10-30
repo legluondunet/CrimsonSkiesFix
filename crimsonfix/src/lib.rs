@@ -76,6 +76,8 @@ static FIRST_MODERN_UNLOCK:Once=Once::new();
 static MODERN_COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_DISPLAY_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_SURFACE_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MODERN_SURFACE_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MODERN_DDRAW_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -293,7 +295,9 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
     let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as usize);
     let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as usize);
-    log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} (observation only)"));
+    if MODERN_SURFACE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<24 {
+        log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} (observation only)"));
+    }
 }
 unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     if object.is_null() || !cfg().log_enabled {return;}
@@ -301,7 +305,9 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
     let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as usize);
-    log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
+    if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
+        log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
+    }
 }
 
 // Read-only interface discovery: the original COM QueryInterface is called
