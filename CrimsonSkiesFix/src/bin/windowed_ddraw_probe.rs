@@ -25,6 +25,8 @@ mod borderless_native_blt;
 mod com_surface4_abi;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
+#[path="../com_surface4_roundtrip.rs"]
+mod com_surface4_roundtrip;
 use borderless_flip::WindowedBlt;
 
 use std::{
@@ -153,9 +155,9 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip)}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -166,7 +168,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [arg] if arg=="--com-forward" => Ok(ProbeMode::ComForward),
         [arg] if arg=="--com-device" => Ok(ProbeMode::ComDevice),
         [arg] if arg=="--com-device-bridge" => Ok(ProbeMode::ComDeviceBridge),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge]".to_owned())
+        [arg] if arg=="--com-device-roundtrip" => Ok(ProbeMode::ComDeviceRoundtrip),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip]".to_owned())
     }
 }
 
@@ -188,7 +191,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -493,7 +496,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.39; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.40; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -508,7 +511,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         ProbeMode::BorderlessLoop=>"borderless-loop-opt-in",
         ProbeMode::ComForward=>"com-forward-borderless-opt-in",
         ProbeMode::ComDevice=>"com-device-borderless-opt-in",
-        ProbeMode::ComDeviceBridge=>"com-device-bridge-borderless-opt-in"};
+        ProbeMode::ComDeviceBridge=>"com-device-bridge-borderless-opt-in",
+        ProbeMode::ComDeviceRoundtrip=>"com-device-roundtrip-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -639,9 +643,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // obtain its *own internal* ddraw_surface, not a generic COM proxy.
     // New opt-in --com-device-bridge explicitly borrows the physical
     // Surface4 at the D3D boundary while keeping wrapper alive.
-    let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge);
+    let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip);
     let wrapped_device_target=if needs_wrapper{
-        probe_line(if mode==ProbeMode::ComDeviceBridge {
+        probe_line(if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip) {
             "COM-DEVICE-BRIDGE-START: wrapper retained; native Direct3D3 target unwrapped"
         }else{
             "COM-DEVICE-START: IDirect3D3.CreateDevice(HAL, forwarded Surface4)"
@@ -654,12 +658,23 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-DEVICE-WRAPPER: native 45-slot Surface4 with separate IUnknown identity created");
         Some(wrapped)
     }else{None};
-    let device_target=if mode==ProbeMode::ComDeviceBridge{
+    let roundtrip=if mode==ProbeMode::ComDeviceRoundtrip {
+        let wrapped=wrapped_device_target.as_ref()
+            .ok_or_else(||"COM-ROUNDTRIP: missing wrapper".to_owned())?;
+        let map=unsafe{com_surface4_roundtrip::Surface4RoundTrip::new(wrapped.0)}
+            .map_err(|hr|format!("COM-ROUNDTRIP: mapping constructor failed {:#010x}",hr as u32))?;
+        probe_line("COM-ROUNDTRIP-REGISTER: one owned wrapper reference and native target registered");
+        Some(map)
+    }else{None};
+    let device_target=if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip){
         let wrapped=wrapped_device_target.as_ref()
             .ok_or_else(||"COM-DEVICE-BRIDGE: no live wrapper".to_owned())?;
-        let native=unsafe{
-            com_surface4_forward::try_borrow_real_surface4(wrapped.0)
-        }.ok_or_else(||"COM-DEVICE-BRIDGE: cannot resolve our own wrapper".to_owned())?;
+        let native=if let Some(map)=roundtrip.as_ref(){
+            map.native_target()
+        }else{
+            unsafe{com_surface4_forward::try_borrow_real_surface4(wrapped.0)}
+                .ok_or_else(||"COM-DEVICE-BRIDGE: cannot resolve our own wrapper".to_owned())?
+        };
         if native!=target.0 || native==wrapped.0 {
             return Err("COM-DEVICE-BRIDGE: physical pointer mismatch".into());
         }
@@ -681,6 +696,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         let label=match mode{
             ProbeMode::ComDevice=>"COM-DEVICE.CreateDevice(HAL, forwarded RGB565 Surface4)",
             ProbeMode::ComDeviceBridge=>"COM-DEVICE-BRIDGE.CreateDevice(HAL, ORIGINAL RGB565 Surface4)",
+            ProbeMode::ComDeviceRoundtrip=>"COM-ROUNDTRIP.CreateDevice(HAL, original physical RGB565 Surface4)",
             _=>"IDirect3D3.CreateDevice(HAL, RGB565 target)"
         };
         check(label,create(d3d.0,&CLSID_D3D_HAL,device_target,&mut device,ptr::null_mut()))?;
@@ -689,7 +705,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let device=Com(device);
     if mode==ProbeMode::ComDevice{
         probe_line("COM-DEVICE-CREATED: real HAL device accepted Surface4 forwarding object");
-    }else if mode==ProbeMode::ComDeviceBridge{
+    }else if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip){
         probe_line("COM-DEVICE-BRIDGE-CREATED: native HAL device accepted borrowed underlying Surface4");
         unsafe{
             let get:unsafe extern "system" fn(Ptr,*mut Ptr)->Hr=
@@ -704,6 +720,25 @@ fn run(mode:ProbeMode)->Result<(),String>{
                     original.0==target.0,original.0==wrapped_device_target.as_ref().unwrap().0));
             }
             probe_line("COM-DEVICE-BRIDGE-RENDER-TARGET: native physical Surface4 returned, NOT wrapper");
+            if let Some(map)=roundtrip.as_ref(){
+                let mapped=map.map_native_result(original.0)
+                    .map_err(|hr|format!("COM-ROUNDTRIP: native result not registered {:#010x}",hr as u32))?;
+                let virtual_result=Com(mapped);
+                let wrapped=wrapped_device_target.as_ref().unwrap();
+                if !map.matches_wrapper(virtual_result.0) || virtual_result.0!=wrapped.0 {
+                    return Err("COM-ROUNDTRIP: wrong game-facing Surface4 identity".into());
+                }
+                let mut unknown=ptr::null_mut();
+                let qi:unsafe extern "system" fn(Ptr,*const Guid,*mut Ptr)->Hr=
+                    std::mem::transmute(slot(virtual_result.0,0));
+                let iid=Guid{d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]};
+                check("COM-ROUNDTRIP.QueryInterface(IUnknown)",qi(virtual_result.0,&iid,&mut unknown))?;
+                if unknown!=wrapped.0{return Err("COM-ROUNDTRIP: IUnknown identity mismatch".into());}
+                let alias=Com(unknown);
+                drop(alias);
+                drop(virtual_result);
+                probe_line("COM-ROUNDTRIP-RESULT: native GetRenderTarget remapped to original game-facing Surface4 identity");
+            }
         }
     }
     if mode==ProbeMode::ComForward{
@@ -721,7 +756,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }
     if mode==ProbeMode::ComDevice{
         probe_line("COM-DEVICE-SCENE: BeginScene and EndScene on real HAL device succeeded");
-    }else if mode==ProbeMode::ComDeviceBridge{
+    }else if matches!(mode,ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip){
         probe_line("COM-DEVICE-BRIDGE-SCENE: native HAL BeginScene/EndScene succeeded");
     }
 
@@ -841,6 +876,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-DEVICE-RESULT: PASS (forwarded Surface4 accepted by Direct3D3 HAL, D3D scene, Blt)");
     }else if mode==ProbeMode::ComDeviceBridge{
         probe_line("COM-DEVICE-BRIDGE-RESULT: PASS (wrapper identity retained, D3D3 receives native target, scene, Blt)");
+    }else if mode==ProbeMode::ComDeviceRoundtrip{
+        probe_line("COM-ROUNDTRIP-FINAL: PASS (wrapper -> native D3D3 -> wrapper identity, scene, 4:3 Blt)");
     }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
@@ -857,7 +894,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.39");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.40");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -977,6 +1014,7 @@ mod tests{
         assert_eq!(parse_mode(&["--com-forward".to_owned()]),Ok(ProbeMode::ComForward));
         assert_eq!(parse_mode(&["--com-device".to_owned()]),Ok(ProbeMode::ComDevice));
         assert_eq!(parse_mode(&["--com-device-bridge".to_owned()]),Ok(ProbeMode::ComDeviceBridge));
+        assert_eq!(parse_mode(&["--com-device-roundtrip".to_owned()]),Ok(ProbeMode::ComDeviceRoundtrip));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -1000,6 +1038,8 @@ mod tests{
         let bridge_plan=plan_test_window(ProbeMode::ComDeviceBridge,1920,1080).unwrap();
         assert_eq!(bridge_plan,plan);
         assert!(ProbeMode::ComDeviceBridge.borderless());
+        let roundtrip_plan=plan_test_window(ProbeMode::ComDeviceRoundtrip,1920,1080).unwrap();
+        assert_eq!(roundtrip_plan,plan);
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);

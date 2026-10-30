@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.39 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.40 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,16 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.40 — round-trip COM identity across the native D3D3 boundary
+
+The owner's v0.1.39 `--com-device-bridge` log is a full **PASS**: HAL `CreateDevice` accepts the borrowed original RGB565 Surface4, `GetRenderTarget` returns that exact physical target, BeginScene/EndScene succeed and 640x480 to centered 1440x1080 presentation succeeds in the unchanged 1920x1080 desktop.
+
+Stage B4i adds an **inactive single-target identity map** in `src/com_surface4_roundtrip.rs`. It preserves one game-facing Surface4 wrapper reference, retrieves the real physical target only for native HAL calls, and maps the physical result of Direct3D3 `GetRenderTarget` back to the **original, same COM wrapper identity** with a new caller-owned AddRef. The original physical result still requires independent COM Release. It refuses foreign native results and does not manufacture or advertise other Surface4 interface versions. Dedicated x86 mock-COM unit tests cover these reference, QI, null and foreign pointer conditions.
+
+The standalone program now offers **`--com-device-roundtrip`**. It creates the genuine RGB565+Z32 resources, wraps the target, registers the wrapper/native pair, calls native `IDirect3D3::CreateDevice(HAL, native)`, verifies physical `GetRenderTarget`, then remaps that returned physical surface to its original game-facing wrapper and checks `IUnknown` pointer identity before scene and presentation. It logs `COM-ROUNDTRIP-FINAL: PASS` only if the entire chain succeeds.
+
+This is a narrow test for **one** D3D render target, not yet a virtual primary/backbuffer/Z-buffer chain, a texture/surface registry, or a hooked Crimson Skies implementation. The original DLL behavior is unchanged. Run the new opt-in test from the standalone Windows x86 artifact outside the game directory: `wine ./windowed_ddraw_probe.exe --com-device-roundtrip` and share the adjacent log.
 
 ## v0.1.39 — HAL device boundary must unwrap the COM Surface4 wrapper
 
