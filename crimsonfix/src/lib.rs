@@ -136,7 +136,7 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("CrimsonFix {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
+                log(&format!("CrimsonSkiesFix {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
