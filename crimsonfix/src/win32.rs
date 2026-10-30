@@ -149,6 +149,24 @@ pub unsafe fn system_export(handle:*mut c_void,name:&[u8])->*const c_void {
     GetProcAddress(handle,name.as_ptr().cast())
 }
 
+// Unlike the legacy cursor-based screen choice, the presentation
+// preflight always targets the monitor containing the game's own HWND.
+pub fn monitor_for_game_window(hwnd:Hwnd)->Option<Rect> {
+    if hwnd.is_null(){return None;}
+    unsafe {
+        if IsWindow(hwnd)==0{return None;}
+        let mut owner=0u32;
+        if GetWindowThreadProcessId(hwnd,&mut owner)==0 || owner!=GetCurrentProcessId(){
+            return None;
+        }
+        let monitor=MonitorFromWindow(hwnd,2 /* MONITOR_DEFAULTTONEAREST */);
+        if monitor.is_null(){return None;}
+        let mut info=MonitorInfo::default();
+        info.size=std::mem::size_of::<MonitorInfo>() as u32;
+        (GetMonitorInfoW(monitor,&mut info)!=0).then_some(info.monitor)
+    }
+}
+
 pub fn monitor_from_cursor_or_window(hwnd:Hwnd)->Option<Rect> {
     unsafe {
         let mut cursor=Point::default();
