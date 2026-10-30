@@ -123,6 +123,24 @@ mod tests {
     }
 
     #[test]
+    fn crimson_4x3_rgb565_frame_on_16x9_output_gets_equal_side_bars() {
+        // 4x3 red frame => 8x6 viewport centered on 12x6 output.
+        let mut src=[0u8;4*3*2];
+        for chunk in src.chunks_exact_mut(2){chunk.copy_from_slice(&0xf800u16.to_le_bytes());}
+        let mut target=[0u8;12*6*4];
+        let area=compose_rgb565(
+            Image{bytes:&src,width:4,height:3,pitch:8},
+            &mut BgraOutput{bytes:&mut target,width:12,height:6,pitch:48}).unwrap();
+        assert_eq!(area,Viewport{x:2,y:0,width:8,height:6});
+        for y in 0..6usize {
+            let row=&target[y*48..(y+1)*48];
+            for x in 0..12usize {
+                let px=&row[x*4..(x+1)*4];
+                assert_eq!(px,if (2..10).contains(&x){&[0,0,255,255]}else{&[0,0,0,255]});
+            }
+        }
+    }
+    #[test]
     fn padded_source_and_target_rows_are_respected() {
         // A 2x1 input, 2 spare bytes after the visible pixels.
         let src=[0,0xf8, 0xe0,0x07, 0xde,0xad];
