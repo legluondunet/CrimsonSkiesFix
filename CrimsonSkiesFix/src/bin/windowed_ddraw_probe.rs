@@ -155,14 +155,26 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip, ComSurfaceChain, ComVirtualFlip, ComVirtualFlip800 }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice, ComDeviceBridge, ComDeviceRoundtrip, ComSurfaceChain, ComVirtualFlip, ComVirtualFlip800, ComVirtualFlipTransition }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip|Self::ComSurfaceChain|Self::ComVirtualFlip|Self::ComVirtualFlip800)}
-    fn virtual_flip(self)->bool{matches!(self,Self::ComVirtualFlip|Self::ComVirtualFlip800)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice|Self::ComDeviceBridge|Self::ComDeviceRoundtrip|Self::ComSurfaceChain|Self::ComVirtualFlip|Self::ComVirtualFlip800|Self::ComVirtualFlipTransition)}
+    fn virtual_flip(self)->bool{matches!(self,Self::ComVirtualFlip|Self::ComVirtualFlip800|Self::ComVirtualFlipTransition)}
     fn source_mode(self)->presentation::Mode{
         let (width,height)=if self==Self::ComVirtualFlip800{(800,600)}else{(640,480)};
         presentation::Mode{width,height,bpp:16}
     }
+}
+
+/// Three independently owned graphics epochs reuse one HWND, DD4 and clipper.
+/// This intentionally does not imitate the game's SetDisplayMode/COM hooks.
+fn probe_source_modes(mode:ProbeMode)->Vec<presentation::Mode>{
+    if mode==ProbeMode::ComVirtualFlipTransition{
+        vec![
+            presentation::Mode{width:800,height:600,bpp:16},
+            presentation::Mode{width:640,height:480,bpp:16},
+            presentation::Mode{width:800,height:600,bpp:16},
+        ]
+    }else{vec![mode.source_mode()]}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -177,7 +189,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [arg] if arg=="--com-surface-chain" => Ok(ProbeMode::ComSurfaceChain),
         [arg] if arg=="--com-virtual-flip" => Ok(ProbeMode::ComVirtualFlip),
         [arg] if arg=="--com-virtual-flip-800" => Ok(ProbeMode::ComVirtualFlip800),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip|--com-surface-chain|--com-virtual-flip|--com-virtual-flip-800]".to_owned())
+        [arg] if arg=="--com-virtual-flip-transition" => Ok(ProbeMode::ComVirtualFlipTransition),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device|--com-device-bridge|--com-device-roundtrip|--com-surface-chain|--com-virtual-flip|--com-virtual-flip-800|--com-virtual-flip-transition]".to_owned())
     }
 }
 
@@ -199,7 +212,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip|ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip|ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -621,9 +634,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
-    let source=mode.source_mode();
+    let sources=probe_source_modes(mode);
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.43; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.44; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -642,7 +655,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
         ProbeMode::ComDeviceRoundtrip=>"com-device-roundtrip-borderless-opt-in",
         ProbeMode::ComSurfaceChain=>"com-surface-chain-borderless-opt-in",
         ProbeMode::ComVirtualFlip=>"com-virtual-flip-borderless-opt-in",
-        ProbeMode::ComVirtualFlip800=>"com-virtual-flip-800-borderless-opt-in"};
+        ProbeMode::ComVirtualFlip800=>"com-virtual-flip-800-borderless-opt-in",
+        ProbeMode::ComVirtualFlipTransition=>"com-virtual-flip-transition-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -702,6 +716,17 @@ fn run(mode:ProbeMode)->Result<(),String>{
             std::mem::transmute(slot(primary.0,28));
         check("primary.SetClipper",set_clipper(primary.0,clipper.0))?;
     }
+    if mode==ProbeMode::ComVirtualFlipTransition{
+        probe_line("COM-TRANSITION-START: one HWND+DirectDraw4+clipper, three isolated 3D surface epochs (800x600 -> 640x480 -> 800x600)");
+    }
+    for (epoch_index,source) in sources.iter().copied().enumerate(){
+        if mode==ProbeMode::ComVirtualFlipTransition{
+            probe_line(&format!("COM-TRANSITION-EPOCH-START: epoch={}/{} source={}x{} bpp={} (recreate target/Z32/COM graph/D3D3 device)",
+                epoch_index+1,sources.len(),source.width,source.height,source.bpp));
+        }
+        // The braces force final COM Release for the previous physical and
+        // virtual device/surfaces before the next epoch allocates anything.
+        {
     let target=unsafe{create_surface(&ddraw,"RGB565 offscreen 3D target",
         desc(DDSCAPS_OFFSCREEN|DDSCAPS_3DDEVICE|DDSCAPS_VIDEOMEMORY,
              source.width,source.height,Some(16)))?};
@@ -773,7 +798,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // obtain its *own internal* ddraw_surface, not a generic COM proxy.
     // New opt-in --com-device-bridge explicitly borrows the physical
     // Surface4 at the D3D boundary while keeping wrapper alive.
-    let surface_chain=if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800){
+    let surface_chain=if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
         Some(unsafe{test_real_virtual_surface_chain(&primary,&target,&depth,source)?})
     }else{None};
     let needs_wrapper=matches!(mode,ProbeMode::ComDevice|ProbeMode::ComDeviceBridge|ProbeMode::ComDeviceRoundtrip);
@@ -834,7 +859,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             ProbeMode::ComDeviceBridge=>"COM-DEVICE-BRIDGE.CreateDevice(HAL, ORIGINAL RGB565 Surface4)",
             ProbeMode::ComDeviceRoundtrip=>"COM-ROUNDTRIP.CreateDevice(HAL, original physical RGB565 Surface4)",
             ProbeMode::ComSurfaceChain=>"COM-CHAIN.CreateDevice(HAL, physical graph Backbuffer)",
-            ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800=>"COM-VFLIP.CreateDevice(HAL, physical virtual-backbuffer target)",
+            ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition=>"COM-VFLIP.CreateDevice(HAL, physical virtual-backbuffer target)",
             _=>"IDirect3D3.CreateDevice(HAL, RGB565 target)"
         };
         check(label,create(d3d.0,&CLSID_D3D_HAL,device_target,&mut device,ptr::null_mut()))?;
@@ -879,7 +904,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             }
         }
     }
-    if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800){
+    if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
         let (_,ref back,_)=surface_chain.as_ref().unwrap();
         unsafe{
             let get:unsafe extern "system" fn(Ptr,*mut Ptr)->Hr=
@@ -1014,7 +1039,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
             working_blt:true,
             complete_surface_com:true,
         }).map_err(|e|format!("COM-VFLIP: adapter refused physical evidence: {e:?}"))?;
-        let generation=1042;
+        let generation=1042u64 + epoch_index as u64;
         unsafe{
             com_surface4_forward::arm_graph_primary_flip(
                 gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h)
@@ -1033,7 +1058,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-VFLIP-ARMED: complete COM graph, physical HAL and presenter verified");
         probe_line("COM-VFLIP-GUARD: wrong target/flags rejected before any physical frame");
     }
-    let frames=if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800){120u32}else{1u32};
+    let frames=if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){120u32}else{1u32};
     probe_line(&format!(
         "FLIP-BLT-SEQUENCE: requested_frames={frames} backend={}",
         if mode.virtual_flip(){"virtual-Surface4::Flip -> real DirectDraw4 Blt"}
@@ -1042,7 +1067,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let start=std::time::Instant::now();
     let mut completed=0u32;
     for n in 0..frames{
-        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800){
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
             // Animate physical RGB565 colors; these are NOT game frames.
             // Keep logs bounded even for 120 consecutive actual Blts.
             let color=[0xf800u32,0x07e0u32,0x001fu32][n as usize%3];
@@ -1090,13 +1115,13 @@ fn run(mode:ProbeMode)->Result<(),String>{
             ).map_err(|e|format!("FLIP-BLT frame {}/{} failed: {e:?}",n+1,frames))?;
         }
         completed+=1;
-        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800) && completed%30==0{
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition) && completed%30==0{
             probe_line(&format!(
                 "{}: successful_frames={completed}/{frames}",
                 if mode.virtual_flip(){"COM-VFLIP-PROGRESS"}else{"FLIP-BLT-PROGRESS"}
             ));
         }
-        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800){
+        if matches!(mode,ProbeMode::BorderlessLoop|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
             unsafe{Sleep(12);} // visual demo, NEVER measured gameplay FPS
         }
     }
@@ -1119,6 +1144,15 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }else if mode.virtual_flip(){
         probe_line("COM-VFLIP-FINAL: PASS (120 real native presentations through virtual Surface4::Flip)");
     }
+        } // Release all per-resolution COM owners, including virtual attachments.
+        if mode==ProbeMode::ComVirtualFlipTransition{
+            probe_line(&format!("COM-TRANSITION-EPOCH-END: epoch={}/{} source={}x{} finished; previous device/surface owners dropped",
+                epoch_index+1,sources.len(),source.width,source.height));
+        }
+    }
+    if mode==ProbeMode::ComVirtualFlipTransition{
+        probe_line("COM-TRANSITION-FINAL: PASS (3 full 120-Flip epochs; 800x600 -> 640x480 -> 800x600; one HWND/DD4/clipper; desktop preserved)");
+    }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
     // A temporary test window, deliberately self-closing. Give the owner
@@ -1134,7 +1168,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.43");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.44");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -1261,8 +1295,14 @@ mod tests{
         assert_eq!(parse_mode(&["--com-surface-chain".to_owned()]),Ok(ProbeMode::ComSurfaceChain));
         assert_eq!(parse_mode(&["--com-virtual-flip".to_owned()]),Ok(ProbeMode::ComVirtualFlip));
         assert_eq!(parse_mode(&["--com-virtual-flip-800".to_owned()]),Ok(ProbeMode::ComVirtualFlip800));
+        assert_eq!(parse_mode(&["--com-virtual-flip-transition".to_owned()]),Ok(ProbeMode::ComVirtualFlipTransition));
         assert_eq!((ProbeMode::ComVirtualFlip.source_mode().width,ProbeMode::ComVirtualFlip.source_mode().height),(640,480));
         assert_eq!((ProbeMode::ComVirtualFlip800.source_mode().width,ProbeMode::ComVirtualFlip800.source_mode().height),(800,600));
+        let transition=probe_source_modes(ProbeMode::ComVirtualFlipTransition);
+        assert_eq!(transition.len(),3);
+        assert_eq!(transition.iter().map(|m|(m.width,m.height,m.bpp)).collect::<Vec<_>>(),
+            vec![(800,600,16),(640,480,16),(800,600,16)]);
+        assert_eq!(probe_source_modes(ProbeMode::ComVirtualFlip).len(),1);
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -1291,6 +1331,8 @@ mod tests{
         assert_eq!(plan_test_window(ProbeMode::ComSurfaceChain,1920,1080).unwrap(),plan);
         assert_eq!(plan_test_window(ProbeMode::ComVirtualFlip,1920,1080).unwrap(),plan);
         assert_eq!(plan_test_window(ProbeMode::ComVirtualFlip800,1920,1080).unwrap(),plan);
+        assert_eq!(plan_test_window(ProbeMode::ComVirtualFlipTransition,1920,1080).unwrap(),plan);
+        assert!(ProbeMode::ComVirtualFlipTransition.virtual_flip());
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);
