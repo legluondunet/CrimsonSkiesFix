@@ -6,6 +6,8 @@ pub const DEFAULT_INI: &str = concat!(
     "Borderless=1\n",
     "DesktopResolution=1\n",
     "FPSLimit=60\n",
+    "; Experimental: pace only primary-surface modern Flip (off by default).\n",
+    "ModernFPSPacing=0\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -16,12 +18,13 @@ pub struct Config {
     pub borderless: bool,
     pub desktop_resolution: bool,
     pub fps_limit: u32,
+    pub modern_fps_pacing: bool,
     pub log_enabled: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, log_enabled: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, log_enabled: false }
     }
 }
 
@@ -53,6 +56,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.borderless = v; },
             ("graphics", "desktopresolution") =>
                 if let Some(v) = enabled(value) { settings.desktop_resolution = v; },
+            ("graphics", "modernfpspacing") =>
+                if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
             ("debug", "log") =>
@@ -74,7 +79,14 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, log_enabled:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, log_enabled:false });
+    }
+    #[test]
+    fn modern_pacing_is_explicit_opt_in_and_graphics_only(){
+        assert!(!Config::default().modern_fps_pacing);
+        assert!(!parse("[Debug]\nModernFPSPacing=1").modern_fps_pacing);
+        assert!(parse("[Graphics]\nModernFPSPacing=1").modern_fps_pacing);
+        assert!(!parse("[Graphics]\nModernFPSPacing=1\nModernFPSPacing=0").modern_fps_pacing);
     }
     #[test]
     fn cannot_exceed_sixty() {
