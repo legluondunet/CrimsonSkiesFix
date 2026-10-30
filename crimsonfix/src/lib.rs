@@ -8,7 +8,7 @@ mod diagnostics_graphics;
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
-          ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock}};
+          ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}};
 use win32::Hwnd;
 
 type Hr=i32;
@@ -43,6 +43,9 @@ static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
 static ORIGINALS:OnceLock<Mutex<HashMap<(usize,usize),usize>>>=OnceLock::new();
 static LAST_FRAME:Mutex<i64>=Mutex::new(0);
 static FREQUENCY:OnceLock<i64>=OnceLock::new();
+static FIRST_FLIP:Once=Once::new();
+static FIRST_BLT:Once=Once::new();
+static COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -64,7 +67,7 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("CrimsonFix 0.1.0 x86 - init; configuration={parsed:?}; DirectDraw proxy"));
+                log(&format!("CrimsonFix {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
@@ -154,19 +157,29 @@ unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)-
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else {return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
     let settings=cfg();
+    let trace=COOPERATIVE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12;
+    if trace {
+        log(&format!("DirectDraw SetCooperativeLevel requested_flags={flags:#x} hwnd={} borderless={}",
+            if hwnd.is_null(){"NULL"}else{"provided"},settings.borderless));
+    }
     if settings.borderless {
         // Experimental: DDSCL_NORMAL avoids switching into an exclusive
         // hardware mode, but legacy flip chains may need further shims.
         let hr=call(this,hwnd,DDSCL_NORMAL);
+        if trace {log(&format!("DirectDraw SetCooperativeLevel DDSCL_NORMAL result={hr:#x}"));}
         if hr>=0 {
-            if let Some(monitor)=win32::monitor_from_cursor_or_window(hwnd) {
-                if win32::borderless_window(hwnd,monitor) {
-                    log(&format!("Borderless monitor [{},{},{},{}]",monitor.left,monitor.top,monitor.right,monitor.bottom));
-                } else {log("WARNING: borderless HWND adjustment failed");}
-            }
+            if hwnd.is_null() {
+                if trace {log("Borderless deferred: game passed a NULL HWND; waiting for a valid HWND");}
+            } else if let Some(monitor)=win32::monitor_from_cursor_or_window(hwnd) {
+                match win32::borderless_window(hwnd,monitor) {
+                    Ok(())=>log(&format!("Borderless applied: monitor [{},{},{},{}]",
+                        monitor.left,monitor.top,monitor.right,monitor.bottom)),
+                    Err(reason)=>if trace {log(&format!("Borderless not applied: {reason}"));},
+                }
+            } else if trace {log("Borderless deferred: could not resolve a monitor");}
             return hr;
         }
-        log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back"));
+        if trace {log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back")); }
     }
     call(this,hwnd,flags)
 }
@@ -186,6 +199,7 @@ unsafe extern "system" fn set_display_mode(this:*mut c_void,w:u32,h:u32,bpp:u32)
 
 unsafe extern "system" fn surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
     let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
+    FIRST_FLIP.call_once(||log("PRESENT: first IDirectDrawSurface::Flip call received; FPS limiter active on this path"));
     pace_frame();
     let call:FlipFn=std::mem::transmute(addr);
     call(this,target,flags)
@@ -193,6 +207,7 @@ unsafe extern "system" fn surface_flip(this:*mut c_void,target:*mut c_void,flags
 
 unsafe extern "system" fn surface_blt(this:*mut c_void,dst:*const c_void,source:*mut c_void,src:*const c_void,flags:u32,fx:*mut c_void)->Hr {
     let Some(addr)=orig(this,SURFACE_BLT) else{return DDERR_GENERIC};
+    FIRST_BLT.call_once(||log("PRESENT: first primary IDirectDrawSurface::Blt call received; FPS limiter active on this path"));
     pace_frame();
     let call:BltFn=std::mem::transmute(addr);
     call(this,dst,source,src,flags,fx)
