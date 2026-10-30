@@ -91,6 +91,40 @@ reported to logs as `BORDERLESS-PREFLIGHT`, with
 is not complete.** Do not convert to normal cooperative mode or
 claim that the game renders at 1920x1080 yet.
 
+## Stage B0 — frame format and CPU presentation foundation, v0.1.12
+
+The owner's v0.1.11 Wine log confirms the following independent
+`DDSURFACEDESC2` facts *on both 640x480 and 800x600*:
+
+- Primary frontbuffer: RGB565, `DDPF_RGB=0x40`, 16 bits, masks
+  `R=0xf800 G=0x07e0 B=0x001f`, and one backbuffer
+- Attached backbuffer: the same RGB565 format
+- Attached Z-buffer: `DDPF_ZBUFFER=0x400`, depth **32 bits**
+- Five successive successful `SetDisplayMode` generations validate
+  a new front/back/depth chain each time. No old Z-buffer evidence is
+  reused in the current preflight.
+- A 120Hz display continues to produce about 120 modern `Flip`
+  calls/s when `ModernFPSPacing=0`; the prior 60-call/s cap requires
+  explicit `ModernFPSPacing=1`.
+
+The tested `src/rgb565_present.rs` compositor is the **pixel output
+stage only**: it can convert an already-available RGB565 framebuffer
+to BGRA8, aspect-fit into a separate desktop buffer, and fill black
+pillarboxes. The inputs are *borrowed byte slices*, and all pitch,
+geometry, and buffer-size bounds are checked before touching output.
+It never calls `Lock` on the DirectDraw render target and never
+replaces the game's exclusive flip chain. This avoids the false
+impression that a simple screen-copy helper can safely capture
+rendering from Direct3D VRAM.
+
+The still-missing integration is significant: `DDSCL_NORMAL` cannot
+retain the legacy exclusive primary Flip chain, while the application
+has a Direct3D device rendering into its original RGB565 backbuffer
+with an attached 32-bit Z-buffer. A correct COM virtualization or
+external compatible DirectDraw3D translation layer must be selected
+before any real windowed presentation or alt-tab behavior is enabled.
+A 2D-only DDraw wrapper is not enough for the 3D device.
+
 ## Stage B — prototype an explicit windowed presentation adapter
 
 Only after Stage A is reproduced in gameplay, implement behind a
