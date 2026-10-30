@@ -66,7 +66,7 @@ fn exe_directory()->Option<PathBuf> {
 
 pub fn project_path(name:&str)->Option<PathBuf> {
     // Fixed internal file names only; never insert user-controlled paths here.
-    Some(exe_directory()?.join("CrimsonFix").join(name))
+    Some(exe_directory()?.join("CrimsonSkiesFix").join(name))
 }
 
 fn regular_file(path:&Path)->bool {
@@ -94,43 +94,51 @@ fn create_ini_once(path:&Path)->std::io::Result<bool> {
     }
 }
 
-pub fn ini_path()->Option<PathBuf> {
-    let modern=project_path("CrimsonFix.ini")?;
-    if regular_file(&modern){return Some(modern);}
-    // If a file of an unsupported type exists, do not touch it.
-    if fs::symlink_metadata(&modern).is_ok(){return None;}
+// Preserve either previous configuration. Prefer the last active layout.
+fn previous_ini(exe:&Path)->Option<PathBuf> {
+    [exe.join("CrimsonFix").join("CrimsonFix.ini"),
+     exe.join("CrimsonFix.ini")]
+        .into_iter().find(|p|regular_file(p))
+}
 
-    let legacy=exe_directory()?.join("CrimsonFix.ini");
-    let directory=modern.parent()?;
-    if !safe_directory(directory,true) {
-        return if regular_file(&legacy){Some(legacy)}else{None};
-    }
-    if regular_file(&legacy) {
-        // Migrate the old root INI, never replace its content or the user
-        // settings in CrimsonFix/ on subsequent extractions/launches.
+pub fn ini_path()->Option<PathBuf> {
+    let modern=project_path("CrimsonSkiesFix.ini")?;
+    if regular_file(&modern){return Some(modern);}
+    // Never replace a symlink, directory, or unexpected filesystem object.
+    if fs::symlink_metadata(&modern).is_ok(){return None;}
+    let legacy=previous_ini(&exe_directory()?);
+    let dir=modern.parent()?;
+    if !safe_directory(dir,true){return legacy;}
+    if let Some(ref old)=legacy {
         let ticks=SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
-        let temp=directory.join(format!(".CrimsonFix-migrate-{}-{ticks}.tmp",std::process::id()));
-        if fs::copy(&legacy,&temp).is_ok(){
-            let temp_w:Vec<u16>=temp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-            let modern_w:Vec<u16>=modern.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-            unsafe {MoveFileExW(temp_w.as_ptr(),modern_w.as_ptr(),0x8 /* MOVEFILE_WRITE_THROUGH */);}
-            let _=fs::remove_file(temp);
+        let tmp=dir.join(format!(".CrimsonSkiesFix-migrate-{}-{ticks}.tmp",std::process::id()));
+        if fs::copy(old,&tmp).is_ok(){
+            let src:Vec<u16>=tmp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            let dst:Vec<u16>=modern.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            // No MOVEFILE_REPLACE_EXISTING; keep all originals intact.
+            unsafe{MoveFileExW(src.as_ptr(),dst.as_ptr(),0x8 /* WRITE_THROUGH */);}
         }
-        // In an unwritable directory or migration failure, use the original
-        // legacy INI instead of silently resetting its Log=1 preference.
-        return if regular_file(&modern){Some(modern)}else{Some(legacy)};
+        let _=fs::remove_file(tmp);
+        return if regular_file(&modern){Some(modern)}else{Some(old.to_path_buf())};
     }
-    // Brand-new installation: generate one real INI automatically.
-    // Extracted ZIPs only ship CrimsonFix.ini.example, which is never
-    // consulted over an existing user configuration.
     let _=create_ini_once(&modern);
     regular_file(&modern).then_some(modern)
 }
 
+// Obtain the actual loaded DLL directory rather than assuming that the
+// process working directory or executable directory always matches.
+fn dll_directory()->Option<PathBuf> {
+    let handle=crate::MODULE.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void;
+    if handle.is_null(){return None;}
+    let mut buffer=[0u16;32768];
+    let n=unsafe{GetModuleFileNameW(handle,buffer.as_mut_ptr(),buffer.len() as u32)} as usize;
+    if n==0 || n>=buffer.len(){return None;}
+    Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
+}
+
 pub fn log_path()->Option<PathBuf> {
-    let path=project_path("CrimsonFix.log")?;
-    let directory=path.parent()?;
-    if !safe_directory(directory,true){return None;}
+    // Same directory as ddraw.dll. Never touch the old CrimsonFix log.
+    let path=dll_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
 }
@@ -299,6 +307,18 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
 #[cfg(test)]
 mod persistent_ini_tests {
     use super::*;
+    #[test]
+    fn prior_config_is_preferred_over_older_root_ini() {
+        let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!("CrimsonSkiesFix-legacy-{}-{nonce}",std::process::id()));
+        fs::create_dir_all(root.join("CrimsonFix")).unwrap();
+        assert!(previous_ini(&root).is_none());
+        fs::write(root.join("CrimsonFix.ini"),"[Debug]\\nLog=0\\n").unwrap();
+        assert_eq!(previous_ini(&root),Some(root.join("CrimsonFix.ini")));
+        fs::write(root.join("CrimsonFix").join("CrimsonFix.ini"),"[Debug]\\nLog=1\\n").unwrap();
+        assert_eq!(previous_ini(&root),Some(root.join("CrimsonFix").join("CrimsonFix.ini")));
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn creates_default_ini_only_once_without_overwriting_edits() {
         let unique=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
