@@ -16,6 +16,7 @@ mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
 mod com_surface4_abi; // inactive, verified 45-slot Surface4 ABI (Stage B3b)
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
+mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
@@ -48,6 +49,7 @@ type GetSurfaceDescFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
 type D3D3CreateDeviceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
 type D3D3SceneFn=unsafe extern "system" fn(*mut c_void)->Hr;
 type D3D3SetRenderTargetFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
+type D3D3GetRenderTargetFn=unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -92,6 +94,7 @@ const D3D3_CREATE_DEVICE:usize=8; // IUnknown(3) + 5 IDirect3D3 methods
 const D3D3_DEVICE_BEGIN_SCENE:usize=9;
 const D3D3_DEVICE_END_SCENE:usize=10;
 const D3D3_DEVICE_SET_RENDER_TARGET:usize=14;
+const D3D3_DEVICE_GET_RENDER_TARGET:usize=15;
 const DDSCAPS_BACKBUFFER:u32=0x0000_0004;
 const DDSCAPS_FLIP:u32=0x0000_0010;
 const DDSCAPS_COMPLEX:u32=0x0000_0008;
@@ -144,6 +147,7 @@ static PRESENTATION_SESSION:Mutex<presentation::Session>=Mutex::new(presentation
 static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
 static SURFACE_FORMAT_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static D3D3_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static GAME_DD4_VTABLE:AtomicUsize=AtomicUsize::new(0);
 static D3D3_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static D3D3_DEVICE_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static D3D3_RENDER_TARGET_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -352,7 +356,11 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
             }
         }
     }
-    let hr=call(this,hwnd,flags); // OBSERVATION ONLY: keep original HWND and flags
+    let hr=if cfg().experimental_windowed_adapter &&
+        GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
+        in_game_adapter::cooperative(this,hwnd,flags,call)
+            .unwrap_or_else(||call(this,hwnd,flags))
+    }else{call(this,hwnd,flags)};
     if !hwnd.is_null() && cfg().log_enabled {
         // Never print the numeric HWND. A stale HWND is checked before use.
         LAST_GAME_HWND.store(hwnd as usize,Ordering::Relaxed);
@@ -373,7 +381,11 @@ unsafe extern "system" fn modern_set_display_mode(
 )->Hr {
     let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else{return DDERR_GENERIC};
     let call:ModernDisplayModeFn=std::mem::transmute(addr);
-    let hr=call(this,w,h,bpp,refresh,flags); // 5 arguments since IDirectDraw2
+    let hr=if cfg().experimental_windowed_adapter &&
+        GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
+        in_game_adapter::display_mode(this,w,h,bpp,refresh,flags,call)
+            .unwrap_or_else(||call(this,w,h,bpp,refresh,flags))
+    }else{call(this,w,h,bpp,refresh,flags)}; // 5 arguments since IDirectDraw2
     if hr>=0 {
         if let Ok(mut session)=PRESENTATION_SESSION.lock(){
             session.begin_mode(presentation::Mode{width:w,height:h,bpp});
@@ -584,7 +596,11 @@ unsafe extern "system" fn modern_create_surface(
 )->Hr {
     let Some(addr)=orig(this,DD_CREATE_SURFACE) else{return DDERR_GENERIC};
     let call:SurfaceFn=std::mem::transmute(addr);
-    let hr=call(this,desc,out,outer);
+    let hr=if cfg().experimental_windowed_adapter &&
+        GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
+        in_game_adapter::create_surface(this,desc,out,outer)
+            .unwrap_or_else(||call(this,desc,out,outer))
+    }else{call(this,desc,out,outer)};
     if MODERN_SURFACE_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("MODERN-DDRAW: CreateSurface result={hr:#x} object_returned={} (unchanged)",
             hr>=0 && !out.is_null() && !(*out).is_null()));
@@ -863,7 +879,10 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     }
 }
 unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
-    if object.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
+    if object.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing || cfg().experimental_windowed_adapter) {return;}
+    if name=="IDirectDraw4" {
+        GAME_DD4_VTABLE.store(*(object.cast::<usize>()),Ordering::Release);
+    }
     let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
@@ -909,7 +928,10 @@ unsafe extern "system" fn d3d3_device_set_render_target(
 )->Hr {
     let Some(addr)=orig(this,D3D3_DEVICE_SET_RENDER_TARGET) else{return DDERR_GENERIC};
     let original:D3D3SetRenderTargetFn=std::mem::transmute(addr);
-    let hr=original(this,target,flags);
+    let native=if cfg().experimental_windowed_adapter {
+        in_game_adapter::unwrap_target(target).unwrap_or(target)
+    }else{target};
+    let hr=original(this,native,flags);
     if cfg().log_enabled && D3D3_RENDER_TARGET_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16{
         let caps=if hr>=0 {modern_surface_caps(target)} else {None};
         log(&format!(
@@ -920,14 +942,33 @@ unsafe extern "system" fn d3d3_device_set_render_target(
     hr
 }
 
+unsafe extern "system" fn d3d3_device_get_render_target(
+    this:*mut c_void,out:*mut *mut c_void
+)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_GET_RENDER_TARGET) else{return DDERR_GENERIC};
+    let original:D3D3GetRenderTargetFn=std::mem::transmute(addr);
+    let hr=original(this,out);
+    if hr>=0 && cfg().experimental_windowed_adapter && !out.is_null() && !(*out).is_null(){
+        if let Some(virtual_target)=in_game_adapter::remap_render_target(*out){
+            let original_ref=*out;
+            let release:unsafe extern "system" fn(*mut c_void)->u32=
+                std::mem::transmute(method(original_ref,2));
+            let _=release(original_ref);
+            *out=virtual_target;
+            if cfg().log_enabled {log("WINDOWED-GAME: D3D3 GetRenderTarget mapped native RGB565 backbuffer back to game-facing Surface4 identity");}
+        }
+    }
+    hr
+}
 unsafe fn observe_d3d3_device(device:*mut c_void){
-    if device.is_null() || !cfg().log_enabled{return;}
+    if device.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
     let begin=replace_method(device,D3D3_DEVICE_BEGIN_SCENE,d3d3_device_begin_scene as usize);
     let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as usize);
     let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as usize);
+    let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as usize);
     if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!(
-            "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} (observation only)"));
+            "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
     }
 }
 
@@ -940,8 +981,11 @@ unsafe extern "system" fn d3d3_create_device(
 )->Hr {
     let Some(addr)=orig(this,D3D3_CREATE_DEVICE) else{return DDERR_GENERIC};
     let call:D3D3CreateDeviceFn=std::mem::transmute(addr);
-    let hr=call(this,device_clsid,target,out,outer);
-    if cfg().log_enabled && hr>=0 && !out.is_null() && !(*out).is_null() {
+    let native_target=if cfg().experimental_windowed_adapter {
+        in_game_adapter::unwrap_target(target).unwrap_or(target)
+    }else{target};
+    let hr=call(this,device_clsid,native_target,out,outer);
+    if (cfg().log_enabled || cfg().experimental_windowed_adapter) && hr>=0 && !out.is_null() && !(*out).is_null() {
         observe_d3d3_device(*out);
     }
     if cfg().log_enabled && D3D3_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
@@ -961,7 +1005,7 @@ unsafe extern "system" fn d3d3_create_device(
 }
 
 unsafe fn observe_d3d3(object:*mut c_void) {
-    if object.is_null() || !cfg().log_enabled{return;}
+    if object.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
     let hooked=replace_method(object,D3D3_CREATE_DEVICE,d3d3_create_device as usize);
     if D3D3_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("D3D3-TRACE: IDirect3D3 CreateDevice hook_installed={hooked} (passive)"));
@@ -1182,6 +1226,7 @@ mod trace_tests {
         assert_eq!(D3D3_DEVICE_BEGIN_SCENE,9);
         assert_eq!(D3D3_DEVICE_END_SCENE,10);
         assert_eq!(D3D3_DEVICE_SET_RENDER_TARGET,14);
+        assert_eq!(D3D3_DEVICE_GET_RENDER_TARGET,15);
         assert!(!is_d3d3_iid(ptr::null()));
     }
     #[test]
