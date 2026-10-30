@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.46 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.47 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -1217,3 +1217,24 @@ After a successful Actions build, from a writable directory outside the game:
 wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
 ```
 Return the adjacent `windowed_ddraw_probe.log`. Expect 3× successful `COM-GRAPH-BLT.backbuffer.ColorFill` and `COM-GRAPH-BLT.depth.DepthFill`, 3×120 `COM-VFLIP` successes, and `COM-TRANSITION-FINAL: PASS`. The game DLL's active hooks/INI/default pacing are unchanged. No PR merge or real borderless activation.
+
+
+## Experimental game adapter — v0.1.47, first in-game implementation (not production ready)
+
+Owner's v0.1.46 standalone Wine log confirmed **360/360** real virtual Flip presentations across 800×600→640×480→800×600, real virtual RGB565 ColorFill and Z32 DepthFill on all three epochs, and safe rejection of stale old COM writes. No further per-method standalone probe is planned.
+
+In the actual \`ddraw.dll\`, the new **distinct default-off** option \`[Graphics] ExperimentalWindowedAdapter=1\` activates a first integration attempt on the real game's **IDirectDraw4**. With a valid process-owned HWND and a standard exclusive request, the hook negotiates real \`DDSCL_NORMAL\`, creates its own **native windowed primary/clipper**, and on a supported 640×480/800×600 16-bit SetDisplayMode prepares native RGB565, native Z32 and a real native HAL D3D3 device preflight. It builds verified separate virtual Surface4 Primary→Backbuffer→Depth COM objects, tests real two-Blt presentation and, **only then**, exposes the matched virtual primary or Z32 to game CreateSurface. The user's desktop display mode must remain unchanged. Virtual backbuffer→Z32 AddAttachedSurface accepts only the exact already-attached object; no generic source-copy forwarding. The game-facing virtual backbuffer is **unwrapped to its native Surface4 before D3D3 CreateDevice/SetRenderTarget** and maps back at GetRenderTarget. Mode changes retire the previous graph.
+
+If native preflight fails **before any virtual game surface is exposed**, the original exclusive cooperative/mode calls are restored; if a later step fails after exposure, return a visible failure and log it rather than attempt unsafe live exclusive fallback. All experiment logs automatically go next to \`ddraw.dll\` even if \`[Debug] Log=0\`.
+
+**IMPORTANT:** this is a first **in-game** implementation, not confirmed playable or fully borderless. \`IDirectDrawSurface4\` may receive extra COM calls / QueryInterface versions that the graph does not yet support; the runtime may report error or the game may fail to launch with this option. Existing \`Borderless=1\`, fps settings and old builds are not changed. Disable the experiment using \`ExperimentalWindowedAdapter=0\` to return to the previous exclusive path.
+
+**Owner test (only after Windows x86 Actions SUCCESS):**
+
+1. Back up the previous \`ddraw.dll\` and existing \`CrimsonSkiesFix.ini\`; replace only \`ddraw.dll\` from the new x86 game artifact.
+2. In the existing \`CrimsonSkiesFix/CrimsonSkiesFix.ini\` set \`[Graphics] ExperimentalWindowedAdapter=1\` (and preferably \`[Debug] Log=1\`).
+3. Run \`CRIMSON.EXE\` under the usual Wine/GE-Proton configuration. Observe the actual game, not \`windowed_ddraw_probe.exe\`.
+4. Send \`CrimsonSkiesFix.log\` from beside \`ddraw.dll\`, plus whether it reaches the menu, draws any 3D image, and retains 1920×1080 desktop.
+5. On any crash, immediately revert option to \`0\`, keep the log and report the exact last visible scene. Never merge this PR until validated.
+
+No user files or game EXE modified. The branch/PR remain draft.
