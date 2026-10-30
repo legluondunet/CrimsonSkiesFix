@@ -5,6 +5,7 @@ mod config;
 mod win32;
 mod diagnostics;
 mod diagnostics_graphics;
+mod presentation;
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
@@ -105,6 +106,12 @@ static SURFACE_CREATE_DETAIL_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_ATTACH_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_DESC_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_FIRST_PRIMARY_ATTACH:Once=Once::new();
+static RENDER_CHAIN:Mutex<presentation::Chain>=Mutex::new(presentation::Chain{
+    front_to_back:false,back_to_depth:false,mipmaps:false,
+});
+static LAST_RENDER_MODE:Mutex<presentation::Mode>=Mutex::new(
+    presentation::Mode{width:0,height:0,bpp:0});
+static PRESENTATION_PLAN_LOGGED:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -304,6 +311,11 @@ unsafe extern "system" fn modern_set_display_mode(
     let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else{return DDERR_GENERIC};
     let call:ModernDisplayModeFn=std::mem::transmute(addr);
     let hr=call(this,w,h,bpp,refresh,flags); // 5 arguments since IDirectDraw2
+    if hr>=0 {
+        if let Ok(mut mode)=LAST_RENDER_MODE.lock(){
+            *mode=presentation::Mode{width:w,height:h,bpp};
+        }
+    }
     if MODERN_DISPLAY_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("MODERN-DDRAW: SetDisplayMode {w}x{h} bpp={bpp} refresh={refresh} flags={flags:#x} result={hr:#x} (unchanged)"));
         let hwnd=LAST_GAME_HWND.load(Ordering::Relaxed) as Hwnd;
@@ -323,6 +335,9 @@ fn surface_roles(caps:u32)->String {
     if caps&DDSCAPS_BACKBUFFER!=0{roles.push("backbuffer");}
     if caps&DDSCAPS_FLIP!=0{roles.push("flip-chain");}
     if caps&DDSCAPS_COMPLEX!=0{roles.push("complex");}
+    if caps&presentation::ZBUFFER!=0{roles.push("z-buffer");}
+    if caps&presentation::TEXTURE!=0{roles.push("texture");}
+    if caps&presentation::MIPMAP!=0{roles.push("mipmap");}
     if roles.is_empty(){"other".into()}else{roles.join("+")}
 }
 
@@ -341,6 +356,46 @@ fn describe_surface_layout(desc:*const c_void)->String{
             format!("{w}x{h}")
         }else{"unspecified".into()};
         format!("desc_size={size} flags={flags:#x} dimensions={dims}")
+    }
+}
+
+// Final preflight only: this never changes the DirectDraw cooperative
+// mode, surfaces, HWND or desktop. Until an actual adapter implements
+// virtualized front/back/Z surfaces, log the safe 4:3 viewport as a plan.
+fn log_render_chain_preflight(request:u32,parent:u32,child:u32) {
+    let Ok(mut model)=RENDER_CHAIN.lock() else{return;};
+    let changed=model.observe(request,parent,child);
+    let snapshot=*model;
+    drop(model);
+    if changed{
+        log(&format!("CHAIN-CLASSIFY: front_to_back={} back_to_depth={} texture_mipmaps={} (non-invasive)",
+            snapshot.front_to_back,snapshot.back_to_depth,snapshot.mipmaps));
+    }
+    if !snapshot.three_d_ready(){return;}
+    let mode=match LAST_RENDER_MODE.lock(){
+        Ok(guard)=>*guard,
+        Err(_)=>return,
+    };
+    // Log once per observed game resolution; 640 and 800 are independent.
+    let bit=match (mode.width,mode.height,mode.bpp){
+        (640,480,16)=>1usize,
+        (800,600,16)=>2usize,
+        _=>return,
+    };
+    let previous=PRESENTATION_PLAN_LOGGED.fetch_or(bit,Ordering::Relaxed);
+    if previous&bit!=0{return;}
+    let hwnd=LAST_GAME_HWND.load(Ordering::Relaxed) as Hwnd;
+    let Some(monitor)=win32::monitor_for_game_window(hwnd) else{
+        log("BORDERLESS-PREFLIGHT: monitor unavailable, keeping original exclusive renderer");
+        return;
+    };
+    let desktop_width=monitor.right.saturating_sub(monitor.left) as u32;
+    let desktop_height=monitor.bottom.saturating_sub(monitor.top) as u32;
+    if let Some(plan)=presentation::preflight(mode,desktop_width,desktop_height,snapshot){
+        log(&format!(
+            "BORDERLESS-PREFLIGHT: complete 3D front->back->Z chain; internal={}x{}x{}; monitor={}x{}; aspect_viewport=x{},y{},{}x{}; requires_virtual_primary=true; applied=false",
+            mode.width,mode.height,mode.bpp,plan.desktop_width,plan.desktop_height,
+            plan.viewport.x,plan.viewport.y,plan.viewport.width,plan.viewport.height));
     }
 }
 
@@ -376,6 +431,8 @@ unsafe extern "system" fn modern_get_attached_surface(
                     SURFACE_FIRST_PRIMARY_ATTACH.call_once(||log(
                         "SURFACE-CHAIN: confirmed primary front buffer -> attached backbuffer (game-provided; no modification)"));
                 }
+                // The requested caps pointer is game-owned, not modified.
+                if !caps.is_null(){log_render_chain_preflight(*caps,a,b);}
             }
         }
     }
@@ -725,6 +782,12 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn surface_capability_roles_include_depth_and_texture_mipmaps(){
+        assert_eq!(surface_roles(0x10024000),"z-buffer");
+        assert_eq!(surface_roles(0x00401808),"complex+texture+mipmap");
+        assert_eq!(surface_roles(0x1000601c),"backbuffer+flip-chain+complex");
+    }
     #[test]
     fn surface_capabilities_identify_front_and_back_buffers(){
         assert_eq!(surface_roles(0x1000e238),"primary+flip-chain+complex");
