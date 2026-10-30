@@ -48,6 +48,44 @@ pub struct Viewport {pub x:u32,pub y:u32,pub width:u32,pub height:u32}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Mode {pub width:u32,pub height:u32,pub bpp:u32}
 
+// Successive SetDisplayMode calls invalidate the previous COM surface chain.
+// Never treat backbuffer/Z-buffer evidence from a *previous* display mode
+// as proof that a new mode's attachments have already been established.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct Session {
+    pub epoch:u64,
+    pub mode:Option<Mode>,
+    pub chain:Chain,
+    pub preflight_reported:bool,
+}
+
+impl Session {
+    pub const fn new()->Self {
+        Self {epoch:0,mode:None,
+              chain:Chain{front_to_back:false,back_to_depth:false,mipmaps:false},
+              preflight_reported:false}
+    }
+
+    // Call only if the real DirectDraw SetDisplayMode succeeded.
+    // This is a *diagnostic* epoch and does not change the game's objects.
+    pub fn begin_mode(&mut self,mode:Mode) {
+        self.epoch=self.epoch.saturating_add(1);
+        self.mode=Some(mode);
+        self.chain=Chain::default();
+        self.preflight_reported=false;
+    }
+
+    // Returns (new evidence, complete chain now ready for first preflight).
+    pub fn observe(&mut self,request:u32,parent:u32,attached:u32)->(bool,bool) {
+        let changed=self.chain.observe(request,parent,attached);
+        let ready=self.mode.is_some() && self.chain.three_d_ready()
+            && !self.preflight_reported;
+        if ready {self.preflight_reported=true;}
+        (changed,ready)
+    }
+}
+
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowedPresentationPlan {
     pub internal:Mode,
@@ -101,6 +139,34 @@ pub fn preflight(mode:Mode,desktop_width:u32,desktop_height:u32,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_display_mode_resets_prior_front_back_depth_evidence() {
+        let mut session=Session::new();
+        session.begin_mode(Mode{width:640,height:480,bpp:16});
+        assert_eq!(session.epoch,1);
+        assert_eq!(session.observe(BACKBUFFER,0x1000e238,0x1000601c),(true,false));
+        assert_eq!(session.observe(ZBUFFER,0x1000601c,0x10024000),(true,true));
+        assert_eq!(session.observe(ZBUFFER,0x1000601c,0x10024000),(false,false));
+        session.begin_mode(Mode{width:800,height:600,bpp:16});
+        assert_eq!(session.epoch,2);
+        assert!(!session.chain.three_d_ready());
+        assert_eq!(session.observe(BACKBUFFER,0x1000e238,0x1000601c),(true,false));
+        assert_eq!(session.observe(ZBUFFER,0x1000601c,0x10024000),(true,true));
+        session.begin_mode(Mode{width:800,height:600,bpp:16});
+        assert_eq!(session.epoch,3);
+        assert!(!session.chain.three_d_ready());
+        assert!(!session.preflight_reported);
+    }
+    #[test]
+    fn preflight_is_not_reported_without_a_successful_display_mode() {
+        let mut session=Session::new();
+        assert_eq!(session.observe(BACKBUFFER,0x1000e238,0x1000601c),(true,false));
+        assert_eq!(session.observe(ZBUFFER,0x1000601c,0x10024000),(true,false));
+        assert!(session.chain.three_d_ready());
+        assert!(!session.preflight_reported);
+        session.begin_mode(Mode{width:640,height:480,bpp:16});
+        assert!(!session.chain.three_d_ready());
+    }
     #[test]
     fn observed_crimson_chain_has_distinct_front_back_depth() {
         let mut chain=Chain::default();
