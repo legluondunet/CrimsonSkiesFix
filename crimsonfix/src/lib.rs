@@ -8,7 +8,7 @@ mod diagnostics_graphics;
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
-          ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}};
+          ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
 type Hr=i32;
@@ -78,6 +78,17 @@ static MODERN_DISPLAY_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_SURFACE_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_SURFACE_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_DDRAW_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static FIRST_MODERN_VALID_HWND:Once=Once::new();
+static FIRST_MODERN_PACED_FLIP:Once=Once::new();
+static FIRST_MODERN_NONPRIMARY_FLIP:Once=Once::new();
+static MODERN_FLIP_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static MODERN_BLT_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static MODERN_UNLOCK_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static MODERN_BLTFAST_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static MODERN_FLIP_START:OnceLock<Instant>=OnceLock::new();
+static MODERN_BLT_START:OnceLock<Instant>=OnceLock::new();
+static MODERN_UNLOCK_START:OnceLock<Instant>=OnceLock::new();
+static MODERN_BLTFAST_START:OnceLock<Instant>=OnceLock::new();
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -185,6 +196,31 @@ fn pace_frame() {
     *previous=now;
 }
 
+// These cumulative rates are COM call rates, not proven on-screen FPS.
+// A scene can issue several Blt/Unlock calls per one displayed frame.
+// At most four samples per API, bounded without background threads.
+fn sample_render_calls(path:&str,count:&AtomicUsize,start:&OnceLock<Instant>) {
+    if !cfg().log_enabled{return;}
+    let n=count.fetch_add(1,Ordering::Relaxed)+1;
+    let first=start.get_or_init(Instant::now);
+    if ![10,60,300,1200].contains(&n){return;}
+    let elapsed=first.elapsed().as_millis();
+    if elapsed>0 {
+        let rate=(n.saturating_sub(1) as u128 * 1000) / elapsed;
+        log(&format!("RENDER-SAMPLE: method={path} calls={n} elapsed_ms={elapsed} average_calls_per_s={rate} (NOT measured display FPS)"));
+    }
+}
+
+unsafe fn modern_surface_primary(this:*mut c_void)->Option<bool> {
+    // DDSCAPS2 is four DWORDs; the first DWORD contains the ordinary
+    // DDSCAPS_PRIMARYSURFACE flag. GetCaps uses COM slot 14 on Surface2/3/4/7.
+    let method=method(this,SURFACE_GET_CAPS);
+    if method==0{return None;}
+    let getcaps:GetCapsFn=std::mem::transmute(method);
+    let mut caps=[0u32;4];
+    (getcaps(this,caps.as_mut_ptr())>=0).then_some(caps[0]&DDSCAPS_PRIMARYSURFACE!=0)
+}
+
 // IID matching is deliberately exhaustive rather than assuming a vtable
 // layout from the major GUID prefix. Definitions come from Wine's ddraw.h.
 fn ddraw_iface(iid:*const Guid)->Option<&'static str> {
@@ -211,6 +247,11 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
     let hr=call(this,hwnd,flags); // OBSERVATION ONLY: keep original HWND and flags
+    if !hwnd.is_null() && cfg().log_enabled {
+        FIRST_MODERN_VALID_HWND.call_once(||log(&format!(
+            "WIN-TRACE: first game-supplied non-NULL HWND: {}",
+            win32::game_window_snapshot(hwnd))));
+    }
     if MODERN_COOPERATIVE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("MODERN-DDRAW: SetCooperativeLevel hwnd={} requested_flags={flags:#x} result={hr:#x} (unchanged)",
             if hwnd.is_null(){"NULL"}else{"provided"}));
@@ -255,9 +296,27 @@ unsafe extern "system" fn modern_create_surface(
 unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
     let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
     FIRST_MODERN_FLIP.call_once(||{
-        log("RENDER-MODERN: first newer-surface Flip (observed; NOT FPS-paced)");
+        log("RENDER-MODERN: first newer-surface Flip (real modern rendering path)");
         trace_game_windows("first modern Flip");
     });
+    sample_render_calls("Flip",&MODERN_FLIP_EVENTS,&MODERN_FLIP_START);
+    if cfg().modern_fps_pacing {
+        match modern_surface_primary(this) {
+            Some(true)=>{
+                FIRST_MODERN_PACED_FLIP.call_once(||log(&format!(
+                    "FPS-PACING: primary modern Flip enabled at {} FPS (experimental)",cfg().fps_limit)));
+                pace_frame();
+            },
+            Some(false)=>{
+                FIRST_MODERN_NONPRIMARY_FLIP.call_once(||log(
+                    "FPS-PACING: non-primary modern Flip bypassed; no throttle on non-primary surface"));
+            },
+            None=>{
+                FIRST_MODERN_NONPRIMARY_FLIP.call_once(||log(
+                    "FPS-PACING: modern surface GetCaps unavailable; no throttle applied"));
+            }
+        }
+    }
     let call:FlipFn=std::mem::transmute(addr);
     call(this,target,flags)
 }
@@ -268,6 +327,7 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
         log("RENDER-MODERN: first newer-surface Blt (observed; NOT FPS-paced)");
         trace_game_windows("first modern Blt");
     });
+    sample_render_calls("Blt",&MODERN_BLT_EVENTS,&MODERN_BLT_START);
     let call:BltFn=std::mem::transmute(addr);
     call(this,dst,src,src_rect,flags,fx)
 }
@@ -275,6 +335,7 @@ unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,
     src:*mut c_void,rect:*const c_void,flags:u32)->Hr {
     let Some(addr)=orig(this,SURFACE_BLT_FAST) else{return DDERR_GENERIC};
     FIRST_MODERN_FAST.call_once(||log("RENDER-MODERN: first newer-surface BltFast (observed; NOT FPS-paced)"));
+    sample_render_calls("BltFast",&MODERN_BLTFAST_EVENTS,&MODERN_BLTFAST_START);
     let call:BltFastFn=std::mem::transmute(addr);
     call(this,x,y,src,rect,flags)
 }
@@ -284,12 +345,13 @@ unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_v
         log("RENDER-MODERN: first newer-surface Unlock (observed; NOT FPS-paced)");
         trace_game_windows("first modern Unlock");
     });
+    sample_render_calls("Unlock",&MODERN_UNLOCK_EVENTS,&MODERN_UNLOCK_START);
     let call:UnlockFn=std::mem::transmute(addr);
     call(this,data)
 }
 
 unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
-    if surface.is_null() || !cfg().log_enabled {return;}
+    if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize);
     let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as usize);
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
@@ -300,7 +362,7 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     }
 }
 unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
-    if object.is_null() || !cfg().log_enabled {return;}
+    if object.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
     let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
@@ -508,6 +570,13 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn primary_caps_flag_is_not_equal_to_flip_capability(){
+        assert_eq!(DDSCAPS_PRIMARYSURFACE,0x200);
+        // A Flip may be issued on a front buffer, but some Flip calls
+        // operate on offscreen surfaces; never pace those in this build.
+        assert_eq!(DDSCAPS_PRIMARYSURFACE & 0x10,0);
+    }
     #[test]
     fn discovers_actual_crimson_skies_directdraw_versions() {
         let dd2=Guid{d1:0xb3a6f3e0,d2:0x2b43,d3:0x11cf,
