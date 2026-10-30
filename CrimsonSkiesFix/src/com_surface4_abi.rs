@@ -509,7 +509,9 @@ mod tests {
             let Ok(info)=s.chain.descriptor(n.handle) else{return E_FAIL;};
             ptr::write_bytes(d,0,31);
             *d=124;
-            *d.add(1)=0x100f; // caps + height + width + pitch? fixture only
+            *d.add(1)=0x1007 | if info.backbuffers!=0 {0x20} else {0};
+            // DDSD_CAPS|HEIGHT|WIDTH|PIXELFORMAT, plus BACKBUFFERCOUNT
+            // on primary only. There is no PITCH claim in this fixture.
             *d.add(2)=info.height;
             *d.add(3)=info.width;
             *d.add(18)=32;
@@ -521,7 +523,7 @@ mod tests {
                 *d.add(23)=0x00ffffff;
             }
             *d.add(26)=info.caps;
-            *d.add(27)=info.backbuffers;
+            *d.add(5)=info.backbuffers; // dwBackBufferCount, not caps2
             S_OK
         }
         unsafe extern "system" fn graph_flip(
@@ -595,6 +597,10 @@ mod tests {
                 let mut surface_caps=[0u32;4];
                 assert_eq!((v.get_caps)(back,surface_caps.as_mut_ptr().cast()),S_OK);
                 assert_eq!(surface_caps[0]&0x2000,0x2000);
+                desc[0]=124;
+                assert_eq!((v.get_surface_desc)(p,desc.as_mut_ptr().cast()),S_OK);
+                assert_eq!((desc[1]&0x20,desc[5]),(0x20,1));
+                assert_eq!(desc[27],0); // DDSCAPS2.dwCaps2 must stay clear
                 assert_eq!((v.release)(p),0);
                 assert_eq!((v.release)(back),0);
                 assert_eq!((v.release)(depth),0);
