@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.30 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.31 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,51 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.31 — optional real-size borderless DirectDraw presentation test
+
+The owner's v0.1.30 standalone log is a full PASS:
+normal-mode DirectDraw, RGB565 640x480 D3D3 target,
+video-memory Z32 (24 useful depth bits), D3D3 HAL
+BeginScene/EndScene, windowed primary COLORFILL,
+and a real DirectDraw stretch Blt to a **720x540 4:3**
+centered region in a 960x540 client. The host desktop
+remained **1920x1080**.
+
+The **separate** standalone test EXE now accepts an
+optional **\`--borderless\`** switch. With no arguments,
+the already-validated 960x540 framed-window test
+remains the default. With the switch, the EXE creates
+its **own temporary WS_POPUP (no border) window**,
+sized to the *primary desktop* (1920x1080 in the
+owner's configuration); no exclusive cooperative
+mode, SetDisplayMode, game HWND hook or topmost
+setting is used.
+
+The EXE checks actual client size and screen origin,
+draws red/green/blue RGB565 stripes on the offscreen
+test surface, black-fills the window through a real
+DirectDraw clipper, and scales the 640x480 surface
+to a centered **1440x1080 4:3 viewport at x=240**.
+It logs the real HWND/client geometry and HRESULTs
+before closing its test window automatically.
+The monitor's display resolution must remain unchanged.
+The opt-in window appears for roughly three seconds;
+it cannot trap the user in permanent fullscreen.
+
+For the next test, keep the standalone EXE **outside
+the game directory** and run it under the same Wine/
+GE-Proton environment as before, with the argument:
+\`windowed_ddraw_probe.exe --borderless\`.
+Attach \`windowed_ddraw_probe.log\` and report whether
+three colored vertical bands appear in the center
+with black pillarboxes left/right.
+
+**Scope:** this validates a temporary test window,
+not the game itself. No COM virtual primary/Flip
+implementation exists yet. The actual game
+\`ddraw.dll\`, EXE, settings and FPS behavior are
+unchanged; the test EXE is distributed separately.
 
 ## v0.1.30 — verify real windowed D3D scenes and 4:3 stretched presentation
 

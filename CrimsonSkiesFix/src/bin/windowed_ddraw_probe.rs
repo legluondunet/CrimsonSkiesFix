@@ -82,6 +82,7 @@ const DDBLT_COLORFILL:u32=0x400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
 const WS_OVERLAPPEDWINDOW:u32=0x00cf_0000;
+const WS_POPUP:u32=0x8000_0000;
 const WS_VISIBLE:u32=0x1000_0000;
 const SM_CXSCREEN:i32=0;
 const SM_CYSCREEN:i32=1;
@@ -133,6 +134,43 @@ extern "system" {
     fn Sleep(ms:u32);
 }
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum ProbeMode { Windowed, Borderless }
+
+fn parse_mode(args:&[String])->Result<ProbeMode,String>{
+    match args {
+        [] => Ok(ProbeMode::Windowed),
+        [arg] if arg=="--borderless" => Ok(ProbeMode::Borderless),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless]".to_owned())
+    }
+}
+
+/// Primary desktop is anchored at (0,0). A temporary WS_POPUP window
+/// fills only this monitor and does NOT modify the monitor resolution.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+struct TestWindowPlan{
+    style:u32,x:i32,y:i32,width:i32,height:i32,
+    client_width:u32,client_height:u32
+}
+fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
+    ->Result<TestWindowPlan,String>{
+    if desktop_w<=0||desktop_h<=0{
+        return Err("Desktop dimensions unavailable".into());
+    }
+    match mode{
+        ProbeMode::Windowed => Ok(TestWindowPlan {
+            style:WS_VISIBLE|WS_OVERLAPPEDWINDOW,
+            x:80,y:80,width:960,height:540,
+            client_width:960,client_height:540,
+        }),
+        ProbeMode::Borderless=>Ok(TestWindowPlan{
+            style:WS_VISIBLE|WS_POPUP,
+            x:0,y:0,width:desktop_w,height:desktop_h,
+            client_width:desktop_w as u32,client_height:desktop_h as u32,
+        }),
+    }
+}
 
 /// Integer aspect fit; source must not be stretched out of proportion.
 fn letterbox(src_w:u32,src_h:u32,dst_w:u32,dst_h:u32)->Option<Rect>{
@@ -287,25 +325,30 @@ unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
     }
     Ok(())
 }
-fn run()->Result<(),String>{
+fn run(mode:ProbeMode)->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.30; standalone test; desktop={}x{}",before.0,before.1));
-    // Request an exact 16:9 *client* rectangle for a reproducible
-    // pillarbox test. AdjustWindowRect compensates for the frame.
-    // This creates a temporary window and never alters display mode.
-    let style=WS_VISIBLE|WS_OVERLAPPEDWINDOW;
-    let mut outer=Rect{left:0,top:0,right:960,bottom:540};
-    if unsafe{AdjustWindowRect(&mut outer,style,0)}==0 {
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.31; standalone test; desktop={}x{}",before.0,before.1));
+    // Default behaviour remains the owner-verified 960x540 test.
+    // Only --borderless creates a desktop-sized WS_POPUP test window,
+    // with no display-mode change, topmost setting or game HWND hooks.
+    let plan=plan_test_window(mode,before.0,before.1)?;
+    let mut outer=Rect{left:0,top:0,right:plan.width,bottom:plan.height};
+    if mode==ProbeMode::Windowed &&
+       unsafe{AdjustWindowRect(&mut outer,plan.style,0)}==0 {
         return Err("AdjustWindowRect failed".into());
     }
+    let mode_label=if mode==ProbeMode::Borderless {"borderless-opt-in"}else{"windowed-default"};
+    probe_line(&format!(
+        "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
+        plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
     let class=wide("STATIC");
-    let title=wide("CrimsonSkiesFix 4:3-in-16:9 DirectDraw probe (not the game)");
+    let title=wide("CrimsonSkiesFix temporary DirectDraw presentation probe (not game)");
     let hwnd=unsafe {
-        CreateWindowExW(0,class.as_ptr(),title.as_ptr(),style,
-            80,80,outer.right-outer.left,outer.bottom-outer.top,
+        CreateWindowExW(0,class.as_ptr(),title.as_ptr(),plan.style,
+            plan.x,plan.y,outer.right-outer.left,outer.bottom-outer.top,
             ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),ptr::null_mut())
     };
     if hwnd.is_null(){return Err("CreateWindowExW failed".into());}
@@ -442,6 +485,26 @@ fn run()->Result<(),String>{
         check("IDirect3DDevice3.EndScene",end(device.0))?;
     }
 
+    // Visual proof in the optional borderless mode only: draw three
+    // solid RGB565 stripes into the genuine 3D-capable offscreen surface.
+    // The previous all-solid-color default test remains unchanged.
+    if mode==ProbeMode::Borderless {
+        let stripes=[
+            ("red",Rect{left:0,top:0,right:213,bottom:480},0xf800u32),
+            ("green",Rect{left:213,top:0,right:426,bottom:480},0x07e0u32),
+            ("blue",Rect{left:426,top:0,right:640,bottom:480},0x001fu32),
+        ];
+        unsafe {
+            let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+                std::mem::transmute(slot(target.0,5));
+            for (color,rect,rgb565) in &stripes {
+                let mut fx=[0u32;25]; fx[0]=100;fx[20]=*rgb565;
+                check(&format!("RGB565-TEST-PATTERN: {color}"),
+                    blt(target.0,rect,ptr::null_mut(),ptr::null(),
+                        DDBLT_COLORFILL|DDBLT_WAIT,fx.as_mut_ptr()))?;
+            }
+        }
+    }
     let mut origin=Point::default();
     let mut client=Rect{left:0,top:0,right:0,bottom:0};
     if unsafe{GetClientRect(window.0,&mut client)}==0{return Err("GetClientRect failed".into());}
@@ -450,7 +513,17 @@ fn run()->Result<(),String>{
     let client_h=u32::try_from(client.bottom-client.top).map_err(|_|"Bad client height")?;
     let viewport=letterbox(640,480,client_w,client_h)
         .ok_or_else(||"Invalid 4:3-in-16:9 geometry".to_owned())?;
-    probe_line(&format!("WINDOW-CLIENT: {}x{} expected=960x540",client_w,client_h));
+    probe_line(&format!(
+        "WINDOW-CLIENT: {}x{} expected={}x{} origin_screen=x{},y{}",
+        client_w,client_h,plan.client_width,plan.client_height,origin.x,origin.y));
+    if client_w!=plan.client_width || client_h!=plan.client_height{
+        return Err(format!("Actual client {}x{} differs from requested {}x{}",
+            client_w,client_h,plan.client_width,plan.client_height));
+    }
+    if mode==ProbeMode::Borderless && (origin.x!=0||origin.y!=0){
+        return Err(format!("Borderless test window was repositioned by host WM: client origin={},{}",
+            origin.x,origin.y));
+    }
     probe_line(&format!(
         "ASPECT-VIEWPORT: source=640x480 window={}x{} viewport=x{},y{},{}x{} letterbox=4:3-in-16:9",
         client_w,client_h,viewport.left,viewport.top,
@@ -481,10 +554,11 @@ fn run()->Result<(),String>{
     // the operation, but does not independently measure displayed pixels.
     let after=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
     if before!=after{return Err(format!("Desktop changed unexpectedly: {:?} -> {:?}",before,after));}
-    probe_line("PASS: windowed primary+clipper, RGB565+Z32, D3D3 HAL BeginScene/EndScene, black bars and 4:3 stretched Blt; desktop preserved");
-    // Show the owned test window briefly to confirm visible Blt. No game
-    // objects, input interception, or persistence is involved.
-    unsafe{Sleep(1000);}
+    probe_line(&format!(
+        "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
+    // A temporary test window, deliberately self-closing. Give the owner
+    // slightly longer to see the RGB565 stripes in borderless mode.
+    unsafe{Sleep(if mode==ProbeMode::Borderless {3000}else{1000});}
     Ok(())
 }
 fn main(){
@@ -495,10 +569,18 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.30");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.31");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
-    if let Err(e)=run(){
+    let args:Vec<String>=std::env::args().skip(1).collect();
+    let mode=match parse_mode(&args){
+        Ok(mode)=>mode,
+        Err(e)=>{
+            probe_line(&format!("PROBE FAILED: {e}"));
+            std::process::exit(2);
+        }
+    };
+    if let Err(e)=run(mode){
         probe_line(&format!("PROBE FAILED: {e}"));
         std::process::exit(1);
     }
@@ -598,6 +680,25 @@ mod tests{
         assert!(letterbox(640,480,0,540).is_none());
         assert!(letterbox(640,480,960,0).is_none());
         assert!(letterbox(640,480,u32::MAX,u32::MAX).is_none());
+    }
+    #[test]
+    fn standalone_borderless_mode_is_opt_in_only(){
+        assert_eq!(parse_mode(&[]),Ok(ProbeMode::Windowed));
+        assert_eq!(parse_mode(&["--borderless".to_owned()]),Ok(ProbeMode::Borderless));
+        assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
+        assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
+    }
+    #[test]
+    fn fullscreen_test_window_is_popup_without_exclusive_or_topmost(){
+        let plan=plan_test_window(ProbeMode::Borderless,1920,1080).unwrap();
+        assert_eq!((plan.x,plan.y,plan.width,plan.height),(0,0,1920,1080));
+        assert_eq!((plan.client_width,plan.client_height),(1920,1080));
+        assert_eq!(plan.style,WS_VISIBLE|WS_POPUP);
+        assert_eq!(plan.style&WS_OVERLAPPEDWINDOW,0);
+        assert!(plan_test_window(ProbeMode::Borderless,0,1080).is_err());
+        let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
+        assert_eq!((normal.client_width,normal.client_height),(960,540));
+        assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);
     }
     #[test]
     fn directdrawcreateex_requires_v7_then_legacy_v4_query(){

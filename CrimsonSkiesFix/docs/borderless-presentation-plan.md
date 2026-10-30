@@ -819,6 +819,41 @@ All HRESULTs and the actual geometry are logged.
 A real game borderless/Flip adapter is not yet
 implemented; no game DLL behavior changes.
 
+## Stage B3k — owner confirms v0.1.30 PASS; v0.1.31 opt-in borderless diagnostic
+
+The owner's \`windowed_ddraw_probe(5).log\` confirms all
+previous v0.1.30 HRESULTs are S_OK, including
+IDirect3DDevice3 BeginScene and EndScene and both
+windowed primary Blts (black full-client fill,
+640x480->720x540 4:3 stretched RGB565).
+The client is exactly 960x540 with aspect viewport
+x=120,y=0,w=720,h=540. The 1920x1080 desktop is
+preserved. The result is API success, not independent
+pixel verification.
+
+Version v0.1.31 introduces an **explicitly opt-in**
+standalone \`--borderless\` test. It creates a separate
+\`WS_POPUP|WS_VISIBLE\` temporary HWND at primary
+desktop 0,0, matching current display dimensions.
+The same real normal-mode DirectDraw4 clipper, RGB565
+D3D3 render target and HAL device are used to
+present a three-band red/green/blue RGB565 test
+pattern stretched into a centered 4:3 viewport.
+For 1920x1080 the planned image is x=240,
+y=0,w=1440,h=1080; the remaining left/right
+strips are black. Runtime checks reject
+wrong client geometry or a repositioned HWND.
+No fullscreen display switch, topmost setting,
+game window hook, new COM surface object or
+input interception occurs. The test window closes
+automatically and its log stays alongside the EXE.
+
+This establishes an additional host-level
+presentation prerequisite, but it is NOT
+in-game borderless and does not implement
+a virtual DirectDraw primary/flip chain.
+Retain PR #6 as draft until game validation.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
