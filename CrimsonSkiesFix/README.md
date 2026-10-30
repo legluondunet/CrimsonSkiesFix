@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.23 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.24 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,32 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.24 — inspect Z-buffer Blt flags (opt-in)
+
+The user's v0.1.23 Wine log shows five 120-Flip groups in 800x600
+and seven in 640x480. **Lock=Unlock for every observed role and
+group**, and every audited HRESULT is successful. In stable 640x480
+there are 120 backbuffer Blts and 240 Z-buffer Blts for 120
+successful primary Flips, while stable menu groups often have
+120 Blts on each buffer.
+
+The existing opt-in `[Debug] SurfaceUsageTrace=1` now also
+produces a bounded `SURFACE-BLT-SIGNATURE` summary for
+each group: exact hexadecimal Blt flags, whether the source
+surface pointer was NULL, success/failure counts and the
+receiving surface's role. Eight distinct signatures per
+role are kept per group and extras are counted as overflow.
+
+This may distinguish `DDBLT_DEPTHFILL=0x02000000` from
+`DDBLT_COLORFILL=0x00000400` or copied surfaces, but
+**does not access DDBLTFX, pixels, RECTs or surface memory**.
+No additional COM hooks are installed, and no game call is
+changed. The borderless presenter is still not implemented.
+
+For the next Wine test, leave the current graphics settings
+and enable `Log=1` and `SurfaceUsageTrace=1` under
+`[Debug]`, then provide the latest `CrimsonSkiesFix.log`.
 
 ## v0.1.23 — per-role Lock/Unlock, Blt and attachment diagnostics
 

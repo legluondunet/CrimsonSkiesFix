@@ -13,6 +13,7 @@ mod borderless_contract; // pure, inactive COM/windowed-surface contract (Stage 
 mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
 mod com_surface4_abi; // inactive, verified 45-slot Surface4 ABI (Stage B3b)
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
+mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
@@ -156,6 +157,8 @@ static SCENE_FLIP_GROUP:Mutex<scene_correlation::SceneCorrelation>=
 static SCENE_FLIP_GROUP_LOGS:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_USAGE_AUDIT:Mutex<surface_usage::Audit>=Mutex::new(surface_usage::Audit::new());
 static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
+static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
+static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -372,6 +375,9 @@ unsafe extern "system" fn modern_set_display_mode(
             session.begin_mode(presentation::Mode{width:w,height:h,bpp});
             if cfg().surface_usage_trace && cfg().log_enabled {
                 if let Ok(mut audit)=SURFACE_USAGE_AUDIT.lock(){
+                    audit.reset(session.epoch);
+                }
+                if let Ok(mut audit)=BLT_SIGNATURE_AUDIT.lock(){
                     audit.reset(session.epoch);
                 }
             }
@@ -650,6 +656,13 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
                     }
                 }
             }
+            if let Ok(mut audit)=BLT_SIGNATURE_AUDIT.lock(){
+                if let Some(report)=audit.primary_flip(){
+                    if BLT_SIGNATURE_LOGS.fetch_add(1,Ordering::Relaxed)<12 {
+                        log(&report);
+                    }
+                }
+            }
         }
         if let Ok(mut group)=SCENE_FLIP_GROUP.lock(){
             let sample=group.observe_flip(
@@ -698,6 +711,12 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
     let call:BltFn=std::mem::transmute(addr);
     let hr=call(this,dst,src,src_rect,flags,fx);
     record_surface_usage(this,surface_usage::Method::Blt,hr);
+    if surface_usage_enabled(){
+        let role=surface_usage::classify(modern_surface_caps(this));
+        if let Ok(mut audit)=BLT_SIGNATURE_AUDIT.lock(){
+            audit.record(role,flags,!src.is_null(),hr);
+        }
+    }
     hr
 }
 unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,

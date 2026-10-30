@@ -587,6 +587,50 @@ DirectDraw object, surface data, COM ownership or GPU
 presentation. Comparing texture Lock versus Unlock and
 Blt receiver roles will inform the next real adapter design.
 
+## v0.1.23 owner log: exact role/method totals
+
+The user-supplied `CrimsonSkiesFix(4).log` from Wine 11.0
+GE-Proton11-11 runs v0.1.23 with `ModernFPSPacing=0`
+and optional `SurfaceUsageTrace=1`. There are **five
+800x600 groups** in generation 2, and **seven 640x480
+groups** in generation 3, each spanning 120 successful
+primary Flips (12 groups; 1440 Flip COM completions).
+There are no recorded HRESULT failures, and each
+Lock/Unlock pair balances exactly in each measured group.
+
+| Method / receiver | 800x600 (5 groups) | 640x480 (7 groups) |
+|---|---:|---:|
+| texture.Lock = texture.Unlock | 1697 | 1709 |
+| backbuffer.Lock = backbuffer.Unlock | 114 | 1 |
+| primary.Lock = primary.Unlock | 1 | 1 |
+| backbuffer.Blt | 615 | 841 |
+| depth.Blt | 442 | 1317 |
+| texture.Restore | 6 | 1358 |
+| backbuffer.AddAttachedSurface | 1 | 1 |
+| primary.GetAttachedSurface | 1 | 1 |
+| backbuffer.GetAttachedSurface | 1 | 1 |
+
+Notably during stable 640x480 3D phases, 120 successful
+primary Flips align with 120 successful backbuffer Blts,
+240 successful depth Blts and exactly 11 BeginScene/EndScene
+pairs per observed inter-Flip interval. These are API rates
+and ratios, **not verified on-screen FPS**.
+
+`depth.Blt` might be an explicit depth clear/fill,
+but this cannot be inferred from the count alone.
+Version 0.1.24 adds optional `SURFACE-BLT-SIGNATURE`
+sampling for exact Blt flags, source-pointer NULL/provided
+status, successful/failed HRESULTs and destination role,
+without examining DDBLTFX or pixels. It has bounded
+eight-signature-per-role storage and resets on mode changes.
+The original exclusive DirectDraw/Direct3D3 paths remain
+unchanged, borderless `applied=false`.
+
+Original DirectDraw flags (Wine include/ddraw.h):
+`DDBLT_COLORFILL=0x00000400`,
+`DDBLT_DEPTHFILL=0x02000000`,
+`DDBLT_WAIT=0x01000000`.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
