@@ -108,18 +108,18 @@ mod tests {
     }
 
     #[test]
-    fn 4x3_input_to_16x9_output_is_pillarboxed_with_opaque_black() {
+    fn square_input_on_widescreen_is_pillarboxed_with_opaque_black() {
         let src=[0x00,0xf8, 0xe0,0x07, 0x1f,0x00, 0xff,0xff];
         let mut dst=[0u8;32*4]; // 8x4x4 BGRA
         let rect=compose_rgb565(
             Image{bytes:&src,width:2,height:2,pitch:4},
             &mut BgraOutput{bytes:&mut dst,width:8,height:4,pitch:32}).unwrap();
-        assert_eq!(rect,Viewport{x:1,y:0,width:6,height:4});
+        assert_eq!(rect,Viewport{x:2,y:0,width:4,height:4});
         assert_eq!(&dst[0..4],[0,0,0,255]); // black pillar
-        assert_eq!(&dst[4..8],[0,0,255,255]); // RGB565 red
+        assert_eq!(&dst[8..12],[0,0,255,255]); // RGB565 red
         assert_eq!(&dst[7*4..8*4],[0,0,0,255]); // other pillar
-        assert_eq!(&dst[3*32+4..3*32+8],[255,0,0,255]); // bottom left blue
-        assert_eq!(&dst[3*32+6*4..3*32+7*4],[255,255,255,255]); // bottom right white
+        assert_eq!(&dst[3*32+2*4..3*32+3*4],[255,0,0,255]); // bottom left blue
+        assert_eq!(&dst[3*32+5*4..3*32+6*4],[255,255,255,255]); // bottom right white
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
             Err(BlitError::ShortSource));
         assert_eq!(compose_rgb565(
             Image{bytes:&src,width:1,height:1,pitch:2},
-            &mut BgraOutput{bytes:&mut dst,width:2,height:2,pitch:8}),
+            &mut BgraOutput{bytes:&mut dst,width:3,height:2,pitch:12}),
             Err(BlitError::ShortDestination));
         assert_eq!(dst,[0x42;16]);
     }
