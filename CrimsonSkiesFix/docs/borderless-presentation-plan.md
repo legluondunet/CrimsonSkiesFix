@@ -721,6 +721,37 @@ game DLL or to the active DirectDraw hook path.
 
 Reference: https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-directdrawcreateex
 
+## Stage B3h — v0.1.28 Z32 DDPIXELFORMAT mask correction
+
+The owner ran the v0.1.27 stand-alone probe and provided a
+complete log. DirectDraw7, QueryInterface(DirectDraw4),
+windowed `DDSCL_NORMAL`, primary, clipper, RGB565
+`DDSCAPS_3DDEVICE` offscreen target all return success.
+The first failure is `CreateSurface(Z32)=0x88760091`,
+`DDERR_INVALIDPIXELFORMAT`. This **does not yet establish
+a Wine 32-bit depth limit**.
+
+Comparing our descriptor with Wine's direct3d 32-bit depth
+tests revealed that `DDPIXELFORMAT.dwZBitMask` was zero.
+The v0.1.28 probe now sets the Win32 x86 word 22 mask to
+`0xffffffff` for a 32-bit Z surface. It first tries the
+requested video-memory Z32 caps and only if that fails
+tries Z32 with driver-selected memory placement, logging
+which path succeeded. After creation it queries the
+*actual* descriptor, asserts 32-bit Z pixel format with a
+non-zero depth mask, and tests the real depth-fill Blt.
+If the second allocation works but lacks video memory,
+this remains separate evidence and does NOT imply full
+equivalence to the game's exact caps.
+
+No 16-bit downgrade, SetDisplayMode, COM virtualization,
+or game process interception is performed. All live DLL
+graphics paths are still unchanged. The PR remains draft.
+
+Reference: Wine's ddraw depth tests and original
+`DDPIXELFORMAT` layout
+(https://github.com/wine-mirror/wine/blob/master/include/ddraw.h).
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.27 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.28 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,38 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.28 — correct Z32 pixel mask and probe real depth fill
+
+The owner-provided `windowed_ddraw_probe(1).log` from v0.1.27
+confirms successful `DirectDrawCreateEx(IDirectDraw7)`,
+`QueryInterface(IDirectDraw4)`, `DDSCL_NORMAL`,
+the windowed primary/clipper and the **RGB565 offscreen 3D
+target**. It stops at `CreateSurface(Z32)` with
+`0x88760091 = DDERR_INVALIDPIXELFORMAT`.
+
+The standalone test's Z32 descriptor incorrectly had a
+**zero `dwZBitMask`**. The corrected pixel format uses
+`DDPF_ZBUFFER`, 32-bit depth and mask `0xffffffff`,
+as in Wine's 32-bit depth-format tests. It first tries
+`DDSCAPS_ZBUFFER | DDSCAPS_VIDEOMEMORY` and, if refused,
+retries another **32-bit** Z surface with driver-selected
+memory placement. Every real HRESULT is logged, with the
+selected memory policy; the probe **never silently falls
+back to 16-bit depth**.
+
+On successful creation, the probe reads the actual Z32
+`GetSurfaceDesc` (bits and mask), tests the game's real
+`DDBLT_DEPTHFILL` operation, then continues with the
+original Z attachment, RGB565 fill, windowed Blt and
+Direct3D3 HAL CreateDevice. If the backend rejects a
+step the log preserves its exact HRESULT.
+
+Only `windowed_ddraw_probe.exe` is changed. Install the
+standalone probe artifact outside the game folder and
+return its `windowed_ddraw_probe.log`. The active game
+`ddraw.dll`, its INI and FPS behavior remain unchanged;
+no in-game borderless feature is claimed.
 
 ## v0.1.27 — fix standalone probe DirectDraw initialization
 

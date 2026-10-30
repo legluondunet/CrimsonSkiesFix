@@ -77,6 +77,7 @@ const DDSCAPS_ZBUFFER:u32=0x20000;
 const DDPF_RGB:u32=0x40;
 const DDPF_ZBUFFER:u32=0x400;
 const DDBLT_COLORFILL:u32=0x400;
+const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
 const WS_OVERLAPPEDWINDOW:u32=0x00cf_0000;
 const WS_VISIBLE:u32=0x1000_0000;
@@ -177,7 +178,12 @@ fn desc(caps:u32,width:u32,height:u32,bits:Option<u32>)->[u32;31]{
         d[18]=32;
         d[19]=if caps&DDSCAPS_ZBUFFER!=0{DDPF_ZBUFFER}else{DDPF_RGB};
         d[21]=bpp;
-        if bpp==16 && caps&DDSCAPS_ZBUFFER==0{
+        if caps&DDSCAPS_ZBUFFER!=0 && bpp==32 {
+            // DDPIXELFORMAT.dwZBitMask aliases dwRBitMask at DWORD 22.
+            // Wine's 32-bit depth format tests use the full mask.
+            // A zero mask is an invalid 32-bit Z pixel format.
+            d[22]=0xffff_ffff;
+        }else if bpp==16 && caps&DDSCAPS_ZBUFFER==0{
             d[22]=0xf800;d[23]=0x07e0;d[24]=0x001f;
         }
     }
@@ -193,12 +199,30 @@ unsafe fn create_surface(ddraw:&Com,name:&str,mut description:[u32;31])
     if out.is_null(){return Err(format!("{name} returned a NULL COM pointer"));}
     Ok(Com(out))
 }
+/// Query the real surface's returned Z format. This is the actual
+/// DirectDraw result, not a copy of our requested descriptor.
+unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
+    let get_desc:unsafe extern "system" fn(Ptr,*mut u32)->Hr=
+        std::mem::transmute(slot(depth.0,22));
+    let mut actual=[0u32;31];actual[0]=124;
+    check("Z32.GetSurfaceDesc",get_desc(depth.0,actual.as_mut_ptr()))?;
+    probe_line(&format!(
+        "Z32-RESULT: flags={:#010x} caps={:#010x} pixel_flags={:#010x} bits={} zmask={:#010x}",
+        actual[1],actual[26],actual[19],actual[21],actual[22]));
+    if actual[1]&DDSD_PIXELFORMAT==0 || actual[18]!=32 ||
+       actual[19]&DDPF_ZBUFFER==0 || actual[21]!=32 || actual[22]==0 {
+        return Err(format!(
+            "Actual Z-buffer format is not a usable 32-bit depth pixel format (flags={:#x}, bits={}, mask={:#x})",
+            actual[19],actual[21],actual[22]));
+    }
+    Ok(())
+}
 fn run()->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.27; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.28; standalone test; desktop={}x{}",before.0,before.1));
     let class=wide("STATIC");
     let title=wide("CrimsonSkiesFix windowed DirectDraw test (not the game)");
     let hwnd=unsafe {
@@ -258,12 +282,39 @@ fn run()->Result<(),String>{
     let target=unsafe{create_surface(&ddraw,"RGB565 offscreen 3D target",
         desc(DDSCAPS_OFFSCREEN|DDSCAPS_3DDEVICE|DDSCAPS_VIDEOMEMORY,
              640,480,Some(16)))?};
-    let depth=unsafe{create_surface(&ddraw,"32-bit Z-buffer",
-        desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32)))?};
+    // A 32-bit Z descriptor requires an actual depth bit mask.
+    // Try the game's preferred video-memory placement first. If that
+    // exact placement is rejected, probe a second *32-bit* allocation
+    // without forcing memory location; NEVER silently degrade to Z16.
+    let (depth,depth_placement)=unsafe {
+        match create_surface(&ddraw,"32-bit Z-buffer (explicit video memory)",
+            desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32))) {
+            Ok(surface)=>(surface,"explicit-video-memory"),
+            Err(err)=>{
+                probe_line(&format!(
+                    "Z32-RETRY: explicit video memory rejected ({err}); retrying 32-bit depth with driver-selected memory placement"));
+                let surface=create_surface(&ddraw,"32-bit Z-buffer (driver-selected memory)",
+                    desc(DDSCAPS_ZBUFFER,640,480,Some(32)))?;
+                (surface,"driver-selected-memory")
+            },
+        }
+    };
+    probe_line(&format!("Z32-PLACEMENT: {depth_placement}"));
+    unsafe{verify_z_format(&depth)?;}
     unsafe{
         let attach:unsafe extern "system" fn(Ptr,Ptr)->Hr=
             std::mem::transmute(slot(target.0,3));
         check("target.AddAttachedSurface(Z)",attach(target.0,depth.0))?;
+    }
+    // Real game uses DDBLT_DEPTHFILL with NULL source. Exercise the
+    // actual depth fill and report its HRESULT before 3D device setup.
+    // In Win32 DDBLTFX, dwFillDepth occupies DWORD index 20.
+    let mut depth_fill=[0u32;25];depth_fill[0]=100;depth_fill[20]=0xffff_ffff;
+    unsafe{
+        let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+            std::mem::transmute(slot(depth.0,5));
+        check("Z32.Blt(DDBLT_DEPTHFILL)",blt(depth.0,ptr::null(),ptr::null_mut(),
+            ptr::null(),DDBLT_DEPTHFILL,depth_fill.as_mut_ptr()))?;
     }
     // 100-byte DDBLTFX in Win32 x86; dwFillColor is DWORD index 20.
     let mut fill=[0u32;25];fill[0]=100;fill[20]=0x3ac7;
@@ -323,7 +374,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.27");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.28");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     if let Err(e)=run(){
@@ -353,7 +404,7 @@ mod tests{
         let d=desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32));
         assert_eq!(d[19],DDPF_ZBUFFER);
         assert_eq!(d[21],32);
-        assert_eq!((d[22],d[23],d[24]),(0,0,0));
+        assert_eq!((d[22],d[23],d[24]),(0xffff_ffff,0,0));
         assert_eq!(d[26],0x24000);
     }
     #[test]
@@ -363,6 +414,21 @@ mod tests{
         assert_eq!(log.parent(),exe.parent());
         assert_eq!(log.file_name().unwrap(),"windowed_ddraw_probe.log");
         assert!(log_path_for_executable(Path::new("")).is_err());
+    }
+    #[test]
+    fn depth_format_mask_matches_wine_32bit_reference(){
+        let forced=desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32));
+        let auto=desc(DDSCAPS_ZBUFFER,640,480,Some(32));
+        for d in [forced,auto] {
+            assert_eq!(d[0],124);
+            assert_eq!(d[1],DDSD_CAPS|DDSD_HEIGHT|DDSD_WIDTH|DDSD_PIXELFORMAT);
+            assert_eq!(d[19],DDPF_ZBUFFER);
+            assert_eq!(d[21],32);
+            assert_eq!(d[22],0xffff_ffff);
+        }
+        assert_eq!(forced[26],DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY);
+        assert_eq!(auto[26],DDSCAPS_ZBUFFER);
+        assert_eq!(DDBLT_DEPTHFILL,0x0200_0000);
     }
     #[test]
     fn directdrawcreateex_requires_v7_then_legacy_v4_query(){
