@@ -194,9 +194,10 @@ and custom render resolution follow separately.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
-- Dist artifact layout stays `ddraw.dll` at game root and
-  `CrimsonFix/` subfolder for docs, INI and logs.
-- Never ship the active `CrimsonFix.ini`; ship only the
-  `CrimsonFix.ini.example` template to preserve user settings.
+- Dist artifact layout stays `ddraw.dll` at game root,
+  `CrimsonSkiesFix/` for docs and INI, and optional
+  `CrimsonSkiesFix.log` beside the loaded DLL.
+- Never ship an active `CrimsonSkiesFix.ini` or log; ship only the
+  `CrimsonSkiesFix.ini.example` template to preserve user settings.
 - x86 Windows CI, tests, and gameplay evidence required before enabling
   any behavior change by default.
