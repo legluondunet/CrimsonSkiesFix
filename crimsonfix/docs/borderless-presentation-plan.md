@@ -125,6 +125,41 @@ external compatible DirectDraw3D translation layer must be selected
 before any real windowed presentation or alt-tab behavior is enabled.
 A 2D-only DDraw wrapper is not enough for the 3D device.
 
+## Stage B1 — identify actual Direct3D3 device/render target
+
+Cross-checking the captured `QueryInterface` GUIDs against Wine's
+`d3d.h` established that the engine requests
+**IID_IDirect3D3 = bb223240-e72b-11d0-a9b4-00aa00c0993e** and
+**IID_IDirect3DTexture2 = 93281502-8cf8-11d0-89ab-00a0c9054129**.
+This is not a 2D-only DirectDraw game and should not be passed to a
+2D-only DDraw wrapper; the original fixed-function Direct3D3 device
+requires genuine support. A DDraw->D3D9 translation layer may be a
+possible future backend, but available third-party wrappers document
+limited D3D compatibility; none is assumed working with Crimson Skies.
+
+v0.1.12 adds a **passive** `IDirect3D3::CreateDevice` COM hook
+(vtable slot 8 per Wine `d3d.h`), installed only after successful
+`QueryInterface(IID_IDirect3D3)`. It delegates to the original
+method with the same CLSID, `IDirectDrawSurface4` render target,
+device output and outer IUnknown; it logs the resulting 3D target
+surface role, result and object-return status. The device remains
+owned by the game; no new D3D device is created. This is the next
+useful runtime question: whether the game renders into the
+**backbuffer** (`0x1000601c`) or another intermediate surface,
+including during menus and transitions.
+
+The pure `rgb565_present.rs` and inactive `win32_present.rs`
+together provide validated pixel conversion and top-down BGRA8
+Win32 client-area output for *already available CPU image data*.
+They are **not connected** to the exclusive D3D3 rendering path;
+safe interception/translation of the 3D render target is still
+missing. The actual borderless mode must remain off until then.
+
+References:
+- https://fossies.org/dox/wine-11.0/d3d_8h_source.html
+- https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setdibitstodevice
+- https://github.com/elishacloud/dxwrapper/wiki/DirectDraw-to-Direct3D9-Conversion
+
 ## Stage B — prototype an explicit windowed presentation adapter
 
 Only after Stage A is reproduced in gameplay, implement behind a
