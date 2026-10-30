@@ -268,6 +268,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 if hr<0{return Some(hr);}
                 return Some(original(dd4,w,h,bpp,refresh,flags));
             }
+            // The host compositor may refuse/alter requested client bounds.
+            // Do not start presenting to an assumed desktop-sized rectangle.
+            let expected=(0,0,area.right as u32,area.bottom as u32);
+            if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
+                log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
+                return Some(E_FAIL);
+            }
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
             Some(0)
