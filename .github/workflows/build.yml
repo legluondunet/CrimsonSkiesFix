@@ -1,4 +1,4 @@
-name: Build and test Rust patcher (Windows)
+name: SafeDisc Rust patcher (Windows)
 
 on:
   push:
@@ -11,6 +11,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: SafeDisc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,5 +25,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: crimson-patcher-windows-x64
-          path: target/release/crimson-patcher.exe
+          path: SafeDisc/target/release/crimson-patcher.exe
           if-no-files-found: error
