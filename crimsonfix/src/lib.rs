@@ -21,6 +21,20 @@ type SurfaceFn=unsafe extern "system" fn(*mut c_void,*mut c_void,*mut *mut c_voi
 type FlipFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
 type BltFn=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut c_void)->Hr;
 type GetCapsFn=unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
+type QueryInterfaceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut *mut c_void)->Hr;
+type BltFastFn=unsafe extern "system" fn(*mut c_void,u32,u32,*mut c_void,*const c_void,u32)->Hr;
+type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct Guid {d1:u32,d2:u16,d3:u16,d4:[u8;8]}
+fn guid_label(iid:*const Guid)->String {
+    if iid.is_null(){return "NULL".to_string();}
+    let g=unsafe{&*iid};
+    format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        g.d1,g.d2,g.d3,g.d4[0],g.d4[1],g.d4[2],g.d4[3],
+        g.d4[4],g.d4[5],g.d4[6],g.d4[7])
+}
 
 const S_OK:Hr=0;
 const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
@@ -29,10 +43,13 @@ const DDSCAPS_PRIMARYSURFACE:u32=0x0000_0200;
 const DLL_PROCESS_ATTACH:u32=1;
 // IDirectDraw v1 slots. Surface Flip/Blt/GetCaps slots are also stable in
 // later surface interface versions; QueryInterface interception is TODO.
+const COM_QUERY_INTERFACE:usize=0;
 const DD_CREATE_SURFACE:usize=6;
 const DD_SET_COOPERATIVE:usize=20;
 const DD_SET_DISPLAY_MODE:usize=21;
 const SURFACE_BLT:usize=5;
+const SURFACE_BLT_FAST:usize=7;
+const SURFACE_UNLOCK:usize=32;
 const SURFACE_FLIP:usize=11;
 const SURFACE_GET_CAPS:usize=14;
 
@@ -46,6 +63,11 @@ static FREQUENCY:OnceLock<i64>=OnceLock::new();
 static FIRST_FLIP:Once=Once::new();
 static FIRST_BLT:Once=Once::new();
 static COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static DDRAW_QI_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static SURFACE_QI_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static WINDOW_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static FIRST_BLT_FAST:Once=Once::new();
+static FIRST_UNLOCK:Once=Once::new();
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -153,6 +175,54 @@ fn pace_frame() {
     *previous=now;
 }
 
+// Read-only interface discovery: the original COM QueryInterface is called
+// without changing IID, return value or output. This identifies whether the
+// 3D renderer uses other DirectDraw/Direct3D interfaces beyond the v1 hooks.
+unsafe extern "system" fn ddraw_query_interface(this:*mut c_void,iid:*const Guid,out:*mut *mut c_void)->Hr {
+    let Some(addr)=orig(this,COM_QUERY_INTERFACE) else{return DDERR_GENERIC};
+    let call:QueryInterfaceFn=std::mem::transmute(addr);
+    let hr=call(this,iid,out);
+    if DDRAW_QI_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
+        log(&format!("COM-TRACE: IDirectDraw::QueryInterface iid={} result={hr:#x} object_returned={}",
+            guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
+    hr
+}
+
+unsafe extern "system" fn surface_query_interface(this:*mut c_void,iid:*const Guid,out:*mut *mut c_void)->Hr {
+    let Some(addr)=orig(this,COM_QUERY_INTERFACE) else{return DDERR_GENERIC};
+    let call:QueryInterfaceFn=std::mem::transmute(addr);
+    let hr=call(this,iid,out);
+    if SURFACE_QI_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
+        log(&format!("COM-TRACE: IDirectDrawSurface::QueryInterface iid={} result={hr:#x} object_returned={}",
+            guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
+    hr
+}
+
+// Trace only. Neither method is paced yet because a CPU lock/unlock
+// or offscreen BltFast is not necessarily a displayed video frame.
+unsafe extern "system" fn surface_blt_fast(this:*mut c_void,x:u32,y:u32,source:*mut c_void,src_rect:*const c_void,flags:u32)->Hr {
+    let Some(addr)=orig(this,SURFACE_BLT_FAST) else{return DDERR_GENERIC};
+    FIRST_BLT_FAST.call_once(||log("RENDER-TRACE: first IDirectDrawSurface::BltFast call (no FPS pacing on this path)"));
+    let call:BltFastFn=std::mem::transmute(addr);
+    call(this,x,y,source,src_rect,flags)
+}
+
+unsafe extern "system" fn surface_unlock(this:*mut c_void,rect_or_ptr:*const c_void)->Hr {
+    let Some(addr)=orig(this,SURFACE_UNLOCK) else{return DDERR_GENERIC};
+    FIRST_UNLOCK.call_once(||log("RENDER-TRACE: first IDirectDrawSurface::Unlock call (no FPS pacing on this path)"));
+    let call:UnlockFn=std::mem::transmute(addr);
+    call(this,rect_or_ptr)
+}
+
+fn trace_game_windows(stage:&str) {
+    if CONFIG.get().is_some_and(|cfg|cfg.log_enabled) &&
+       WINDOW_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<6 {
+        log(&format!("WIN-TRACE: at {stage}: {}",win32::game_windows_snapshot()));
+    }
+}
+
 unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else {return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
@@ -170,6 +240,7 @@ unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)-
         if hr>=0 {
             if hwnd.is_null() {
                 if trace {log("Borderless deferred: game passed a NULL HWND; waiting for a valid HWND");}
+                if trace {trace_game_windows("SetCooperativeLevel NULL HWND");}
             } else if let Some(monitor)=win32::monitor_from_cursor_or_window(hwnd) {
                 match win32::borderless_window(hwnd,monitor) {
                     Ok(())=>log(&format!("Borderless applied: monitor [{},{},{},{}]",
@@ -219,6 +290,13 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
     let hr=call(this,desc,out,outer);
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let surface=*out;
+        if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize) {
+            log("COM-TRACE: IDirectDrawSurface::QueryInterface tracing installed");
+        }
+        if replace_method(surface,SURFACE_UNLOCK,surface_unlock as usize) {
+            log("RENDER-TRACE: IDirectDrawSurface::Unlock tracing installed");
+        }
+        trace_game_windows("CreateSurface");
         if replace_method(surface,SURFACE_FLIP,surface_flip as usize) {
             log("IDirectDrawSurface::Flip paced (1..60 FPS)");
         }
@@ -229,6 +307,9 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
             if getcaps(surface,caps.as_mut_ptr())>=0 && caps[0]&DDSCAPS_PRIMARYSURFACE!=0 {
                 if replace_method(surface,SURFACE_BLT,surface_blt as usize) {
                     log("Primary IDirectDrawSurface::Blt paced (1..60 FPS)");
+                }
+                if replace_method(surface,SURFACE_BLT_FAST,surface_blt_fast as usize) {
+                    log("RENDER-TRACE: primary IDirectDrawSurface::BltFast tracing installed");
                 }
             }
         }
@@ -244,10 +325,11 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     let hr=real(guid,out,outer);
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let dd=*out;
+        let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
         let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as usize);
         let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as usize);
         let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as usize);
-        log(&format!("DirectDrawCreate interception: cooperative={a}, mode={b}, surface={c}"));
+        log(&format!("DirectDrawCreate interception: query_interface={qi}, cooperative={a}, mode={b}, surface={c}"));
     }
     hr
 }
@@ -265,8 +347,11 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
     let function=symbol(b"DirectDrawCreateEx\0");
     if function.is_null(){return DDERR_GENERIC;}
     let real:CreateExFn=std::mem::transmute(function);
-    // Future work: intercept IDirectDraw7 QueryInterface/CreateSurface too.
-    real(guid,out,iid,outer)
+    // Diagnostic-only until newer DirectDraw COM interfaces are understood.
+    let hr=real(guid,out,iid,outer);
+    log(&format!("COM-TRACE: DirectDrawCreateEx iid={} result={hr:#x} object_returned={}",
+        guid_label(iid.cast()),hr>=0 && !out.is_null() && !(*out).is_null()));
+    hr
 }
 
 #[no_mangle]
@@ -274,4 +359,16 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
     if reason==DLL_PROCESS_ATTACH {MODULE.store(module as usize,Ordering::Relaxed);}
     // No file I/O, DLL loading or hook installation under the loader lock.
     1
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    #[test]
+    fn formats_interface_identifier_without_private_handles() {
+        let g=Guid{d1:0x6c14db80,d2:0xa733,d3:0x11ce,
+                   d4:[0xa5,0x21,0x00,0x20,0xaf,0x0b,0xe5,0x60]};
+        assert_eq!(guid_label(&g),"6c14db80-a733-11ce-a521-0020af0be560");
+        assert_eq!(guid_label(ptr::null()),"NULL");
+    }
 }
