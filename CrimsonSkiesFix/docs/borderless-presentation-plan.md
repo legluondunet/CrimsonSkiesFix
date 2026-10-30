@@ -973,6 +973,13 @@ Following the 45-method, refcounted COM forwarder implementation (B4e), the next
 Critically, the returned attachment remains the original **unwrapped** physical Z buffer; this must not be advertised as virtual game attachment topology. An independent temporary RGB565 surface then tests underlying AddRef lifetime by dropping the original COM owner while the wrapper is still live. The test never passes the wrapper to IDirect3D3::CreateDevice, which still uses the original physical target; thus this is an isolated live-COM smoke test rather than an in-game 3D rendering test through a virtual surface.
 
 All steps report detailed HRESULTs in the adjacent log and the normal borderless presentation checks still run. No game mode switch, COM hook installation or active game DLL changes.
+## Stage B4g — v0.1.38 test Direct3D3 device creation on a forwarded Surface4
+
+The owner verifies v0.1.37 live COM-forward behavior under Wine with native IUnknown/Surface4 identity, physical attached Z32 and actual RGB565 Blt. All expected HRESULTs are S_OK, the wrapper retains an independent original Surface4 reference across owner destruction, and the 1920x1080 desktop remains unchanged. Its COM wrapper is nevertheless not yet used as the render target of a D3D3 device.
+
+Version 0.1.38 adds **only** an opt-in `--com-device` standalone experiment: preserve the real normal-mode primary, real 640x480 RGB565 surface with true Z32 attachment, wrap the RGB565 surface in the full typed 45-slot COM forwarding façade and pass **the wrapper** into `IDirect3D3::CreateDevice(HAL, wrapper)`. The returned real HRESULT is logged, with no fallback to the original target if the test fails. If it succeeds, the test runs BeginScene/EndScene and the existing windowed Blt presentation and records `COM-DEVICE-RESULT: PASS`.
+
+This test intentionally probes an implementation-defined boundary: Direct3D3 may require additional COM identity/interface information that the forwarding wrapper does not advertise. A failed HRESULT or crash will be used to plan the next integration step; it does not imply any regression in the native physical DirectDraw renderer. No game DLL hook calls this new code.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

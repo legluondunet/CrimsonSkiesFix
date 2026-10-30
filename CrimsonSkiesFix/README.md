@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.37 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.38 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,16 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.38 — opt-in Direct3D3 HAL device creation using a real Surface4 forwarder
+
+The owner's v0.1.37 `--com-forward` log reports **COM-FORWARD-RESULT: PASS** under Wine: independent `IUnknown` / `IDirectDrawSurface4` identity, QueryInterface/AddRef/Release, real RGB565 caps and descriptors, physical attached Z32, successful forwarded Blt, and a real underlying surface kept alive after release of its original owner. A separate native color/Blt presentation also passed with desktop 1920x1080 preserved.
+
+To test the next critical compatibility prerequisite, the standalone EXE adds an **explicitly opt-in `--com-device` mode**. Only in this mode, the probe passes a real RGB565 640x480 DirectDraw4 surface **through the 45-method forwarder** as the `pRenderTarget` parameter to **`IDirect3D3::CreateDevice(CLSID_D3D_HAL)`**. Its original physical RGB565 target and Z32 attachment remain alive, and the COM forwarder is kept alive throughout device use. The test then attempts real `IDirect3DDevice3::BeginScene/EndScene` and windowed Blt presentation, without switching desktop mode.
+
+**A failed CreateDevice HRESULT is a valuable diagnostic:** it shows which obstacle remains between successful native COM delegation and Direct3D3 accepting the wrapper. The probe will log the exact HRESULT and **will not silently retry** with the original surface, or claim a successful virtual target. This mode is entirely separate from the already validated default, `--borderless`, `--borderless-loop` and `--com-forward` modes.
+
+Use the separately built Windows x86 `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL` artifact, extract to a writable folder outside the game installation and run `wine ./windowed_ddraw_probe.exe --com-device` in the same Wine/GE-Proton environment. Attach its adjacent `windowed_ddraw_probe.log`. The actual game DLL's rendering and installed INI remain unchanged, and no virtual primary/Flip chain is exposed to the game.
 
 ## v0.1.37 — first native COM forwarder smoke test under Wine
 

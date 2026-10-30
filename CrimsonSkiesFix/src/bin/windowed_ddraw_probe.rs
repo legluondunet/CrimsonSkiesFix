@@ -153,9 +153,9 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward, ComDevice }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward|Self::ComDevice)}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -164,7 +164,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [arg] if arg=="--borderless" => Ok(ProbeMode::Borderless),
         [arg] if arg=="--borderless-loop" => Ok(ProbeMode::BorderlessLoop),
         [arg] if arg=="--com-forward" => Ok(ProbeMode::ComForward),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward]".to_owned())
+        [arg] if arg=="--com-device" => Ok(ProbeMode::ComDevice),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward|--com-device]".to_owned())
     }
 }
 
@@ -186,7 +187,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward|ProbeMode::ComDevice=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -491,7 +492,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.37; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.38; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -504,7 +505,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let mode_label=match mode {ProbeMode::Windowed=>"windowed-default",
         ProbeMode::Borderless=>"borderless-opt-in",
         ProbeMode::BorderlessLoop=>"borderless-loop-opt-in",
-        ProbeMode::ComForward=>"com-forward-borderless-opt-in"};
+        ProbeMode::ComForward=>"com-forward-borderless-opt-in",
+        ProbeMode::ComDevice=>"com-device-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -629,15 +631,35 @@ fn run(mode:ProbeMode)->Result<(),String>{
         check("RGB565 offscreen ColorFill",blt(target.0,ptr::null(),ptr::null_mut(),
                 ptr::null(),DDBLT_COLORFILL|DDBLT_WAIT,fill.as_mut_ptr()))?;
     }
+    // Experimental gate: supply the *same actual* RGB565 surface as a
+    // full 45-method COM forwarding object to Direct3D3.CreateDevice.
+    // We never do this in the game DLL. There is no silent fallback to
+    // the real target after a failed CreateDevice: record the real HRESULT.
+    let wrapped_device_target=if mode==ProbeMode::ComDevice{
+        probe_line("COM-DEVICE-START: IDirect3D3.CreateDevice(HAL, forwarded Surface4)");
+        let facade=unsafe{com_surface4_forward::new_forwarding_surface4(target.0)}
+            .map_err(|hr|format!("COM-DEVICE: Surface4 wrapper creation failed {:#010x}",hr as u32))?;
+        if facade.is_null(){return Err("COM-DEVICE: wrapper NULL".into());}
+        let wrapped=Com(facade);
+        if wrapped.0==target.0{return Err("COM-DEVICE: wrapper aliases physical target".into());}
+        probe_line("COM-DEVICE-WRAPPER: native 45-slot Surface4 with separate IUnknown identity created");
+        Some(wrapped)
+    }else{None};
+    let device_target=wrapped_device_target.as_ref().map_or(target.0,|c|c.0);
     let mut device=ptr::null_mut();
     unsafe{
         let create:unsafe extern "system" fn(Ptr,*const Guid,Ptr,*mut Ptr,Ptr)->Hr=
             std::mem::transmute(slot(d3d.0,8));
-        check("IDirect3D3.CreateDevice(HAL, RGB565 target)",
-            create(d3d.0,&CLSID_D3D_HAL,target.0,&mut device,ptr::null_mut()))?;
+        let label=if mode==ProbeMode::ComDevice{
+            "COM-DEVICE.CreateDevice(HAL, forwarded RGB565 Surface4)"
+        }else{"IDirect3D3.CreateDevice(HAL, RGB565 target)"};
+        check(label,create(d3d.0,&CLSID_D3D_HAL,device_target,&mut device,ptr::null_mut()))?;
     }
     if device.is_null(){return Err("CreateDevice returned NULL".into());}
     let device=Com(device);
+    if mode==ProbeMode::ComDevice{
+        probe_line("COM-DEVICE-CREATED: real HAL device accepted Surface4 forwarding object");
+    }
     if mode==ProbeMode::ComForward{
         unsafe{test_real_surface4_forwarder(&ddraw,&target)?;}
     }
@@ -650,6 +672,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
             std::mem::transmute(slot(device.0,10));
         check("IDirect3DDevice3.BeginScene",begin(device.0))?;
         check("IDirect3DDevice3.EndScene",end(device.0))?;
+    }
+    if mode==ProbeMode::ComDevice{
+        probe_line("COM-DEVICE-SCENE: BeginScene and EndScene on real HAL device succeeded");
     }
 
     // Visual proof in the optional borderless mode only: draw three
@@ -764,6 +789,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // the operation, but does not independently measure displayed pixels.
     let after=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
     if before!=after{return Err(format!("Desktop changed unexpectedly: {:?} -> {:?}",before,after));}
+    if mode==ProbeMode::ComDevice{
+        probe_line("COM-DEVICE-RESULT: PASS (forwarded Surface4 accepted by Direct3D3 HAL, D3D scene, Blt)");
+    }
     probe_line(&format!(
         "PASS: mode={mode_label}; real windowed primary+clipper, RGB565+Z32, D3D3 HAL scenes, centered 4:3 Blt; desktop preserved"));
     // A temporary test window, deliberately self-closing. Give the owner
@@ -779,7 +807,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.37");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.38");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -897,6 +925,7 @@ mod tests{
         assert_eq!(parse_mode(&["--borderless".to_owned()]),Ok(ProbeMode::Borderless));
         assert_eq!(parse_mode(&["--borderless-loop".to_owned()]),Ok(ProbeMode::BorderlessLoop));
         assert_eq!(parse_mode(&["--com-forward".to_owned()]),Ok(ProbeMode::ComForward));
+        assert_eq!(parse_mode(&["--com-device".to_owned()]),Ok(ProbeMode::ComDevice));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -914,6 +943,9 @@ mod tests{
         let com_plan=plan_test_window(ProbeMode::ComForward,1920,1080).unwrap();
         assert_eq!(com_plan,plan);
         assert!(ProbeMode::ComForward.borderless());
+        let device_plan=plan_test_window(ProbeMode::ComDevice,1920,1080).unwrap();
+        assert_eq!(device_plan,plan);
+        assert!(ProbeMode::ComDevice.borderless());
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);
