@@ -5,6 +5,9 @@
 Borderless=1
 DesktopResolution=1
 FPSLimit=60
+; Experimental: throttle only primary modern Flip; not Blt or Unlock.
+; Leave at 0 until a diagnostic log confirms the desired rendering path.
+ModernFPSPacing=0
 ; FPSLimit is clamped to 1..60.
 
 [Debug]
