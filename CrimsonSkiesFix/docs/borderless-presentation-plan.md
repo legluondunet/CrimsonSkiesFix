@@ -919,6 +919,32 @@ and no active DirectDraw4 hooks are changed.
 The production virtual COM surface chain
 still requires engineering and verification.
 
+## Stage B4b runtime seam — v0.1.33 host-owned COM surfaces
+
+The standalone Win32 x86 probe now imports the same
+\`borderless_flip::execute_windowed_blt_pair\` shared
+by the game-side fail-closed transaction model.
+A real \`NativeWindowedBlt\` backend borrows the
+validated windowed primary/clipper and real 640x480
+RGB565 offscreen \`IDirectDrawSurface4\` to perform
+the actual black-clear and stretch. The game-side
+COM adapter remains unexposed.
+
+The optional **\`--borderless-loop\`** flag runs
+120 physical source color fills, D3D3 scene pairs
+and 120 clipped black-clear + RGB565 scaled Blt
+pairs, logging progress in groups of 30 and the
+first HRESULT failure. The operation count is
+not an actual gameplay frame-rate measurement.
+The existing one-frame windowed and borderless
+tests are unchanged. The host desktop remains
+in normal DDSCL mode, with no display switch.
+
+A future in-game bridge still requires a complete
+physical COM virtual primary/backbuffer/depth
+surface chain and verified IUnknown identities,
+not just this working real backend.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

@@ -170,15 +170,31 @@ rather than duplicating its logic. New tests ensure
 a failed clear does not attempt presentation and
 a failed stretch is not counted as a completed frame.
 
-In the accompanying standalone program, the *physical*
-Win32 DirectDraw4 primary and real RGB565 offscreen
-target will implement the \`WindowedBlt\` operations;
-a separate optional \`--borderless-loop\` mode will
-exercise a series of real frames without creating a
-game-facing COM surface or changing the desktop mode.
-The existing default and \`--borderless\` single-frame
-tests are preserved. The game still uses its original
-exclusive/direct Flip chain.
+The standalone x86 test EXE now imports this **same
+two-Blt transaction** and provides a \`WindowedBlt\`
+implementation backed by *real DirectDraw4 COM
+surfaces*, not simulated buffers. The existing
+default and \`--borderless\` options still execute
+a single frame, as in the previously validated
+standalone tests.
+
+A new explicit \`--borderless-loop\` option attempts
+**120 RGB565 color fills, 120 additional D3D3 scene
+pairs and 120 black-clear + scaled viewport Blt
+pairs** in its own 1920x1080 window. It reports
+per-stage HRESULT failures, bounded successful-frame
+progress, and a final summary. The loop's timing is
+**not game FPS**, and the test does not intercept
+Crimson Skies or call its exclusive \`Flip\`.
+
+Run from a writable folder **outside the game
+installation**, under the same Wine/GE-Proton:
+\`wine windowed_ddraw_probe.exe --borderless-loop\`.
+Send \`windowed_ddraw_probe.log\` afterward.
+The test window closes automatically.
+
+The actual game still uses its original exclusive
+DirectDraw4 Flip chain.
 
 Only a standalone host-level test is presently available.
 A complete game-facing virtual primary/backbuffer/Z COM
