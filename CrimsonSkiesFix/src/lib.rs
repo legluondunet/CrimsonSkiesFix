@@ -41,6 +41,7 @@ type FlipFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
 type BltFn=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut c_void)->Hr;
 type GetCapsFn=unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
 type ModernDisplayModeFn=unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u32)->Hr;
+type GetDisplayModeFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
 type QueryInterfaceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut *mut c_void)->Hr;
 type BltFastFn=unsafe extern "system" fn(*mut c_void,u32,u32,*mut c_void,*const c_void,u32)->Hr;
 type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
@@ -73,6 +74,7 @@ const COM_QUERY_INTERFACE:usize=0;
 const DD_CREATE_SURFACE:usize=6;
 const DD_SET_COOPERATIVE:usize=20;
 const DD_SET_DISPLAY_MODE:usize=21;
+const DD_GET_DISPLAY_MODE:usize=12;
 const SURFACE_BLT:usize=5;
 const SURFACE_USAGE_ADD_ATTACHED_SURFACE:usize=3;
 const SURFACE_USAGE_DELETE_ATTACHED_SURFACE:usize=8;
@@ -120,6 +122,7 @@ static FIRST_MODERN_FAST:Once=Once::new();
 static FIRST_MODERN_UNLOCK:Once=Once::new();
 static MODERN_COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_DISPLAY_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MODERN_GET_DISPLAY_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_SURFACE_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_SURFACE_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_DDRAW_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -423,6 +426,22 @@ unsafe extern "system" fn modern_set_display_mode(
             log(&format!("WIN-TRACE: after SetDisplayMode {w}x{h}: {}",
                 win32::game_window_snapshot(hwnd)));
         }
+    }
+    hr
+}
+
+// In the windowed adapter, the game's DD4 logical mode is not the monitor's
+// native mode. Preserve the native HRESULT, but return the mode the game
+// originally requested to avoid a false 1920x1080x32 validation failure.
+unsafe extern "system" fn modern_get_display_mode(this:*mut c_void,d:*mut c_void)->Hr{
+    let Some(addr)=orig(this,DD_GET_DISPLAY_MODE) else{return DDERR_GENERIC;};
+    let call:GetDisplayModeFn=std::mem::transmute(addr);
+    let hr=call(this,d);
+    let eligible=cfg().experimental_windowed_adapter &&
+        GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>());
+    let rewritten=hr>=0 && eligible && in_game_adapter::rewrite_display_mode(this,d);
+    if MODERN_GET_DISPLAY_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
+        log(&format!("WINDOWED-GAME: DD4 GetDisplayMode native HRESULT={hr:#x}, logical_rewrite={rewritten}"));
     }
     hr
 }
@@ -898,6 +917,10 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
     let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as usize);
+    if name=="IDirectDraw4" && cfg().experimental_windowed_adapter {
+        let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as usize);
+        if cfg().log_enabled {log(&format!("WINDOWED-GAME: DD4 GetDisplayMode hook_installed={get_mode}"));}
+    }
     if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
         log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
     }
@@ -1234,6 +1257,7 @@ mod trace_tests {
             d4:[0xa9,0xb4,0x00,0xaa,0x00,0xc0,0x99,0x3e]};
         assert!(is_d3d3_iid(&d3d3));
         assert_eq!(D3D3_CREATE_DEVICE,8);
+        assert_eq!(DD_GET_DISPLAY_MODE,12);
         assert_eq!(D3D3_DEVICE_BEGIN_SCENE,9);
         assert_eq!(D3D3_DEVICE_END_SCENE,10);
         assert_eq!(D3D3_DEVICE_SET_RENDER_TARGET,14);
