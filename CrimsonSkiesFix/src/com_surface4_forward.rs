@@ -16,12 +16,14 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::atomic::{AtomicPtr,AtomicU32,Ordering},
+    sync::{Mutex,atomic::{AtomicPtr,AtomicU32,Ordering}},
 };
 use crate::{
     Guid,
     com_surface4_abi::{Rect,Surface4VTable,SurfaceThis},
-    borderless_contract::SurfaceRole,
+    borderless_contract::{AdapterContract,SurfaceRole},
+    borderless_flip::{FlipBridgeError,FlipToBltBridge},
+    borderless_native_blt::NativeWindowedBlt,
     presentation::Mode,
 };
 const S_OK:i32=0;
@@ -51,6 +53,16 @@ impl VirtualGraphNode {
     fn bpp(self)->u32{if self.role==SurfaceRole::Depth{32}else{16}}
     fn count(self)->u32{if self.role==SurfaceRole::Primary{1}else{0}}
 }
+/// Probe-only eligible native presentation session. The wrapper's
+/// primary->backbuffer->depth COM strong edges own the physical resources.
+/// The full three-object chain and native HWND/clipper MUST be verified
+/// before this is armed. There is deliberately no active game runtime caller.
+struct GraphFlipSession{
+    bridge:FlipToBltBridge,
+    backend:NativeWindowedBlt,
+    epoch:u64,
+    mode:Mode,
+}
 #[repr(C)]
 struct Surface4Forwarder{
     vtable:*const Surface4VTable, // COM slot 0, first DWORD
@@ -58,6 +70,7 @@ struct Surface4Forwarder{
     refs:AtomicU32,               // client-owned references only
     graph:Option<VirtualGraphNode>, // None retains pure passthrough semantics
     attached:AtomicPtr<c_void>,  // one strong child edge when graph is set
+    virtual_flip:Mutex<Option<GraphFlipSession>>, // explicitly armed once; default off
 }
 
 /// # Safety
@@ -76,6 +89,7 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         vtable:&SURFACE4_FORWARD_VTABLE,
         real,refs:AtomicU32::new(1),
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
+        virtual_flip:Mutex::new(None),
     });
     Ok(Box::into_raw(obj).cast())
 }
@@ -148,6 +162,73 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
         *d.add(5)=0x07e0;
         *d.add(6)=0x001f;
     }
+}
+
+/// Enable the virtual-primary COM Flip vtable path on an already built,
+/// fully verified, explicit three-object Surface4 graph. Once enabled,
+/// IDirectDrawSurface4::Flip maps to *real windowed* black clear + RGB565
+/// stretch. An incomplete graph, wrong mode/client size or prior arm
+/// is rejected. Virtual Blt and all other incomplete operations remain
+/// fail-closed. This is not installed in the game.
+///
+/// The contract's Phase::Exposed is a required proof gate from the caller:
+/// NEVER manufacture BackendEvidence before physical DirectDraw4, Z32,
+/// D3D3 HAL and clipping checks actually succeed.
+///
+/// # Safety
+/// primary must be a live graph-enabled COM Surface4 primary with its
+/// backbuffer/depth children attached. The caller ensures the underlying
+/// real primary is clipped to the HWND, all physical pointers are valid,
+/// and desktop origin and client dimensions describe that same HWND.
+/// The graph must outlive every in-flight COM method invocation.
+pub unsafe fn arm_graph_primary_flip(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32)
+)->Result<(),i32>{
+    if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
+    let p=&*primary.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG);};
+    if node.role!=SurfaceRole::Primary||node.mode!=contract.plan.internal||
+       (contract.plan.desktop_width,contract.plan.desktop_height)!=client{
+        return Err(E_INVALIDARG);
+    }
+    let back=p.attached.load(Ordering::Acquire);
+    if !is_our_forwarder(back){return Err(E_INVALIDARG);}
+    let b=&*back.cast::<Surface4Forwarder>();
+    let Some(b_node)=b.graph else{return Err(E_INVALIDARG);};
+    if b_node.role!=SurfaceRole::Backbuffer||b_node.mode!=node.mode{
+        return Err(E_INVALIDARG);
+    }
+    let depth=b.attached.load(Ordering::Acquire);
+    if !is_our_forwarder(depth){return Err(E_INVALIDARG);}
+    let z=&*depth.cast::<Surface4Forwarder>();
+    let Some(z_node)=z.graph else{return Err(E_INVALIDARG);};
+    if z_node.role!=SurfaceRole::Depth||z_node.mode!=node.mode{
+        return Err(E_INVALIDARG);
+    }
+    // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
+    let bridge=FlipToBltBridge::from_exposed(contract,generation)
+        .map_err(|_|E_FAIL)?;
+    let backend=NativeWindowedBlt::from_borrowed_com(
+        p.real,b.real,origin,client,node.mode
+    ).map_err(|_|E_INVALIDARG)?;
+    let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
+    if state.is_some(){return Err(E_FAIL);}
+    *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode});
+    Ok(())
+}
+
+/// Returns the completed native clear-and-stretch count; no COM ref is
+/// created. A return of None means this is not a fully armed primary.
+///
+/// # Safety
+/// primary is a live COM Surface4 pointer or null.
+pub unsafe fn graph_primary_completed_flips(primary:SurfaceThis)->Option<u64>{
+    if !is_our_forwarder(primary){return None;}
+    let p=&*primary.cast::<Surface4Forwarder>();
+    if p.graph?.role!=SurfaceRole::Primary{return None;}
+    let guard=p.virtual_flip.lock().ok()?;
+    Some(guard.as_ref()?.bridge.stats().complete_frames)
 }
 
 /// Borrow the real DirectDraw4 surface only from our OWN Surface4 COM
@@ -293,9 +374,22 @@ unsafe extern "system" fn forward_enum_overlay_z_orders(this:SurfaceThis,p1:u32,
 }
 
 unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->i32{
-    // Virtual primary Flip MUST NOT reach the physical exclusive Flip.
-    // A safe, separately gated Flip-to-Blt hook has not been installed.
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        if node.role!=SurfaceRole::Primary||p2!=0{return E_INVALIDARG;}
+        let p=&*this.cast::<Surface4Forwarder>();
+        let back=p.attached.load(Ordering::Acquire);
+        // Accept only a NULL target or this primary's own virtual backbuffer.
+        if back.is_null()||(!p1.is_null()&&p1!=back){return E_INVALIDARG;}
+        let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
+        let Some(session)=state.as_mut() else{return E_NOTIMPL;};
+        let GraphFlipSession{bridge,backend,epoch,mode}=session;
+        return match bridge.present(*epoch,*mode,backend){
+            Ok(_)=>S_OK,
+            Err(FlipBridgeError::ClearBlackFailed(hr)|
+                FlipBridgeError::StretchFailed(hr))=>hr,
+            Err(_)=>E_FAIL, // includes latched failure; never exclusive
+        };
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).flip)(real,p1,p2)
@@ -756,6 +850,61 @@ mod tests{
             assert_eq!(phys.blts.load(Ordering::SeqCst),0);
         }
     }
+    #[test]
+    fn armed_virtual_flip_uses_actual_blt_slot_and_never_native_flip(){
+        use crate::{
+            borderless_contract::{BackendEvidence,RenderTarget},
+            presentation::Chain,
+        };
+        let table=mock_table();
+        let mut phys=[real_mock(&table),real_mock(&table),real_mock(&table)];
+        let raw=std::array::from_fn::<_,3,_>(|i|
+            (&mut phys[i] as *mut RealMock).cast::<c_void>());
+        let mode=Mode{width:640,height:480,bpp:16};
+        let mut contract=AdapterContract::prepare(
+            mode,(1920,1080),
+            Chain{front_to_back:true,back_to_depth:true,mipmaps:false}
+        ).unwrap();
+        // In this UNIT TEST ONLY the physical mock evidence is synthetic.
+        // The standalone live test must first pass real HRESULT checks.
+        contract.expose(BackendEvidence{
+            process_owned_window:true,normal_directdraw:true,
+            render_target:RenderTarget::RealDirectDrawSurface4,
+            render_target_caps:0x2000,render_target_is_rgb565:true,
+            real_zbuffer_32:true,primary_with_clipper:true,
+            working_blt:true,complete_surface_com:true,
+        }).unwrap();
+        unsafe{
+            let p=new_graph_surface4(raw[0],SurfaceRole::Primary,mode).unwrap();
+            let b=new_graph_surface4(raw[1],SurfaceRole::Backbuffer,mode).unwrap();
+            let z=new_graph_surface4(raw[2],SurfaceRole::Depth,mode).unwrap();
+            attach_graph_surface4(p,b).unwrap();
+            attach_graph_surface4(b,z).unwrap();
+            let vt=&**p.cast::<*const Surface4VTable>();
+            assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
+            assert_eq!(graph_primary_completed_flips(p),None);
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540)),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080)),Ok(()));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080)),Err(E_FAIL));
+            assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
+            assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
+            assert_eq!((vt.flip)(p,b,0),S_OK);
+            assert_eq!((vt.flip)(p,ptr::null_mut(),0),S_OK);
+            assert_eq!(graph_primary_completed_flips(p),Some(2));
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),4);
+            assert_eq!(phys[0].flips.load(Ordering::SeqCst),0);
+            assert_eq!(phys[1].flips.load(Ordering::SeqCst),0);
+            assert_eq!((vt.release)(p),0); // cascades strong child refs
+            assert_eq!((vt.release)(b),0);
+            assert_eq!((vt.release)(z),0);
+        }
+        for phys in &phys{
+            assert_eq!(phys.refs.load(Ordering::SeqCst),1);
+            assert_eq!(phys.flips.load(Ordering::SeqCst),0);
+        }
+    }
+
     #[test]
     fn virtual_graph_rejects_native_flip_blt_invalid_attachment_and_mutation(){
         let table=mock_table();
