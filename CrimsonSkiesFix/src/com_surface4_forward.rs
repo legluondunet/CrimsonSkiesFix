@@ -472,6 +472,22 @@ unsafe fn native_copy_source(source:SurfaceThis,target_mode:Mode)->Option<Surfac
     (!wrapper.real.is_null()).then_some(wrapper.real)
 }
 
+/// Read-only, bounded inspection of the native source's DDSURFACEDESC2.
+/// Detects incompatible 555/565/8-bit palette/32-bit formats without
+/// changing the source, pixel data or game rendering.
+unsafe fn trace_native_copy_format(source:SurfaceThis,flags:u32){
+    let mut words=[0u32;31];
+    words[0]=124;
+    let hr=(real_vtable(source).get_surface_desc)(source,words.as_mut_ptr().cast());
+    if hr<0 || words[0]!=124 {
+        crate::log(&format!("WINDOWED-COLOR: source GetSurfaceDesc failed hr={:#010x}",hr as u32));
+        return;
+    }
+    crate::log(&format!(
+        "WINDOWED-COLOR: backbuffer Blt source={}x{} bpp={} pf_flags={:#x} masks=({:#06x},{:#06x},{:#06x}) caps={:#x} blt_flags={:#x} (read-only)",
+        words[3],words[2],words[21],words[19],words[22],words[23],words[24],words[26],flags));
+}
+
 /// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
 /// Surface4. Native texture/offscreen source copies can be forwarded safely
 /// when the source is unwrapped to a real COM pointer. Depth Blt remains
@@ -508,6 +524,7 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
             let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,p4,p5);
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+                if count<=4 {trace_native_copy_format(real_source,p4);}
                 if count==1 || count%120==0{
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
                 }
@@ -588,8 +605,14 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 S_OK
             },
             Err(FlipBridgeError::ClearBlackFailed(hr)|
-                FlipBridgeError::StretchFailed(hr))=>hr,
-            Err(_)=>E_FAIL, // includes latched failure; never exclusive
+                FlipBridgeError::StretchFailed(hr))=>{
+                virtual_issue(SurfaceRole::Primary,"Flip native presentation failed",hr);
+                hr
+            },
+            Err(failure)=>{
+                virtual_issue(SurfaceRole::Primary,&format!("Flip bridge failed: {failure:?}"),E_FAIL);
+                E_FAIL // includes latched failure; never exclusive
+            },
         };
     }
     let real=borrowed_real(this);
