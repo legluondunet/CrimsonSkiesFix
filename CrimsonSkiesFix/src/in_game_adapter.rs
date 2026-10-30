@@ -419,7 +419,7 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
         working_blt:true,complete_surface_com:true
     }).map_err(|e|format!("graph evidence: {e:?}"))?;
     com_surface4_forward::arm_graph_primary_flip(
-        primary.ptr(),&contract,generation,(0,0),client
+        primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit)
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
