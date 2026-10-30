@@ -11,6 +11,7 @@ mod win32_present;
 mod scene_correlation;
 mod borderless_contract; // pure, inactive COM/windowed-surface contract (Stage B2)
 mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
+mod com_surface4_abi; // inactive, verified 45-slot Surface4 ABI (Stage B3b)
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,

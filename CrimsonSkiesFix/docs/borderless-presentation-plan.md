@@ -497,6 +497,28 @@ Next stages:
 
 Reference: https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface
 
+## Stage B3b — v0.1.21 exact 45-method Surface4 ABI
+
+A separate inactive Rust module `src/com_surface4_abi.rs`
+contains the complete, order-verified IDirectDrawSurface4 vtable
+based on Wine's `include/ddraw.h`, with all 45 signatures and
+the Win32 x86 calling convention.
+
+The four x86 tests cover offsets of **all 45 methods**, the
+180-byte struct, fixed method slot identities observed in the
+owner's logs and typed dispatch on a fully initialized mock.
+The mock deliberately returns E_NOINTERFACE for Surface4,
+and it is never used as a real DirectDraw or Direct3D target.
+
+This module fixes only the ABI contract. A real borderless adapter
+still requires complete COM dispatch for every advertised IID,
+genuine Direct3D3-compatible RGB565 offscreen resources and
+32-bit Z buffer, windowed primary/clipper and actual presentation
+without changing the host desktop resolution. No live hook or
+configuration option is enabled by this commit.
+
+Source: https://github.com/wine-mirror/wine/blob/master/include/ddraw.h
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

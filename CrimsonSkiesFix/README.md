@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.20 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.21 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,21 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.21 — complete Surface4 COM ABI layout (inactive)
+
+The new `src/com_surface4_abi.rs` defines the **45-entry
+IDirectDrawSurface4 vtable** with explicit, typed Win32 x86 calling
+signatures, verified against Wine's DirectDraw header. Four Windows
+x86 unit tests verify every slot offset, the 180-byte table size,
+critical observed methods (Flip, Blt, GetAttachedSurface, Lock,
+Unlock, GetSurfaceDesc) and typed mock dispatch.
+
+This is **ABI groundwork, not a functional Surface4 implementation**.
+Only a test-only mock uses the table. The mock does not advertise
+a Surface4 IID and no new object is exposed to the game. Surface1/2/3/7
+must have separate, correct ABI definitions. The current graphics
+hooks and windowing remain unchanged.
 
 ## v0.1.20 — Stage B3a: native IUnknown ABI scaffold (inactive)
 
