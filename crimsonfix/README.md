@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.6 — experimental DirectDraw proxy
+# CrimsonFix 0.1.7 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -56,6 +56,7 @@ it to `Log=0`.
 Borderless=1
 DesktopResolution=1
 FPSLimit=60
+ModernFPSPacing=0
 
 [Debug]
 Log=0
@@ -69,6 +70,9 @@ Log=0
 - `FPSLimit=60`: clamp frame pacing to 1..60 FPS. Currently covers
   `Flip` and primary `Blt` paths only, so the entire game may not
   actually be limited until additional rendering paths are captured.
+- `ModernFPSPacing=0`: modern primary Flip pacing **disabled by default**;
+  set `1` only for a controlled experimental FPS test. This does not
+  change full-screen mode or the in-game rendering resolution.
 - `[Debug] Log=0`: logging is **fully disabled by default**; no
   log file is created or modified. Set `Log=1` to create/overwrite
   `CrimsonFix/CrimsonFix.log` at the next game startup.
@@ -136,6 +140,42 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.7 — confirmed modern render calls and guarded FPS experiment
+
+The v0.1.6 Wine log confirms that the game **really calls newer-surface
+Flip and Blt**, while DirectDraw4 changes display modes between
+`640x480x16` and `800x600x16`. The game passes a valid HWND and requests
+flags `0x13`, corresponding to exclusive full-screen mode
+(`DDSCL_FULLSCREEN | DDSCL_ALLOWREBOOT | DDSCL_EXCLUSIVE`).
+Previously invisible windows are **not** evidence that there is no
+game window: those snapshots were captured earlier in initialization.
+
+This build logs one bounded `WIN-TRACE` snapshot of the **first
+non-NULL HWND actually passed by the game**, including visibility,
+outer/client dimensions and style flags (never the window title or raw
+HWND). Modern `Flip`, `Blt`, `BltFast` and `Unlock` hooks collect
+cumulative call counts. At 10, 60, 300 and 1200 calls they emit
+`RENDER-SAMPLE` messages with elapsed time and approximate calls/sec.
+**These are API-call rates, not verified rendered FPS**, particularly
+for Blt and Unlock.
+
+An **optional, experimental** real FPS limiter can now be tried on
+newer DirectDraw interfaces. Add `ModernFPSPacing=1` under `[Graphics]`
+in the existing active `CrimsonFix.ini`. It applies `FPSLimit=60`
+(or another existing 1–60 setting) only to newer-surface **Flip**
+calls whose `GetCaps` confirms `DDSCAPS_PRIMARYSURFACE`. It does not
+throttle offscreen surfaces, `Blt`, `BltFast` or `Unlock`, which
+can occur multiple times per frame. Set `ModernFPSPacing=0` to
+disable immediately on the next game launch. **Default is 0 to
+preserve the current working game behavior**. This experiment has
+passed compilation/tests but has NOT yet been validated in-game.
+
+The `Borderless` and `DesktopResolution` settings still affect
+only the old DirectDraw v1 interception; no borderless or resolution
+patch has yet been applied to DirectDraw4/7. Merely resizing a window
+while the game is in exclusive 16-bit mode would not constitute
+native 1920x1080 rendering or widescreen FOV correction.
 
 ## Diagnostic follow-up — DirectDraw 2/4/7 and Surface 2/3/4
 
