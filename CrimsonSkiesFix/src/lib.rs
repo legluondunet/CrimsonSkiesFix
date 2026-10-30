@@ -360,6 +360,9 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
         GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
         in_game_adapter::cooperative(this,hwnd,flags,call)
             .unwrap_or_else(||call(this,hwnd,flags))
+    }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
+        log("WINDOWED-GAME: non-DD4 SetCooperativeLevel blocked after virtual graph exposure");
+        0x8000_4001u32 as i32
     }else{call(this,hwnd,flags)};
     if !hwnd.is_null() && cfg().log_enabled {
         // Never print the numeric HWND. A stale HWND is checked before use.
@@ -385,6 +388,9 @@ unsafe extern "system" fn modern_set_display_mode(
         GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
         in_game_adapter::display_mode(this,w,h,bpp,refresh,flags,call)
             .unwrap_or_else(||call(this,w,h,bpp,refresh,flags))
+    }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
+        log("WINDOWED-GAME: non-DD4 SetDisplayMode blocked after virtual graph exposure");
+        0x8000_4001u32 as i32
     }else{call(this,w,h,bpp,refresh,flags)}; // 5 arguments since IDirectDraw2
     if hr>=0 {
         if let Ok(mut session)=PRESENTATION_SESSION.lock(){
