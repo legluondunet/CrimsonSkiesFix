@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.42 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.43 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -1166,3 +1166,10 @@ cargo build --release --target i686-pc-windows-msvc
 The GitHub Actions artifact contains the game-ready layout. No
 copyrighted game file, memory dump or original system DLL is included.
 Keep this PR in draft until the owner validates a real gameplay session.
+
+
+## Standalone v0.1.43 proof: 800×600 virtual COM Flip (not in-game)
+
+The Windows x86 `windowed_ddraw_probe.exe` (separate Actions artifact, **not** the deployed `ddraw.dll`) supports `--com-virtual-flip-800` to repeat the fully native DirectDraw4 + D3D3 HAL + RGB565/Z32 + 45-slot three-surface virtual COM graph with an **800×600** internal render target. The existing `--com-virtual-flip` remains **640×480** and unchanged. Both use the same true borderless desktop-sized test window, preserve the desktop mode, reject unarmed/invalid Flip operations, and attempt 120 real two-Blt presentations. The test never launches Crimson Skies, modifies its files, or enables borderless in the game.
+
+From a writable directory **outside the game installation**, run `wine ./windowed_ddraw_probe.exe --com-virtual-flip-800`, then send the adjacent `windowed_ddraw_probe.log`. Expect `ASPECT-VIEWPORT: source=800x600`, `COM-VFLIP-RESULT: requested=120 successful=120`, `COM-VFLIP-FINAL: PASS`, and `PROBE COMPLETED: PASS` if the Wine backend accepts this mode. A negative HRESULT is meaningful evidence; do not replace the installed game DLL for this test.
