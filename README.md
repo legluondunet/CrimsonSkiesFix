@@ -7,6 +7,11 @@ Two **independent** projects live in this repository.
 
 ## [SafeDisc](SafeDisc/)
 
+Includes the original Python v0.9 Crimson Skies SafeDisc unwrapper
+in `SafeDisc/python/unwrapper/` and restored offline SafeDisc/Wine
+Python research scripts in `SafeDisc/scripts/`. See
+[SafeDisc documentation](SafeDisc/README.md).
+
 Native Rust SafeDisc research and an experimental Windows EXE / Wine
 compatibility patcher. Includes a read-only native unSafeDisc 1.x
 analysis tool, source code, historical research, and documentation.

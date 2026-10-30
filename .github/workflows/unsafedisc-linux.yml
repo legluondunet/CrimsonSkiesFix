@@ -11,6 +11,9 @@ on:
       - 'SafeDisc/docs/unsafedisc-linux.md'
       - 'SafeDisc/docs/dll-state-references.md'
       - '.github/workflows/unsafedisc-linux.yml'
+      - 'SafeDisc/python/**'
+      - 'SafeDisc/scripts/**'
+      - 'SafeDisc/archive/**'
       - 'SafeDisc/Cargo.toml'
       - 'SafeDisc/Cargo.lock'
   workflow_dispatch:
@@ -30,6 +33,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Unit tests (synthetic fixtures only)
         run: cargo test --bin unsafedisc-linux
+      - name: Python SafeDisc research syntax and synthetic tests
+        run: |
+          python -m compileall -q python scripts
+          python -m unittest discover -s scripts -p 'test_*.py'
       - name: Build native Linux executable
         run: cargo build --release --bin unsafedisc-linux
       - name: Smoke test CLI
@@ -63,6 +70,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Unit tests (synthetic fixtures only)
         run: cargo test --bin unsafedisc-linux
+      - name: Python SafeDisc research syntax and synthetic tests
+        run: |
+          python -m compileall -q python scripts
+          python -m unittest discover -s scripts -p 'test_*.py'
       - name: Build native Windows executable
         run: cargo build --release --bin unsafedisc-linux
       - name: Smoke test CLI

@@ -2,7 +2,13 @@ name: SafeDisc Rust patcher (Windows)
 
 on:
   push:
+    paths:
+      - 'SafeDisc/**'
+      - '.github/workflows/build.yml'
   pull_request:
+    paths:
+      - 'SafeDisc/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:

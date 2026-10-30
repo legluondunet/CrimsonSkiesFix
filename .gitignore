@@ -11,3 +11,6 @@
 *.crimson-original.bak
 *.before-nul-guard
 *.tmp
+
+**/__pycache__/
+*.pyc

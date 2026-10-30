@@ -4,11 +4,11 @@ on:
   push:
     paths:
       - 'CrimsonSkiesFix/**'
-      - '.github/workflows/CrimsonSkiesFix-x86.yml'
+      - '.github/workflows/crimsonskiesfix-x86.yml'
   pull_request:
     paths:
       - 'CrimsonSkiesFix/**'
-      - '.github/workflows/CrimsonSkiesFix-x86.yml'
+      - '.github/workflows/crimsonskiesfix-x86.yml'
   workflow_dispatch:
 
 jobs:
