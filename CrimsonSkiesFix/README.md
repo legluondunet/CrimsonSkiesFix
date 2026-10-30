@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.34 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.35 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,16 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.35 — test-only physical Surface4 COM graph (ABI, references, Flip)
+
+The user's v0.1.34 `--borderless-loop` log reports **120/120 successfully completed real DirectDraw4 presentation pairs** in the borderless 1920x1080 test window, with 1440x1080 centered RGB565 output and unchanged desktop. All HRESULT checks passed. The recorded 1512 ms includes test sleeps and is **not game FPS**.
+
+**Stage B4d** adds an **x86 unit-test-only** physical COM graph inside `com_surface4_abi.rs`, reusing the previously verified 45-entry `Surface4VTable` type. Three separate, stable mock object addresses emulate logical primary, backbuffer and depth. The mock `QueryInterface(IUnknown/IDirectDrawSurface4)` preserves each physical identity, the typed `GetAttachedSurface` ABI returns the correct child pointer and consumes an independent client reference, and `GetCaps` / `GetSurfaceDesc` report the modeled RGB565/Z32 sizes and capabilities.
+
+A test-only primary `Flip` vtable function calls the already fail-closed `FlipToBltBridge`: every successful logical Flip requires both black clear and stretch; failed presentation is returned to the caller and subsequent flips do not silently fall back to exclusive rendering. Tests check reference lifetimes after releasing the parent, unsupported interface rejection, real vtable slot signatures and 2-frame success followed by a partial-frame failure.
+
+**This is not a production COM facade.** The graph is compiled only under `#[cfg(test)]`, its remaining Surface4 methods deliberately return `E_NOTIMPL`, the fixtures own their memory rather than COM Release freeing it, and the backend uses simulated presentation steps. The actual `ddraw.dll` never creates or exposes these mocks. The next phase must implement all game-used COM surface methods, real VRAM render-target ownership and proper dynamic reference-counted destruction before changing the game's `Flip`.
 
 ## v0.1.34 — 120/120 real presentations confirmed; native Blt backend shared
 

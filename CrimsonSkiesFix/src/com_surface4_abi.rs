@@ -307,6 +307,325 @@ mod tests {
         }
     }
 
+
+    // Strictly TEST ONLY: an actual three-object x86 COM vtable graph.
+    // Its unimplemented methods return E_NOTIMPL; it is deliberately
+    // never compiled or exposed in a production game DLL.
+    mod surface_graph_tests {
+        use super::*;
+        use std::{cell::RefCell,ptr};
+        use crate::{
+            borderless_contract::{
+                AdapterContract,Attachment,BackendEvidence,Interface,
+                LogicalIdentity,RenderTarget,SurfaceContract,SurfaceHandle,SurfaceRole
+            },
+            borderless_flip::{FlipToBltBridge,WindowedBlt},
+            presentation::{Chain,Mode},
+        };
+
+        const E_POINTER:i32=0x8000_4003u32 as i32;
+        const E_FAIL:i32=0x8000_4005u32 as i32;
+        const IID_IUNKNOWN:Guid=Guid{
+            d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]
+        };
+        const IID_SURFACE4:Guid=Guid{
+            d1:0x0b2b8630,d2:0xad35,d3:0x11d0,
+            d4:[0x8e,0xa6,0,0x60,0x97,0x97,0xea,0x5b]
+        };
+        fn same_guid(a:&Guid,b:&Guid)->bool{
+            a.d1==b.d1&&a.d2==b.d2&&a.d3==b.d3&&a.d4==b.d4
+        }
+
+        #[derive(Default)]
+        struct FakeBlts {
+            steps:Vec<&'static str>,
+            fail_stretch:Option<i32>,
+        }
+        impl WindowedBlt for FakeBlts {
+            fn clear_full_window_black(&mut self,_w:u32,_h:u32)->Result<(),i32>{
+                self.steps.push("black");
+                Ok(())
+            }
+            fn stretch_rgb565_into_viewport(
+                &mut self,_mode:Mode,_viewport:crate::presentation::Viewport
+            )->Result<(),i32>{
+                self.steps.push("stretch");
+                self.fail_stretch.map_or(Ok(()),Err)
+            }
+        }
+        struct GraphState {
+            chain:SurfaceContract,
+            bridge:FlipToBltBridge,
+            backend:FakeBlts,
+            epoch:u64,
+            mode:Mode,
+            addresses:[SurfaceThis;3],
+        }
+        #[repr(C)]
+        struct GraphNode {
+            vtable:*const Surface4VTable,
+            state:*const RefCell<GraphState>,
+            handle:SurfaceHandle,
+        }
+        fn index(role:SurfaceRole)->usize {
+            match role {
+                SurfaceRole::Primary=>0,
+                SurfaceRole::Backbuffer=>1,
+                SurfaceRole::Depth=>2,
+            }
+        }
+        // The test Rig owns all backing storage; no COM pointer may escape
+        // its lexical lifetime or be used after logical Release to zero.
+        struct Rig {
+            table:Box<Surface4VTable>,
+            state:Box<RefCell<GraphState>>,
+            nodes:[Box<GraphNode>;3],
+        }
+        impl Rig {
+            fn new()->Self {
+                let mode=Mode{width:640,height:480,bpp:16};
+                let mut adapter=AdapterContract::prepare(
+                    mode,(1920,1080),
+                    Chain{front_to_back:true,back_to_depth:true,mipmaps:false}
+                ).unwrap();
+                // Fabricated evidence is permitted ONLY for a unit-test
+                // graph, never as proof of a live DirectDraw backend.
+                adapter.expose(BackendEvidence{
+                    process_owned_window:true,normal_directdraw:true,
+                    render_target:RenderTarget::RealDirectDrawSurface4,
+                    render_target_caps:0x2000,render_target_is_rgb565:true,
+                    real_zbuffer_32:true,primary_with_clipper:true,
+                    working_blt:true,complete_surface_com:true
+                }).unwrap();
+                let (chain,_primary)=SurfaceContract::new(&adapter,7).unwrap();
+                let bridge=FlipToBltBridge::from_exposed(&adapter,7).unwrap();
+                let mut table=Box::new(fixture());
+                table.query_interface=graph_query_interface;
+                table.add_ref=graph_add_ref;
+                table.release=graph_release;
+                table.get_attached_surface=graph_get_attached_surface;
+                table.get_caps=graph_get_caps;
+                table.get_surface_desc=graph_get_surface_desc;
+                table.flip=graph_flip;
+                let state=Box::new(RefCell::new(GraphState{
+                    chain,bridge,backend:FakeBlts::default(),
+                    epoch:7,mode,addresses:[ptr::null_mut();3]
+                }));
+                let roles=[
+                    SurfaceRole::Primary,SurfaceRole::Backbuffer,SurfaceRole::Depth
+                ];
+                let nodes=std::array::from_fn(|i|{
+                    Box::new(GraphNode{
+                        vtable:&*table,
+                        state:&*state,
+                        handle:SurfaceHandle{
+                            identity:LogicalIdentity{epoch:7,role:roles[i]},
+                            interface:Interface::Surface4
+                        },
+                    })
+                });
+                for (i,node) in nodes.iter().enumerate(){
+                    state.borrow_mut().addresses[i]=
+                        (&**node as *const GraphNode).cast_mut().cast();
+                }
+                Self {table,state,nodes}
+            }
+            fn ptr(&self,role:SurfaceRole)->SurfaceThis{
+                self.state.borrow().addresses[index(role)]
+            }
+            fn v(&self)->&Surface4VTable{&self.table}
+        }
+        unsafe fn node(this:SurfaceThis)->&'static GraphNode{
+            &*this.cast::<GraphNode>()
+        }
+        unsafe extern "system" fn graph_query_interface(
+            this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
+        )->i32{
+            if out.is_null(){return E_POINTER;}
+            *out=ptr::null_mut();
+            if this.is_null()||iid.is_null(){return E_POINTER;}
+            let id=&*iid;
+            let iface=if same_guid(id,&IID_IUNKNOWN){
+                Interface::IUnknown
+            }else if same_guid(id,&IID_SURFACE4){
+                Interface::Surface4
+            }else{return E_NOINTERFACE;};
+            let n=node(this);
+            let mut s=(*n.state).borrow_mut();
+            match s.chain.query_interface(n.handle,iface){
+                Ok(_)=>{*out=this;S_OK},
+                Err(_)=>E_FAIL,
+            }
+        }
+        unsafe extern "system" fn graph_add_ref(this:SurfaceThis)->u32{
+            if this.is_null(){return 0;}
+            let n=node(this);
+            (*n.state).borrow_mut().chain.add_ref(n.handle).unwrap_or(0)
+        }
+        unsafe extern "system" fn graph_release(this:SurfaceThis)->u32{
+            if this.is_null(){return 0;}
+            let n=node(this);
+            (*n.state).borrow_mut().chain.release(n.handle).unwrap_or(0)
+        }
+        unsafe extern "system" fn graph_get_attached_surface(
+            this:SurfaceThis,caps:*mut c_void,out:*mut SurfaceThis
+        )->i32{
+            if out.is_null(){return E_POINTER;}
+            *out=ptr::null_mut();
+            if this.is_null()||caps.is_null(){return E_POINTER;}
+            let request=*(caps.cast::<u32>());
+            let attachment=if request==0x00000004 {
+                Attachment::Backbuffer
+            }else if request==0x00020000{
+                Attachment::ZBuffer
+            }else{return E_FAIL;};
+            let n=node(this);
+            let mut s=(*n.state).borrow_mut();
+            match s.chain.get_attached(n.handle,attachment){
+                Ok(h)=>{*out=s.addresses[index(h.identity.role)];S_OK},
+                Err(_)=>E_FAIL,
+            }
+        }
+        unsafe extern "system" fn graph_get_caps(
+            this:SurfaceThis,caps:*mut c_void
+        )->i32 {
+            if this.is_null()||caps.is_null(){return E_POINTER;}
+            let n=node(this);
+            let s=(*n.state).borrow();
+            let Ok(d)=s.chain.descriptor(n.handle) else{return E_FAIL;};
+            let out=caps.cast::<u32>();
+            ptr::write_bytes(out,0,4); // DDSCAPS2 is 16 bytes
+            *out=d.caps;
+            S_OK
+        }
+        unsafe extern "system" fn graph_get_surface_desc(
+            this:SurfaceThis,desc:*mut c_void
+        )->i32{
+            if this.is_null()||desc.is_null(){return E_POINTER;}
+            let d=desc.cast::<u32>();
+            if *d!=124{return E_FAIL;}
+            let n=node(this);
+            let s=(*n.state).borrow();
+            let Ok(info)=s.chain.descriptor(n.handle) else{return E_FAIL;};
+            ptr::write_bytes(d,0,31);
+            *d=124;
+            *d.add(1)=0x100f; // caps + height + width + pitch? fixture only
+            *d.add(2)=info.height;
+            *d.add(3)=info.width;
+            *d.add(18)=32;
+            *d.add(19)=if n.handle.identity.role==SurfaceRole::Depth{0x400}else{0x40};
+            *d.add(21)=info.bits;
+            if info.bits==16{
+                *d.add(22)=0xf800;*d.add(23)=0x07e0;*d.add(24)=0x001f;
+            }else{
+                *d.add(23)=0x00ffffff;
+            }
+            *d.add(26)=info.caps;
+            *d.add(27)=info.backbuffers;
+            S_OK
+        }
+        unsafe extern "system" fn graph_flip(
+            this:SurfaceThis,target:SurfaceThis,flags:u32
+        )->i32{
+            if this.is_null(){return E_POINTER;}
+            let n=node(this);
+            if n.handle.identity.role!=SurfaceRole::Primary || flags!=0{
+                return E_FAIL;
+            }
+            let mut s=(*n.state).borrow_mut();
+            if !target.is_null() && target!=s.addresses[1]{return E_FAIL;}
+            let epoch=s.epoch;
+            let mode=s.mode;
+            let GraphState{bridge,backend,..}=&mut *s;
+            match bridge.present(epoch,mode,backend){
+                Ok(_)=>S_OK,
+                Err(crate::borderless_flip::FlipBridgeError::StretchFailed(hr))=>hr,
+                Err(crate::borderless_flip::FlipBridgeError::ClearBlackFailed(hr))=>hr,
+                Err(_)=>E_FAIL,
+            }
+        }
+
+        #[test]
+        fn distinct_surface4_physicals_and_iunknown_identity_are_stable(){
+            let rig=Rig::new();let v=rig.v();
+            let p=rig.ptr(SurfaceRole::Primary);
+            let b=rig.ptr(SurfaceRole::Backbuffer);
+            assert_ne!(p,b);
+            unsafe{
+                let mut u=ptr::null_mut();
+                assert_eq!((v.query_interface)(p,&IID_IUNKNOWN,&mut u),S_OK);
+                assert_eq!(u,p);
+                let mut v4=ptr::null_mut();
+                assert_eq!((v.query_interface)(u,&IID_SURFACE4,&mut v4),S_OK);
+                assert_eq!(v4,p);
+                let unsupported=Guid{d1:0x15e65ec0,d2:0x3b9c,d3:0x11d2,
+                    d4:[0xb9,0x2f,0,0x60,0x97,0x97,0xea,0x5b]};
+                let mut out=p;
+                assert_eq!((v.query_interface)(p,&unsupported,&mut out),E_NOINTERFACE);
+                assert!(out.is_null());
+                assert_eq!((v.release)(u),2);
+                assert_eq!((v.release)(v4),1);
+            }
+        }
+        #[test]
+        fn real_vtable_attachment_methods_hold_distinct_backbuffer_and_depth(){
+            let rig=Rig::new();let v=rig.v();
+            let p=rig.ptr(SurfaceRole::Primary);
+            let b=rig.ptr(SurfaceRole::Backbuffer);
+            let z=rig.ptr(SurfaceRole::Depth);
+            unsafe{
+                let mut back=ptr::null_mut();
+                let mut caps=[0x4u32,0,0,0];
+                assert_eq!((v.get_attached_surface)(p,caps.as_mut_ptr().cast(),&mut back),S_OK);
+                assert_eq!(back,b);
+                let mut depth=ptr::null_mut();
+                caps[0]=0x20000;
+                assert_eq!((v.get_attached_surface)(back,caps.as_mut_ptr().cast(),&mut depth),S_OK);
+                assert_eq!(depth,z);
+                let mut wrong=z;
+                assert_eq!((v.get_attached_surface)(p,caps.as_mut_ptr().cast(),&mut wrong),E_FAIL);
+                assert!(wrong.is_null());
+                let mut desc=[0u32;31];desc[0]=124;
+                assert_eq!((v.get_surface_desc)(back,desc.as_mut_ptr().cast()),S_OK);
+                assert_eq!((desc[2],desc[3],desc[21]),(480,640,16));
+                assert_eq!(desc[26]&0x4,0x4);
+                desc[0]=124;
+                assert_eq!((v.get_surface_desc)(depth,desc.as_mut_ptr().cast()),S_OK);
+                assert_eq!((desc[19],desc[21],desc[23]),(0x400,32,0x00ffffff));
+                let mut surface_caps=[0u32;4];
+                assert_eq!((v.get_caps)(back,surface_caps.as_mut_ptr().cast()),S_OK);
+                assert_eq!(surface_caps[0]&0x2000,0x2000);
+                assert_eq!((v.release)(p),0);
+                assert_eq!((v.release)(back),0);
+                assert_eq!((v.release)(depth),0);
+            }
+        }
+        #[test]
+        fn vtable_flip_only_acks_after_two_blts_and_latches_fault(){
+            let rig=Rig::new();let v=rig.v();
+            let p=rig.ptr(SurfaceRole::Primary);
+            let back=rig.ptr(SurfaceRole::Backbuffer);
+            unsafe{
+                assert_eq!((v.flip)(back,ptr::null_mut(),0),E_FAIL);
+                assert_eq!((v.flip)(p,back,0),S_OK);
+                assert_eq!((v.flip)(p,ptr::null_mut(),0),S_OK);
+            }
+            {
+                let s=rig.state.borrow();
+                assert_eq!(s.backend.steps,["black","stretch","black","stretch"]);
+                assert_eq!(s.bridge.stats().complete_frames,2);
+            }
+            rig.state.borrow_mut().backend.fail_stretch=Some(-42);
+            unsafe{
+                assert_eq!((v.flip)(p,back,0),-42);
+                assert_eq!((v.flip)(p,back,0),E_FAIL);
+            }
+            let s=rig.state.borrow();
+            assert_eq!(s.bridge.stats().complete_frames,2);
+            assert_eq!(s.backend.steps.len(),6);
+        }
+    }
+
     #[test]
     fn test_mock_cannot_advertise_an_incomplete_surface4_interface(){
         let table=fixture();

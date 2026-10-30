@@ -952,6 +952,13 @@ The owner's v0.1.33 `--borderless-loop` log confirms exactly `FLIP-BLT-RESULT: r
 The NativeWindowedBlt implementation has been extracted to an identical shared source module used by the standalone test and **compiled but inactive** inside `ddraw.dll`. The module's unsafe constructor requires physical IDirectDrawSurface4 pointers and caller-maintained COM ownership; geometry and HRESULTs are explicitly checked. Three isolated mock-vtable tests cover flags, actual screen-space viewport rectangles, color fill, propagation of a failing Blt and refusal to dispatch invalid geometry.
 
 No virtual game COM interface, GetAttachedSurface handler or active in-game Flip hook was added; the game path is still exclusive/unchanged. This is a safe engineering prerequisite, not a borderless game feature. Owner follow-up may use the unchanged `--borderless-loop` option with the v0.1.34 separate EXE.
+## Stage B4d — typed COM graph integration tests, v0.1.35
+
+The owner's v0.1.34 standalone log once again confirms borderless `FLIP-BLT-RESULT: requested=120 successful=120 elapsed_ms=1512 (NOT gameplay FPS)` and preserved 1920x1080 host display. The standalone physical NativeWindowedBlt implementation is considered validated at the DirectDraw HRESULT level.
+
+The new test-only `surface_graph_tests` within `com_surface4_abi.rs` combines the *exact 45-slot native Win32 x86 Surface4 vtable*, the existing `SurfaceContract` ownership state machine, and the fail-closed `FlipToBltBridge` into one in-memory mock COM graph. These tests cover real pointer dispatch of IUnknown and IDirectDrawSurface4, primary/backbuffer/Z attachments, reference lifetimes, descriptor/caps reads, and a simulated Flip success/failure latch.
+
+All mock object allocations remain owned by the Rust test Rig; Release to zero changes logical graph lifetime but does not deallocate that test memory. The fixture advertises no unimplemented interface versions and does not exercise the actual game process. The full game-used Surface4 COM implementation and VRAM backing remain prerequisites for a safe production bridge. No game hook changes.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
