@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.43 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.44 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -1173,3 +1173,16 @@ Keep this PR in draft until the owner validates a real gameplay session.
 The Windows x86 `windowed_ddraw_probe.exe` (separate Actions artifact, **not** the deployed `ddraw.dll`) supports `--com-virtual-flip-800` to repeat the fully native DirectDraw4 + D3D3 HAL + RGB565/Z32 + 45-slot three-surface virtual COM graph with an **800×600** internal render target. The existing `--com-virtual-flip` remains **640×480** and unchanged. Both use the same true borderless desktop-sized test window, preserve the desktop mode, reject unarmed/invalid Flip operations, and attempt 120 real two-Blt presentations. The test never launches Crimson Skies, modifies its files, or enables borderless in the game.
 
 From a writable directory **outside the game installation**, run `wine ./windowed_ddraw_probe.exe --com-virtual-flip-800`, then send the adjacent `windowed_ddraw_probe.log`. Expect `ASPECT-VIEWPORT: source=800x600`, `COM-VFLIP-RESULT: requested=120 successful=120`, `COM-VFLIP-FINAL: PASS`, and `PROBE COMPLETED: PASS` if the Wine backend accepts this mode. A negative HRESULT is meaningful evidence; do not replace the installed game DLL for this test.
+
+
+## Standalone v0.1.44: repeat full Surface4/Direct3D3 resource epochs (not in-game)
+
+The opt-in `--com-virtual-flip-transition` creates **one** real desktop-size borderless HWND, one real `IDirectDraw4` instance with `DDSCL_NORMAL`, and one windowed primary+HWND clipper. It then **recreates and releases** the independent RGB565 3D target, matching Z32, three game-facing virtual Surface4 COM identities, actual HAL Direct3D3 device and virtual Flip bridge across successive source resolutions **800×600 → 640×480 → 800×600**. Each complete epoch independently performs 120 guarded physical two-Blt virtual-Flip presentations, checks the viewport, successful COM identity, Z32 and unchanged desktop resolution, and drops per-epoch COM owners before allocating the next target. The 640 and 800 single-mode options are preserved.
+
+This is a bounded, isolated resource-reinitialization probe only. It does **not** call `SetDisplayMode`, emulate all game surface COM methods, intercept `CreateSurface`/D3D3 methods, or exercise the game's real resolution transition. The game DLL remains unchanged and borderless remains disabled by default.
+
+Run in an independent writable test directory under the same Wine/GE-Proton setup:
+```bash
+wine ./windowed_ddraw_probe.exe --com-virtual-flip-transition
+```
+Return the adjacent `windowed_ddraw_probe.log`, including `COM-TRANSITION-EPOCH-START`, `COM-TRANSITION-EPOCH-END`, and `COM-TRANSITION-FINAL` lines. Each of the three epochs should report `COM-VFLIP-RESULT: requested=120 successful=120`. This is not a gameplay FPS test.
