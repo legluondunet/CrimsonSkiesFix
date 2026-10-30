@@ -51,6 +51,7 @@ extern "system" {
     fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
     fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
     fn GetClientRect(hwnd:Hwnd,rect:*mut Rect)->i32;
+    fn ClientToScreen(hwnd:Hwnd,point:*mut Point)->i32;
 }
 
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
@@ -172,6 +173,23 @@ pub fn monitor_for_game_window(hwnd:Hwnd)->Option<Rect> {
         let mut info=MonitorInfo::default();
         info.size=std::mem::size_of::<MonitorInfo>() as u32;
         (GetMonitorInfoW(monitor,&mut info)!=0).then_some(info.monitor)
+    }
+}
+
+/// Verified game-owned HWND client rectangle in screen coordinates.
+/// Used by the optional adapter only AFTER setting WS_POPUP, so native
+/// surface Blts never assume a width or origin that the host WM refused.
+pub fn game_client_geometry(hwnd:Hwnd)->Option<(i32,i32,u32,u32)> {
+    let _monitor=monitor_for_game_window(hwnd)?;
+    unsafe {
+        let mut client=Rect::default();
+        let mut origin=Point::default();
+        if GetClientRect(hwnd,&mut client)==0 || ClientToScreen(hwnd,&mut origin)==0 {
+            return None;
+        }
+        let width=u32::try_from(client.right.checked_sub(client.left)?).ok()?;
+        let height=u32::try_from(client.bottom.checked_sub(client.top)?).ok()?;
+        (width>0 && height>0).then_some((origin.x,origin.y,width,height))
     }
 }
 
