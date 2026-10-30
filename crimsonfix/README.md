@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.4 — experimental DirectDraw proxy
+# CrimsonFix 0.1.5 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -136,6 +136,29 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## Diagnostic follow-up after the first in-game Wine log
+
+The user-supplied Wine log shows `SetCooperativeLevel(DDCSL_NORMAL)` is
+called **twice with HWND=NULL**, so the current borderless change is
+deferred. It also shows hooks installed on `Flip` and primary `Blt`,
+but **no actual `PRESENT:` calls**, so 60 FPS pacing and native game
+rendering resolution remain unverified.
+
+In v0.1.5, when `[Debug] Log=1` is enabled, bounded read-only
+`WIN-TRACE:` entries count visible/top-level windows owned by the
+game process (without printing titles, HWNDs or other processes'
+windows). They are collected only during DirectDraw initialization,
+not every frame. Bounded `COM-TRACE:` entries capture requested
+DirectDraw and DirectDrawSurface interface GUIDs from QueryInterface,
+without altering the returned object. One-time `RENDER-TRACE:`
+markers detect `BltFast` and `Unlock` on v1 surfaces; **these methods
+are NOT FPS-paced** because their calls do not necessarily correspond
+to displayed frames. The existing borderless/window behavior remains
+unchanged: the proxy does not guess a window or force a new mode
+without first establishing the renderer's actual object path.
+
+The trace is fully disabled with `Log=0` and is deliberately bounded.
 
 Some Wine/DXVK D3D9 drivers report the sentinel version
 `32767.65535.65535.65535`; CrimsonFix now labels that
