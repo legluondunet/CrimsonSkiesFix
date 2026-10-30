@@ -37,6 +37,8 @@ const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 // Bounded diagnostic for the game's first rejected virtual COM operation.
 // A flood of per-frame errors must not hide the failure that prevented init.
 static VIRTUAL_DIAG_COUNT:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_COPY_COUNT:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
 fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
     if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
         crate::log(&format!("WINDOWED-GAME: virtual Surface4 {method} role={role:?} result={:#010x}",hr as u32));
@@ -433,11 +435,28 @@ unsafe extern "system" fn forward_add_overlay_dirty_rect(this:SurfaceThis,p1:*mu
     (real_vtable(real).add_overlay_dirty_rect)(real,p1)
 }
 
-/// Strictly allow the only verified graph-specific native Blts:
-/// RGB565 Backbuffer ColorFill and Z32 DepthFill with NULL source.
-/// Source-copying Blts may carry wrapped or foreign COM identities, which
-/// cannot be passed directly to Wine's internal ddraw_surface implementation.
-/// The windowed *primary* is never forwarded for native Blt.
+/// Turn a game-supplied Surface4 source into a *native* Source4 pointer.
+/// It is never safe to pass a synthetic COM facade into Wine's raw DD4 Blt.
+/// A real non-facade Surface4 belongs to the caller and is forwarded as-is;
+/// Wine itself validates its object/format. A graph child must be in the
+/// same live resolution epoch; stale graph wrappers never reach Wine.
+unsafe fn native_copy_source(source:SurfaceThis,target_mode:Mode)->Option<SurfaceThis>{
+    if source.is_null(){return None;}
+    if !is_our_forwarder(source){return Some(source);}
+    let wrapper=&*source.cast::<Surface4Forwarder>();
+    if wrapper.retired.load(Ordering::Acquire){return None;}
+    if let Some(node)=wrapper.graph {
+        if node.role!=SurfaceRole::Backbuffer || node.mode!=target_mode {
+            return None;
+        }
+    }
+    (!wrapper.real.is_null()).then_some(wrapper.real)
+}
+
+/// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
+/// Surface4. Native texture/offscreen source copies can be forwarded safely
+/// when the source is unwrapped to a real COM pointer. Depth Blt remains
+/// fill-only; primary writes must never be forwarded to desktop coordinates.
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
     if let Some(node)=graph_node(this){
         if node.role==SurfaceRole::Primary{
@@ -446,19 +465,6 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
         }
         let current=&*this.cast::<Surface4Forwarder>();
         if current.retired.load(Ordering::Acquire){return E_NOTIMPL;}
-        if !p2.is_null() || !p3.is_null(){
-            virtual_issue(node.role,"Blt source-copy (unsupported)",E_NOTIMPL);
-            return E_NOTIMPL;
-        }
-        let requested_fill=p4&!DDBLT_WAIT;
-        let expected_fill=if node.role==SurfaceRole::Depth{DDBLT_DEPTHFILL}else{DDBLT_COLORFILL};
-        if requested_fill!=expected_fill{
-            virtual_issue(node.role,"Blt unsupported fill flags",E_NOTIMPL);
-            return E_NOTIMPL;
-        }
-        if p5.is_null(){return E_INVALIDARG;}
-        // IDirectDrawSurface4::Blt expects a Win32-x86 100-byte DDBLTFX.
-        if *(p5.cast::<u32>())!=100{return E_INVALIDARG;}
         if !p1.is_null(){
             let rect=&*p1;
             if rect.left<0 || rect.top<0 || rect.right<=rect.left ||
@@ -467,10 +473,40 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                 return E_INVALIDARG;
             }
         }
-        // The real RGB565/Z32 surfaces have exactly the same internal mode
-        // as the graph. This deliberately does not implement texture copies.
-        let real=current.real;
-        return (real_vtable(real).blt)(real,p1,ptr::null_mut(),ptr::null_mut(),p4,p5);
+        if !p2.is_null(){
+            // Real color source copying is needed for menu/movie UI.
+            // Do not present a Z surface as a copy target or allow fill flags
+            // on a source-copy operation. Any other flags are validated by DD4.
+            if node.role!=SurfaceRole::Backbuffer ||
+               p4&(DDBLT_COLORFILL|DDBLT_DEPTHFILL)!=0{
+                virtual_issue(node.role,"Blt source-copy incompatible role/flags",E_NOTIMPL);
+                return E_NOTIMPL;
+            }
+            let Some(real_source)=native_copy_source(p2,node.mode) else {
+                virtual_issue(node.role,"Blt source is retired/foreign graph",E_NOTIMPL);
+                return E_NOTIMPL;
+            };
+            let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,p4,p5);
+            if hr>=0 {
+                let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+                if count==1 || count%120==0{
+                    crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
+                }
+            }else{
+                virtual_issue(node.role,"native backbuffer source Blt failed",hr);
+            }
+            return hr;
+        }
+        if !p3.is_null(){return E_INVALIDARG;}
+        let requested_fill=p4&!DDBLT_WAIT;
+        let expected_fill=if node.role==SurfaceRole::Depth{DDBLT_DEPTHFILL}else{DDBLT_COLORFILL};
+        if requested_fill!=expected_fill{
+            virtual_issue(node.role,"Blt unsupported fill flags",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
+        if p5.is_null(){return E_INVALIDARG;}
+        if *(p5.cast::<u32>())!=100{return E_INVALIDARG;}
+        return (real_vtable(current.real).blt)(current.real,p1,ptr::null_mut(),ptr::null_mut(),p4,p5);
     }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
@@ -521,7 +557,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
         let GraphFlipSession{bridge,backend,epoch,mode}=session;
         return match bridge.present(*epoch,*mode,backend){
-            Ok(_)=>S_OK,
+            Ok(frame)=>{
+                let count=GRAPH_FLIP_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+                if count==1 || count%120==0{
+                    crate::log(&format!("WINDOWED-GAME: virtual Primary Flip presented frame={frame} global_flips={count}"));
+                }
+                S_OK
+            },
             Err(FlipBridgeError::ClearBlackFailed(hr)|
                 FlipBridgeError::StretchFailed(hr))=>hr,
             Err(_)=>E_FAIL, // includes latched failure; never exclusive
@@ -993,6 +1035,42 @@ mod tests{
         assert_eq!(staging.refs.load(Ordering::SeqCst),1);
     }
 
+    #[test]
+    fn game_backbuffer_native_texture_blt_is_forwarded_but_stale_or_wrong_graph_is_not(){
+        let vt=mock_table();
+        let mut primary_native=real_mock(&vt);
+        let mut back_native=real_mock(&vt);
+        let mut texture_native=real_mock(&vt);
+        let primary_raw=(&mut primary_native as *mut RealMock).cast::<c_void>();
+        let back_raw=(&mut back_native as *mut RealMock).cast::<c_void>();
+        let texture_raw=(&mut texture_native as *mut RealMock).cast::<c_void>();
+        let mode=Mode{width:640,height:480,bpp:16};
+        unsafe{
+            let back=new_graph_surface4(back_raw,SurfaceRole::Backbuffer,mode).unwrap();
+            let primary=new_graph_surface4(primary_raw,SurfaceRole::Primary,mode).unwrap();
+            let bv=&**back.cast::<*const Surface4VTable>();
+            let rect=Rect{left:0,top:0,right:100,bottom:100};
+            assert_eq!((bv.blt)(back,&rect as *const _ as *mut _,
+                texture_raw,ptr::null_mut(),DDBLT_WAIT,ptr::null_mut()),S_OK);
+            assert_eq!(back_native.blts.load(Ordering::SeqCst),1);
+            // The wrong physical desktop primary cannot become a color source.
+            assert_eq!((bv.blt)(back,ptr::null_mut(),primary,ptr::null_mut(),
+                DDBLT_WAIT,ptr::null_mut()),E_NOTIMPL);
+            assert_eq!((bv.blt)(back,ptr::null_mut(),texture_raw,ptr::null_mut(),
+                DDBLT_COLORFILL,ptr::null_mut()),E_NOTIMPL);
+            assert_eq!((bv.blt)(back,ptr::null_mut(),texture_raw,ptr::null_mut(),
+                DDBLT_WAIT,ptr::null_mut()),S_OK);
+            assert_eq!(back_native.blts.load(Ordering::SeqCst),2);
+            // Passing a wrapped, same-epoch backbuffer must unwrap to a REAL COM surface.
+            assert_eq!(native_copy_source(back,mode),Some(back_raw));
+            assert_eq!(native_copy_source(back,Mode{width:800,height:600,bpp:16}),None);
+            assert_eq!((bv.release)(back),0);
+            assert_eq!(((&**primary.cast::<*const Surface4VTable>()).release)(primary),0);
+        }
+        assert_eq!(back_native.refs.load(Ordering::SeqCst),1);
+        assert_eq!(primary_native.refs.load(Ordering::SeqCst),1);
+        assert_eq!(texture_native.refs.load(Ordering::SeqCst),1);
+    }
     #[test]
     fn every_forwarded_backend_call_uses_the_actual_real_surface(){
         let table=mock_table();
