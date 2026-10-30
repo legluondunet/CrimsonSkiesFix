@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.10 — experimental DirectDraw proxy
+# CrimsonFix 0.1.11 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -141,6 +141,42 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.11 — correct per-mode 3D chain and detect actual pixel formats
+
+The owner's v0.1.10 log confirms correct initial preflight at
+`640x480x16`: the captured original monitor is `1920x1080`,
+the primary -> backbuffer and backbuffer -> Z-buffer attachments are
+both present and the calculated 4:3 centered viewport is
+`x240,y0,1440x1080`, with `applied=false`.
+
+A subtle diagnostic bug was also discovered: when the game changes
+from `640x480` to `800x600`, the old global chain's state was still
+marked complete. That meant the v0.1.10 log emitted a **premature**
+`800x600` preflight immediately after the *first* backbuffer
+attachment, before that mode's Z-buffer had been observed.
+
+This is fixed: `presentation::Session` now tracks one **generation
+per successful SetDisplayMode**, invalidates the previous front/back/Z
+topology on every mode change (including repeated resolutions), and
+only logs `BORDERLESS-PREFLIGHT` after both new attachments exist
+during that generation. New `CHAIN-EPOCH` lines make the reset
+explicit and the preflight line prints the generation.
+
+The next unknown is actual surface pixel format. `SURFACE-FORMAT`
+uses a bounded, read-only `GetSurfaceDesc` query on the real 124-byte
+`DDSURFACEDESC2` **primary/backbuffer/Z surfaces only**, recording
+size, backbuffer count, reported pixel flags/bit count, and RGB masks
+where available. This distinguishes RGB555 from RGB565 and reports
+the Z-buffer format without guessing. It never locks surfaces, accesses
+pixel data, alters the display mode, or changes game return values.
+The returned format data is treated as metadata, not proof that a
+future borderless adapter already exists.
+
+This new build has no new windowed presentation implementation.
+For runtime validation keep `Log=1` and
+`ModernFPSPacing=0` to isolate the diagnostics. An experimental
+60-calls-per-second primary Flip limiter remains available separately.
 
 ## v0.1.10 — proven 3D flip chain and 4:3 desktop preflight
 
