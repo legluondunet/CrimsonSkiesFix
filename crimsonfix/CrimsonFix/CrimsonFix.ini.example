@@ -1,0 +1,13 @@
+; CrimsonFix configuration TEMPLATE (not auto-loaded; copy only if desired).
+; The DLL creates CrimsonFix.ini on first launch if it does not exist.
+; This template remains .example so extracting future updates never replaces your settings.
+[Graphics]
+Borderless=1
+DesktopResolution=1
+FPSLimit=60
+; FPSLimit is clamped to 1..60.
+
+[Debug]
+; 0 = no CrimsonFix.log is created or modified.
+; 1 = startup configuration and privacy-filtered system inventory.
+Log=0
