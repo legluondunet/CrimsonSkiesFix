@@ -1,4 +1,5 @@
-use std::{ffi::{c_char, c_void, OsString}, fs, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{ffi::{c_char, c_void, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use crate::config::DEFAULT_INI;
 
 pub type Hwnd = *mut c_void;
 pub const PAGE_READWRITE: u32 = 0x04;
@@ -74,6 +75,20 @@ fn safe_directory(dir:&Path,create:bool)->bool {
         .unwrap_or(false)
 }
 
+// `create_new` is atomic: no update archive or game startup can truncate
+// the player's configuration. Defaults are materialized only on a new install.
+fn create_ini_once(path:&Path)->std::io::Result<bool> {
+    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file)=>{
+            file.write_all(DEFAULT_INI.as_bytes())?;
+            file.sync_all()?;
+            Ok(true)
+        },
+        Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e)=>Err(e),
+    }
+}
+
 pub fn ini_path()->Option<PathBuf> {
     let modern=project_path("CrimsonFix.ini")?;
     if regular_file(&modern){return Some(modern);}
@@ -81,21 +96,30 @@ pub fn ini_path()->Option<PathBuf> {
     if fs::symlink_metadata(&modern).is_ok(){return None;}
 
     let legacy=exe_directory()?.join("CrimsonFix.ini");
-    if !regular_file(&legacy){return Some(modern);}
     let directory=modern.parent()?;
-    if !safe_directory(directory,true){return Some(modern);}
-
-    // Exactly-once, non-overwriting migration from the old v0.1 layout.
-    // Always keep the legacy root INI intact.
-    let ticks=SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
-    let temp=directory.join(format!(".CrimsonFix-migrate-{}-{ticks}.tmp",std::process::id()));
-    if fs::copy(&legacy,&temp).is_ok(){
-        let temp_w:Vec<u16>=temp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-        let modern_w:Vec<u16>=modern.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-        unsafe {MoveFileExW(temp_w.as_ptr(),modern_w.as_ptr(),0x8 /* MOVEFILE_WRITE_THROUGH */);}
-        let _=fs::remove_file(temp);
+    if !safe_directory(directory,true) {
+        return if regular_file(&legacy){Some(legacy)}else{None};
     }
-    Some(modern)
+    if regular_file(&legacy) {
+        // Migrate the old root INI, never replace its content or the user
+        // settings in CrimsonFix/ on subsequent extractions/launches.
+        let ticks=SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos();
+        let temp=directory.join(format!(".CrimsonFix-migrate-{}-{ticks}.tmp",std::process::id()));
+        if fs::copy(&legacy,&temp).is_ok(){
+            let temp_w:Vec<u16>=temp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            let modern_w:Vec<u16>=modern.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            unsafe {MoveFileExW(temp_w.as_ptr(),modern_w.as_ptr(),0x8 /* MOVEFILE_WRITE_THROUGH */);}
+            let _=fs::remove_file(temp);
+        }
+        // In an unwritable directory or migration failure, use the original
+        // legacy INI instead of silently resetting its Log=1 preference.
+        return if regular_file(&modern){Some(modern)}else{Some(legacy)};
+    }
+    // Brand-new installation: generate one real INI automatically.
+    // Extracted ZIPs only ship CrimsonFix.ini.example, which is never
+    // consulted over an existing user configuration.
+    let _=create_ini_once(&modern);
+    regular_file(&modern).then_some(modern)
 }
 
 pub fn log_path()->Option<PathBuf> {
@@ -181,4 +205,23 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
     let mut discarded=0;
     VirtualProtect(slot.cast(),std::mem::size_of::<usize>(),previous,&mut discarded);
     true
+}
+
+#[cfg(test)]
+mod persistent_ini_tests {
+    use super::*;
+    #[test]
+    fn creates_default_ini_only_once_without_overwriting_edits() {
+        let unique=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!("CrimsonFix-ini-test-{}-{unique}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let file=dir.join("CrimsonFix.ini");
+        assert_eq!(create_ini_once(&file).unwrap(),true);
+        let generated=fs::read_to_string(&file).unwrap();
+        assert!(generated.contains("[Debug]\\nLog=0"));
+        fs::write(&file,generated.replace("Log=0","Log=1")).unwrap();
+        assert_eq!(create_ini_once(&file).unwrap(),false);
+        assert!(fs::read_to_string(&file).unwrap().contains("[Debug]\\nLog=1"));
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
