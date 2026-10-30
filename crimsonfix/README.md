@@ -1,7 +1,8 @@
-# CrimsonFix 0.1.8 — experimental DirectDraw proxy
+# CrimsonFix 0.1.9 — experimental DirectDraw proxy
 
-**Status:** x86 DirectDraw proof of concept; game rendering, borderless
-and FPS pacing still require live Windows/Wine validation. This PR does
+**Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
+modern primary Flip was measured under Wine, but gameplay simulation
+speed and borderless still require live validation. This PR does
 not modify the original EXE, the main Rust patcher or unSafeDisc.
 
 ## Installation — only one file at the game root
@@ -140,6 +141,49 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.9 — first primary/backbuffer chain inspection
+
+The v0.1.8 game test with `ModernFPSPacing=1` demonstrated
+actual DirectDraw4 primary-surface `Flip` pacing: three consecutive
+120-call samples took about 2000 ms each (~60 calls/sec), versus
+~1000 ms each (~120 calls/sec) when disabled. This confirms that the
+**COM API call limiter** works in the user's Wine/GE-Proton session.
+Normal gameplay speed and animation timing remain unverified; this
+does **not** establish 60 unique 3D frames on screen.
+
+The primary surface's capabilities include
+`DDSCAPS_PRIMARYSURFACE`, `DDSCAPS_FLIP` and
+`DDSCAPS_COMPLEX`. These signify a hardware-style front/backbuffer
+chain which cannot be preserved by a naive switch to `DDSCL_NORMAL`
+and skipping `SetDisplayMode`. The actual exclusive HWND resizes to
+640x480 or 800x600, 16 bpp. A borderless 1920x1080 *window* alone
+would not yield 1920x1080 3D rendering.
+
+This new version instruments the next two critical COM operations
+**without changing their behavior**:
+
+- `SURFACE-ATTACH` records a successful GetAttachedSurface request,
+  parent and returned surface DDSCAPS roles, HRESULT and whether a
+  backbuffer object was returned, without writing raw COM pointers
+- `SURFACE-CHAIN` marks a proven primary -> attached backbuffer
+  association, if the game requests it
+- `SURFACE-DESC` records the descriptor dimensions and DDSCAPS when
+  the game itself invokes GetSurfaceDesc (the hook does not allocate
+  pixels or call Lock)
+- The returned attached object receives the same bounded modern
+  diagnostic hooks for subsequent Flip/Blt calls
+
+Tracing is bounded (first 24 attachments and 20 descriptions), is
+opt-in via `[Debug] Log=1`, and does not interfere with the existing
+experimental `ModernFPSPacing` choice. The package still ships only
+the non-overwriting `CrimsonFix.ini.example`.
+
+For the next run, **keep `ModernFPSPacing=0` first** to isolate the
+instrumentation. If the game runs normally and the chain is
+identified, the next branch can design a separate, explicitly opt-in
+windowed presentation adapter with original rendering resolution
+retained internally.
 
 ## v0.1.8 — interval call rates and surface/viewport observation
 
