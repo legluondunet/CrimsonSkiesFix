@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.12 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.13 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -15,11 +15,11 @@ layout is:
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonFix/
-    CrimsonFix.ini.example # shipped with the ZIP; safe to overwrite
+  CrimsonSkiesFix.log           # created ONLY when [Debug] Log=1, beside ddraw.dll
+  CrimsonSkiesFix/
+    CrimsonSkiesFix.ini.example # shipped with the ZIP; safe to overwrite
     README.md
-    CrimsonFix.ini         # created once on first launch, NEVER shipped
-    CrimsonFix.log         # created ONLY when [Debug] Log=1
+    CrimsonSkiesFix.ini         # created once on first launch, NEVER shipped
 ```
 
 **Only ddraw.dll lives beside the EXE**. Do not replace any DLL in the
@@ -27,26 +27,34 @@ Windows or Wine system directories. Both Windows and Wine use the same
 32-bit Windows DLL, not a Linux .so. If Wine loads its own builtin
 ddraw.dll, set `WINEDLLOVERRIDES="ddraw=n,b"`.
 
+**Renamed from CrimsonFix:** The active configuration is now
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`. On first launch, the DLL
+**copies** the existing `CrimsonFix/CrimsonFix.ini`, or earlier
+`CrimsonFix.ini` in the game root, only if the new INI does not exist.
+The old INI is never deleted. Existing `Log=1` and FPS settings
+are preserved. The new `CrimsonSkiesFix.log` is created **beside the
+loaded `ddraw.dll`**, not in the config folder; old logs are untouched.
+
 **Updates preserve user settings.** The ZIP contains
-`CrimsonFix/CrimsonFix.ini.example`, **not** `CrimsonFix/CrimsonFix.ini`.
+`CrimsonSkiesFix/CrimsonSkiesFix.ini.example`, **not** `CrimsonSkiesFix/CrimsonSkiesFix.ini`.
 Simply extract the ZIP over an existing game installation: only the
 example and DLL may be replaced. Your existing
-`CrimsonFix/CrimsonFix.ini`, including `[Debug] Log=1`, is untouched.
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`, including `[Debug] Log=1`, is untouched.
 
-For a **new install**, the Rust DLL creates `CrimsonFix/CrimsonFix.ini`
+For a **new install**, the Rust DLL creates `CrimsonSkiesFix/CrimsonSkiesFix.ini`
 with defaults the first time DirectDraw initializes; it uses an atomic
 `create_new` file open, which never truncates or replaces an
 existing INI. If the game directory is read-only, in-memory defaults
 still work but no INI will be created.
 
 If you used the old v0.1 proof of concept that placed
-`CrimsonFix.ini` in the game root, it is migrated **only when the
+`CrimsonSkiesFix.ini` in the game root, it is migrated **only when the
 nested INI is absent**. The original root file is preserved. If
 migration fails, the old root configuration is still read rather
 than silently dropping the user's settings.
 
 To enable logs for debugging, edit the **active**
-`CrimsonFix/CrimsonFix.ini`, not the `.example` template.
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`, not the `.example` template.
 Set `[Debug] Log=1` and relaunch. Future updates no longer reset
 it to `Log=0`.
 
@@ -80,7 +88,7 @@ Log=0
   change full-screen mode or the in-game rendering resolution.
 - `[Debug] Log=0`: logging is **fully disabled by default**; no
   log file is created or modified. Set `Log=1` to create/overwrite
-  `CrimsonFix/CrimsonFix.log` at the next game startup.
+  `CrimsonSkiesFix.log` at the next game startup.
 
 ## Private-by-default diagnostics (reused from Spider-Man)
 
@@ -127,8 +135,7 @@ Wine/Windows reporting still needs owner testing.
 ## Troubleshooting
 
 If the game displays incorrectly, change `Borderless=0` and test
-again. If more detail is needed, set `Log=1` and examine the log in
-the `CrimsonFix/` folder. Reset `Log=0` afterward.
+again. If more detail is needed, set `Log=1` and examine `CrimsonSkiesFix.log` beside `ddraw.dll`. Reset `Log=0` afterward.
 
 After the first Wine test, a successful DirectDraw proxy installation
 was confirmed but the initial borderless attempts reported an
@@ -316,7 +323,7 @@ This new version instruments the next two critical COM operations
 Tracing is bounded (first 24 attachments and 20 descriptions), is
 opt-in via `[Debug] Log=1`, and does not interfere with the existing
 experimental `ModernFPSPacing` choice. The package still ships only
-the non-overwriting `CrimsonFix.ini.example`.
+the non-overwriting `CrimsonSkiesFix.ini.example`.
 
 For the next run, **keep `ModernFPSPacing=0` first** to isolate the
 instrumentation. If the game runs normally and the chain is
@@ -379,7 +386,7 @@ for Blt and Unlock.
 
 An **optional, experimental** real FPS limiter can now be tried on
 newer DirectDraw interfaces. Add `ModernFPSPacing=1` under `[Graphics]`
-in the existing active `CrimsonFix.ini`. It applies `FPSLimit=60`
+in the existing active `CrimsonSkiesFix.ini`. It applies `FPSLimit=60`
 (or another existing 1–60 setting) only to newer-surface **Flip**
 calls whose `GetCaps` confirms `DDSCAPS_PRIMARYSURFACE`. It does not
 throttle offscreen surfaces, `Blt`, `BltFast` or `Unlock`, which
@@ -442,7 +449,7 @@ without first establishing the renderer's actual object path.
 The trace is fully disabled with `Log=0` and is deliberately bounded.
 
 Some Wine/DXVK D3D9 drivers report the sentinel version
-`32767.65535.65535.65535`; CrimsonFix now labels that
+`32767.65535.65535.65535`; CrimsonSkiesFix now labels that
 `Unavailable` rather than claiming a genuine driver version.
 
 The standalone proxy still forwards `DirectDrawCreate`,
