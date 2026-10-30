@@ -379,7 +379,8 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         let p=&*this.cast::<Surface4Forwarder>();
         let back=p.attached.load(Ordering::Acquire);
         // Accept only a NULL target or this primary's own virtual backbuffer.
-        if back.is_null()||(!p1.is_null()&&p1!=back){return E_INVALIDARG;}
+        if back.is_null(){return E_NOTIMPL;} // incomplete graph is unarmed
+        if !p1.is_null()&&p1!=back{return E_INVALIDARG;}
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
         let GraphFlipSession{bridge,backend,epoch,mode}=session;
