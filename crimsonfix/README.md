@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.11 — experimental DirectDraw proxy
+# CrimsonFix 0.1.12 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -63,14 +63,18 @@ ModernFPSPacing=0
 Log=0
 ```
 
-- `Borderless=1`: experimental DDSCL_NORMAL cooperative mode plus a
-  borderless window. Some DirectDraw flip chains may not support this.
+- `Borderless=1`: currently changes only the legacy DirectDraw v1
+  initialization behavior. **It does not convert Crimson Skies' real
+  DirectDraw4 exclusive 16-bit flip chain to borderless.** The actual
+  borderless adapter is not yet active; this option is not proof that
+  the game is windowed.
 - `DesktopResolution=1`: preserve desktop mode, choose the display
   under the cursor at DirectDraw initialization. The game render target
   and FOV **are not yet automatically resized**.
-- `FPSLimit=60`: clamp frame pacing to 1..60 FPS. Currently covers
-  `Flip` and primary `Blt` paths only, so the entire game may not
-  actually be limited until additional rendering paths are captured.
+- `FPSLimit=60`: select a pacing target of 1..60 calls/s; the game's
+  **modern DirectDraw4 presentation path only uses this setting when
+  `ModernFPSPacing=1`**. With `ModernFPSPacing=0`, 120 `Flip`
+  calls/s on a 120Hz display are expected, as verified in gameplay.
 - `ModernFPSPacing=0`: modern primary Flip pacing **disabled by default**;
   set `1` only for a controlled experimental FPS test. This does not
   change full-screen mode or the in-game rendering resolution.
@@ -141,6 +145,36 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.12 — RGB565 image composer (backend foundation only)
+
+The user's v0.1.11 Wine log confirmed that the prior pixel format and
+per-mode diagnostics work as designed. The primary and backbuffer are
+both **RGB565 16-bit**, with masks R=0xf800, G=0x07e0, B=0x001f,
+while the attached depth surface is **Z32** (32-bit depth). Five
+successive display-mode generations had their own complete
+primary -> backbuffer -> Z-buffer evidence, with no reused stale
+attachments. During this trace, `ModernFPSPacing=false` and the
+user observed 120 FPS, which is expected; `FPSLimit=60` alone does
+not enable modern DirectDraw4 pacing.
+
+This update adds `src/rgb565_present.rs`: a self-contained, tested
+CPU compositor for a **borrowed** RGB565 frame and an existing BGRA8
+desktop output buffer. It supports explicit row pitches, safe
+slice-bound checks, nearest-neighbor aspect-correct scaling, opaque
+black pillarboxes and exact RGB565-to-8bit-channel conversion.
+Its purpose is to supply the pixel conversion stage for the eventual
+windowed presenter. The module has no Windows API, file IO, COM,
+surface creation or game-hook side effects.
+
+**This compositor is intentionally not wired into the actual Flip
+path yet.** Before presenting any game frame, a future backend must
+virtualize the primary/backbuffer while preserving the Z-buffer and
+the game's Direct3D device; it must also acquire a valid frame without
+locking a live GPU render target in an unsafe phase. The 3D game
+still runs at its original 640x480 or 800x600 exclusive DirectDraw
+resolution. Native 1920x1080 rendering and widescreen FOV correction
+remain separate tasks.
 
 ## v0.1.11 — correct per-mode 3D chain and detect actual pixel formats
 
