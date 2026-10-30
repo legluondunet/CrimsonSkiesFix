@@ -6,13 +6,13 @@ on:
       - feature/unsafedisc-linux-crimson
   pull_request:
     paths:
-      - 'src/bin/unsafedisc-linux.rs'
-      - 'src/unsafedisc_*.rs'
-      - 'docs/unsafedisc-linux.md'
-      - 'docs/dll-state-references.md'
+      - 'SafeDisc/src/bin/unsafedisc-linux.rs'
+      - 'SafeDisc/src/unsafedisc_*.rs'
+      - 'SafeDisc/docs/unsafedisc-linux.md'
+      - 'SafeDisc/docs/dll-state-references.md'
       - '.github/workflows/unsafedisc-linux.yml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+      - 'SafeDisc/Cargo.toml'
+      - 'SafeDisc/Cargo.lock'
   workflow_dispatch:
 
 permissions:
@@ -22,6 +22,9 @@ jobs:
   linux-x86_64:
     name: Linux x86_64 - research CLI
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: SafeDisc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,12 +49,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unsafedisc-linux-x86_64-inspect-only
-          path: target/release/unsafedisc-linux
+          path: SafeDisc/target/release/unsafedisc-linux
           if-no-files-found: error
 
   windows-x86_64:
     name: Windows x86_64 - research CLI
     runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: SafeDisc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -85,5 +91,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unsafedisc-windows-x86_64-inspect-only
-          path: target/release/unsafedisc-linux.exe
+          path: SafeDisc/target/release/unsafedisc-linux.exe
           if-no-files-found: error
