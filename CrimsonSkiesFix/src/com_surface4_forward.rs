@@ -16,16 +16,20 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::atomic::{AtomicU32,Ordering},
+    sync::atomic::{AtomicPtr,AtomicU32,Ordering},
 };
 use crate::{
     Guid,
     com_surface4_abi::{Rect,Surface4VTable,SurfaceThis},
+    borderless_contract::SurfaceRole,
+    presentation::Mode,
 };
 const S_OK:i32=0;
 const E_NOINTERFACE:i32=0x8000_4002u32 as i32;
 const E_POINTER:i32=0x8000_4003u32 as i32;
 const E_FAIL:i32=0x8000_4005u32 as i32;
+const E_NOTIMPL:i32=0x8000_4001u32 as i32;
+const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 const IID_IUNKNOWN:Guid=Guid{
     d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]
 };
@@ -36,11 +40,24 @@ const IID_SURFACE4:Guid=Guid{
 fn same_guid(a:&Guid,b:&Guid)->bool{
     a.d1==b.d1&&a.d2==b.d2&&a.d3==b.d3&&a.d4==b.d4
 }
+#[derive(Clone,Copy)]
+struct VirtualGraphNode {role:SurfaceRole, mode:Mode}
+impl VirtualGraphNode {
+    fn caps(self)->u32{match self.role{
+        SurfaceRole::Primary=>0x1000_e238,
+        SurfaceRole::Backbuffer=>0x1000_601c,
+        SurfaceRole::Depth=>0x1002_4000,
+    }}
+    fn bpp(self)->u32{if self.role==SurfaceRole::Depth{32}else{16}}
+    fn count(self)->u32{if self.role==SurfaceRole::Primary{1}else{0}}
+}
 #[repr(C)]
 struct Surface4Forwarder{
     vtable:*const Surface4VTable, // COM slot 0, first DWORD
     real:SurfaceThis,             // one underlying owned COM ref
     refs:AtomicU32,               // client-owned references only
+    graph:Option<VirtualGraphNode>, // None retains pure passthrough semantics
+    attached:AtomicPtr<c_void>,  // one strong child edge when graph is set
 }
 
 /// # Safety
@@ -58,8 +75,79 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
     let obj=Box::new(Surface4Forwarder{
         vtable:&SURFACE4_FORWARD_VTABLE,
         real,refs:AtomicU32::new(1),
+        graph:None,attached:AtomicPtr::new(ptr::null_mut()),
     });
     Ok(Box::into_raw(obj).cast())
+}
+
+/// Create a real COM Surface4 wrapper with graph-specific descriptor and
+/// attachment behavior. All other unsupported virtual operations still
+/// fail closed; this is NOT yet a complete game-facing replacement.
+/// Each wrapper holds exactly one strong ref to its own physical surface.
+///
+/// # Safety
+/// real is a live native Surface4 with an existing caller-owned reference.
+/// The returned client interface must be released exactly once.
+pub unsafe fn new_graph_surface4(
+    real:SurfaceThis,role:SurfaceRole,mode:Mode
+)->Result<SurfaceThis,i32>{
+    if !matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16)){
+        return Err(E_INVALIDARG);
+    }
+    let wrapped=new_forwarding_surface4(real)?;
+    (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{role,mode});
+    Ok(wrapped)
+}
+
+/// Add an explicit, strong and acyclic COM attachment:
+/// Primary -> Backbuffer -> Depth only. The parent owns the child's
+/// attachment reference until final parent Release. Independent returned
+/// GetAttachedSurface client refs must always be released by the caller.
+///
+/// # Safety
+/// parent and child must be distinct, live, graph-enabled wrappers
+/// constructed by new_graph_surface4, with the same logical mode.
+pub unsafe fn attach_graph_surface4(parent:SurfaceThis,child:SurfaceThis)
+    ->Result<(),i32>
+{
+    if parent.is_null()||child.is_null()||parent==child{return Err(E_INVALIDARG);}
+    if !is_our_forwarder(parent)||!is_our_forwarder(child){return Err(E_INVALIDARG);}
+    let p=&*parent.cast::<Surface4Forwarder>();
+    let c=&*child.cast::<Surface4Forwarder>();
+    let (Some(p_role),Some(c_role))=(p.graph,c.graph) else{return Err(E_INVALIDARG);};
+    let permitted=matches!((p_role.role,c_role.role),
+        (SurfaceRole::Primary,SurfaceRole::Backbuffer)|
+        (SurfaceRole::Backbuffer,SurfaceRole::Depth));
+    if !permitted||p_role.mode!=c_role.mode{return Err(E_INVALIDARG);}
+    let child_vt=&**child.cast::<*const Surface4VTable>();
+    if (child_vt.add_ref)(child)==0{return Err(E_FAIL);}
+    if p.attached.compare_exchange(ptr::null_mut(),child,
+            Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (child_vt.release)(child);
+        return Err(E_FAIL);
+    }
+    Ok(())
+}
+unsafe fn is_our_forwarder(candidate:SurfaceThis)->bool{
+    !candidate.is_null() &&
+    std::ptr::eq(*candidate.cast::<*const Surface4VTable>(),&SURFACE4_FORWARD_VTABLE)
+}
+unsafe fn graph_node(this:SurfaceThis)->Option<VirtualGraphNode>{
+    if this.is_null(){return None;}
+    (*this.cast::<Surface4Forwarder>()).graph
+}
+unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
+    ptr::write_bytes(d,0,8);
+    *d=32;
+    *d.add(1)=if node.role==SurfaceRole::Depth{0x400}else{0x40};
+    *d.add(3)=node.bpp();
+    if node.role==SurfaceRole::Depth{
+        *d.add(5)=0x00ff_ffff;
+    }else{
+        *d.add(4)=0xf800;
+        *d.add(5)=0x07e0;
+        *d.add(6)=0x001f;
+    }
 }
 
 /// Borrow the real DirectDraw4 surface only from our OWN Surface4 COM
@@ -133,6 +221,12 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
                     // Release, then free the outer object. All other
                     // callers must already own their own COM references.
                     std::sync::atomic::fence(Ordering::Acquire);
+                    let obj=&*this.cast::<Surface4Forwarder>();
+                    let child=obj.attached.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !child.is_null(){
+                        let child_vt=&**child.cast::<*const Surface4VTable>();
+                        (child_vt.release)(child);
+                    }
                     let real=borrowed_real(this);
                     (real_vtable(real).release)(real);
                     drop(Box::from_raw(this.cast::<Surface4Forwarder>()));
@@ -145,6 +239,7 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
 }
 
 unsafe extern "system" fn forward_add_attached_surface(this:SurfaceThis,p1:SurfaceThis)->i32{
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).add_attached_surface)(real,p1)
@@ -157,6 +252,9 @@ unsafe extern "system" fn forward_add_overlay_dirty_rect(this:SurfaceThis,p1:*mu
 }
 
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
+    // DirectDraw Wine requires its own internal Surface4 for Blt sources.
+    // Do not pass an independent wrapper or a virtual primary to it.
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).blt)(real,p1,p2,p3,p4,p5)
@@ -169,12 +267,14 @@ unsafe extern "system" fn forward_blt_batch(this:SurfaceThis,p1:*mut c_void,p2:u
 }
 
 unsafe extern "system" fn forward_blt_fast(this:SurfaceThis,p1:u32,p2:u32,p3:SurfaceThis,p4:*mut Rect,p5:u32)->i32{
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).blt_fast)(real,p1,p2,p3,p4,p5)
 }
 
 unsafe extern "system" fn forward_delete_attached_surface(this:SurfaceThis,p1:u32,p2:SurfaceThis)->i32{
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).delete_attached_surface)(real,p1,p2)
@@ -193,12 +293,34 @@ unsafe extern "system" fn forward_enum_overlay_z_orders(this:SurfaceThis,p1:u32,
 }
 
 unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->i32{
+    // Virtual primary Flip MUST NOT reach the physical exclusive Flip.
+    // A safe, separately gated Flip-to-Blt hook has not been installed.
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).flip)(real,p1,p2)
 }
 
 unsafe extern "system" fn forward_get_attached_surface(this:SurfaceThis,p1:*mut c_void,p2:*mut SurfaceThis)->i32{
+    if let Some(node)=graph_node(this){
+        if p2.is_null(){return E_POINTER;}
+        *p2=ptr::null_mut();
+        if p1.is_null(){return E_POINTER;}
+        let requested=*(p1.cast::<u32>());
+        let expected=match node.role {
+            SurfaceRole::Primary=>0x4,       // DDSCAPS_BACKBUFFER
+            SurfaceRole::Backbuffer=>0x20000, // DDSCAPS_ZBUFFER
+            SurfaceRole::Depth=>return E_INVALIDARG,
+        };
+        if requested!=expected{return E_INVALIDARG;}
+        let parent=&*this.cast::<Surface4Forwarder>();
+        let child=parent.attached.load(Ordering::Acquire);
+        if child.is_null(){return E_FAIL;}
+        let v=&**child.cast::<*const Surface4VTable>();
+        if (v.add_ref)(child)==0{return E_FAIL;}
+        *p2=child;
+        return S_OK;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).get_attached_surface)(real,p1,p2)
@@ -211,6 +333,13 @@ unsafe extern "system" fn forward_get_blt_status(this:SurfaceThis,p1:u32)->i32{
 }
 
 unsafe extern "system" fn forward_get_caps(this:SurfaceThis,p1:*mut c_void)->i32{
+    if let Some(node)=graph_node(this){
+        if p1.is_null(){return E_POINTER;}
+        let out=p1.cast::<u32>();
+        ptr::write_bytes(out,0,4);
+        *out=node.caps();
+        return S_OK;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).get_caps)(real,p1)
@@ -253,12 +382,33 @@ unsafe extern "system" fn forward_get_palette(this:SurfaceThis,p1:*mut *mut c_vo
 }
 
 unsafe extern "system" fn forward_get_pixel_format(this:SurfaceThis,p1:*mut c_void)->i32{
+    if let Some(node)=graph_node(this){
+        if p1.is_null(){return E_POINTER;}
+        let out=p1.cast::<u32>();
+        if *out!=32{return E_INVALIDARG;}
+        virtual_pixel_format(node,out);
+        return S_OK;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).get_pixel_format)(real,p1)
 }
 
 unsafe extern "system" fn forward_get_surface_desc(this:SurfaceThis,p1:*mut c_void)->i32{
+    if let Some(node)=graph_node(this){
+        if p1.is_null(){return E_POINTER;}
+        let out=p1.cast::<u32>();
+        if *out!=124{return E_INVALIDARG;}
+        ptr::write_bytes(out,0,31);
+        *out=124;
+        *out.add(1)=0x1007|if node.count()!=0{0x20}else{0};
+        *out.add(2)=node.mode.height;
+        *out.add(3)=node.mode.width;
+        *out.add(5)=node.count();
+        virtual_pixel_format(node,out.add(18));
+        *out.add(26)=node.caps();
+        return S_OK;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).get_surface_desc)(real,p1)
@@ -277,6 +427,7 @@ unsafe extern "system" fn forward_is_lost(this:SurfaceThis)->i32{
 }
 
 unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_void,p3:u32,p4:*mut c_void)->i32{
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).lock)(real,p1,p2,p3,p4)
@@ -325,6 +476,7 @@ unsafe extern "system" fn forward_unlock(this:SurfaceThis,p1:*mut Rect)->i32{
 }
 
 unsafe extern "system" fn forward_update_overlay(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
+    if graph_node(this).is_some(){return E_NOTIMPL;}
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).update_overlay)(real,p1,p2,p3,p4,p5)
