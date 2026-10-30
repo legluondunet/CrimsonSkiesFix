@@ -183,6 +183,19 @@ DirectDraw flip chain would not produce stable, real borderless 3D.
 A later version must supply the necessary COM surface virtualization
 or a compatible DirectDraw/Direct3D translation layer first.
 
+A third discovery came from the game logs: IID
+`bb223240-e72b-11d0-a9b4-00aa00c0993e` is **IDirect3D3**, and
+`93281502-8cf8-11d0-89ab-00a0c9054129` is
+**IDirect3DTexture2**. The wrapper now installs a passive hook on
+`IDirect3D3::CreateDevice` (Wine d3d.h slot 8) when QueryInterface
+returns a D3D3 object. `D3D3-TRACE` records the device CLSID,
+the chosen DirectDrawSurface4 render-target caps, HRESULT and
+whether an IDirect3DDevice3 was returned. It delegates unchanged,
+does not acquire another device, and never modifies graphics state.
+The game has not yet been tested with this new hook. A future
+borderless engine must preserve these legacy D3D3 device interfaces
+rather than assuming a 2D-only renderer.
+
 **This compositor is intentionally not wired into the actual Flip
 path yet.** Before presenting any game frame, a future backend must
 virtualize the primary/backbuffer while preserving the Z-buffer and
