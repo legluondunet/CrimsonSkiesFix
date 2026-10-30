@@ -32,6 +32,11 @@ const E_POINTER:i32=0x8000_4003u32 as i32;
 const E_FAIL:i32=0x8000_4005u32 as i32;
 const E_NOTIMPL:i32=0x8000_4001u32 as i32;
 const E_INVALIDARG:i32=0x8007_0057u32 as i32;
+// Exact DirectDraw4 Win32 fill-only Blt flag subset. We deliberately do
+// not emulate game texture copies, overlapping Blts or 2D primary Blts.
+const DDBLT_COLORFILL:u32=0x0000_0400;
+const DDBLT_DEPTHFILL:u32=0x0200_0000;
+const DDBLT_WAIT:u32=0x0100_0000;
 const IID_IUNKNOWN:Guid=Guid{
     d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]
 };
@@ -253,6 +258,18 @@ pub unsafe fn retire_graph_primary_flip(primary:SurfaceThis)->Result<u64,i32>{
     if p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     let Some(session)=state.take() else{return Err(E_FAIL);};
     let completed=session.bridge.stats().complete_frames;
+    // Propagate the retired mode generation to the entire known, acyclic
+    // Primary -> Backbuffer -> Z32 graph. Old attached COM identities can
+    // remain alive for Release/QI, but null-source fills must not render.
+    let back=p.attached.load(Ordering::Acquire);
+    if !back.is_null(){
+        let b=&*back.cast::<Surface4Forwarder>();
+        let depth=b.attached.load(Ordering::Acquire);
+        if !depth.is_null(){
+            (*depth.cast::<Surface4Forwarder>()).retired.store(true,Ordering::Release);
+        }
+        b.retired.store(true,Ordering::Release);
+    }
     p.retired.store(true,Ordering::Release);
     drop(session); // lifetime-owning backend is no longer allowed to present
     Ok(completed)
@@ -359,10 +376,36 @@ unsafe extern "system" fn forward_add_overlay_dirty_rect(this:SurfaceThis,p1:*mu
     (real_vtable(real).add_overlay_dirty_rect)(real,p1)
 }
 
+/// Strictly allow the only verified graph-specific native Blts:
+/// RGB565 Backbuffer ColorFill and Z32 DepthFill with NULL source.
+/// Source-copying Blts may carry wrapped or foreign COM identities, which
+/// cannot be passed directly to Wine's internal ddraw_surface implementation.
+/// The windowed *primary* is never forwarded for native Blt.
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
-    // DirectDraw Wine requires its own internal Surface4 for Blt sources.
-    // Do not pass an independent wrapper or a virtual primary to it.
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        if node.role==SurfaceRole::Primary{return E_NOTIMPL;}
+        let current=&*this.cast::<Surface4Forwarder>();
+        if current.retired.load(Ordering::Acquire){return E_NOTIMPL;}
+        if !p2.is_null() || !p3.is_null(){return E_NOTIMPL;}
+        let requested_fill=p4&!DDBLT_WAIT;
+        let expected_fill=if node.role==SurfaceRole::Depth{DDBLT_DEPTHFILL}else{DDBLT_COLORFILL};
+        if requested_fill!=expected_fill{return E_NOTIMPL;}
+        if p5.is_null(){return E_INVALIDARG;}
+        // IDirectDrawSurface4::Blt expects a Win32-x86 100-byte DDBLTFX.
+        if *(p5.cast::<u32>())!=100{return E_INVALIDARG;}
+        if !p1.is_null(){
+            let rect=&*p1;
+            if rect.left<0 || rect.top<0 || rect.right<=rect.left ||
+               rect.bottom<=rect.top || rect.right as u32>node.mode.width ||
+               rect.bottom as u32>node.mode.height {
+                return E_INVALIDARG;
+            }
+        }
+        // The real RGB565/Z32 surfaces have exactly the same internal mode
+        // as the graph. This deliberately does not implement texture copies.
+        let real=current.real;
+        return (real_vtable(real).blt)(real,p1,ptr::null_mut(),ptr::null_mut(),p4,p5);
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).blt)(real,p1,p2,p3,p4,p5)
@@ -878,6 +921,73 @@ mod tests{
             assert_eq!(phys.blts.load(Ordering::SeqCst),0);
         }
     }
+    #[test]
+    fn graph_only_allows_physical_null_source_fills_and_retires_stale_depth_and_backbuffer(){
+        use crate::{borderless_contract::{BackendEvidence,RenderTarget},presentation::Chain};
+        let table=mock_table();
+        let mut phys=[real_mock(&table),real_mock(&table),real_mock(&table)];
+        let raw=std::array::from_fn::<_,3,_>(|i|
+            (&mut phys[i] as *mut RealMock).cast::<c_void>());
+        let m=Mode{width:640,height:480,bpp:16};
+        let mut contract=AdapterContract::prepare(m,(1920,1080),
+            Chain{front_to_back:true,back_to_depth:true,mipmaps:false}).unwrap();
+        contract.expose(BackendEvidence{
+            process_owned_window:true,normal_directdraw:true,
+            render_target:RenderTarget::RealDirectDrawSurface4,
+            render_target_caps:0x2000,render_target_is_rgb565:true,
+            real_zbuffer_32:true,primary_with_clipper:true,
+            working_blt:true,complete_surface_com:true,
+        }).unwrap();
+        unsafe{
+            let p=new_graph_surface4(raw[0],SurfaceRole::Primary,m).unwrap();
+            let b=new_graph_surface4(raw[1],SurfaceRole::Backbuffer,m).unwrap();
+            let z=new_graph_surface4(raw[2],SurfaceRole::Depth,m).unwrap();
+            attach_graph_surface4(p,b).unwrap();
+            attach_graph_surface4(b,z).unwrap();
+            let pv=&**p.cast::<*const Surface4VTable>();
+            let bv=&**b.cast::<*const Surface4VTable>();
+            let zv=&**z.cast::<*const Surface4VTable>();
+            let mut fx=[0u32;25];fx[0]=100;fx[20]=0x07e0;
+            let effects=fx.as_mut_ptr().cast();
+            assert_eq!((pv.blt)(p,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
+            assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL|DDBLT_WAIT,effects),S_OK);
+            assert_eq!((zv.blt)(z,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_DEPTHFILL,effects),S_OK);
+            assert_eq!((bv.blt)(b,ptr::null_mut(),z,
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
+            assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_DEPTHFILL,effects),E_NOTIMPL);
+            assert_eq!((zv.blt)(z,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
+            assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,ptr::null_mut()),E_INVALIDARG);
+            fx[0]=0;
+            assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_INVALIDARG);
+            fx[0]=100;
+            let mut bad=Rect{left:0,top:0,right:641,bottom:480};
+            assert_eq!((bv.blt)(b,&mut bad,ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_INVALIDARG);
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
+            assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
+            assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
+            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080)).unwrap();
+            assert_eq!(retire_graph_primary_flip(p),Ok(0));
+            assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
+            assert_eq!((zv.blt)(z,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_DEPTHFILL,effects),E_NOTIMPL);
+            assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
+            assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
+            assert_eq!((pv.release)(p),0);
+            assert_eq!((bv.release)(b),0);
+            assert_eq!((zv.release)(z),0);
+        }
+        for phys in &phys{assert_eq!(phys.refs.load(Ordering::SeqCst),1);}
+    }
+
     #[test]
     fn armed_virtual_flip_uses_actual_blt_slot_and_never_native_flip(){
         use crate::{
