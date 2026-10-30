@@ -966,6 +966,13 @@ The 45-slot typed Surface4 ABI from Stage B3b is now implemented by a real, comp
 This solves **ABI-complete forwarding and object reference lifetime**, not the game primary/backbuffer/Z topology: forwarding `Flip` remains physical Flip and forwarding GetAttachedSurface returns an underlying physical attached surface. Therefore **the module has no runtime caller** and is forbidden from being exposed as a game windowed virtual surface. The next stage will make role-specific virtual primary methods provide the observed chain and route Flip to the already validated NativeWindowedBlt backend, without disturbing the renderer's real RGB565 Direct3D3 render target. Additional interface versions must not be advertised until implemented.
 
 The owner has separately confirmed v0.1.34 standalone borderless loop 120/120 successful; no new Wine test is needed for this COM-only step.
+## Stage B4f — v0.1.37 standalone real native Surface4 COM forwarding test
+
+Following the 45-method, refcounted COM forwarder implementation (B4e), the next validation uses **genuine Windows x86 DirectDraw4 COM surfaces under Wine** rather than mocked vtables. The standalone `--com-forward` mode wraps the real RGB565 640x480 3D target with its genuine Z32 attachment and verifies COM QI identity, unsupported IID behavior, counts, real GetCaps/GetSurfaceDesc, physical GetAttachedSurface, real Z descriptor, and actual RGB565 green ColorFill through the wrapper.
+
+Critically, the returned attachment remains the original **unwrapped** physical Z buffer; this must not be advertised as virtual game attachment topology. An independent temporary RGB565 surface then tests underlying AddRef lifetime by dropping the original COM owner while the wrapper is still live. The test never passes the wrapper to IDirect3D3::CreateDevice, which still uses the original physical target; thus this is an isolated live-COM smoke test rather than an in-game 3D rendering test through a virtual surface.
+
+All steps report detailed HRESULTs in the adjacent log and the normal borderless presentation checks still run. No game mode switch, COM hook installation or active game DLL changes.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

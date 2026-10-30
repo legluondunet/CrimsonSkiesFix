@@ -21,6 +21,10 @@ mod borderless_contract;
 mod borderless_flip;
 #[path="../borderless_native_blt.rs"]
 mod borderless_native_blt;
+#[path="../com_surface4_abi.rs"]
+mod com_surface4_abi;
+#[path="../com_surface4_forward.rs"]
+mod com_surface4_forward;
 use borderless_flip::WindowedBlt;
 
 use std::{
@@ -149,9 +153,9 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless, BorderlessLoop }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop, ComForward }
 impl ProbeMode {
-    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop)}
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop|Self::ComForward)}
 }
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
@@ -159,7 +163,8 @@ fn parse_mode(args:&[String])->Result<ProbeMode,String>{
         [] => Ok(ProbeMode::Windowed),
         [arg] if arg=="--borderless" => Ok(ProbeMode::Borderless),
         [arg] if arg=="--borderless-loop" => Ok(ProbeMode::BorderlessLoop),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop]".to_owned())
+        [arg] if arg=="--com-forward" => Ok(ProbeMode::ComForward),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop|--com-forward]".to_owned())
     }
 }
 
@@ -181,7 +186,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless|ProbeMode::BorderlessLoop=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop|ProbeMode::ComForward=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -375,12 +380,118 @@ impl WindowedBlt for LoggedNativeBlt<'_>{
     }
 }
 
+
+/// Exercise our REAL 45-slot Surface4 forwarder with Wine COM objects.
+/// The game never receives the forwarder, and CreateDevice is supplied
+/// the original real target. This is not game COM-chain virtualization.
+unsafe fn test_real_surface4_forwarder(ddraw:&Com,target:&Com)->Result<(),String>{
+    use com_surface4_abi::Surface4VTable;
+    probe_line("COM-FORWARD-START: native real IDirectDrawSurface4, no game object exposure");
+
+    let forward=com_surface4_forward::new_forwarding_surface4(target.0)
+        .map_err(|hr|format!("COM-FORWARD: construction failed {:#010x}",hr as u32))?;
+    if forward.is_null(){return Err("COM-FORWARD: NULL facade".into());}
+    let wrapped=Com(forward);
+    if wrapped.0==target.0{return Err("COM-FORWARD: wrapper aliases original".into());}
+    let vt=&**(wrapped.0.cast::<*const Surface4VTable>());
+    let iid_unknown=Guid{d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]};
+    let iid_surface4=Guid{d1:0x0b2b8630,d2:0xad35,d3:0x11d0,
+                          d4:[0x8e,0xa6,0,0x60,0x97,0x97,0xea,0x5b]};
+    let mut out=ptr::null_mut();
+    check("COM-FORWARD.QueryInterface(IUnknown)",
+        (vt.query_interface)(wrapped.0,&iid_unknown,&mut out))?;
+    if out!=wrapped.0{return Err("COM-FORWARD: IUnknown identity differs".into());}
+    let qi_unknown=Com(out);
+
+    out=ptr::null_mut();
+    check("COM-FORWARD.QueryInterface(IDirectDrawSurface4)",
+        (vt.query_interface)(qi_unknown.0,&iid_surface4,&mut out))?;
+    if out!=wrapped.0{return Err("COM-FORWARD: Surface4 identity differs".into());}
+    let qi_surface=Com(out);
+    let refcount=(vt.add_ref)(wrapped.0);
+    if refcount!=4{return Err(format!("COM-FORWARD: AddRef expected 4, got {refcount}"));}
+    if (vt.release)(wrapped.0)!=3{return Err("COM-FORWARD: Release after AddRef mismatched".into());}
+    drop(qi_surface);
+    drop(qi_unknown);
+    probe_line("COM-FORWARD-IUNKNOWN: stable Surface4 identity, QI and AddRef/Release OK");
+
+    out=wrapped.0; // invalid QI must clear this pointer.
+    let hr=(vt.query_interface)(wrapped.0,&IID_IDIRECTDRAW7,&mut out);
+    if hr!=0x8000_4002u32 as i32 || !out.is_null(){
+        return Err(format!("COM-FORWARD: unsupported IID returned {:#010x} ptr_null={}",
+            hr as u32,out.is_null()));
+    }
+    probe_line("COM-FORWARD-UNSUPPORTED-IID: E_NOINTERFACE, output NULL OK");
+
+    let mut caps=[0u32;4];
+    check("COM-FORWARD.GetCaps",(vt.get_caps)(wrapped.0,caps.as_mut_ptr().cast()))?;
+    if caps[0]&DDSCAPS_3DDEVICE==0 || caps[0]&DDSCAPS_OFFSCREEN==0{
+        return Err(format!("COM-FORWARD: expected real D3D offscreen caps, got {:#010x}",caps[0]));
+    }
+    let mut d=[0u32;31];d[0]=124;
+    check("COM-FORWARD.GetSurfaceDesc",(vt.get_surface_desc)(wrapped.0,d.as_mut_ptr().cast()))?;
+    if d[2]!=480||d[3]!=640||d[19]&DDPF_RGB==0||d[21]!=16||
+       (d[22],d[23],d[24])!=(0xf800,0x07e0,0x001f){
+        return Err(format!("COM-FORWARD: invalid returned RGB565 {}x{} bpp={} masks={:#x}/{:#x}/{:#x}",
+            d[3],d[2],d[21],d[22],d[23],d[24]));
+    }
+    probe_line(&format!("COM-FORWARD-SURFACE: {}x{} RGB565 caps={:#010x}",
+        d[3],d[2],caps[0]));
+
+    // This returns a *physical* attached Z32 COM pointer (unwrapped).
+    // The caller must Release this borrowed attachment result once.
+    let mut zcaps=[DDSCAPS_ZBUFFER,0,0,0];
+    let mut z=ptr::null_mut();
+    check("COM-FORWARD.GetAttachedSurface(Z32, physical)",
+        (vt.get_attached_surface)(wrapped.0,zcaps.as_mut_ptr().cast(),&mut z))?;
+    if z.is_null()||z==wrapped.0{return Err("COM-FORWARD: invalid raw depth attachment".into());}
+    let raw_z=Com(z);
+    let mut zd=[0u32;31];zd[0]=124;
+    let get_z:unsafe extern "system" fn(Ptr,*mut u32)->Hr=
+        std::mem::transmute(slot(raw_z.0,22));
+    check("COM-FORWARD.RawDepth.GetSurfaceDesc",get_z(raw_z.0,zd.as_mut_ptr()))?;
+    if zd[19]&DDPF_ZBUFFER==0 || zd[21]!=32 || zd[23]!=0x00ff_ffff{
+        return Err(format!("COM-FORWARD: wrong attached depth: flags={:#x} bits={} mask={:#x}",
+            zd[19],zd[21],zd[23]));
+    }
+    probe_line("COM-FORWARD-ATTACHMENT: raw real Z32 with 24 active Z bits; NOT VIRTUAL");
+    drop(raw_z);
+
+    let mut fx=[0u32;25];fx[0]=100;fx[20]=0x07e0;
+    check("COM-FORWARD.Blt(RGB565 green fill)",(vt.blt)(
+        wrapped.0,ptr::null_mut(),ptr::null_mut(),ptr::null_mut(),
+        DDBLT_COLORFILL|DDBLT_WAIT,fx.as_mut_ptr().cast()))?;
+    drop(wrapped); // real target remains alive in the calling probe.
+    probe_line("COM-FORWARD-RELEASE: wrapper released, original 3D target still owned");
+
+    // Independent lifetime test: wrapper owns its real AddRef even when
+    // its original Com owner is dropped before final facade Release.
+    let owned=create_surface(ddraw,"COM-FORWARD isolated RGB565",
+        desc(DDSCAPS_3DDEVICE|DDSCAPS_OFFSCREEN|DDSCAPS_VIDEOMEMORY,
+             640,480,Some(16)))?;
+    let retained=com_surface4_forward::new_forwarding_surface4(owned.0)
+        .map_err(|hr|format!("COM-FORWARD isolated wrapper failed: {:#010x}",hr as u32))?;
+    let wrapper_only=Com(retained);
+    drop(owned);
+    let wvt=&**(wrapper_only.0.cast::<*const Surface4VTable>());
+    let mut alive=[0u32;31];alive[0]=124;
+    check("COM-FORWARD.GetSurfaceDesc(after original Release)",
+        (wvt.get_surface_desc)(wrapper_only.0,alive.as_mut_ptr().cast()))?;
+    if (alive[3],alive[2],alive[21])!=(640,480,16){
+        return Err("COM-FORWARD: live wrapper lost its original surface".into());
+    }
+    drop(wrapper_only); // releases the final owned real COM reference.
+    probe_line("COM-FORWARD-LIFETIME: original owner released first, wrapper still valid");
+    probe_line("COM-FORWARD-RESULT: PASS (native COM identity, caps, RGB565, Z32, Blt, ownership)");
+    Ok(())
+}
+
 fn run(mode:ProbeMode)->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.34; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.37; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -392,7 +503,8 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }
     let mode_label=match mode {ProbeMode::Windowed=>"windowed-default",
         ProbeMode::Borderless=>"borderless-opt-in",
-        ProbeMode::BorderlessLoop=>"borderless-loop-opt-in"};
+        ProbeMode::BorderlessLoop=>"borderless-loop-opt-in",
+        ProbeMode::ComForward=>"com-forward-borderless-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -526,6 +638,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }
     if device.is_null(){return Err("CreateDevice returned NULL".into());}
     let device=Com(device);
+    if mode==ProbeMode::ComForward{
+        unsafe{test_real_surface4_forwarder(&ddraw,&target)?;}
+    }
     // In-game Crimson Skies repeatedly uses BeginScene/EndScene on the
     // same Direct3D3 device. Exercise the real HAL scene API in normal mode.
     unsafe{
@@ -664,7 +779,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.34");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.37");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -781,6 +896,7 @@ mod tests{
         assert_eq!(parse_mode(&[]),Ok(ProbeMode::Windowed));
         assert_eq!(parse_mode(&["--borderless".to_owned()]),Ok(ProbeMode::Borderless));
         assert_eq!(parse_mode(&["--borderless-loop".to_owned()]),Ok(ProbeMode::BorderlessLoop));
+        assert_eq!(parse_mode(&["--com-forward".to_owned()]),Ok(ProbeMode::ComForward));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -795,6 +911,9 @@ mod tests{
         let loop_plan=plan_test_window(ProbeMode::BorderlessLoop,1920,1080).unwrap();
         assert_eq!(loop_plan,plan);
         assert!(ProbeMode::BorderlessLoop.borderless());
+        let com_plan=plan_test_window(ProbeMode::ComForward,1920,1080).unwrap();
+        assert_eq!(com_plan,plan);
+        assert!(ProbeMode::ComForward.borderless());
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);

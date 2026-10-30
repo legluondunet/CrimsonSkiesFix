@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.36 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.37 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,16 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.37 — first native COM forwarder smoke test under Wine
+
+Stage B4f connects the new **full 45-method Surface4 COM forwarder** to the *real DirectDraw4 runtime* in the separately distributed standalone `windowed_ddraw_probe.exe`. The new explicitly opt-in `--com-forward` mode launches a temporary 1920x1080 borderless diagnostic window with **normal/non-exclusive DirectDraw**, creates the real RGB565+D3D3 target and Z32 depth attachment, and then exercises the forwarding COM object against genuine Windows/Wine COM resources.
+
+The test checks: two independent `QueryInterface` calls on the wrapper retaining the same physical `IUnknown`/`IDirectDrawSurface4` identity; AddRef/Release counts; `E_NOINTERFACE` and zeroed output for unsupported IIDs; real `GetCaps` and `GetSurfaceDesc` returning 640x480 RGB565; *physical* `GetAttachedSurface(Z32)` and the original 32-bit depth format; and `Blt` through the forwarding vtable. It also creates an **isolated second real RGB565 surface**, drops its original owner, confirms the wrapper's strong underlying COM reference keeps the surface usable, and finally releases that wrapper.
+
+The legacy windowed, `--borderless` and `--borderless-loop` test modes remain unchanged; even `--com-forward` performs the existing native presentation Blt with the real target, **never** passes a virtual primary to Direct3D3, intercepts the game or changes display mode. All failures are logged in `windowed_ddraw_probe.log` beside the test EXE.
+
+**Owner test:** extract the separate Windows x86 `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL` artifact to a writable directory outside the game folder and run `wine ./windowed_ddraw_probe.exe --com-forward` under the same Wine/GE-Proton environment. Send `windowed_ddraw_probe.log` afterward. The test is host-side only and the game DLL's actual rendering path remains unchanged.
 
 ## v0.1.36 — full 45-method Surface4 forwarding ABI and owned IUnknown
 
