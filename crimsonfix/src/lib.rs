@@ -25,6 +25,8 @@ type ModernDisplayModeFn=unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u
 type QueryInterfaceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut *mut c_void)->Hr;
 type BltFastFn=unsafe extern "system" fn(*mut c_void,u32,u32,*mut c_void,*const c_void,u32)->Hr;
 type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
+type GetAttachedSurfaceFn=unsafe extern "system" fn(*mut c_void,*const u32,*mut *mut c_void)->Hr;
+type GetSurfaceDescFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -52,7 +54,12 @@ const SURFACE_BLT:usize=5;
 const SURFACE_BLT_FAST:usize=7;
 const SURFACE_UNLOCK:usize=32;
 const SURFACE_FLIP:usize=11;
+const SURFACE_GET_ATTACHED:usize=12;
 const SURFACE_GET_CAPS:usize=14;
+const SURFACE_GET_DESC:usize=22;
+const DDSCAPS_BACKBUFFER:u32=0x0000_0004;
+const DDSCAPS_FLIP:u32=0x0000_0010;
+const DDSCAPS_COMPLEX:u32=0x0000_0008;
 
 static MODULE:AtomicUsize=AtomicUsize::new(0);
 static CONFIG:OnceLock<Config>=OnceLock::new();
@@ -95,6 +102,9 @@ static MODERN_UNLOCK_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
 static MODERN_BLTFAST_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
 static LAST_GAME_HWND:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_CREATE_DETAIL_COUNT:AtomicUsize=AtomicUsize::new(0);
+static SURFACE_ATTACH_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static SURFACE_DESC_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static SURFACE_FIRST_PRIMARY_ATTACH:Once=Once::new();
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -305,6 +315,92 @@ unsafe extern "system" fn modern_set_display_mode(
     hr
 }
 
+// Named status based entirely on the public DirectDraw DDSCAPS flags.
+// We deliberately do not log raw COM pointer addresses or identifiers.
+fn surface_roles(caps:u32)->String {
+    let mut roles=Vec::new();
+    if caps&DDSCAPS_PRIMARYSURFACE!=0{roles.push("primary");}
+    if caps&DDSCAPS_BACKBUFFER!=0{roles.push("backbuffer");}
+    if caps&DDSCAPS_FLIP!=0{roles.push("flip-chain");}
+    if caps&DDSCAPS_COMPLEX!=0{roles.push("complex");}
+    if roles.is_empty(){"other".into()}else{roles.join("+")}
+}
+
+fn describe_surface_layout(desc:*const c_void)->String{
+    if desc.is_null(){return "NULL descriptor".into();}
+    unsafe{
+        // The first 16 bytes are common to DDSURFACEDESC and DDSURFACEDESC2:
+        // dwSize, dwFlags, dwHeight and dwWidth. No pixels are inspected.
+        let words=desc as *const u32;
+        let size=*words;
+        if size!=108 && size!=124{return format!("unsupported_descriptor_size={size}");}
+        let flags=*words.add(1);
+        let h=*words.add(2);
+        let w=*words.add(3);
+        let dims=if flags&0x6==0x6{
+            format!("{w}x{h}")
+        }else{"unspecified".into()};
+        format!("desc_size={size} flags={flags:#x} dimensions={dims}")
+    }
+}
+
+// The GetAttachedSurface ABI is the same for Surface2/3/4/7.
+// Call through with the original DDSCAPS or DDSCAPS2 pointer unchanged.
+// Do not Release the returned COM interface: ownership belongs to the game.
+unsafe extern "system" fn modern_get_attached_surface(
+    this:*mut c_void,caps:*const u32,out:*mut *mut c_void
+)->Hr {
+    let Some(addr)=orig(this,SURFACE_GET_ATTACHED) else{return DDERR_GENERIC};
+    let call:GetAttachedSurfaceFn=std::mem::transmute(addr);
+    let hr=call(this,caps,out);
+    if cfg().log_enabled {
+        let n=SURFACE_ATTACH_TRACE_COUNT.fetch_add(1,Ordering::Relaxed);
+        if n<24 {
+            let requested=if caps.is_null(){None}else{Some(*caps)};
+            let parent=modern_surface_caps(this);
+            let child=if hr>=0 && !out.is_null() && !(*out).is_null(){
+                modern_surface_caps(*out)
+            }else{None};
+            log(&format!(
+                "SURFACE-ATTACH: requested={} parent={} ({}) attached={} ({}) hr={hr:#x} returned={} (unchanged)",
+                requested.map(|x|format!("{x:#010x}")).unwrap_or_else(||"NULL".into()),
+                parent.map(|x|format!("{x:#010x}")).unwrap_or_else(||"Unavailable".into()),
+                parent.map(surface_roles).unwrap_or_else(||"unknown".into()),
+                child.map(|x|format!("{x:#010x}")).unwrap_or_else(||"Unavailable".into()),
+                child.map(surface_roles).unwrap_or_else(||"unknown".into()),
+                hr>=0 && !out.is_null() && !(*out).is_null()));
+        }
+        if hr>=0 && !out.is_null() && !(*out).is_null(){
+            if let (Some(a),Some(b))=(modern_surface_caps(this),modern_surface_caps(*out)){
+                if a&DDSCAPS_PRIMARYSURFACE!=0 && b&DDSCAPS_BACKBUFFER!=0 {
+                    SURFACE_FIRST_PRIMARY_ATTACH.call_once(||log(
+                        "SURFACE-CHAIN: confirmed primary front buffer -> attached backbuffer (game-provided; no modification)"));
+                }
+            }
+        }
+    }
+    if hr>=0 && !out.is_null() && !(*out).is_null(){
+        observe_modern_surface(*out,"GetAttachedSurface");
+    }
+    hr
+}
+
+// GetSurfaceDesc is read-only; this wrapper captures only the first
+// 16-byte descriptor prefix and delegates exactly once to the system DLL.
+unsafe extern "system" fn modern_get_surface_desc(this:*mut c_void,desc:*mut c_void)->Hr {
+    let Some(addr)=orig(this,SURFACE_GET_DESC) else{return DDERR_GENERIC};
+    let call:GetSurfaceDescFn=std::mem::transmute(addr);
+    let hr=call(this,desc);
+    if cfg().log_enabled && SURFACE_DESC_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<20 {
+        let layout=if hr>=0{describe_surface_layout(desc)}else{"call failed".into()};
+        let caps=modern_surface_caps(this);
+        log(&format!("SURFACE-DESC: {layout} caps={} role={} hr={hr:#x} (unchanged)",
+            caps.map(|x|format!("{x:#010x}")).unwrap_or_else(||"Unavailable".into()),
+            caps.map(surface_roles).unwrap_or_else(||"unknown".into())));
+    }
+    hr
+}
+
 // Newer DirectDraw versions share the opaque CreateSurface calling
 // convention, though the descriptor and surface types differ.
 unsafe extern "system" fn modern_create_surface(
@@ -414,8 +510,10 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
     let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as usize);
     let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as usize);
+    let attached=replace_method(surface,SURFACE_GET_ATTACHED,modern_get_attached_surface as usize);
+    let desc=replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as usize);
     if MODERN_SURFACE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<24 {
-        log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} (observation only)"));
+        log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} get_attached={attached} get_desc={desc} (observation only)"));
     }
 }
 unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
@@ -627,6 +725,18 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn surface_capabilities_identify_front_and_back_buffers(){
+        assert_eq!(surface_roles(0x1000e238),"primary+flip-chain+complex");
+        assert_eq!(surface_roles(DDSCAPS_BACKBUFFER|DDSCAPS_FLIP),"backbuffer+flip-chain");
+        assert_eq!(surface_roles(0x1000601c),"backbuffer+flip-chain+complex");
+        assert_eq!(surface_roles(0),"other");
+    }
+    #[test]
+    fn directdraw_surface_slots_match_com_abi(){
+        assert_eq!(SURFACE_GET_ATTACHED,12);
+        assert_eq!(SURFACE_GET_DESC,22);
+    }
     #[test]
     fn primary_caps_flag_is_not_equal_to_flip_capability(){
         assert_eq!(DDSCAPS_PRIMARYSURFACE,0x200);
