@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.1 — experimental DirectDraw proxy
+# CrimsonFix 0.1.3 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -102,6 +102,26 @@ Wine/Windows reporting still needs owner testing.
 If the game displays incorrectly, change `Borderless=0` and test
 again. If more detail is needed, set `Log=1` and examine the log in
 the `CrimsonFix/` folder. Reset `Log=0` afterward.
+
+After the first Wine test, a successful DirectDraw proxy installation
+was confirmed but the initial borderless attempts reported an
+unclassified `HWND adjustment failed`. New diagnostics now record
+whether `SetCooperativeLevel` received a **NULL** window, a non-game
+HWND, bad monitor geometry, or a precise Win32 error from
+`GetWindowLongW`, `SetWindowLongW`, or `SetWindowPos`.
+A NULL HWND leaves the window unchanged and the borderless adjustment
+deferred until another cooperative-level call supplies a valid window.
+The log intentionally avoids raw handle values.
+
+A `Flip paced` or `Blt paced` line alone means the vtable hook was
+**installed**; it does not prove that the game called it. The first
+actual call generates a one-time `PRESENT:` marker. If no
+`PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
+unverified and additional graphics paths must be investigated.
+
+Some Wine/DXVK D3D9 drivers report the sentinel version
+`32767.65535.65535.65535`; CrimsonFix now labels that
+`Unavailable` rather than claiming a genuine driver version.
 
 The standalone proxy still forwards `DirectDrawCreate`,
 `DirectDrawEnumerateA` and `DirectDrawCreateEx` to the real Windows
