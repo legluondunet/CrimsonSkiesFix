@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.16 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.17 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,30 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.17 — same-group successful Flip timing (diagnostic only)
+
+The v0.1.16 scene/Flip correlation now also times **the same set
+of successful primary Flip calls**, using a monotonic clock and a
+snapshot taken after each successful original COM operation. Each
+120-call group contains **119 intervals from the first successful
+Flip to the last**. Its bounded (12 lines per process) opt-in
+`SCENE-CORRELATION` output gains:
+
+- `first_to_last_flip_ms`: elapsed time inside the group, not since
+  the game started or a display mode was configured.
+- `flip_intervals=119`: the correct interval count for 120 events.
+- `successful_primary_flip_calls_per_s`: API completion rate from those
+  same 119 intervals, or `Unavailable` when the duration
+  rounds to zero milliseconds.
+
+Scene/Flip ratios still use **120 successful Flip calls**, and do
+not establish unique presented frames, simulation rate or a precise
+one-to-one scene/Flip relationship. Failed/secondary Flip attempts
+are excluded. Any successful SetDisplayMode resets both the partial
+sample and its clock, even for a repeated resolution. No rendering
+mode, COM arguments, FPS limiter, game input, audio, INI defaults
+or log placement were changed.
 
 ## v0.1.16 — exact Direct3D3 scene/Flip correlation
 

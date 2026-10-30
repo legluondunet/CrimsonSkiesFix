@@ -191,6 +191,23 @@ The first borderless proof should focus on **aspect-correct presentation
 at desktop output resolution**; native widescreen geometry, UI, FOV
 and custom render resolution follow separately.
 
+## Stage B1 follow-up — v0.1.17 same-group API timing
+
+The passive `SCENE-CORRELATION` now includes monotonic elapsed
+milliseconds between the first and 120th successful **primary**
+Flip in each group. It divides **119 observed intervals** by that
+elapsed time to report successful primary Flip *COM completion*
+calls per second. This is better aligned with the corresponding
+successful BeginScene/EndScene call counts than the previous
+independent attempted-Flip and scene rate windows.
+
+The first scene-counter baseline for a mode begins at successful
+SetDisplayMode, so the initial group can also include scene events
+during loading before its first Flip. Subsequent sample baselines
+are the prior successful primary Flip group boundary. Neither
+measurement proves on-screen frame rates or frame-to-scene identity.
+The new counters do not enable windowed presentation.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

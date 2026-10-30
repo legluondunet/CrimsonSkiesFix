@@ -628,12 +628,18 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
             if let Some(sample)=sample {
                 // Limit to 12 correlated windows over the whole session.
                 if SCENE_FLIP_GROUP_LOGS.fetch_add(1,Ordering::Relaxed)<12 {
+                    let successful_flip_rate=sample
+                        .successful_primary_flip_calls_per_s()
+                        .map(|rate|format!("{rate:.2}"))
+                        .unwrap_or_else(||"Unavailable".to_string());
                     log(&format!(
-                        "SCENE-CORRELATION: generation={} successful_primary_flips={} successful_begin_scene={} successful_end_scene={} begins_per_flip={:.2} ends_per_flip={:.2} (same Flip group; COM calls NOT displayed frames)",
+                        "SCENE-CORRELATION: generation={} successful_primary_flips={} successful_begin_scene={} successful_end_scene={} begins_per_flip={:.2} ends_per_flip={:.2} first_to_last_flip_ms={} flip_intervals={} successful_primary_flip_calls_per_s={} (same successful-Flip group; rates are COM calls, NOT display FPS)",
                         sample.generation,sample.flips,sample.successful_begins,
                         sample.successful_ends,
                         sample.successful_begins as f64/sample.flips as f64,
-                        sample.successful_ends as f64/sample.flips as f64));
+                        sample.successful_ends as f64/sample.flips as f64,
+                        sample.first_to_last_flip_ms,sample.observed_flip_intervals,
+                        successful_flip_rate));
                 }
             }
         }
