@@ -23,6 +23,7 @@ const DD_CAPS_PRIMARY:u32=0x0000_0200;
 const DD_CAPS_OFFSCREEN:u32=0x0000_0040;
 const DD_CAPS_3D:u32=0x0000_2000;
 const DD_CAPS_VIDEOMEM:u32=0x0000_4000;
+const DD_CAPS_SYSTEMMEM:u32=0x0000_0800;
 const DD_CAPS_Z:u32=0x0002_0000;
 const DDSD_BACKBUFFERCOUNT:u32=0x20;
 const DDSD_HEIGHT:u32=0x2;
@@ -152,6 +153,37 @@ fn check_native_rgb_depth(back:&Com,depth:&Com,mode:Mode)->Result<(),String>{
     }
     Ok(())
 }
+// We cannot use a 1920x1080 native desktop primary for Crimson Skies'
+// initial 640x480 CPU Lock. Verify a dedicated 16-bit RGB565 native staging
+// surface, including an actual CPU Lock+Unlock, before offering its pointer
+// through a virtual IDirectDrawSurface4 primary.
+unsafe fn verify_primary_lock_staging(staging:&Com,mode:Mode)->Result<(),String>{
+    let desc=native_desc(staging)?;
+    if (desc[3],desc[2],desc[21],desc[22],desc[23],desc[24])!=
+        (mode.width,mode.height,16,0xf800,0x07e0,0x001f) ||
+        desc[26]&DD_CAPS_OFFSCREEN==0 || desc[26]&DD_CAPS_SYSTEMMEM==0{
+        return Err(format!("primary lock staging RGB565 mismatch caps={:#010x} {}x{} bpp={}",
+            desc[26],desc[3],desc[2],desc[21]));
+    }
+    type Lock=unsafe extern "system" fn(*mut c_void,*const c_void,*mut u32,u32,*mut c_void)->Hr;
+    type Unlock=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
+    let lock:Lock=std::mem::transmute(slot(staging.ptr(),25));
+    let unlock:Unlock=std::mem::transmute(slot(staging.ptr(),32));
+    let mut info=[0u32;31];info[0]=124;
+    require(lock(staging.ptr(),ptr::null(),info.as_mut_ptr(),0,ptr::null_mut()),
+        "RGB565 primary staging Lock")?;
+    // Always unlock a successful native Lock before checking the returned
+    // DDSURFACEDESC2. Never strand the staging surface in locked state.
+    let unlock_hr=unlock(staging.ptr(),ptr::null());
+    require(unlock_hr,"RGB565 primary staging Unlock")?;
+    if (info[0],info[3],info[2],info[21])!=(124,mode.width,mode.height,16) ||
+       info[9]==0 || info[4]==0 {
+        return Err(format!("primary staging Lock incompatible: {}x{} bpp={} pitch={} pixels={}",
+            info[3],info[2],info[21],info[4],if info[9]==0{"NULL"}else{"provided"}));
+    }
+    Ok(())
+}
+
 struct Epoch {
     mode:Mode,
     primary:Com,
@@ -160,7 +192,7 @@ struct Epoch {
     // These three physical resources and clipper outlive their virtual COM
     // counterpart; every wrapper owns an additional native AddRef itself.
     physical_primary:Com,
-    physical_back:Com,
+    physical_lock_primary:Com, // independent logical RGB565 primary staging
     physical_depth:Com,
     clipper:Com,
 }
@@ -314,12 +346,19 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     native_fill(&real_depth,true)?;
     native_fill(&real_back,false)?;
     prove_hal(dd4,&real_back)?;
+    let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+        mode.width,mode.height,Some(16)))?;
+    verify_primary_lock_staging(&primary_lock,mode)?;
+    log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
+        mode.width,mode.height));
     let primary=Com::from_out(com_surface4_forward::new_graph_surface4(real_primary.ptr(),SurfaceRole::Primary,mode)
         .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
     let back=Com::from_out(com_surface4_forward::new_graph_surface4(real_back.ptr(),SurfaceRole::Backbuffer,mode)
         .map_err(|hr|format!("virtual backbuffer: {:#010x}",hr as u32))?)?;
     let depth=Com::from_out(com_surface4_forward::new_graph_surface4(real_depth.ptr(),SurfaceRole::Depth,mode)
         .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
+    com_surface4_forward::arm_graph_primary_lock_surface(primary.ptr(),primary_lock.ptr())
+        .map_err(|hr|format!("arm primary Lock staging: {:#010x}",hr as u32))?;
     com_surface4_forward::attach_graph_surface4(primary.ptr(),back.ptr())
         .map_err(|hr|format!("attach virtual BB {:#010x}",hr as u32))?;
     com_surface4_forward::attach_graph_surface4(back.ptr(),depth.ptr())
@@ -347,7 +386,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
         primary.ptr(),&contract,generation,(0,0),client
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
-        physical_back:real_back,physical_depth:real_depth,clipper})
+        physical_lock_primary:primary_lock,physical_back:real_back,
+        physical_depth:real_depth,clipper})
 }
 // Give the game its *logical* DD4 mode, not the desktop's physical mode.
 // Crimson Skies requests 640x480x16 (or 800x600x16), while our real
