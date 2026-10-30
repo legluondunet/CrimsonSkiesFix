@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.9 — experimental DirectDraw proxy
+# CrimsonFix 0.1.10 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -141,6 +141,46 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.10 — proven 3D flip chain and 4:3 desktop preflight
+
+The user-supplied v0.1.9 Wine log verifies the full legacy chain
+**without mutating any DirectDraw surface**:
+`GetAttachedSurface(request=0x4)` on the primary
+`0x1000e238` returns backbuffer `0x1000601c`;
+`GetAttachedSurface(request=0x20000)` on that backbuffer returns
+Z-buffer `0x10024000`. A separate request `0x00401000` accesses
+texture mipmaps and **must never be treated as a screen buffer**.
+The same front/back/depth relations recur after game mode changes
+between 640x480x16 and 800x600x16.
+
+The Rust module `src/presentation.rs` now provides:
+
+- Classification of **actual successful** primary -> backbuffer,
+  backbuffer -> Z-buffer, and texture -> mipmap attachments
+- A conservative preflight requiring a complete 3D chain **and**
+  either 640x480x16 or 800x600x16
+- An integer aspect-ratio calculation for presenting a 4:3 game image
+  on the monitor's initial desktop resolution
+- A read-only `BORDERLESS-PREFLIGHT` journal line indicating the
+  internal resolution, pre-exclusive monitor dimensions, planned
+  centered viewport and `applied=false`
+- Tests for the observed surface caps, invalid/partial chains,
+  4:3 -> 16:9 output and unusual screen dimensions
+
+For a 1920x1080 desktop, both observed game modes would be
+**displayed within a centered 1440x1080 viewport** with 240px black
+bars on each side. This is a *presentation plan*, **not** native
+1920x1080 game geometry, increased internal resolution or a working
+borderless mode. A real borderless backend must emulate the original
+DirectDraw front/back/Z semantics and present the internal 16-bit
+image using a compatible windowed output path.
+
+v0.1.10 does not make the exclusive renderer windowed: it only
+tests that the necessary conditions are recognized. Keep
+`ModernFPSPacing=0` for the next diagnostic session to isolate
+rendering behavior; the previously confirmed optional
+60-call/s primary Flip limiter remains available.
 
 ## v0.1.9 — first primary/backbuffer chain inspection
 
