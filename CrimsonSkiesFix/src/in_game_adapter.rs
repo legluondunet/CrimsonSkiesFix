@@ -350,6 +350,9 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL)};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
+    // COM output ownership is transferred only on S_OK. On any refusal,
+    // never accidentally return the caller's previous surface pointer.
+    *out=ptr::null_mut();
     let Some(epoch)=runtime.epoch.as_ref() else{return Some(E_FAIL)};
     let requested=if is_primary{
         let flags=*words.add(1);
