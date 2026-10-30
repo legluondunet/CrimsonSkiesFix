@@ -50,6 +50,7 @@ extern "system" {
     fn IsWindowVisible(hwnd:Hwnd)->i32;
     fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
     fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
+    fn GetClientRect(hwnd:Hwnd,rect:*mut Rect)->i32;
 }
 
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
@@ -195,6 +196,31 @@ unsafe extern "system" fn game_window_callback(hwnd:Hwnd,context:isize)->i32 {
         }
     }
     1
+}
+
+// Read-only details of a handle explicitly supplied by the game. Do not
+// log the numeric HWND, title, class name, window text or external process data.
+pub fn game_window_snapshot(hwnd:Hwnd)->String {
+    if hwnd.is_null(){return "HWND=NULL".into();}
+    unsafe {
+        if IsWindow(hwnd)==0{return "HWND=invalid".into();}
+        let mut pid=0u32;
+        if GetWindowThreadProcessId(hwnd,&mut pid)==0 || pid!=GetCurrentProcessId(){
+            return "HWND=foreign-or-owner-unavailable".into();
+        }
+        let mut outer=Rect::default();
+        let mut client=Rect::default();
+        let outer_ok=GetWindowRect(hwnd,&mut outer)!=0;
+        let client_ok=GetClientRect(hwnd,&mut client)!=0;
+        let outer_size=if outer_ok{format!("{}x{}",outer.right.saturating_sub(outer.left),
+            outer.bottom.saturating_sub(outer.top))}else{"Unavailable".into()};
+        let client_size=if client_ok{format!("{}x{}",client.right.saturating_sub(client.left),
+            client.bottom.saturating_sub(client.top))}else{"Unavailable".into()};
+        let visible=IsWindowVisible(hwnd)!=0;
+        let top_level=GetWindow(hwnd,4 /* GW_OWNER */).is_null();
+        let style=GetWindowLongW(hwnd,GWL_STYLE) as u32;
+        format!("HWND=game-owned visible={visible} unowned={top_level} outer={outer_size} client={client_size} style={style:#010x}")
+    }
 }
 
 pub fn game_windows_snapshot()->String {
