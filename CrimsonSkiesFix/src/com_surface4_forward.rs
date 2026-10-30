@@ -17,6 +17,7 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
+    time::{Duration,Instant},
 };
 use crate::{
     Guid,
@@ -77,6 +78,23 @@ struct GraphFlipSession{
     backend:NativeWindowedBlt,
     epoch:u64,
     mode:Mode,
+    fps_limit:Option<u32>, // None in standalone probe and COM unit tests
+    last_present:Option<Instant>, // reset whenever the mode epoch changes
+}
+
+/// Limit only the *real game* virtual Primary Flip, never intermediate
+/// Blts or the standalone probe. Crucial because the existing passive
+/// ModernFPSPacing option cannot hook a synthetic Surface4 vtable.
+fn pace_graph_flip(session:&mut GraphFlipSession){
+    let Some(fps)=session.fps_limit.filter(|v|*v>0) else{return;};
+    let interval=Duration::from_nanos(1_000_000_000/u64::from(fps));
+    let now=Instant::now();
+    if let Some(previous)=session.last_present {
+        if let Some(deadline)=previous.checked_add(interval){
+            if deadline>now {std::thread::sleep(deadline.duration_since(now));}
+        }
+    }
+    session.last_present=Some(Instant::now());
 }
 #[repr(C)]
 struct Surface4Forwarder{
@@ -228,7 +246,7 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
 /// The graph must outlive every in-flight COM method invocation.
 pub unsafe fn arm_graph_primary_flip(
     primary:SurfaceThis,contract:&AdapterContract,generation:u64,
-    origin:(i32,i32),client:(u32,u32)
+    origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>
 )->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
@@ -259,7 +277,8 @@ pub unsafe fn arm_graph_primary_flip(
     ).map_err(|_|E_INVALIDARG)?;
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
-    *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode});
+    *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
+        fps_limit,last_present:None});
     Ok(())
 }
 
@@ -555,7 +574,11 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         if !p1.is_null()&&p1!=back{return E_INVALIDARG;}
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
-        let GraphFlipSession{bridge,backend,epoch,mode}=session;
+        // A successful windowed Flip is the sole frame-present boundary.
+        // Do not rely on the passive modern Flip hook: these synthetic COM
+        // surfaces never call through that native interface.
+        pace_graph_flip(session);
+        let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         return match bridge.present(*epoch,*mode,backend){
             Ok(frame)=>{
                 let count=GRAPH_FLIP_COUNT.fetch_add(1,Ordering::Relaxed)+1;
@@ -1211,7 +1234,7 @@ mod tests{
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
             assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
-            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080)).unwrap();
+            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None).unwrap();
             assert_eq!(retire_graph_primary_flip(p),Ok(0));
             assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
@@ -1259,9 +1282,9 @@ mod tests{
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!(graph_primary_completed_flips(p),None);
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540)),Err(E_INVALIDARG));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080)),Ok(()));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080)),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None),Ok(()));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None),Err(E_FAIL));
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
@@ -1276,7 +1299,7 @@ mod tests{
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
             assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
-            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080)),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None),Err(E_FAIL));
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
