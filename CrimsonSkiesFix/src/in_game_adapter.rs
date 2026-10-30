@@ -193,6 +193,7 @@ struct Epoch {
     // counterpart; every wrapper owns an additional native AddRef itself.
     physical_primary:Com,
     physical_lock_primary:Com, // independent logical RGB565 primary staging
+    physical_back:Com, // native D3D3 RGB565 backbuffer; retained for identity checks
     physical_depth:Com,
     clipper:Com,
 }
