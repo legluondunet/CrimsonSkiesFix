@@ -636,7 +636,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
     }
     let sources=probe_source_modes(mode);
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.45; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.46; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -805,6 +805,31 @@ fn run(mode:ProbeMode)->Result<(),String>{
     let surface_chain=if matches!(mode,ProbeMode::ComSurfaceChain|ProbeMode::ComVirtualFlip|ProbeMode::ComVirtualFlip800|ProbeMode::ComVirtualFlipTransition){
         Some(unsafe{test_real_virtual_surface_chain(&primary,&target,&depth,source)?})
     }else{None};
+    if mode==ProbeMode::ComVirtualFlipTransition{
+        use com_surface4_abi::Surface4VTable;
+        let (gp,gb,gz)=surface_chain.as_ref().unwrap();
+        unsafe{
+            let pvt=&**gp.0.cast::<*const Surface4VTable>();
+            let bvt=&**gb.0.cast::<*const Surface4VTable>();
+            let zvt=&**gz.0.cast::<*const Surface4VTable>();
+            check("COM-GRAPH-BLT.backbuffer.ColorFill(NULL source)",
+                (bvt.blt)(gb.0,ptr::null_mut(),ptr::null_mut(),
+                    ptr::null_mut(),DDBLT_COLORFILL|DDBLT_WAIT,fill.as_mut_ptr().cast()))?;
+            check("COM-GRAPH-BLT.depth.DepthFill(NULL source)",
+                (zvt.blt)(gz.0,ptr::null_mut(),ptr::null_mut(),
+                    ptr::null_mut(),DDBLT_DEPTHFILL,depth_fill.as_mut_ptr().cast()))?;
+            let bad=(pvt.blt)(gp.0,ptr::null_mut(),ptr::null_mut(),
+                ptr::null_mut(),DDBLT_COLORFILL,fill.as_mut_ptr().cast());
+            if bad!=0x8000_4001u32 as i32{
+                return Err(format!("COM-GRAPH-BLT: unsafe primary Blt returned {:#010x}",bad as u32));
+            }
+            let copy=(bvt.blt)(gb.0,ptr::null_mut(),gz.0,ptr::null_mut(),0,ptr::null_mut());
+            if copy!=0x8000_4001u32 as i32{
+                return Err(format!("COM-GRAPH-BLT: unsupported source-copy returned {:#010x}",copy as u32));
+            }
+        }
+        probe_line(&format!("COM-GRAPH-BLT: epoch={}/{} RGB565 ColorFill and Z32 DepthFill routed to physical Surface4; primary/source-copy rejected",epoch_index+1,sources.len()));
+    }
     if let Some((previous_epoch,old))=retired_previous.take(){
         // The next mode's physical RGB565/Z32 and virtual graph now exist.
         // A still-live OLD virtual primary must never present onto either.
@@ -814,7 +839,31 @@ fn run(mode:ProbeMode)->Result<(),String>{
             return Err(format!("COM-TRANSITION-STALE: old epoch {} Flip returned {:#010x}, expected E_NOTIMPL",
                 previous_epoch,stale as u32));
         }
-        probe_line(&format!("COM-TRANSITION-STALE: old epoch {} primary remains COM-live but Flip is E_NOTIMPL after new epoch {} target/graph initialization",
+        let mut old_back=ptr::null_mut();
+        let mut back_caps=[4u32,0,0,0];
+        check("COM-GRAPH-BLT.old-primary.GetAttachedSurface(backbuffer)",
+            unsafe{(vt.get_attached_surface)(old.0,back_caps.as_mut_ptr().cast(),&mut old_back)})?;
+        if old_back.is_null(){return Err("COM-GRAPH-BLT: old backbuffer NULL".into());}
+        let old_back=Com(old_back);
+        let bvt=unsafe{&**old_back.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let mut old_depth=ptr::null_mut();
+        let mut depth_caps=[DDSCAPS_ZBUFFER,0,0,0];
+        check("COM-GRAPH-BLT.old-backbuffer.GetAttachedSurface(depth)",
+            unsafe{(bvt.get_attached_surface)(old_back.0,depth_caps.as_mut_ptr().cast(),&mut old_depth)})?;
+        if old_depth.is_null(){return Err("COM-GRAPH-BLT: old depth NULL".into());}
+        let old_depth=Com(old_depth);
+        let zvt=unsafe{&**old_depth.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let stale_blt=unsafe{(bvt.blt)(old_back.0,ptr::null_mut(),ptr::null_mut(),
+            ptr::null_mut(),DDBLT_COLORFILL,fill.as_mut_ptr().cast())};
+        let stale_depth=unsafe{(zvt.blt)(old_depth.0,ptr::null_mut(),ptr::null_mut(),
+            ptr::null_mut(),DDBLT_DEPTHFILL,depth_fill.as_mut_ptr().cast())};
+        if stale_blt!=0x8000_4001u32 as i32 || stale_depth!=0x8000_4001u32 as i32{
+            return Err(format!("COM-GRAPH-BLT: old epoch {} stale backbuffer={:#010x} depth={:#010x} expected E_NOTIMPL",
+                previous_epoch,stale_blt as u32,stale_depth as u32));
+        }
+        drop(old_depth);
+        drop(old_back);
+        probe_line(&format!("COM-TRANSITION-STALE: old epoch {} primary Flip and backbuffer/Z32 null-source Blts all E_NOTIMPL after new epoch {} graph initialization",
             previous_epoch,epoch_index+1));
         drop(old); // last deliberate stale AddRef, after verifying fail closed
     }
@@ -1162,7 +1211,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         probe_line("COM-VFLIP-FINAL: PASS (120 real native presentations through virtual Surface4::Flip)");
     }
     if mode==ProbeMode::ComVirtualFlipTransition{
-        let (gp,gb,_)=surface_chain.as_ref().unwrap();
+        let (gp,gb,gz)=surface_chain.as_ref().unwrap();
         let vt=unsafe{&**gp.0.cast::<*const com_surface4_abi::Surface4VTable>()};
         let retired=unsafe{com_surface4_forward::retire_graph_primary_flip(gp.0)}
             .map_err(|hr|format!("COM-TRANSITION-RETIRE: epoch={} failed {:#010x}",epoch_index+1,hr as u32))?;
@@ -1173,10 +1222,20 @@ fn run(mode:ProbeMode)->Result<(),String>{
         if stale!=0x8000_4001u32 as i32{
             return Err(format!("COM-TRANSITION-RETIRE: epoch={} stale Flip unexpectedly succeeded {:#010x}",epoch_index+1,stale as u32));
         }
+        let bvt=unsafe{&**gb.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let zvt=unsafe{&**gz.0.cast::<*const com_surface4_abi::Surface4VTable>()};
+        let stale_back=unsafe{(bvt.blt)(gb.0,ptr::null_mut(),ptr::null_mut(),
+            ptr::null_mut(),DDBLT_COLORFILL,fill.as_mut_ptr().cast())};
+        let stale_z=unsafe{(zvt.blt)(gz.0,ptr::null_mut(),ptr::null_mut(),
+            ptr::null_mut(),DDBLT_DEPTHFILL,depth_fill.as_mut_ptr().cast())};
+        if stale_back!=0x8000_4001u32 as i32 || stale_z!=0x8000_4001u32 as i32{
+            return Err(format!("COM-TRANSITION-RETIRE: epoch={} old backbuffer/Z32 Blt not rejected ({:#010x}/{:#010x})",
+                epoch_index+1,stale_back as u32,stale_z as u32));
+        }
         let refcount=unsafe{(vt.add_ref)(gp.0)};
         if refcount<2{return Err("COM-TRANSITION-RETIRE: failed to hold stale COM reference".into());}
         retired_previous=Some((epoch_index+1,Com(gp.0)));
-        probe_line(&format!("COM-TRANSITION-RETIRE: epoch={}/{} final_frames={} presenter permanently disarmed; stale Flip rejected; one COM reference retained for next epoch",
+        probe_line(&format!("COM-TRANSITION-RETIRE: epoch={}/{} final_frames={} presenter permanently disarmed; stale Flip and backbuffer/Z32 Blts rejected; one COM reference retained for next epoch",
             epoch_index+1,sources.len(),retired));
     }
         } // Release this epoch\x27s normal COM owners; one retained stale AddRef is intentional.
@@ -1212,7 +1271,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.45");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.46");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
