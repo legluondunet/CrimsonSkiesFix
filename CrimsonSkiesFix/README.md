@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.15 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.16 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,47 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.16 — exact Direct3D3 scene/Flip correlation
+
+The owner supplied three genuine v0.1.14 runtime logs:
+`gamez.out`, `gamez.err`, and `CrimsonSkiesFix.log`.
+The latter definitively confirms the IDirect3D3 device targets the
+**RGB565 backbuffer** (DDSCAPS `0x1000601c`), with the
+32-bit Z-buffer attached, in both 640x480 and 800x600 modes.
+No successful `IDirect3DDevice3::SetRenderTarget` call is visible
+in the bounded trace; the CreateDevice target is the only
+confirmed render target in this session.
+
+With opt-in `ModernFPSPacing=1`, the primary `Flip` API is around
+60 calls/s in stable intervals, while successful
+`D3D3.BeginScene` and `D3D3.EndScene` can each reach about 240
+calls/s; `Blt` reaches 120 calls/s. **These earlier rates came from
+independent time intervals and do not prove four scenes per Flip.**
+The game's separate `gamez.out` reports a one-off
+`dsh fps: 90.533806`, not a complete runtime FPS trace.
+`gamez.err` reports a MCI CD-audio command error at
+`zSound/zsnd_cd.cpp(413)`; its impact and relationship to the
+wrapper are not yet established.
+
+A new tested, **diagnostic-only** `scene_correlation.rs` module
+groups exactly 120 **successful primary-surface Flip calls** and
+measures the number of successful Direct3D3 BeginScene and EndScene
+calls that happened between them. It resets when a
+`SetDisplayMode` succeeds, including changes back to the same
+resolution. Its maximum of 12 `SCENE-CORRELATION` log lines
+reports `successful_primary_flips`, `successful_begin_scene`,
+`successful_end_scene`, `begins_per_flip`, `ends_per_flip`
+and the render-mode generation. This is the appropriate way to
+find the number of D3D3 scene calls **per group of displayed
+presentation API calls**, without assuming a scene means a frame.
+The hook never locks any surface, sleeps beyond the owner's
+existing pacing option, alters COM arguments, changes the game's
+3D state, or modifies the original `Flip` result.
+
+For the next test, enable `[Debug] Log=1` and keep the previous
+`ModernFPSPacing` preference. Note that this build does **not**
+activate borderless or native widescreen rendering.
 
 ## v0.1.15 — log branding consistency
 
