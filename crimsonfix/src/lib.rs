@@ -21,6 +21,7 @@ type SurfaceFn=unsafe extern "system" fn(*mut c_void,*mut c_void,*mut *mut c_voi
 type FlipFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
 type BltFn=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut c_void)->Hr;
 type GetCapsFn=unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
+type ModernDisplayModeFn=unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u32)->Hr;
 type QueryInterfaceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut *mut c_void)->Hr;
 type BltFastFn=unsafe extern "system" fn(*mut c_void,u32,u32,*mut c_void,*const c_void,u32)->Hr;
 type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
@@ -68,6 +69,13 @@ static SURFACE_QI_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static WINDOW_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static FIRST_BLT_FAST:Once=Once::new();
 static FIRST_UNLOCK:Once=Once::new();
+static FIRST_MODERN_FLIP:Once=Once::new();
+static FIRST_MODERN_BLT:Once=Once::new();
+static FIRST_MODERN_FAST:Once=Once::new();
+static FIRST_MODERN_UNLOCK:Once=Once::new();
+static MODERN_COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MODERN_DISPLAY_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MODERN_SURFACE_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -175,6 +183,127 @@ fn pace_frame() {
     *previous=now;
 }
 
+// IID matching is deliberately exhaustive rather than assuming a vtable
+// layout from the major GUID prefix. Definitions come from Wine's ddraw.h.
+fn ddraw_iface(iid:*const Guid)->Option<&'static str> {
+    let name=guid_label(iid);
+    match name.as_str() {
+        "b3a6f3e0-2b43-11cf-a2de-00aa00b93356"=>Some("IDirectDraw2"),
+        "9c59509a-39bd-11d1-8c4a-00c04fd930c5"=>Some("IDirectDraw4"),
+        "15e65ec0-3b9c-11d2-b92f-00609797ea5b"=>Some("IDirectDraw7"),
+        _=>None,
+    }
+}
+fn surface_iface(iid:*const Guid)->Option<&'static str> {
+    let name=guid_label(iid);
+    match name.as_str() {
+        "57805885-6eec-11cf-9441-a82303c10e27"=>Some("IDirectDrawSurface2"),
+        "da044e00-69b2-11d0-a1d5-00aa00b8dfbb"=>Some("IDirectDrawSurface3"),
+        "0b2b8630-ad35-11d0-8ea6-00609797ea5b"=>Some("IDirectDrawSurface4"),
+        "06675a80-3b9b-11d2-b92f-00609797ea5b"=>Some("IDirectDrawSurface7"),
+        _=>None,
+    }
+}
+
+unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
+    let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
+    let call:CooperativeFn=std::mem::transmute(addr);
+    let hr=call(this,hwnd,flags); // OBSERVATION ONLY: keep original HWND and flags
+    if MODERN_COOPERATIVE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        log(&format!("MODERN-DDRAW: SetCooperativeLevel hwnd={} requested_flags={flags:#x} result={hr:#x} (unchanged)",
+            if hwnd.is_null(){"NULL"}else{"provided"}));
+        trace_game_windows("modern DirectDraw SetCooperativeLevel");
+    }
+    hr
+}
+
+unsafe extern "system" fn modern_set_display_mode(
+    this:*mut c_void,w:u32,h:u32,bpp:u32,refresh:u32,flags:u32
+)->Hr {
+    let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else{return DDERR_GENERIC};
+    let call:ModernDisplayModeFn=std::mem::transmute(addr);
+    let hr=call(this,w,h,bpp,refresh,flags); // 5 arguments since IDirectDraw2
+    if MODERN_DISPLAY_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        log(&format!("MODERN-DDRAW: SetDisplayMode {w}x{h} bpp={bpp} refresh={refresh} flags={flags:#x} result={hr:#x} (unchanged)"));
+    }
+    hr
+}
+
+// Newer DirectDraw versions share the opaque CreateSurface calling
+// convention, though the descriptor and surface types differ.
+unsafe extern "system" fn modern_create_surface(
+    this:*mut c_void,desc:*mut c_void,out:*mut *mut c_void,outer:*mut c_void
+)->Hr {
+    let Some(addr)=orig(this,DD_CREATE_SURFACE) else{return DDERR_GENERIC};
+    let call:SurfaceFn=std::mem::transmute(addr);
+    let hr=call(this,desc,out,outer);
+    if MODERN_SURFACE_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        log(&format!("MODERN-DDRAW: CreateSurface result={hr:#x} object_returned={} (unchanged)",
+            hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
+    if hr>=0 && !out.is_null() && !(*out).is_null(){
+        observe_modern_surface(*out,"CreateSurface");
+    }
+    hr
+}
+
+// A single hook can be used on all newer surface versions because these
+// specific method ABIs (and vtable indices) are stable, per ddraw.h.
+// Unlike legacy v1 pacing, this instrumentation NEVER sleeps or edits frames.
+unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
+    let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
+    FIRST_MODERN_FLIP.call_once(||{
+        log("RENDER-MODERN: first newer-surface Flip (observed; NOT FPS-paced)");
+        trace_game_windows("first modern Flip");
+    });
+    let call:FlipFn=std::mem::transmute(addr);
+    call(this,target,flags)
+}
+unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
+    src:*mut c_void,src_rect:*const c_void,flags:u32,fx:*mut c_void)->Hr {
+    let Some(addr)=orig(this,SURFACE_BLT) else{return DDERR_GENERIC};
+    FIRST_MODERN_BLT.call_once(||{
+        log("RENDER-MODERN: first newer-surface Blt (observed; NOT FPS-paced)");
+        trace_game_windows("first modern Blt");
+    });
+    let call:BltFn=std::mem::transmute(addr);
+    call(this,dst,src,src_rect,flags,fx)
+}
+unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,
+    src:*mut c_void,rect:*const c_void,flags:u32)->Hr {
+    let Some(addr)=orig(this,SURFACE_BLT_FAST) else{return DDERR_GENERIC};
+    FIRST_MODERN_FAST.call_once(||log("RENDER-MODERN: first newer-surface BltFast (observed; NOT FPS-paced)"));
+    let call:BltFastFn=std::mem::transmute(addr);
+    call(this,x,y,src,rect,flags)
+}
+unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_void)->Hr {
+    let Some(addr)=orig(this,SURFACE_UNLOCK) else{return DDERR_GENERIC};
+    FIRST_MODERN_UNLOCK.call_once(||{
+        log("RENDER-MODERN: first newer-surface Unlock (observed; NOT FPS-paced)");
+        trace_game_windows("first modern Unlock");
+    });
+    let call:UnlockFn=std::mem::transmute(addr);
+    call(this,data)
+}
+
+unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
+    if surface.is_null() || !cfg().log_enabled {return;}
+    let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize);
+    let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as usize);
+    let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
+    let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as usize);
+    let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as usize);
+    log(&format!("MODERN-SURFACE: from={source} query_interface={qi} flip={flip} blt={blt} blt_fast={fast} unlock={unlock} (observation only)"));
+}
+unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
+    if object.is_null() || !cfg().log_enabled {return;}
+    let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
+    let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
+    let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
+    let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as usize);
+    log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
+}
+
 // Read-only interface discovery: the original COM QueryInterface is called
 // without changing IID, return value or output. This identifies whether the
 // 3D renderer uses other DirectDraw/Direct3D interfaces beyond the v1 hooks.
@@ -186,6 +315,9 @@ unsafe extern "system" fn ddraw_query_interface(this:*mut c_void,iid:*const Guid
         log(&format!("COM-TRACE: IDirectDraw::QueryInterface iid={} result={hr:#x} object_returned={}",
             guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
     }
+    if hr>=0 && !out.is_null() && !(*out).is_null() {
+        if let Some(version)=ddraw_iface(iid){observe_modern_ddraw(*out,version);}
+    }
     hr
 }
 
@@ -196,6 +328,9 @@ unsafe extern "system" fn surface_query_interface(this:*mut c_void,iid:*const Gu
     if SURFACE_QI_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
         log(&format!("COM-TRACE: IDirectDrawSurface::QueryInterface iid={} result={hr:#x} object_returned={}",
             guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
+    if hr>=0 && !out.is_null() && !(*out).is_null(){
+        if let Some(version)=surface_iface(iid){observe_modern_surface(*out,version);}
     }
     hr
 }
@@ -351,6 +486,9 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
     let hr=real(guid,out,iid,outer);
     log(&format!("COM-TRACE: DirectDrawCreateEx iid={} result={hr:#x} object_returned={}",
         guid_label(iid.cast()),hr>=0 && !out.is_null() && !(*out).is_null()));
+    if hr>=0 && !out.is_null() && !(*out).is_null(){
+        if let Some(version)=ddraw_iface(iid.cast()){observe_modern_ddraw(*out,version);}
+    }
     hr
 }
 
@@ -364,6 +502,17 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn discovers_actual_crimson_skies_directdraw_versions() {
+        let dd2=Guid{d1:0xb3a6f3e0,d2:0x2b43,d3:0x11cf,
+            d4:[0xa2,0xde,0x00,0xaa,0x00,0xb9,0x33,0x56]};
+        let surface4=Guid{d1:0x0b2b8630,d2:0xad35,d3:0x11d0,
+            d4:[0x8e,0xa6,0x00,0x60,0x97,0x97,0xea,0x5b]};
+        assert_eq!(ddraw_iface(&dd2),Some("IDirectDraw2"));
+        assert_eq!(surface_iface(&surface4),Some("IDirectDrawSurface4"));
+        assert_eq!(ddraw_iface(ptr::null()),None);
+        assert_eq!(surface_iface(&dd2),None);
+    }
     #[test]
     fn formats_interface_identifier_without_private_handles() {
         let g=Guid{d1:0x6c14db80,d2:0xa733,d3:0x11ce,
