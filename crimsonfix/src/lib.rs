@@ -345,11 +345,12 @@ unsafe extern "system" fn modern_set_display_mode(
 // Only modern 124-byte DDSURFACEDESC2 objects can be safely probed.
 unsafe fn probe_modern_surface_layout(surface:*mut c_void,reason:&str) {
     if surface.is_null() || !cfg().log_enabled{return;}
-    if SURFACE_FORMAT_PROBE_COUNT.fetch_add(1,Ordering::Relaxed)>=20{return;}
     let Some(caps)=modern_surface_caps(surface) else{return;};
     if caps&(presentation::PRIMARY|presentation::BACKBUFFER|presentation::ZBUFFER)==0{
         return;
     }
+    // Unrelated textures must not exhaust the bounded display-surface probe.
+    if SURFACE_FORMAT_PROBE_COUNT.fetch_add(1,Ordering::Relaxed)>=20{return;}
     // Query original GetSurfaceDesc to avoid going through our own logging
     // hook. A method already patched on this vtable has an original mapping.
     let address=orig(surface,SURFACE_GET_DESC).or_else(||{
