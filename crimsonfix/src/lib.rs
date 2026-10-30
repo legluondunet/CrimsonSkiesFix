@@ -7,6 +7,7 @@ mod diagnostics;
 mod diagnostics_graphics;
 mod presentation;
 mod rgb565_present;
+mod win32_present;
 
 use config::Config;
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
