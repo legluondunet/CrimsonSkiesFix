@@ -980,6 +980,11 @@ The owner verifies v0.1.37 live COM-forward behavior under Wine with native IUnk
 Version 0.1.38 adds **only** an opt-in `--com-device` standalone experiment: preserve the real normal-mode primary, real 640x480 RGB565 surface with true Z32 attachment, wrap the RGB565 surface in the full typed 45-slot COM forwarding façade and pass **the wrapper** into `IDirect3D3::CreateDevice(HAL, wrapper)`. The returned real HRESULT is logged, with no fallback to the original target if the test fails. If it succeeds, the test runs BeginScene/EndScene and the existing windowed Blt presentation and records `COM-DEVICE-RESULT: PASS`.
 
 This test intentionally probes an implementation-defined boundary: Direct3D3 may require additional COM identity/interface information that the forwarding wrapper does not advertise. A failed HRESULT or crash will be used to plan the next integration step; it does not imply any regression in the native physical DirectDraw renderer. No game DLL hook calls this new code.
+## Stage B4h — v0.1.39 Wine HAL boundary requires original internal surface
+
+The owner's v0.1.38 standalone log proves the complete native resource chain still works but `IDirect3D3::CreateDevice` rejects the *forwarded* Surface4 with `DDERR_INVALIDCAPS` (0x88760064). Inspection of current Wine `ddraw.c::d3d3_CreateDevice` and `surface.c::unsafe_impl_from_IDirectDrawSurface4` shows an implementation-specific dependency: Wine converts the Surface4 interface pointer to its internal `ddraw_surface` structure. Calling QI for Surface4 on our wrapper does not change its physical address, and thus cannot supply the expected native internal layout.
+
+Stage B4h introduces `try_borrow_real_surface4` to resolve only our own live forwarding object to its borrowed original Surface4 pointer. The optional standalone `--com-device-bridge` mode checks this boundary, calls D3D3 HAL CreateDevice with the real target, reads `IDirect3DDevice3::GetRenderTarget` to ensure the result belongs to the original real target, then confirms scene and scaled presentation. This does **not** install a D3D3 hook in Crimson Skies, replace a real object with a virtual primary or make in-game borderless work. It is a host-level foundation for a future controlled D3D3 intercept.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

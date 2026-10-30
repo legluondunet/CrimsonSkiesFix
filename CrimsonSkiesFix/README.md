@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.38 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.39 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,18 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.39 — HAL device boundary must unwrap the COM Surface4 wrapper
+
+The owner's v0.1.38 `--com-device` log shows `IDirect3D3::CreateDevice(HAL, forwarded RGB565 Surface4)` fails with **0x88760064 = DDERR_INVALIDCAPS**. All preparatory real DirectDraw/HAL Z32 allocations and Z attachments still succeed. Wine's `dlls/ddraw/ddraw.c::d3d3_CreateDevice` calls `unsafe_impl_from_IDirectDrawSurface4`, which assumes its own internal `struct ddraw_surface`. Wine's `dlls/ddraw/surface.c` implementation accepts the pointer only via native vtable or QueryInterface and then uses `CONTAINING_RECORD`: our independent COM wrapper cannot be treated as that internal surface.
+
+To test a **safe future interception boundary**, v0.1.39 adds `com_surface4_forward::try_borrow_real_surface4` with an exact known-wrapper vtable check. This returns a **borrowed physical DirectDraw4 surface** only from our live forwarding object, never from an unrelated native surface. Callers must keep their original wrapper reference alive throughout the native operation. A new x86 test validates wrapper/foreign/null recognition, IUnknown aliasing and underlying COM ownership.
+
+The standalone EXE adds explicit **`--com-device-bridge`** mode. It creates exactly the same full 45-method Surface4 wrapper, checks its own unwrapping API, then calls the genuine `IDirect3D3::CreateDevice(HAL)` with **the original physical RGB565 target**, not the wrapper. If creation works, it verifies `IDirect3DDevice3::GetRenderTarget` returns the original real target (not the wrapper), tests BeginScene/EndScene and the previous borderless Blt. Each gate reports an exact HRESULT and never silently retries.
+
+Crucially, this is still a host-only demonstration. The **actual game's IDirect3D3::CreateDevice** needs a separate opt-in intercept to unwrap only our owned Surface4 COM handles. No replacement is installed yet. The old `--com-device` failing experiment remains available for diagnostics, while all previous successful test modes remain unchanged.
+
+**Owner test:** download only `CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL`, extract outside the game directory and run `wine ./windowed_ddraw_probe.exe --com-device-bridge` in the previously validated Wine/GE-Proton environment. Send `windowed_ddraw_probe.log` even if a specific stage fails. The experimental DLL should not be installed for this test.
 
 ## v0.1.38 — opt-in Direct3D3 HAL device creation using a real Surface4 forwarder
 

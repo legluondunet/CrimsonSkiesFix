@@ -62,6 +62,25 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
     Ok(Box::into_raw(obj).cast())
 }
 
+/// Borrow the real DirectDraw4 surface only from our OWN Surface4 COM
+/// forwarding object. Does NOT AddRef. The caller MUST retain its own
+/// live forwarding COM reference until the native API operation finishes.
+/// A foreign, but valid, Surface4 object must return None unchanged.
+/// Wine's native Direct3D3 CreateDevice expects its internal real surface
+/// implementation; do not pass this forwarding wrapper directly to Wine.
+///
+/// # Safety
+/// candidate must be a valid, live COM interface pointer or null, with
+/// a valid vtable pointer. This routine does not authenticate untrusted or
+/// stale arbitrary memory addresses.
+pub unsafe fn try_borrow_real_surface4(candidate:SurfaceThis)->Option<SurfaceThis>{
+    if candidate.is_null(){return None;}
+    let vt=*candidate.cast::<*const Surface4VTable>();
+    if !std::ptr::eq(vt,&SURFACE4_FORWARD_VTABLE){return None;}
+    let real=borrowed_real(candidate);
+    if real.is_null(){None}else{Some(real)}
+}
+
 unsafe fn borrowed_real(this:SurfaceThis)->SurfaceThis{
     if this.is_null(){return ptr::null_mut();}
     (*this.cast::<Surface4Forwarder>()).real
@@ -522,6 +541,26 @@ mod tests{
         }
         assert_eq!(real.blts.load(Ordering::SeqCst),1);
         assert_eq!(real.flips.load(Ordering::SeqCst),1);
+        assert_eq!(real.refs.load(Ordering::SeqCst),1);
+    }
+    #[test]
+    fn native_d3d_boundary_can_borrow_only_our_own_live_wrapper(){
+        let table=mock_table();
+        let mut real=real_mock(&table);
+        let physical=(&mut real as *mut RealMock).cast();
+        unsafe{
+            assert_eq!(try_borrow_real_surface4(ptr::null_mut()),None);
+            assert_eq!(try_borrow_real_surface4(physical),None);
+            let wrapper=new_forwarding_surface4(physical).unwrap();
+            assert_ne!(wrapper,physical);
+            assert_eq!(try_borrow_real_surface4(wrapper),Some(physical));
+            let vt=&**wrapper.cast::<*const Surface4VTable>();
+            let mut alias=ptr::null_mut();
+            assert_eq!((vt.query_interface)(wrapper,&IID_IUNKNOWN,&mut alias),S_OK);
+            assert_eq!(try_borrow_real_surface4(alias),Some(physical));
+            assert_eq!((vt.release)(alias),1);
+            assert_eq!((vt.release)(wrapper),0);
+        }
         assert_eq!(real.refs.load(Ordering::SeqCst),1);
     }
     #[test]
