@@ -30,6 +30,9 @@ extern "system" {
     pub fn QueryPerformanceFrequency(value:*mut i64)->i32;
     pub fn Sleep(ms:u32);
     fn MoveFileExW(from:*const u16,to:*const u16,flags:u32)->i32;
+    fn GetLastError()->u32;
+    fn SetLastError(code:u32);
+    fn GetCurrentProcessId()->u32;
 }
 #[link(name = "user32")]
 extern "system" {
@@ -41,6 +44,7 @@ extern "system" {
     fn SetWindowLongW(hwnd:Hwnd,index:i32,new:i32)->i32;
     fn SetWindowPos(hwnd:Hwnd,insert_after:Hwnd,x:i32,y:i32,width:i32,height:i32,flags:u32)->i32;
     fn IsWindow(hwnd:Hwnd)->i32;
+    fn GetWindowThreadProcessId(hwnd:Hwnd,process_id:*mut u32)->u32;
 }
 
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
@@ -132,20 +136,38 @@ pub fn monitor_from_cursor_or_window(hwnd:Hwnd)->Option<Rect> {
     }
 }
 
-pub fn borderless_window(hwnd:Hwnd,area:Rect)->bool {
-    if hwnd.is_null() {return false;}
+// The early Crimson Skies SetCooperativeLevel calls may use a NULL HWND.
+// Report *why* we cannot adjust the window; never manipulate another
+// process's HWND, and never invent a guessed main window at startup.
+pub fn borderless_window(hwnd:Hwnd,area:Rect)->Result<(),String> {
+    if hwnd.is_null() {return Err("deferred: NULL HWND supplied by game".into());}
     unsafe {
-        if IsWindow(hwnd)==0{return false;}
-        // Preserve the window's existing unrelated style flags; remove borders
-        // and add WS_POPUP while retaining visibility.
-        let existing=GetWindowLongW(hwnd,GWL_STYLE) as u32;
-        let borders=0x00CF_0000u32; // caption, thickframe, sysmenu, min/max boxes
-        let new_style=((existing & !borders)|WS_POPUP|WS_VISIBLE) as i32;
-        SetWindowLongW(hwnd,GWL_STYLE,new_style);
+        if IsWindow(hwnd)==0 {return Err("deferred: HWND is not a window".into());}
+        let mut owner=0u32;
+        if GetWindowThreadProcessId(hwnd,&mut owner)==0 || owner!=GetCurrentProcessId() {
+            return Err("rejected: HWND does not belong to this game process".into());
+        }
         let w=area.right.saturating_sub(area.left);
         let h=area.bottom.saturating_sub(area.top);
-        w>0 && h>0 && SetWindowPos(hwnd,std::ptr::null_mut(),area.left,area.top,w,h,
-                                  SWP_FRAMECHANGED|SWP_SHOWWINDOW|SWP_NOOWNERZORDER)!=0
+        if w<=0 || h<=0 {return Err("rejected: monitor bounds are empty".into());}
+        // GetWindowLong may legally return zero; check GetLastError.
+        SetLastError(0);
+        let existing=GetWindowLongW(hwnd,GWL_STYLE);
+        let error=GetLastError();
+        if existing==0 && error!=0 {return Err(format!("GetWindowLongW Win32 error={error}"));}
+        // Preserve unrelated window styles and remove caption, frame, system menu.
+        let borders=0x00CF_0000u32;
+        let new_style=((existing as u32 & !borders)|WS_POPUP|WS_VISIBLE) as i32;
+        SetLastError(0);
+        let previous=SetWindowLongW(hwnd,GWL_STYLE,new_style);
+        let error=GetLastError();
+        if previous==0 && error!=0 {return Err(format!("SetWindowLongW Win32 error={error}"));}
+        if SetWindowPos(hwnd,std::ptr::null_mut(),area.left,area.top,w,h,
+                        SWP_FRAMECHANGED|SWP_SHOWWINDOW|SWP_NOOWNERZORDER)==0 {
+            let error=GetLastError();
+            return Err(format!("SetWindowPos Win32 error={error}"));
+        }
+        Ok(())
     }
 }
 
