@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.35 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.36 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,16 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.36 — full 45-method Surface4 forwarding ABI and owned IUnknown
+
+Stage B4e creates `src/com_surface4_forward.rs`, a real Win32 x86 `IDirectDrawSurface4` forwarding object **compiled but never instantiated in the game DLL**. It uses the previously verified *exact 45-slot typed vtable*, with all non-IUnknown methods forwarded to an original **real** Surface4 COM object, rather than returning misleading placeholder success.
+
+The façade has its own stable physical `IUnknown` / `IDirectDrawSurface4` identity, returns `E_NOINTERFACE` for interfaces whose ABI it does not implement, maintains an independent atomic COM client-reference count, acquires exactly one strong reference to the original surface at construction, and releases that reference exactly once on final façade `Release`.
+
+Four new x86 tests check all 45 vtable slots, stable QueryInterface identity and counts, real forwarding of Blt/Flip/GetAttachedSurface/Unlock with original HRESULT and pointer values, null pointer argument handling, and final ownership. The full real-method table is checked at compile time because it must initialize all 45 vtable fields.
+
+**This is deliberately NOT the game borderless virtual primary.** Its GetAttachedSurface, Flip, GetSurfaceDesc, caps and all other graphics operations still describe the **physical original** surface. Real attachment returned pointers are not wrapped, and it is not yet integrated with the fail-closed borderless Flip bridge or active DirectDraw4 hooks. The game still runs its unchanged original rendering path. This step establishes ABI-complete forwarding and correct COM identity as a prerequisite for safely implementing selective virtual primary semantics.
 
 ## v0.1.35 — test-only physical Surface4 COM graph (ABI, references, Flip)
 

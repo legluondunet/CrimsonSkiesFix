@@ -959,6 +959,13 @@ The owner's v0.1.34 standalone log once again confirms borderless `FLIP-BLT-RESU
 The new test-only `surface_graph_tests` within `com_surface4_abi.rs` combines the *exact 45-slot native Win32 x86 Surface4 vtable*, the existing `SurfaceContract` ownership state machine, and the fail-closed `FlipToBltBridge` into one in-memory mock COM graph. These tests cover real pointer dispatch of IUnknown and IDirectDrawSurface4, primary/backbuffer/Z attachments, reference lifetimes, descriptor/caps reads, and a simulated Flip success/failure latch.
 
 All mock object allocations remain owned by the Rust test Rig; Release to zero changes logical graph lifetime but does not deallocate that test memory. The fixture advertises no unimplemented interface versions and does not exercise the actual game process. The full game-used Surface4 COM implementation and VRAM backing remain prerequisites for a safe production bridge. No game hook changes.
+## Stage B4e — v0.1.36 real COM forwarding object, still inactive
+
+The 45-slot typed Surface4 ABI from Stage B3b is now implemented by a real, compilable COM forwarding façade in `com_surface4_forward.rs`. It owns an independent IUnknown identity and one real strong underlying Surface4 reference. QI advertises only IUnknown and IDirectDrawSurface4; AddRef/Release are atomic; the last client Release drops the façade and exactly one underlying COM reference. All other 42 methods delegate through exact typed original COM function pointers.
+
+This solves **ABI-complete forwarding and object reference lifetime**, not the game primary/backbuffer/Z topology: forwarding `Flip` remains physical Flip and forwarding GetAttachedSurface returns an underlying physical attached surface. Therefore **the module has no runtime caller** and is forbidden from being exposed as a game windowed virtual surface. The next stage will make role-specific virtual primary methods provide the observed chain and route Flip to the already validated NativeWindowedBlt backend, without disturbing the renderer's real RGB565 Direct3D3 render target. Additional interface versions must not be advertised until implemented.
+
+The owner has separately confirmed v0.1.34 standalone borderless loop 120/120 successful; no new Wine test is needed for this COM-only step.
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.

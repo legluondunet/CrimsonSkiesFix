@@ -120,7 +120,7 @@ pub const SURFACE4_SLOTS:[&str;45]=[
 
 #[cfg(test)]
 #[allow(unused_variables)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{mem::{size_of,align_of,offset_of},ptr};
     unsafe extern "system" fn mock_query_interface(_this:SurfaceThis, iid:*const Guid, out:*mut *mut c_void)->i32{ if !out.is_null(){*out=ptr::null_mut();} E_NOINTERFACE }
@@ -169,7 +169,7 @@ mod tests {
     unsafe extern "system" fn mock_get_uniqueness_value(_this:SurfaceThis, value:*mut u32)->i32{ E_NOTIMPL }
     unsafe extern "system" fn mock_change_uniqueness_value(_this:SurfaceThis)->i32{ E_NOTIMPL }
 
-    fn fixture()->Surface4VTable {
+    pub(crate) fn fixture()->Surface4VTable {
         Surface4VTable {
             query_interface:mock_query_interface,
             add_ref:mock_add_ref,
