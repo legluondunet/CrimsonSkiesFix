@@ -160,6 +160,7 @@ struct Epoch {
 }
 struct Runtime {
     dd4:usize,
+    dd4_owner:Com, // strong COM parent ref for the entire experiment
     hwnd:usize,
     monitor:win32::Rect,
     generation:u64,
@@ -174,6 +175,12 @@ static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
     if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
+        // Do not allow an old active graph to silently revert to native
+        // DDSCL_EXCLUSIVE or DDSCL_NORMAL through another cooperative call.
+        if RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false){
+            log("WINDOWED-GAME: unexpected cooperative reconfiguration while virtual graph exposed: rejected");
+            return Some(E_NOTIMPL);
+        }
         return None;
     }
     let Some(monitor)=win32::monitor_for_game_window(hwnd) else{
@@ -196,7 +203,15 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}), original exclusive path retained",hr as u32));
         return None;
     }
-    *guard=Some(Runtime{dd4:dd4 as usize,hwnd:hwnd as usize,
+    // The game can Release its own DD4 interface while virtual surfaces
+    // remain referenced. Hold one distinct strong DD4 COM reference.
+    type AddRef=unsafe extern "system" fn(*mut c_void)->u32;
+    let add_ref:AddRef=std::mem::transmute(slot(dd4,1));
+    if add_ref(dd4)==0{
+        log("WINDOWED-GAME: DD4 AddRef failed after DDSCL_NORMAL; cannot expose");
+        return Some(E_FAIL);
+    }
+    *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
         monitor,generation:0,exposed:false,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
@@ -370,6 +385,11 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
         "WINDOWED-GAME: game now owns verified virtual Surface4 Z32"
     });
     Some(0)
+}
+/// Other DD2/DD7 SetDisplayMode and cooperative calls cannot silently switch
+/// this live graph back to exclusive after the game has seen virtual objects.
+pub fn must_block_other_mode_interface()->bool{
+    RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
 }
 /// Only valid while the game holds a live virtual backbuffer reference.
 /// The native HAL device must always receive the actual RGB565 surface.
