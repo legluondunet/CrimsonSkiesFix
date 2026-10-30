@@ -136,9 +136,100 @@ pub fn preflight(mode:Mode,desktop_width:u32,desktop_height:u32,
     })
 }
 
+// Legacy Win32 (x86) DDSURFACEDESC2, 124 bytes / 31 DWORDs.
+// The layout is defined by Wine's DirectDraw SDK header: DDPIXELFORMAT
+// begins at DWORD 18 (byte offset 0x48), DDSCAPS2 at DWORD 26 (0x68).
+// These are metadata only: the lpSurface pixel-data pointer is never read.
+pub const DDSD_BACKBUFFERCOUNT:u32=0x20;
+pub const DDSD_PIXELFORMAT:u32=0x1000;
+pub const DDPF_RGB:u32=0x40;
+pub const DDPF_ZBUFFER:u32=0x400;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SurfaceLayout {
+    pub width:u32,
+    pub height:u32,
+    pub flags:u32,
+    pub caps:u32,
+    pub backbuffer_count:Option<u32>,
+    pub pixel_flags:Option<u32>,
+    pub bits_per_pixel:Option<u32>,
+    pub color_masks:Option<[u32;4]>,
+}
+
+// No COM calls. This is safe on a *copied* fixed-size descriptor.
+pub fn parse_surface_desc2(words:&[u32;31])->Option<SurfaceLayout> {
+    if words[0]!=124{return None;}
+    let flags=words[1];
+    let pixel_flags=if flags&DDSD_PIXELFORMAT!=0 && words[18]==32 {
+        Some(words[19])
+    }else{None};
+    let bits_per_pixel=pixel_flags.map(|_|words[21]);
+    let color_masks=if pixel_flags.is_some_and(|pf|pf&DDPF_RGB!=0){
+        Some([words[22],words[23],words[24],words[25]])
+    }else{None};
+    Some(SurfaceLayout{
+        width:words[3],
+        height:words[2],
+        flags,
+        caps:words[26],
+        backbuffer_count:(flags&DDSD_BACKBUFFERCOUNT!=0).then_some(words[5]),
+        pixel_flags,bits_per_pixel,color_masks,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_legacy_124_byte_ddraw_description_and_16bit_rgb_masks(){
+        let mut desc=[0u32;31];
+        desc[0]=124;
+        desc[1]=0x1027; // caps + width + height + backbuffer count + pixel format
+        desc[2]=480;
+        desc[3]=640;
+        desc[5]=1;
+        desc[18]=32;
+        desc[19]=DDPF_RGB;
+        desc[21]=16;
+        desc[22]=0xf800;
+        desc[23]=0x07e0;
+        desc[24]=0x001f;
+        desc[26]=0x1000e238;
+        let got=parse_surface_desc2(&desc).unwrap();
+        assert_eq!((got.width,got.height),(640,480));
+        assert_eq!(got.backbuffer_count,Some(1));
+        assert_eq!(got.bits_per_pixel,Some(16));
+        assert_eq!(got.color_masks,Some([0xf800,0x07e0,0x1f,0]));
+        assert_eq!(got.caps,0x1000e238);
+    }
+    #[test]
+    fn preserve_zbuffer_depth_without_misreading_color_masks(){
+        let mut d=[0u32;31];
+        d[0]=124;
+        d[1]=DDSD_PIXELFORMAT;
+        d[18]=32;
+        d[19]=DDPF_ZBUFFER;
+        d[21]=16;
+        d[26]=0x10024000;
+        let info=parse_surface_desc2(&d).unwrap();
+        assert_eq!(info.bits_per_pixel,Some(16));
+        assert_eq!(info.color_masks,None);
+        assert_eq!(info.backbuffer_count,None);
+        d[0]=108;
+        assert_eq!(parse_surface_desc2(&d),None);
+    }
+    #[test]
+    fn absent_pixel_format_is_not_assumed_to_be_rgb(){
+        let mut d=[0u32;31];
+        d[0]=124;
+        d[19]=DDPF_RGB;
+        d[21]=16;
+        let i=parse_surface_desc2(&d).unwrap();
+        assert_eq!(i.pixel_flags,None);
+        assert_eq!(i.bits_per_pixel,None);
+        assert_eq!(i.color_masks,None);
+    }
     #[test]
     fn new_display_mode_resets_prior_front_back_depth_evidence() {
         let mut session=Session::new();
