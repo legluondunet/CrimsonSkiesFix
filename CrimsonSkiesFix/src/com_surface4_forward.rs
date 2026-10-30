@@ -364,7 +364,21 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
 }
 
 unsafe extern "system" fn forward_add_attached_surface(this:SurfaceThis,p1:SurfaceThis)->i32{
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        // The complete real native RGB565->Z32 attachment exists before
+        // game exposure. When the game repeats AddAttachedSurface(Z32) on
+        // its virtual backbuffer, acknowledge ONLY our exact virtual Z32
+        // child; never forward a wrapper pointer into Wine's native COM.
+        if node.role!=SurfaceRole::Backbuffer || p1.is_null(){return E_NOTIMPL;}
+        let owner=&*this.cast::<Surface4Forwarder>();
+        if owner.retired.load(Ordering::Acquire){return E_NOTIMPL;}
+        let attached=owner.attached.load(Ordering::Acquire);
+        if attached.is_null()||p1!=attached{return E_NOTIMPL;}
+        if graph_node(attached).map(|z|z.role)!=Some(SurfaceRole::Depth){
+            return E_NOTIMPL;
+        }
+        return S_OK;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).add_attached_surface)(real,p1)
@@ -910,6 +924,9 @@ mod tests{
                 assert_eq!(fmt[3],expected_bpp);
                 if expected_bpp==32{assert_eq!(fmt[5],0x00ff_ffff);}
             }
+            assert_eq!((bv.add_attached_surface)(back,z),S_OK); // already native-attached
+            assert_eq!((pv.add_attached_surface)(p,z),E_NOTIMPL);
+            assert_eq!((bv.add_attached_surface)(back,p),E_NOTIMPL);
             assert_eq!((zv.release)(depth),1);
             assert_eq!((bv.release)(back),1);
             // Cascades ownership edges Primary->Backbuffer->Depth.
