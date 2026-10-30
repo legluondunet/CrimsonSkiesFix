@@ -1,7 +1,7 @@
 // Used only for first-run initialization. Never overwrite an existing
-// CrimsonFix.ini: it contains the user's persistent preferences.
+// CrimsonSkiesFix.ini: it contains the user's persistent preferences.
 pub const DEFAULT_INI: &str = concat!(
-    "; CrimsonFix — user settings; created once. Safe to edit.\n",
+    "; CrimsonSkiesFix — user settings; created once. Safe to edit.\n",
     "[Graphics]\n",
     "Borderless=1\n",
     "DesktopResolution=1\n",
