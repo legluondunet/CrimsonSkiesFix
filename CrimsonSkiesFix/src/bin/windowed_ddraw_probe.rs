@@ -10,6 +10,17 @@
 //! The probe is NOT a replacement IDirectDrawSurface implementation and
 //! does not claim to provide Crimson Skies borderless yet.
 #![cfg(windows)]
+
+// Share the pure Flip-to-Blt operation with the game-side transaction.
+// No virtual game COM surface is created or exposed by this test executable.
+#[path="../presentation.rs"]
+mod presentation;
+#[path="../borderless_contract.rs"]
+mod borderless_contract;
+#[path="../borderless_flip.rs"]
+mod borderless_flip;
+use borderless_flip::WindowedBlt;
+
 use std::{
     ffi::c_void,
     fs::{File,OpenOptions},
@@ -136,13 +147,17 @@ extern "system" {
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum ProbeMode { Windowed, Borderless }
+enum ProbeMode { Windowed, Borderless, BorderlessLoop }
+impl ProbeMode {
+    fn borderless(self)->bool{matches!(self,Self::Borderless|Self::BorderlessLoop)}
+}
 
 fn parse_mode(args:&[String])->Result<ProbeMode,String>{
     match args {
         [] => Ok(ProbeMode::Windowed),
         [arg] if arg=="--borderless" => Ok(ProbeMode::Borderless),
-        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless]".to_owned())
+        [arg] if arg=="--borderless-loop" => Ok(ProbeMode::BorderlessLoop),
+        _ => Err("Usage: windowed_ddraw_probe.exe [--borderless|--borderless-loop]".to_owned())
     }
 }
 
@@ -164,7 +179,7 @@ fn plan_test_window(mode:ProbeMode,desktop_w:i32,desktop_h:i32)
             x:80,y:80,width:960,height:540,
             client_width:960,client_height:540,
         }),
-        ProbeMode::Borderless=>Ok(TestWindowPlan{
+        ProbeMode::Borderless|ProbeMode::BorderlessLoop=>Ok(TestWindowPlan{
             style:WS_VISIBLE|WS_POPUP,
             x:0,y:0,width:desktop_w,height:desktop_h,
             client_width:desktop_w as u32,client_height:desktop_h as u32,
@@ -325,12 +340,63 @@ unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
     }
     Ok(())
 }
+/// A real DirectDraw4 backend borrowing the tested primary and RGB565
+/// offscreen COM objects. It is NOT an exposed game surface interface.
+struct NativeWindowedBlt<'a>{
+    primary:&'a Com,target:&'a Com,
+    origin:Point,client:(u32,u32),verbose:bool,
+}
+impl NativeWindowedBlt<'_>{
+    fn report(&self,step:&str,hr:Hr)->Result<(),Hr>{
+        if self.verbose || hr<0 {
+            probe_line(&format!("{step}: HRESULT={:#010x} {}",
+                hr as u32,if hr>=0{"OK"}else{"FAIL"}));
+        }
+        if hr<0{Err(hr)}else{Ok(())}
+    }
+}
+impl WindowedBlt for NativeWindowedBlt<'_>{
+    fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),Hr>{
+        if (w,h)!=self.client{return Err(0x8007_0057u32 as i32);}
+        let r=Rect{left:self.origin.x,top:self.origin.y,
+                   right:self.origin.x+w as i32,bottom:self.origin.y+h as i32};
+        let mut fx=[0u32;25];fx[0]=100;
+        unsafe{
+            let f:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+                std::mem::transmute(slot(self.primary.0,5));
+            self.report("primary.Blt(COLORFILL black 16:9 window with clipper)",
+                f(self.primary.0,&r,ptr::null_mut(),ptr::null(),
+                    DDBLT_COLORFILL|DDBLT_WAIT,fx.as_mut_ptr()))
+        }
+    }
+    fn stretch_rgb565_into_viewport(
+        &mut self,m:presentation::Mode,v:presentation::Viewport
+    )->Result<(),Hr>{
+        if m!=(presentation::Mode{width:640,height:480,bpp:16}) ||
+           v.x.checked_add(v.width).is_none_or(|n|n>self.client.0) ||
+           v.y.checked_add(v.height).is_none_or(|n|n>self.client.1){
+            return Err(0x8007_0057u32 as i32);
+        }
+        let r=Rect{
+            left:self.origin.x+v.x as i32,top:self.origin.y+v.y as i32,
+            right:self.origin.x+(v.x+v.width) as i32,
+            bottom:self.origin.y+(v.y+v.height) as i32,
+        };
+        unsafe{
+            let f:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+                std::mem::transmute(slot(self.primary.0,5));
+            self.report("primary.Blt(STRETCH RGB565 640x480 to 4:3 centered viewport)",
+                f(self.primary.0,&r,self.target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))
+        }
+    }
+}
+
 fn run(mode:ProbeMode)->Result<(),String>{
     if std::mem::size_of::<usize>()!=4 {
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.31; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.33; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -340,7 +406,9 @@ fn run(mode:ProbeMode)->Result<(),String>{
        unsafe{AdjustWindowRect(&mut outer,plan.style,0)}==0 {
         return Err("AdjustWindowRect failed".into());
     }
-    let mode_label=if mode==ProbeMode::Borderless {"borderless-opt-in"}else{"windowed-default"};
+    let mode_label=match mode {ProbeMode::Windowed=>"windowed-default",
+        ProbeMode::Borderless=>"borderless-opt-in",
+        ProbeMode::BorderlessLoop=>"borderless-loop-opt-in"};
     probe_line(&format!(
         "WINDOW-MODE: {mode_label} style={:#010x} requested_client={}x{} at x={},y={}",
         plan.style,plan.client_width,plan.client_height,plan.x,plan.y));
@@ -520,7 +588,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         return Err(format!("Actual client {}x{} differs from requested {}x{}",
             client_w,client_h,plan.client_width,plan.client_height));
     }
-    if mode==ProbeMode::Borderless && (origin.x!=0||origin.y!=0){
+    if mode.borderless() && (origin.x!=0||origin.y!=0){
         return Err(format!("Borderless test window was repositioned by host WM: client origin={},{}",
             origin.x,origin.y));
     }
@@ -532,24 +600,63 @@ fn run(mode:ProbeMode)->Result<(),String>{
     // First paint the *entire client* black, then stretch the 640x480
     // RGB565 surface into the centered 4:3 viewport. The clipper restricts
     // drawing to our own window, leaving the rest of the desktop untouched.
-    let full=Rect {
-        left:origin.x,top:origin.y,
-        right:origin.x+client_w as i32,bottom:origin.y+client_h as i32
+    // Exercise exactly the same two-Blt transaction as the planned
+    // fail-closed game Flip bridge, but here with *actual* Win32 COM
+    // primary and 640x480 RGB565 offscreen surfaces.
+    let source=presentation::Mode{width:640,height:480,bpp:16};
+    let view=presentation::Viewport{
+        x:viewport.left as u32,y:viewport.top as u32,
+        width:(viewport.right-viewport.left) as u32,
+        height:(viewport.bottom-viewport.top) as u32,
     };
-    let dst=Rect{
-        left:origin.x+viewport.left,top:origin.y+viewport.top,
-        right:origin.x+viewport.right,bottom:origin.y+viewport.bottom
+    let mut backend=NativeWindowedBlt{
+        primary:&primary,target:&target,
+        origin,client:(client_w,client_h),verbose:true,
     };
-    let mut black=[0u32;25];black[0]=100;black[20]=0;
-    unsafe{
-        let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
-            std::mem::transmute(slot(primary.0,5));
-        check("primary.Blt(COLORFILL black 16:9 window with clipper)",
-              blt(primary.0,&full,ptr::null_mut(),ptr::null(),
-                  DDBLT_COLORFILL|DDBLT_WAIT,black.as_mut_ptr()))?;
-        check("primary.Blt(STRETCH RGB565 640x480 to 4:3 centered viewport)",
-              blt(primary.0,&dst,target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))?;
+    let frames=if mode==ProbeMode::BorderlessLoop{120u32}else{1u32};
+    probe_line(&format!("FLIP-BLT-SEQUENCE: requested_frames={frames} backend=real-DirectDraw4"));
+    let start=std::time::Instant::now();
+    let mut completed=0u32;
+    for n in 0..frames{
+        if mode==ProbeMode::BorderlessLoop{
+            // Animate physical RGB565 colors; these are NOT game frames.
+            // Keep logs bounded even for 120 consecutive actual Blts.
+            let color=[0xf800u32,0x07e0u32,0x001fu32][n as usize%3];
+            let mut fx=[0u32;25];fx[0]=100;fx[20]=color;
+            unsafe{
+                let blt:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
+                    std::mem::transmute(slot(target.0,5));
+                let hr=blt(target.0,ptr::null(),ptr::null_mut(),ptr::null(),
+                           DDBLT_COLORFILL|DDBLT_WAIT,fx.as_mut_ptr());
+                if hr<0{return Err(format!(
+                    "FLIP-BLT frame {} RGB565 fill failed: {:#010x}",n+1,hr as u32));}
+                let begin:unsafe extern "system" fn(Ptr)->Hr=
+                    std::mem::transmute(slot(device.0,9));
+                let end:unsafe extern "system" fn(Ptr)->Hr=
+                    std::mem::transmute(slot(device.0,10));
+                let hr=begin(device.0);
+                if hr<0{return Err(format!(
+                    "FLIP-BLT frame {} BeginScene failed: {:#010x}",n+1,hr as u32));}
+                let hr=end(device.0);
+                if hr<0{return Err(format!(
+                    "FLIP-BLT frame {} EndScene failed: {:#010x}",n+1,hr as u32));}
+            }
+        }
+        backend.verbose=n==0;
+        borderless_flip::execute_windowed_blt_pair(
+            &mut backend,source,(client_w,client_h),view
+        ).map_err(|e|format!("FLIP-BLT frame {}/{} failed: {e:?}",n+1,frames))?;
+        completed+=1;
+        if mode==ProbeMode::BorderlessLoop && completed%30==0{
+            probe_line(&format!("FLIP-BLT-PROGRESS: successful_frames={completed}/{frames}"));
+        }
+        if mode==ProbeMode::BorderlessLoop{
+            unsafe{Sleep(12);} // demo cadence, NEVER measured gameplay FPS
+        }
     }
+    probe_line(&format!(
+        "FLIP-BLT-RESULT: requested={frames} successful={completed} elapsed_ms={} (NOT gameplay FPS)",
+        start.elapsed().as_millis()));
     // A windowed primary Blt success means the DirectDraw backend accepted
     // the operation, but does not independently measure displayed pixels.
     let after=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
@@ -569,7 +676,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.31");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.33");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
@@ -685,6 +792,7 @@ mod tests{
     fn standalone_borderless_mode_is_opt_in_only(){
         assert_eq!(parse_mode(&[]),Ok(ProbeMode::Windowed));
         assert_eq!(parse_mode(&["--borderless".to_owned()]),Ok(ProbeMode::Borderless));
+        assert_eq!(parse_mode(&["--borderless-loop".to_owned()]),Ok(ProbeMode::BorderlessLoop));
         assert!(parse_mode(&["--fullscreen".to_owned()]).is_err());
         assert!(parse_mode(&["--borderless".to_owned(),"x".to_owned()]).is_err());
     }
@@ -696,6 +804,9 @@ mod tests{
         assert_eq!(plan.style,WS_VISIBLE|WS_POPUP);
         assert_eq!(plan.style&WS_OVERLAPPEDWINDOW,0);
         assert!(plan_test_window(ProbeMode::Borderless,0,1080).is_err());
+        let loop_plan=plan_test_window(ProbeMode::BorderlessLoop,1920,1080).unwrap();
+        assert_eq!(loop_plan,plan);
+        assert!(ProbeMode::BorderlessLoop.borderless());
         let normal=plan_test_window(ProbeMode::Windowed,1920,1080).unwrap();
         assert_eq!((normal.client_width,normal.client_height),(960,540));
         assert_eq!(normal.style,WS_VISIBLE|WS_OVERLAPPEDWINDOW);
