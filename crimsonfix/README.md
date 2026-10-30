@@ -1,4 +1,4 @@
-# CrimsonFix 0.1.5 — experimental DirectDraw proxy
+# CrimsonFix 0.1.6 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; game rendering, borderless
 and FPS pacing still require live Windows/Wine validation. This PR does
@@ -136,6 +136,30 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## Diagnostic follow-up — DirectDraw 2/4/7 and Surface 2/3/4
+
+The owner-provided v0.1.5 log identifies the exact requested interfaces:
+`IDirectDraw2`, `IDirectDraw4`, `IDirectDraw7`, and
+`IDirectDrawSurface2`, `IDirectDrawSurface3`, `IDirectDrawSurface4`.
+All queries succeeded. The game uses COM interface upgrades that can
+bypass the v1-only presentation hooks. The initial `WIN-TRACE` captured
+2 then 4 process windows, **none yet visible**, at `HWND=NULL` calls.
+One v1 surface `Unlock` was observed; v1 `PRESENT:` was absent.
+
+In v0.1.6, the diagnostic hooks **follow successful QueryInterface**
+on these known versions and the `IDirectDraw7` returned directly by
+`DirectDrawCreateEx`, preserving the original IID, output and HRESULT.
+Modern `SetCooperativeLevel` and the five-argument
+`SetDisplayMode` are traced with the correct ABI and forwarded
+unchanged. Modern `CreateSurface` and surface `Flip`, `Blt`,
+`BltFast`, `Unlock` are traced with exact COM signatures.
+New messages start with `MODERN-DDRAW:`, `MODERN-SURFACE:`,
+`RENDER-MODERN:` and are rate-limited or one-time-only. **No
+FPS pacing, borderless adjustments, mode suppression or new
+window selection are applied to these newer interfaces** until
+gameplay confirms which calls represent actual presentation.
+With `Log=0`, the extra modern-interface observation is disabled.
 
 ## Diagnostic follow-up after the first in-game Wine log
 
