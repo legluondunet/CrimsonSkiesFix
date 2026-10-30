@@ -19,6 +19,8 @@ mod presentation;
 mod borderless_contract;
 #[path="../borderless_flip.rs"]
 mod borderless_flip;
+#[path="../borderless_native_blt.rs"]
+mod borderless_native_blt;
 use borderless_flip::WindowedBlt;
 
 use std::{
@@ -342,52 +344,34 @@ unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
 }
 /// A real DirectDraw4 backend borrowing the tested primary and RGB565
 /// offscreen COM objects. It is NOT an exposed game surface interface.
-struct NativeWindowedBlt<'a>{
-    primary:&'a Com,target:&'a Com,
-    origin:Point,client:(u32,u32),verbose:bool,
+/// Probe-only log wrapper for shared real DirectDraw4 backend.
+/// References to the original COM owners keep their lifetimes explicit.
+struct LoggedNativeBlt<'a>{
+    inner:borderless_native_blt::NativeWindowedBlt,
+    _primary:&'a Com,
+    _source:&'a Com,
+    verbose:bool,
 }
-impl NativeWindowedBlt<'_>{
-    fn report(&self,step:&str,hr:Hr)->Result<(),Hr>{
-        if self.verbose || hr<0 {
+impl LoggedNativeBlt<'_>{
+    fn report(&self,step:&str,result:Result<(),i32>)->Result<(),i32>{
+        if self.verbose || result.is_err(){
+            let hr=result.err().unwrap_or(0);
             probe_line(&format!("{step}: HRESULT={:#010x} {}",
                 hr as u32,if hr>=0{"OK"}else{"FAIL"}));
         }
-        if hr<0{Err(hr)}else{Ok(())}
+        result
     }
 }
-impl WindowedBlt for NativeWindowedBlt<'_>{
-    fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),Hr>{
-        if (w,h)!=self.client{return Err(0x8007_0057u32 as i32);}
-        let r=Rect{left:self.origin.x,top:self.origin.y,
-                   right:self.origin.x+w as i32,bottom:self.origin.y+h as i32};
-        let mut fx=[0u32;25];fx[0]=100;
-        unsafe{
-            let f:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
-                std::mem::transmute(slot(self.primary.0,5));
-            self.report("primary.Blt(COLORFILL black 16:9 window with clipper)",
-                f(self.primary.0,&r,ptr::null_mut(),ptr::null(),
-                    DDBLT_COLORFILL|DDBLT_WAIT,fx.as_mut_ptr()))
-        }
+impl WindowedBlt for LoggedNativeBlt<'_>{
+    fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),i32>{
+        let result=self.inner.clear_full_window_black(w,h);
+        self.report("primary.Blt(COLORFILL black 16:9 window with clipper)",result)
     }
     fn stretch_rgb565_into_viewport(
-        &mut self,m:presentation::Mode,v:presentation::Viewport
-    )->Result<(),Hr>{
-        if m!=(presentation::Mode{width:640,height:480,bpp:16}) ||
-           v.x.checked_add(v.width).is_none_or(|n|n>self.client.0) ||
-           v.y.checked_add(v.height).is_none_or(|n|n>self.client.1){
-            return Err(0x8007_0057u32 as i32);
-        }
-        let r=Rect{
-            left:self.origin.x+v.x as i32,top:self.origin.y+v.y as i32,
-            right:self.origin.x+(v.x+v.width) as i32,
-            bottom:self.origin.y+(v.y+v.height) as i32,
-        };
-        unsafe{
-            let f:unsafe extern "system" fn(Ptr,*const Rect,Ptr,*const Rect,u32,*mut u32)->Hr=
-                std::mem::transmute(slot(self.primary.0,5));
-            self.report("primary.Blt(STRETCH RGB565 640x480 to 4:3 centered viewport)",
-                f(self.primary.0,&r,self.target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))
-        }
+        &mut self,mode:presentation::Mode,view:presentation::Viewport
+    )->Result<(),i32>{
+        let result=self.inner.stretch_rgb565_into_viewport(mode,view);
+        self.report("primary.Blt(STRETCH RGB565 640x480 to 4:3 centered viewport)",result)
     }
 }
 
@@ -396,7 +380,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.33; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.34; standalone test; desktop={}x{}",before.0,before.1));
     // Default behaviour remains the owner-verified 960x540 test.
     // Only --borderless creates a desktop-sized WS_POPUP test window,
     // with no display-mode change, topmost setting or game HWND hooks.
@@ -609,9 +593,13 @@ fn run(mode:ProbeMode)->Result<(),String>{
         width:(viewport.right-viewport.left) as u32,
         height:(viewport.bottom-viewport.top) as u32,
     };
-    let mut backend=NativeWindowedBlt{
-        primary:&primary,target:&target,
-        origin,client:(client_w,client_h),verbose:true,
+    // The shared backend is compiled into both binaries. The probe
+    // retains the actual COM owners and adds only its local log wrapper.
+    let physical=unsafe{borderless_native_blt::NativeWindowedBlt::from_borrowed_com(
+        primary.0,target.0,(origin.x,origin.y),(client_w,client_h),source
+    )}.map_err(|hr|format!("Native DirectDraw4 backend rejected parameters: {:#010x}",hr as u32))?;
+    let mut backend=LoggedNativeBlt{
+        inner:physical,_primary:&primary,_source:&target,verbose:true,
     };
     let frames=if mode==ProbeMode::BorderlessLoop{120u32}else{1u32};
     probe_line(&format!("FLIP-BLT-SEQUENCE: requested_frames={frames} backend=real-DirectDraw4"));
@@ -676,7 +664,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.33");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.34");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     let args:Vec<String>=std::env::args().skip(1).collect();
