@@ -513,6 +513,7 @@ unsafe extern "system" fn modern_get_attached_surface(
     let Some(addr)=orig(this,SURFACE_GET_ATTACHED) else{return DDERR_GENERIC};
     let call:GetAttachedSurfaceFn=std::mem::transmute(addr);
     let hr=call(this,caps,out);
+    record_surface_usage(this,surface_usage::Method::GetAttachedSurface,hr);
     if cfg().log_enabled {
         let n=SURFACE_ATTACH_TRACE_COUNT.fetch_add(1,Ordering::Relaxed);
         if n<24 {
@@ -695,7 +696,9 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
     });
     sample_render_calls("Blt",&MODERN_BLT_EVENTS,&MODERN_BLT_START,&MODERN_BLT_WINDOW);
     let call:BltFn=std::mem::transmute(addr);
-    call(this,dst,src,src_rect,flags,fx)
+    let hr=call(this,dst,src,src_rect,flags,fx);
+    record_surface_usage(this,surface_usage::Method::Blt,hr);
+    hr
 }
 unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,
     src:*mut c_void,rect:*const c_void,flags:u32)->Hr {
@@ -703,7 +706,9 @@ unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,
     FIRST_MODERN_FAST.call_once(||log("RENDER-MODERN: first newer-surface BltFast (observed; NOT FPS-paced)"));
     sample_render_calls("BltFast",&MODERN_BLTFAST_EVENTS,&MODERN_BLTFAST_START,&MODERN_BLTFAST_WINDOW);
     let call:BltFastFn=std::mem::transmute(addr);
-    call(this,x,y,src,rect,flags)
+    let hr=call(this,x,y,src,rect,flags);
+    record_surface_usage(this,surface_usage::Method::BltFast,hr);
+    hr
 }
 unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_void)->Hr {
     let Some(addr)=orig(this,SURFACE_UNLOCK) else{return DDERR_GENERIC};
@@ -713,7 +718,9 @@ unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_v
     });
     sample_render_calls("Unlock",&MODERN_UNLOCK_EVENTS,&MODERN_UNLOCK_START,&MODERN_UNLOCK_WINDOW);
     let call:UnlockFn=std::mem::transmute(addr);
-    call(this,data)
+    let hr=call(this,data);
+    record_surface_usage(this,surface_usage::Method::Unlock,hr);
+    hr
 }
 
 // Separate from normal scene counters: in this *opt-in* path we

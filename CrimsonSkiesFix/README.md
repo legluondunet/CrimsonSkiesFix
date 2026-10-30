@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.22 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.23 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,29 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.23 — per-role Lock/Unlock, Blt and attachment diagnostics
+
+After the owner supplied v0.1.22 logs, the opt-in
+`[Debug] SurfaceUsageTrace=1` audit additionally records
+`Unlock`, `Blt`, `BltFast` and `GetAttachedSurface`
+successes/failures **by receiver surface role**. These
+methods already have forwarding hooks; no new vtable entries
+are patched and original arguments, HRESULTs and gameplay
+behavior are unchanged. Two tests cover the new counters.
+
+The previous v0.1.22 test confirmed explicit
+`backbuffer.AddAttachedSurface` during both 800x600/640x480
+initializations, frequent texture Lock and Restore operations,
+and three `GetDDInterface` queries on other offscreen
+surfaces during the measured 800x600 phase. No captured hook
+returned an error; borderless remains inactive.
+
+For the v0.1.23 test, keep `Log=1` and
+`SurfaceUsageTrace=1` under `[Debug]`, preserve your
+existing `ModernFPSPacing`, visit menus and play 3D,
+then provide `CrimsonSkiesFix.log`. New lines can compare
+per-role Lock/Unlock counts with Blt destinations.
 
 ## v0.1.22 — Stage B3c: opt-in passive DirectDraw surface audit
 

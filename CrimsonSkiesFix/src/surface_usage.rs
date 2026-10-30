@@ -6,7 +6,7 @@
 
 pub const FLIPS_PER_AUDIT:usize=120;
 pub const ROLES:usize=5;
-pub const METHODS:usize=9;
+pub const METHODS:usize=13;
 
 #[repr(usize)]
 #[derive(Copy,Clone,Debug,PartialEq,Eq)]
@@ -42,6 +42,10 @@ pub enum Method {
     Restore,
     SetClipper,
     GetDDInterface,
+    Unlock,
+    Blt,
+    BltFast,
+    GetAttachedSurface,
 }
 impl Method {
     pub const fn label(self)->&'static str {
@@ -55,6 +59,10 @@ impl Method {
             Self::Restore=>"Restore",
             Self::SetClipper=>"SetClipper",
             Self::GetDDInterface=>"GetDDInterface",
+            Self::Unlock=>"Unlock",
+            Self::Blt=>"Blt",
+            Self::BltFast=>"BltFast",
+            Self::GetAttachedSurface=>"GetAttachedSurface",
         }
     }
 }
@@ -82,7 +90,8 @@ impl Sample {
             for method in [
                 Method::AddAttachedSurface,Method::DeleteAttachedSurface,
                 Method::GetDC,Method::IsLost,Method::Lock,Method::ReleaseDC,
-                Method::Restore,Method::SetClipper,Method::GetDDInterface
+                Method::Restore,Method::SetClipper,Method::GetDDInterface,
+                Method::Unlock,Method::Blt,Method::BltFast,Method::GetAttachedSurface
             ]{
                 let c=self.counts[role as usize][method as usize];
                 if c.any(){
@@ -188,5 +197,31 @@ mod tests {
         c.note(0);
         c.note(-1);
         assert_eq!(c,Count{ok:u64::MAX,failed:u64::MAX});
+    }
+    #[test]
+    fn added_real_hook_calls_are_counted_with_lock_unlock_parity(){
+        let mut a=Audit::new();a.reset(3);
+        for _ in 0..2 {
+            a.record(Role::Texture,Method::Lock,0);
+            a.record(Role::Texture,Method::Unlock,0);
+        }
+        a.record(Role::Backbuffer,Method::Blt,0);
+        a.record(Role::Texture,Method::BltFast,-1);
+        a.record(Role::Primary,Method::GetAttachedSurface,0);
+        for _ in 0..119 {assert!(a.observe_primary_flip().is_none());}
+        let s=a.observe_primary_flip().unwrap().summary();
+        for term in ["texture.Lock=2/0","texture.Unlock=2/0",
+                     "backbuffer.Blt=1/0","texture.BltFast=0/1",
+                     "primary.GetAttachedSurface=1/0"] {assert!(s.contains(term));}
+    }
+    #[test]
+    fn new_method_counts_reset_on_mode_change(){
+        let mut a=Audit::new();a.reset(2);
+        a.record(Role::Other,Method::Unlock,0);
+        a.record(Role::Primary,Method::GetAttachedSurface,0);
+        a.reset(3);
+        for _ in 0..120 {let _=a.observe_primary_flip();}
+        let empty=a.observe_primary_flip();
+        assert!(empty.is_none());
     }
 }

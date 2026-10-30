@@ -544,6 +544,49 @@ logging location and release archive layout are unchanged.
 The opt-in audit is **not** a borderless implementation and should
 not be confused with the standalone IUnknown and Surface4 ABI tests.
 
+## Live v0.1.22 audit and v0.1.23 next measurement
+
+The owner-provided v0.1.22 log uses Wine 11.0 and
+GE-Proton11-11, `ModernFPSPacing=0`, `Log=1` and
+`SurfaceUsageTrace=1`. Twelve bounded 120-primary-Flip
+groups are recorded: six in generation 2 at 800x600, and
+six in generation 3 at 640x480. Every captured method call
+returned success (zero observed failures).
+
+| Receiver.Method | 800x600 (gen 2) | 640x480 (gen 3) |
+|---|---:|---:|
+| primary.Lock / Restore | 1 / 1 | 1 / 1 |
+| backbuffer.AddAttachedSurface | 1 | 1 |
+| backbuffer.Lock / Restore | 147 / 1 | 1 / 1 |
+| depth.Restore | 1 | 1 |
+| texture.Lock / Restore | 1669 / 6 | 1477 / 1358 |
+| other.Lock / Restore | 3 / 1 | 1 / 1 |
+| other.GetDDInterface | 3 | 0 |
+
+No `GetDC`, `ReleaseDC`, `SetClipper`, `IsLost`
+or `DeleteAttachedSurface` was recorded in these limited
+windows. This does not prove those methods are never used.
+The first 640x480 group has 1358 successful texture Restores,
+while subsequent stable 120-primary-Flip groups repeatedly
+show ~240 texture Locks. A future windowed backend must
+honor actual attachment and restoration semantics; it
+cannot safely assume GetAttachedSurface or Restore are
+mere no-ops.
+
+Stable generation 3 still shows exactly 11 successful
+BeginScene and EndScene calls per observed primary Flip
+interval, with ~120 successful primary Flips/s when unpaced.
+The current 16-bit RGB565 primary/backbuffer + 32-bit depth
+chain remains unchanged, and every observed borderless
+preflight says `applied=false`.
+
+Version 0.1.23 adds only per-role accounting for the
+already intercepted `Unlock`, `Blt`, `BltFast` and
+`GetAttachedSurface` calls, without changing any live
+DirectDraw object, surface data, COM ownership or GPU
+presentation. Comparing texture Lock versus Unlock and
+Blt receiver roles will inform the next real adapter design.
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
