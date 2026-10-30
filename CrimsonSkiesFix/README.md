@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.48 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.49 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -94,7 +94,7 @@ Log=0
   surface. This remains **not gameplay-validated**: the first real
   v0.1.47 run reached successful `D3D3::CreateDevice` but the game
   reported `Failed to initialize video` before its first 3D scene.
-  v0.1.48 adds bounded diagnostics on rejected virtual COM operations.
+  v0.1.48 adds bounded diagnostics on rejected virtual COM operations.\n  In v0.1.49, the virtual Primary surface additionally uses a separate,\n  preflight-verified RGB565 staging surface for its CPU `Lock`/`Unlock`: the\n  1920x1080 desktop primary is **never exposed** as a lockable 640x480 buffer.\n  This specifically targets the observed v0.1.48 game error\n  `WINDOWED-GAME: virtual Surface4 Lock physical desktop primary refused`.\n  Direct primary writes are not yet mirrored to the display without a Flip,\n  and full gameplay remains unverified.
   Turn this option back to `0` to return to the previous exclusive
   rendering path if initialization fails.
 - `[Debug] Log=0`: logging is **fully disabled by default**; no
