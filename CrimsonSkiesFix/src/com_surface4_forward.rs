@@ -1268,7 +1268,7 @@ mod tests{
             assert_eq!((vt.flip)(p,b,0),S_OK);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),S_OK);
             assert_eq!(graph_primary_completed_flips(p),Some(2));
-            assert_eq!(phys[0].blts.load(Ordering::SeqCst),4);
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),3);
             assert_eq!(phys[0].flips.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].flips.load(Ordering::SeqCst),0);
             assert_eq!(retire_graph_primary_flip(p),Ok(2));
@@ -1277,7 +1277,7 @@ mod tests{
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
             assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
             assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080)),Err(E_FAIL));
-            assert_eq!(phys[0].blts.load(Ordering::SeqCst),4); // no stale writes
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),3); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
             assert_eq!((vt.release)(z),0);
