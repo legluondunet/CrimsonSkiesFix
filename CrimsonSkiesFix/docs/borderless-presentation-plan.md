@@ -260,23 +260,65 @@ scene contains geometry draw calls. The log's successful
 32-bit Z-buffer; the borderless preflight reports
 `applied=false`.
 
-### Next controlled comparison — with modern primary Flip pacing disabled
+### Completed A/B comparison — v0.1.18, ModernFPSPacing=1 versus 0
 
-Before adding further COM hooks, repeat **the same short 640x480
-gameplay phase** with the same v0.1.18 DLL and `[Debug] Log=1`,
-but change **only** `[Graphics] ModernFPSPacing=0`.
-Leave `FPSLimit=60` unchanged to isolate the pacing switch.
-Compare new `SCENE-INTERFLIP`, `SCENE-CORRELATION` and
-successful primary Flip API completion rates to the paced
-session. An unpaced 120Hz refresh may produce up to about
-120 Flip API calls/s, but it is not a guaranteed rate.
+The owner supplied the requested same-binary test with modern primary
+Flip pacing disabled (`CrimsonSkiesFix(2).log`). Both recordings use
+v0.1.18, the same Wine 11.0/GE-Proton11-11 stack and 120Hz desktop,
+`[Graphics] FPSLimit=60` and `[Debug] Log=1`. The **only recorded
+configuration difference** is `ModernFPSPacing=1` for the first
+recording versus `ModernFPSPacing=0` for the second. We cannot
+verify identical game movements/scenes or timing from the logs alone.
 
-Stop if game simulation becomes visibly too fast or unstable.
-This test cannot establish real display FPS or simulation speed
-without independent in-game observations. Re-enable
-`ModernFPSPacing=1` afterward if pacing is desired.
-Do not change the renderer, COM interface hooks, windowing
-or 3D surface ownership based solely on these scene counts.
+| Property | Paced: `ModernFPSPacing=1` | Unpaced: `ModernFPSPacing=0` |
+|---|---|---|
+| Samples logged | 12 groups × 120 successful primary Flips | 12 groups × 120 successful primary Flips |
+| 800x600 generation 2 | 4 groups; 476/476 intervals exactly 1 BeginScene and EndScene | 7 groups; 833/833 intervals exactly 1 BeginScene and EndScene |
+| 640x480 generation 3, stabilized | 5 groups; 595/595 sampled intervals exactly 11 successful BeginScene and EndScene | 3 groups; 357/357 sampled intervals exactly 11 successful BeginScene and EndScene |
+| Successful primary Flip completion cadence, stable 640x480 | 59.89–60.01 calls/s | 119.96–120.08 calls/s |
+| Successful primary Flip completion cadence, steady 800x600 | 58.05 calls/s in one group; other groups include startup/stalls | 120.08 calls/s in three groups; transient groups vary |
+| BeginScene vs EndScene interval mismatches | 0 | 0 |
+| Counter regressions | 0 | 0 |
+
+The stable unpaced 640x480 groups each contain exactly 1,320
+successful BeginScene and 1,320 EndScene calls per 120 successful
+primary Flips, with elapsed first-to-last-Flip times of 991, 991
+and 992 ms. The corresponding paced stable groups each have the
+same 1,320/120 counts but require 1983–1987 ms.
+Therefore the *rate of COM scene calls* roughly doubles with the
+successful Flip completion rate, while the observed 11-scene/Flip
+structure stays unchanged.
+
+For 800x600, both runs confirm an exact 1-scene-per-inter-Flip
+interval during all measured groups; unpaced groups achieve
+120.08 calls/s once stabilized. During an unpaced 640x480
+transition, one group shows 52 intervals with 4 scene calls,
+66 with 11, and one with 22; its Flip call rate is only 59.77/s.
+Thus **disabling the limiter does not guarantee 120 calls/s at
+every moment**. Phases with slower workload or transition timing
+must not be mistaken for a persistent 60-FPS cap.
+
+Neither observation establishes unique on-screen frame counts,
+simulation ticks, correctness of animation speed or the number
+of actual draw calls in each BeginScene/EndScene section.
+The original 3D device/backbuffer/Z-buffer topology persists,
+and borderless remains unimplemented.
+
+### Next validation: game simulation timing, without another DLL hook
+
+The A/B experiment is complete. Before changing FPS pacing defaults,
+the game must be assessed for **actual simulation/animation speed**
+with pacing enabled and disabled. Compare equivalent reproducible
+gameplay actions (e.g., a fixed-length timed maneuver, movement
+over a known route or scripted event) using an external stopwatch
+and screenshots/video if needed; note any fast-forward symptoms.
+The existing log alone cannot establish whether doubling Flip and
+scene-call rates also doubles simulation speed.
+
+Preserve `ModernFPSPacing=0` as the code default and `FPSLimit=60`
+as a setting that matters only when modern pacing is enabled.
+Do not change the FPS limiter or the COM graphics pipeline solely
+from these API-call observations.
 
 ## Release gates
 
