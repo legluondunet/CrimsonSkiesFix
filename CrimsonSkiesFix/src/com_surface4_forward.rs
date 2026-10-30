@@ -16,7 +16,7 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,Ordering}},
+    sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
 };
 use crate::{
     Guid,
@@ -34,6 +34,14 @@ const E_NOTIMPL:i32=0x8000_4001u32 as i32;
 const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 // Exact DirectDraw4 Win32 fill-only Blt flag subset. We deliberately do
 // not emulate game texture copies, overlapping Blts or 2D primary Blts.
+// Bounded diagnostic for the game's first rejected virtual COM operation.
+// A flood of per-frame errors must not hide the failure that prevented init.
+static VIRTUAL_DIAG_COUNT:AtomicUsize=AtomicUsize::new(0);
+fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
+    if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
+        crate::log(&format!("WINDOWED-GAME: virtual Surface4 {method} role={role:?} result={:#010x}",hr as u32));
+    }
+}
 const DDBLT_COLORFILL:u32=0x0000_0400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
@@ -310,6 +318,10 @@ unsafe extern "system" fn facade_query_interface(
     *out=ptr::null_mut();
     if this.is_null()||iid.is_null(){return E_POINTER;}
     if !same_guid(&*iid,&IID_IUNKNOWN)&&!same_guid(&*iid,&IID_SURFACE4){
+        if let Some(node)=graph_node(this){
+            crate::log(&format!("WINDOWED-GAME: virtual Surface4 QueryInterface unsupported role={:?} iid={:08x}-{:04x}-{:04x}",
+                node.role,(*iid).d1,(*iid).d2,(*iid).d3));
+        }
         return E_NOINTERFACE;
     }
     if facade_add_ref(this)==0{return E_FAIL;}
@@ -397,13 +409,22 @@ unsafe extern "system" fn forward_add_overlay_dirty_rect(this:SurfaceThis,p1:*mu
 /// The windowed *primary* is never forwarded for native Blt.
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
     if let Some(node)=graph_node(this){
-        if node.role==SurfaceRole::Primary{return E_NOTIMPL;}
+        if node.role==SurfaceRole::Primary{
+            virtual_issue(node.role,"Blt primary (unsupported)",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
         let current=&*this.cast::<Surface4Forwarder>();
         if current.retired.load(Ordering::Acquire){return E_NOTIMPL;}
-        if !p2.is_null() || !p3.is_null(){return E_NOTIMPL;}
+        if !p2.is_null() || !p3.is_null(){
+            virtual_issue(node.role,"Blt source-copy (unsupported)",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
         let requested_fill=p4&!DDBLT_WAIT;
         let expected_fill=if node.role==SurfaceRole::Depth{DDBLT_DEPTHFILL}else{DDBLT_COLORFILL};
-        if requested_fill!=expected_fill{return E_NOTIMPL;}
+        if requested_fill!=expected_fill{
+            virtual_issue(node.role,"Blt unsupported fill flags",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
         if p5.is_null(){return E_INVALIDARG;}
         // IDirectDrawSurface4::Blt expects a Win32-x86 100-byte DDBLTFX.
         if *(p5.cast::<u32>())!=100{return E_INVALIDARG;}
@@ -491,7 +512,10 @@ unsafe extern "system" fn forward_get_attached_surface(this:SurfaceThis,p1:*mut 
             SurfaceRole::Backbuffer=>0x20000, // DDSCAPS_ZBUFFER
             SurfaceRole::Depth=>return E_INVALIDARG,
         };
-        if requested!=expected{return E_INVALIDARG;}
+        if requested!=expected{
+            virtual_issue(node.role,"GetAttachedSurface unexpected caps",E_INVALIDARG);
+            return E_INVALIDARG;
+        }
         let parent=&*this.cast::<Surface4Forwarder>();
         let child=parent.attached.load(Ordering::Acquire);
         if child.is_null(){return E_FAIL;}
@@ -606,10 +630,24 @@ unsafe extern "system" fn forward_is_lost(this:SurfaceThis)->i32{
 }
 
 unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_void,p3:u32,p4:*mut c_void)->i32{
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        // Native RGB565 backbuffer and Z32 have the SAME dimensions and pixel
+        // format as the game-visible virtual surfaces. The real primary does
+        // not: it belongs to the full desktop, so its Lock cannot be exposed.
+        if node.role==SurfaceRole::Primary {
+            virtual_issue(node.role,"Lock physical desktop primary refused",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
+        if (*this.cast::<Surface4Forwarder>()).retired.load(Ordering::Acquire){
+            virtual_issue(node.role,"Lock retired surface",E_NOTIMPL);
+            return E_NOTIMPL;
+        }
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).lock)(real,p1,p2,p3,p4)
+    let hr=(real_vtable(real).lock)(real,p1,p2,p3,p4);
+    if hr<0 {if let Some(node)=graph_node(this){virtual_issue(node.role,"native Lock failed",hr);}}
+    hr
 }
 
 unsafe extern "system" fn forward_release_dc(this:SurfaceThis,p1:*mut c_void)->i32{
@@ -651,7 +689,9 @@ unsafe extern "system" fn forward_set_palette(this:SurfaceThis,p1:*mut c_void)->
 unsafe extern "system" fn forward_unlock(this:SurfaceThis,p1:*mut Rect)->i32{
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).unlock)(real,p1)
+    let hr=(real_vtable(real).unlock)(real,p1);
+    if hr<0 {if let Some(node)=graph_node(this){virtual_issue(node.role,"native Unlock failed",hr);}}
+    hr
 }
 
 unsafe extern "system" fn forward_update_overlay(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
