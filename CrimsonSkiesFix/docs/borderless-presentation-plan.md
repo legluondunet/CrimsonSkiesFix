@@ -733,7 +733,7 @@ a Wine 32-bit depth limit**.
 
 Comparing our descriptor with Wine's direct3d 32-bit depth
 tests revealed that `DDPIXELFORMAT.dwZBitMask` was zero.
-The v0.1.28 probe now sets the Win32 x86 word 22 mask to
+The v0.1.28 probe **incorrectly attempted** to set Win32 x86 word 22 to
 `0xffffffff` for a 32-bit Z surface. It first tries the
 requested video-memory Z32 caps and only if that fails
 tries Z32 with driver-selected memory placement, logging
@@ -751,6 +751,39 @@ graphics paths are still unchanged. The PR remains draft.
 Reference: Wine's ddraw depth tests and original
 `DDPIXELFORMAT` layout
 (https://github.com/wine-mirror/wine/blob/master/include/ddraw.h).
+
+## Stage B3i — v0.1.29 exact DDPIXELFORMAT union layout and HAL enumeration
+
+The v0.1.28 owner log still fails Z32 allocation with
+`DDERR_INVALIDPIXELFORMAT` after both attempts. The
+diagnostic's Win32 descriptor was incorrect in **both**
+v0.1.27 and v0.1.28: the depth mask is the third union,
+`DDPIXELFORMAT.dwZBitMask` at relative DWORD 5.
+The 32-bit x86 DDSURFACEDESC2 DDPIXELFORMAT begins at
+DWORD 18, so **actual Z mask is DWORD 23**, whereas
+the previous code wrote 0xffffffff to DWORD 22
+(the `dwStencilBitDepth` alias). This is a concrete
+ABI bug in the standalone test, not proof that Wine
+cannot create a windowed Z32 resource.
+
+The v0.1.29 probe fixes both the requested and the
+returned `dwZBitMask` offset. It also queries
+`IDirect3D3::EnumZBufferFormats(HAL)` (COM slot 10,
+callback HRESULT=DDENUMRET_OK=1) and logs the
+hardware-advertised Z formats *before* allocation.
+If HAL advertises a **pure 32-bit Z format**, the
+probe requests its exact 32-byte DDPIXELFORMAT,
+otherwise it requests a correctly packed Z32
+with 0xffffffff mask as an explicit test.
+
+The program never silently downgrades to 16-bit
+depth, never alters the desktop display mode, and
+leaves the game proxy untouched. New unit tests
+check the correct Z/stencil word offsets and
+selection of a genuine 32-bit depth format.
+
+Reference: https://github.com/wine-mirror/wine/blob/master/include/ddraw.h
+and https://github.com/wine-mirror/wine/blob/master/include/d3d.h.
 
 ## Release gates
 

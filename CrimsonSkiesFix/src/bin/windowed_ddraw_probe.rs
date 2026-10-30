@@ -76,6 +76,8 @@ const DDSCAPS_VIDEOMEMORY:u32=0x4000;
 const DDSCAPS_ZBUFFER:u32=0x20000;
 const DDPF_RGB:u32=0x40;
 const DDPF_ZBUFFER:u32=0x400;
+const DDPF_STENCILBUFFER:u32=0x4000;
+const DDENUMRET_OK:Hr=1;
 const DDBLT_COLORFILL:u32=0x400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
@@ -179,10 +181,11 @@ fn desc(caps:u32,width:u32,height:u32,bits:Option<u32>)->[u32;31]{
         d[19]=if caps&DDSCAPS_ZBUFFER!=0{DDPF_ZBUFFER}else{DDPF_RGB};
         d[21]=bpp;
         if caps&DDSCAPS_ZBUFFER!=0 && bpp==32 {
-            // DDPIXELFORMAT.dwZBitMask aliases dwRBitMask at DWORD 22.
-            // Wine's 32-bit depth format tests use the full mask.
-            // A zero mask is an invalid 32-bit Z pixel format.
-            d[22]=0xffff_ffff;
+            // Win32 DDPIXELFORMAT starts at DDSURFACEDESC2 DWORD 18.
+            // dwZBitMask aliases dwGBitMask at pixel-format DWORD 5,
+            // i.e. DDSURFACEDESC2 DWORD 23, NOT dwRBitMask at 22.
+            // The 0.1.28 probe incorrectly wrote 0xffffffff to 22.
+            d[23]=0xffff_ffff;
         }else if bpp==16 && caps&DDSCAPS_ZBUFFER==0{
             d[22]=0xf800;d[23]=0x07e0;d[24]=0x001f;
         }
@@ -199,6 +202,57 @@ unsafe fn create_surface(ddraw:&Com,name:&str,mut description:[u32;31])
     if out.is_null(){return Err(format!("{name} returned a NULL COM pointer"));}
     Ok(Com(out))
 }
+
+/// IDirect3D3::EnumZBufferFormats ABI callback: DDPIXELFORMAT
+/// has exactly 8 DWORDs on Windows x86; the depth mask is DWORD 5.
+/// Never retain the callback's borrowed pointer after enumeration.
+unsafe extern "system" fn capture_z_format(format:*const u32,context:Ptr)->Hr {
+    if format.is_null() || context.is_null(){return DDENUMRET_OK;}
+    if *format!=32{return DDENUMRET_OK;}
+    let formats=&mut *(context as *mut Vec<[u32;8]>);
+    if formats.len()>=32{return DDENUMRET_OK;}
+    let mut words=[0u32;8];
+    ptr::copy_nonoverlapping(format,words.as_mut_ptr(),8);
+    formats.push(words);
+    DDENUMRET_OK
+}
+/// Use the actual Direct3D3 HAL formats to avoid guessing a Z layout.
+/// Enumeration is advisory: failed/empty enumeration is logged and the
+/// corrected strict Z32 descriptor is still tried, without Z16 fallback.
+unsafe fn enumerate_z_formats(d3d:&Com)->Vec<[u32;8]> {
+    type Callback=unsafe extern "system" fn(*const u32,Ptr)->Hr;
+    let enumerate:unsafe extern "system" fn(Ptr,*const Guid,Callback,Ptr)->Hr=
+        std::mem::transmute(slot(d3d.0,10)); // IDirect3D3 EnumZBufferFormats
+    let mut formats=Vec::<[u32;8]>::new();
+    let hr=enumerate(d3d.0,&CLSID_D3D_HAL,capture_z_format,
+                     (&mut formats as *mut Vec<[u32;8]>).cast());
+    let _=check("IDirect3D3.EnumZBufferFormats(HAL)",hr);
+    for (i,p) in formats.iter().enumerate(){
+        probe_line(&format!(
+            "Z-FORMAT[{i}]: flags={:#010x} bits={} stencil_bits={} zmask={:#010x} stencil_mask={:#010x}",
+            p[1],p[3],p[4],p[5],p[6]));
+    }
+    probe_line(&format!(
+        "Z-FORMAT-SUMMARY: enumerated={} pure_32bit={}",
+        formats.len(),formats.iter().filter(|p|pure_z32(p)).count()));
+    formats
+}
+fn pure_z32(p:&[u32;8])->bool{
+    p[0]==32 && p[1]&DDPF_ZBUFFER!=0 &&
+    p[1]&DDPF_STENCILBUFFER==0 && p[3]==32 && p[5]!=0
+}
+fn select_pure_z32(formats:&[[u32;8]])->Option<[u32;8]>{
+    formats.iter().copied().filter(pure_z32)
+        .min_by_key(|p|if p[5]==0xffff_ffff {0}else{1})
+}
+fn make_z32_desc(caps:u32,selected:Option<[u32;8]>)->[u32;31]{
+    let mut requested=desc(caps,640,480,Some(32));
+    if let Some(format)=selected{
+        requested[18..26].copy_from_slice(&format);
+    }
+    requested
+}
+
 /// Query the real surface's returned Z format. This is the actual
 /// DirectDraw result, not a copy of our requested descriptor.
 unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
@@ -207,13 +261,13 @@ unsafe fn verify_z_format(depth:&Com)->Result<(),String>{
     let mut actual=[0u32;31];actual[0]=124;
     check("Z32.GetSurfaceDesc",get_desc(depth.0,actual.as_mut_ptr()))?;
     probe_line(&format!(
-        "Z32-RESULT: flags={:#010x} caps={:#010x} pixel_flags={:#010x} bits={} zmask={:#010x}",
-        actual[1],actual[26],actual[19],actual[21],actual[22]));
+        "Z32-RESULT: flags={:#010x} caps={:#010x} pixel_flags={:#010x} bits={} stencil_bits={} zmask={:#010x}",
+        actual[1],actual[26],actual[19],actual[21],actual[22],actual[23]));
     if actual[1]&DDSD_PIXELFORMAT==0 || actual[18]!=32 ||
-       actual[19]&DDPF_ZBUFFER==0 || actual[21]!=32 || actual[22]==0 {
+       actual[19]&DDPF_ZBUFFER==0 || actual[21]!=32 || actual[23]==0 {
         return Err(format!(
             "Actual Z-buffer format is not a usable 32-bit depth pixel format (flags={:#x}, bits={}, mask={:#x})",
-            actual[19],actual[21],actual[22]));
+            actual[19],actual[21],actual[23]));
     }
     Ok(())
 }
@@ -222,7 +276,7 @@ fn run()->Result<(),String>{
         return Err("This executable requires Windows x86 (32-bit)".into());
     }
     let before=unsafe{(GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN))};
-    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.28; standalone test; desktop={}x{}",before.0,before.1));
+    probe_line(&format!("WINDOWED-DDRAW-PROBE v0.1.29; standalone test; desktop={}x{}",before.0,before.1));
     let class=wide("STATIC");
     let title=wide("CrimsonSkiesFix windowed DirectDraw test (not the game)");
     let hwnd=unsafe {
@@ -282,19 +336,39 @@ fn run()->Result<(),String>{
     let target=unsafe{create_surface(&ddraw,"RGB565 offscreen 3D target",
         desc(DDSCAPS_OFFSCREEN|DDSCAPS_3DDEVICE|DDSCAPS_VIDEOMEMORY,
              640,480,Some(16)))?};
-    // A 32-bit Z descriptor requires an actual depth bit mask.
+    // A separate query of the same DD4 object. Do not substitute the
+    // standalone probe target into the game; CreateDevice must succeed here.
+    let mut d3d=ptr::null_mut();
+    unsafe{
+        let qi:unsafe extern "system" fn(Ptr,*const Guid,*mut Ptr)->Hr=
+            std::mem::transmute(slot(ddraw.0,0));
+        check("IDirectDraw4.QueryInterface(IDirect3D3)",
+            qi(ddraw.0,&IID_IDIRECT3D3,&mut d3d))?;
+    }
+    if d3d.is_null(){return Err("IDirect3D3 QueryInterface returned NULL".into());}
+    let d3d=Com(d3d);
+    // Query actual HAL Z formats before selecting a depth surface;
+    // keep the probe strict: no 16-bit fallback and no fake success.
+    let offered=unsafe{enumerate_z_formats(&d3d)};
+    let selected=select_pure_z32(&offered);
+    match selected{
+        Some(p)=>probe_line(&format!(
+            "Z32-SELECTED: enumerated HAL format flags={:#010x} bits={} stencil_bits={} zmask={:#010x}",
+            p[1],p[3],p[4],p[5])),
+        None=>probe_line("Z32-SELECTED: no pure 32-bit format enumerated; trying corrected 0xffffffff mask as diagnostic"),
+    }
     // Try the game's preferred video-memory placement first. If that
     // exact placement is rejected, probe a second *32-bit* allocation
     // without forcing memory location; NEVER silently degrade to Z16.
     let (depth,depth_placement)=unsafe {
         match create_surface(&ddraw,"32-bit Z-buffer (explicit video memory)",
-            desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32))) {
+            make_z32_desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,selected)) {
             Ok(surface)=>(surface,"explicit-video-memory"),
             Err(err)=>{
                 probe_line(&format!(
                     "Z32-RETRY: explicit video memory rejected ({err}); retrying 32-bit depth with driver-selected memory placement"));
                 let surface=create_surface(&ddraw,"32-bit Z-buffer (driver-selected memory)",
-                    desc(DDSCAPS_ZBUFFER,640,480,Some(32)))?;
+                    make_z32_desc(DDSCAPS_ZBUFFER,selected))?;
                 (surface,"driver-selected-memory")
             },
         }
@@ -338,17 +412,6 @@ fn run()->Result<(),String>{
         check("primary.Blt(RGB565 target, window clipper)",
              blt(primary.0,&dst,target.0,ptr::null(),DDBLT_WAIT,ptr::null_mut()))?;
     }
-    // A separate query of the same DD4 object. Do not substitute the
-    // standalone probe target into the game; CreateDevice must succeed here.
-    let mut d3d=ptr::null_mut();
-    unsafe{
-        let qi:unsafe extern "system" fn(Ptr,*const Guid,*mut Ptr)->Hr=
-            std::mem::transmute(slot(ddraw.0,0));
-        check("IDirectDraw4.QueryInterface(IDirect3D3)",
-            qi(ddraw.0,&IID_IDIRECT3D3,&mut d3d))?;
-    }
-    if d3d.is_null(){return Err("IDirect3D3 QueryInterface returned NULL".into());}
-    let d3d=Com(d3d);
     let mut device=ptr::null_mut();
     unsafe{
         let create:unsafe extern "system" fn(Ptr,*const Guid,Ptr,*mut Ptr,Ptr)->Hr=
@@ -374,7 +437,7 @@ fn main(){
             std::process::exit(2);
         }
     };
-    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.28");
+    probe_line("CrimsonSkiesFix standalone windowed resource probe v0.1.29");
     probe_line(&format!("Log file: {}",path.display()));
     probe_line("All DirectDraw HRESULTs and final result are saved in this log; Wine diagnostics are excluded.");
     if let Err(e)=run(){
@@ -404,7 +467,7 @@ mod tests{
         let d=desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,640,480,Some(32));
         assert_eq!(d[19],DDPF_ZBUFFER);
         assert_eq!(d[21],32);
-        assert_eq!((d[22],d[23],d[24]),(0xffff_ffff,0,0));
+        assert_eq!((d[22],d[23],d[24]),(0,0xffff_ffff,0));
         assert_eq!(d[26],0x24000);
     }
     #[test]
@@ -424,11 +487,42 @@ mod tests{
             assert_eq!(d[1],DDSD_CAPS|DDSD_HEIGHT|DDSD_WIDTH|DDSD_PIXELFORMAT);
             assert_eq!(d[19],DDPF_ZBUFFER);
             assert_eq!(d[21],32);
-            assert_eq!(d[22],0xffff_ffff);
+            assert_eq!(d[22],0);
+            assert_eq!(d[23],0xffff_ffff);
         }
         assert_eq!(forced[26],DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY);
         assert_eq!(auto[26],DDSCAPS_ZBUFFER);
         assert_eq!(DDBLT_DEPTHFILL,0x0200_0000);
+    }
+    #[test]
+    fn ddpixelformat_depth_bit_mask_is_at_word_23_not_22(){
+        let d=desc(DDSCAPS_ZBUFFER,640,480,Some(32));
+        assert_eq!(d[18],32);
+        assert_eq!(d[19],DDPF_ZBUFFER);
+        assert_eq!(d[21],32);
+        assert_eq!(d[22],0); // dwStencilBitDepth / dwRBitMask
+        assert_eq!(d[23],0xffff_ffff); // dwZBitMask / dwGBitMask
+        assert_eq!(d[24],0); // dwStencilBitMask
+    }
+    #[test]
+    fn enumeration_preference_preserves_exact_driver_pixel_format(){
+        let mut z24stencil=[0u32;8];
+        z24stencil[0]=32;
+        z24stencil[1]=DDPF_ZBUFFER|DDPF_STENCILBUFFER;
+        z24stencil[3]=32;z24stencil[4]=8;z24stencil[5]=0x00ffffff;
+        let mut pure=z24stencil;
+        pure[1]=DDPF_ZBUFFER;pure[4]=0;pure[5]=0xffff_ffff;
+        assert!(!pure_z32(&z24stencil));
+        assert!(pure_z32(&pure));
+        let selected=select_pure_z32(&[z24stencil,pure]);
+        assert_eq!(selected,Some(pure));
+        let d=make_z32_desc(DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY,selected);
+        assert_eq!(&d[18..26],&pure);
+        assert_eq!(d[22],0);
+        assert_eq!(d[23],0xffff_ffff);
+        assert_eq!(d[26],DDSCAPS_ZBUFFER|DDSCAPS_VIDEOMEMORY);
+        assert_eq!(select_pure_z32(&[z24stencil]),None);
+        assert_eq!(make_z32_desc(DDSCAPS_ZBUFFER,None)[23],0xffff_ffff);
     }
     #[test]
     fn directdrawcreateex_requires_v7_then_legacy_v4_query(){

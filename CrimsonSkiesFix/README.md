@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.28 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.29 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -152,6 +152,42 @@ A `Flip paced` or `Blt paced` line alone means the vtable hook was
 actual call generates a one-time `PRESENT:` marker. If no
 `PRESENT:` marker appears during 3D gameplay, the 60 FPS limit remains
 unverified and additional graphics paths must be investigated.
+
+## v0.1.29 — correct the actual Z mask field and enumerate HAL Z formats
+
+The v0.1.28 owner test still returns
+`DDERR_INVALIDPIXELFORMAT (0x88760091)` with both
+forced video memory and driver-selected Z32 allocation.
+
+A **real ABI bug** remained: the probe wrote its proposed
+Z32 mask to `DDSURFACEDESC2[22]` (the stencil-bit-depth
+field), while Wine's `DDPIXELFORMAT.dwZBitMask` actually
+occupies **DDSURFACEDESC2[23]**. The field layout is
+documented in Wine's `include/ddraw.h`; the previous
+0.1.28 claim of having fully corrected the descriptor
+was therefore premature.
+
+Version 0.1.29 writes `dwZBitMask=0xffffffff` at word
+23, leaving the stencil-bit-depth word 22 zero. Before
+allocating Z32, it now uses **real
+`IDirect3D3::EnumZBufferFormats(HAL)`** and logs all
+returned pixel-format flags, bits, stencil bits, Z masks
+and stencil masks. If a pure 32-bit Z format is advertised,
+the exact reported `DDPIXELFORMAT` is copied into
+the Z32 creation descriptor. Otherwise, the probe
+attempts the corrected standard pure-Z32 descriptor and
+reports the result instead of claiming support.
+
+The previous strict video-memory and optional driver-
+selected-memory **32-bit only** tests, real `GetSurfaceDesc`
+verification, depth fill, clipper-constrained window Blt,
+and HAL `CreateDevice` remain. The log now also reports
+the **actual** returned depth mask at word 23.
+
+Only the independent `windowed_ddraw_probe.exe` is
+changed. Install it outside the game directory, run
+it under Wine and send `windowed_ddraw_probe.log`.
+No game DLL code or in-game DirectDraw behavior changed.
 
 ## v0.1.28 — correct Z32 pixel mask and probe real depth fill
 
