@@ -14,6 +14,11 @@ use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Wr
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
+// All user-facing log messages must use this project name. The former
+// "CrimsonFix" token is valid only for legacy configuration migration.
+const PROJECT_NAME:&str="CrimsonSkiesFix";
+const SYSTEM_DDRAW_RECURSION_ERROR:&str="ERROR: loading the system DirectDraw resolved back to CrimsonSkiesFix proxy; aborting to avoid recursion";
+
 type Hr=i32;
 type CreateFn=unsafe extern "system" fn(*const c_void,*mut *mut c_void,*mut c_void)->Hr;
 type EnumerateFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
@@ -151,7 +156,7 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("CrimsonSkiesFix {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
+                log(&format!("{PROJECT_NAME} {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
@@ -164,7 +169,7 @@ fn real_module()->Option<*mut c_void> {
     let result=(*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
         .map(|x|x as *mut c_void);
     if result.map(|x|x as usize)==Some(MODULE.load(Ordering::Relaxed)) {
-        log("ERROR: loading the system DirectDraw resolved back to CrimsonFix proxy; aborting to avoid recursion");
+        log(SYSTEM_DDRAW_RECURSION_ERROR);
         return None;
     }
     result
@@ -951,6 +956,12 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn log_identity_has_no_deprecated_project_name() {
+        assert_eq!(PROJECT_NAME,"CrimsonSkiesFix");
+        assert!(!SYSTEM_DDRAW_RECURSION_ERROR.contains("CrimsonFix"));
+        assert!(SYSTEM_DDRAW_RECURSION_ERROR.contains(PROJECT_NAME));
+    }
     #[test]
     fn real_d3d3_interface_guid_and_create_device_slot() {
         let d3d3=Guid{d1:0xbb223240,d2:0xe72b,d3:0x11d0,
