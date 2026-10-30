@@ -320,6 +320,105 @@ as a setting that matters only when modern pacing is enabled.
 Do not change the FPS limiter or the COM graphics pipeline solely
 from these API-call observations.
 
+## Owner observation: perceived simulation speed in the A/B test
+
+After comparing v0.1.18 with `ModernFPSPacing=1` (~60 successful
+primary Flip COM completions/s) and `ModernFPSPacing=0` (~120/s),
+the owner reports **no perceptible speed-up in gameplay**, including
+aircraft movement and animation. This is a *qualitative* observation,
+not a stopwatch-based proof of simulation-timing independence.
+
+Decision: **retain current pacing defaults and behavior**. Do not
+force 60 FPS or deduce simulation ticks from BeginScene/EndScene.
+Prioritize the actual DirectDraw3D-compatible borderless presentation
+architecture rather than additional pacing hooks.
+
+## Borderless development decision — next implementation stages
+
+**Do not activate a partial borderless implementation.** DirectDraw
+requires exclusive level for the game's real primary-surface flipping
+chain. Passing `DDSCL_NORMAL` to the real API and pretending that
+`SetDisplayMode` and `Flip` succeeded would strand the Direct3D3
+render target or the app's expected COM surface topology.
+
+The observed Windows/Wine objects are:
+
+1. `IDirectDraw4::SetCooperativeLevel` receives a valid game-owned
+   HWND and `0x13` (`DDSCL_FULLSCREEN|DDSCL_EXCLUSIVE|DDSCL_ALLOWREBOOT`).
+2. `IDirectDraw4::SetDisplayMode` selects 640x480x16 / 800x600x16.
+3. `CreateSurface` creates a primary with one backbuffer, then
+   `GetAttachedSurface` returns an RGB565 backbuffer and a 32-bit
+   Z-buffer; the game also creates many texture/mipmap surfaces.
+4. `IDirect3D3::CreateDevice` gets that **real DirectDrawSurface4
+   backbuffer**, and the scene hooks observe 1, 4 or 11 complete
+   BeginScene/EndScene pairs between successful primary Flips.
+
+### Stage B2: pure Rust COM-interface / state-machine contract
+
+Design and unit-test a dedicated façade that distinguishes a
+**game-visible virtual primary/backbuffer** from the real system
+windowed primary and the real Direct3D-capable offscreen RGB565
+render target. Test method identity across QueryInterface versions,
+AddRef/Release and attachment ownership, expected flags/descriptors,
+and error propagation before introducing any active runtime hook.
+
+The actual Direct3D3 device MUST receive a compatible real
+DirectDrawSurface4 target; do not substitute an arbitrary memory
+buffer or fake a successful `CreateDevice` HRESULT. A fake `Flip`
+cannot simply return DD_OK unless the corresponding pixels have
+actually been presented.
+
+### Stage B3: fully isolated, default-off runtime experiment
+
+Use a **separate** `ExperimentalWindowedAdapter=0` configuration
+option *only once its implementation exists*. The original
+`Borderless=1` preflight is not a guarantee of windowed rendering
+and must not silently enable this experiment.
+
+On opt-in only, before the game is exposed to any replacement surface:
+- Validate a game-owned HWND and complete windowed DirectDraw3D
+  initialization support in the chosen Windows/Wine backend.
+- Keep the desktop mode intact, retain the 640x480/800x600
+  RGB565 offscreen 3D render target and 32-bit Z-buffer;
+  retain texture/mipmap semantics.
+- Create a real windowed primary with an appropriate clipper; use
+  a tested real DirectDraw `Blt` (or a validated equivalent)
+  from the 3D render target to an aspect-fitted desktop viewport.
+  Account for real desktop format conversion, scaling, GDI/Win32
+  interop, and Windows/Wine focus changes.
+- Emulate game-visible surface capabilities and Flip semantics
+  consistently for all QueryInterface versions and involved COM
+  methods. No host resolution change or guessed dimensions.
+- If any capability or resource initialization fails, **fall back
+  before exposing objects to the game**. Once active, do not
+  silently switch to exclusive mode mid-frame.
+- Validate menus/3D/cutscenes/Alt+Tab/exit/mode switches under Wine
+  *and* native Windows before considering an enabled-by-default
+  behavior.
+
+The existing RGB565-to-BGRA8 compositor and GDI presenter remain
+**inactive fallback building blocks**: they only process already
+available CPU pixels and do not solve GPU backbuffer capture.
+No 3D surface locks or synchronous per-frame CPU readbacks should be
+introduced solely to make a nominal borderless screenshot appear.
+
+### Why not substitute an off-the-shelf 2D wrapper?
+
+`cnc-ddraw` explicitly excludes Direct3D games.
+`dxwrapper`'s `Dd7to9` documents limited Direct3D support, so it
+cannot be assumed compatible with this Direct3D3 renderer without
+independent validation. `DDrawCompat` supports sophisticated
+borderless presentation on Windows but explicitly does not support
+Wine or stacking with other graphics wrappers; it cannot directly
+serve as a validated component inside our Wine-targeted DLL.
+
+References:
+- https://learn.microsoft.com/en-us/windows/win32/api/ddraw/nf-ddraw-idirectdraw7-setcooperativelevel
+- https://learn.microsoft.com/en-us/previous-versions/ms785063(v=vs.85)
+- https://github.com/FunkyFr3sh/cnc-ddraw/blob/master/README.md
+- https://github.com/elishacloud/dxwrapper/wiki/DirectDraw-to-Direct3D9-Conversion
+- https://github.com/narzoul/DDrawCompat/blob/master/README.md
+
 ## Release gates
 
 - Keep the PR in draft and never merge without owner validation.
