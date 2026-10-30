@@ -31,6 +31,8 @@ type UnlockFn=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
 type GetAttachedSurfaceFn=unsafe extern "system" fn(*mut c_void,*const u32,*mut *mut c_void)->Hr;
 type GetSurfaceDescFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
 type D3D3CreateDeviceFn=unsafe extern "system" fn(*mut c_void,*const Guid,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
+type D3D3SceneFn=unsafe extern "system" fn(*mut c_void)->Hr;
+type D3D3SetRenderTargetFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -62,6 +64,10 @@ const SURFACE_GET_ATTACHED:usize=12;
 const SURFACE_GET_CAPS:usize=14;
 const SURFACE_GET_DESC:usize=22;
 const D3D3_CREATE_DEVICE:usize=8; // IUnknown(3) + 5 IDirect3D3 methods
+// Verified against IDirect3DDevice3's original DX6 COM ABI.
+const D3D3_DEVICE_BEGIN_SCENE:usize=9;
+const D3D3_DEVICE_END_SCENE:usize=10;
+const D3D3_DEVICE_SET_RENDER_TARGET:usize=14;
 const DDSCAPS_BACKBUFFER:u32=0x0000_0004;
 const DDSCAPS_FLIP:u32=0x0000_0010;
 const DDSCAPS_COMPLEX:u32=0x0000_0008;
@@ -115,6 +121,15 @@ static PRE_EXCLUSIVE_DESKTOP:OnceLock<(u32,u32)>=OnceLock::new();
 static SURFACE_FORMAT_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static D3D3_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static D3D3_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static D3D3_DEVICE_HOOK_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static D3D3_RENDER_TARGET_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static D3D3_BEGIN_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static D3D3_END_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static D3D3_BEGIN_START:OnceLock<Instant>=OnceLock::new();
+static D3D3_END_START:OnceLock<Instant>=OnceLock::new();
+static D3D3_BEGIN_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
+static D3D3_END_WINDOW:OnceLock<Mutex<(usize,Instant)>>=OnceLock::new();
+static FIRST_D3D3_SCENE:Once=Once::new();
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -648,6 +663,58 @@ fn is_d3d3_iid(iid:*const Guid)->bool {
     guid_label(iid)=="bb223240-e72b-11d0-a9b4-00aa00c0993e"
 }
 
+// The attached device's legacy Direct3D3 interface is traced only after
+// the original CreateDevice succeeds. The genuine device and surfaces
+// are still owned by the game: no replacement objects or AddRef/Release.
+unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
+    let original:D3D3SceneFn=std::mem::transmute(addr);
+    let hr=original(this);
+    if cfg().log_enabled && hr>=0 {
+        FIRST_D3D3_SCENE.call_once(||log(
+            "D3D3-DEVICE: first successful BeginScene; game 3D rendering active"));
+        sample_render_calls("D3D3.BeginScene",&D3D3_BEGIN_EVENTS,&D3D3_BEGIN_START,&D3D3_BEGIN_WINDOW);
+    }
+    hr
+}
+
+unsafe extern "system" fn d3d3_device_end_scene(this:*mut c_void)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_END_SCENE) else{return DDERR_GENERIC};
+    let original:D3D3SceneFn=std::mem::transmute(addr);
+    let hr=original(this);
+    if cfg().log_enabled && hr>=0 {
+        sample_render_calls("D3D3.EndScene",&D3D3_END_EVENTS,&D3D3_END_START,&D3D3_END_WINDOW);
+    }
+    hr
+}
+
+unsafe extern "system" fn d3d3_device_set_render_target(
+    this:*mut c_void,target:*mut c_void,flags:u32
+)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_SET_RENDER_TARGET) else{return DDERR_GENERIC};
+    let original:D3D3SetRenderTargetFn=std::mem::transmute(addr);
+    let hr=original(this,target,flags);
+    if cfg().log_enabled && D3D3_RENDER_TARGET_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16{
+        let caps=if hr>=0 {modern_surface_caps(target)} else {None};
+        log(&format!(
+            "D3D3-DEVICE: SetRenderTarget flags={flags:#x} result={hr:#x} target_caps={} role={} (unchanged)",
+            caps.map(|x|format!("{x:#010x}")).unwrap_or_else(||"Unavailable".into()),
+            caps.map(surface_roles).unwrap_or_else(||"unknown".into())));
+    }
+    hr
+}
+
+unsafe fn observe_d3d3_device(device:*mut c_void){
+    if device.is_null() || !cfg().log_enabled{return;}
+    let begin=replace_method(device,D3D3_DEVICE_BEGIN_SCENE,d3d3_device_begin_scene as usize);
+    let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as usize);
+    let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as usize);
+    if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
+        log(&format!(
+            "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} (observation only)"));
+    }
+}
+
 // In Wine d3d.h, IDirect3D3 vtable slot 8 is
 // CreateDevice(REFCLSID, IDirectDrawSurface4*, IDirect3DDevice3**, IUnknown*).
 // This exact Win32 x86 ABI is observed *without* changing the device.
@@ -658,8 +725,13 @@ unsafe extern "system" fn d3d3_create_device(
     let Some(addr)=orig(this,D3D3_CREATE_DEVICE) else{return DDERR_GENERIC};
     let call:D3D3CreateDeviceFn=std::mem::transmute(addr);
     let hr=call(this,device_clsid,target,out,outer);
+    if cfg().log_enabled && hr>=0 && !out.is_null() && !(*out).is_null() {
+        observe_d3d3_device(*out);
+    }
     if cfg().log_enabled && D3D3_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
-        let caps=modern_surface_caps(target);
+        // If CreateDevice rejects a surface, the supplied target may not be
+        // valid for post-call probing. Only inspect after success.
+        let caps=if hr>=0 {modern_surface_caps(target)} else {None};
         log(&format!(
             "D3D3-TRACE: CreateDevice clsid={} render_target_caps={} role={} hr={hr:#x} object_returned={} (unchanged)",
             guid_label(device_clsid),
@@ -667,7 +739,7 @@ unsafe extern "system" fn d3d3_create_device(
             caps.map(surface_roles).unwrap_or_else(||"unknown".into()),
             hr>=0 && !out.is_null() && !(*out).is_null()));
         // Never lock the render target or modify its 3D state.
-        probe_modern_surface_layout(target,"D3D3::CreateDevice target");
+        if hr>=0 { probe_modern_surface_layout(target,"D3D3::CreateDevice target"); }
     }
     hr
 }
@@ -885,6 +957,9 @@ mod trace_tests {
             d4:[0xa9,0xb4,0x00,0xaa,0x00,0xc0,0x99,0x3e]};
         assert!(is_d3d3_iid(&d3d3));
         assert_eq!(D3D3_CREATE_DEVICE,8);
+        assert_eq!(D3D3_DEVICE_BEGIN_SCENE,9);
+        assert_eq!(D3D3_DEVICE_END_SCENE,10);
+        assert_eq!(D3D3_DEVICE_SET_RENDER_TARGET,14);
         assert!(!is_d3d3_iid(ptr::null()));
     }
     #[test]
