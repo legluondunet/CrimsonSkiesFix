@@ -938,6 +938,62 @@ mod tests{
         assert_eq!(real.refs.load(Ordering::SeqCst),1);
     }
     #[test]
+    fn virtual_primary_lock_and_unlock_use_dedicated_rgb565_staging_not_desktop(){
+        unsafe extern "system" fn mock_lock(
+            this:SurfaceThis,_rect:*mut Rect,desc:*mut c_void,_flags:u32,_event:*mut c_void
+        )->i32{
+            let real=&*this.cast::<RealMock>();
+            real.blts.fetch_add(1,Ordering::SeqCst);
+            if !desc.is_null(){
+                let d=desc.cast::<u32>();
+                if *d!=124{return E_INVALIDARG;}
+                *d.add(2)=480;*d.add(3)=640;*d.add(4)=1280;
+                *d.add(9)=0x1234;*d.add(21)=16;
+                *d.add(26)=0x840; // real OFFSCREEN+SYSTEMMEM caps
+            }
+            S_OK
+        }
+        unsafe extern "system" fn mock_unlock(this:SurfaceThis,_rect:*mut Rect)->i32{
+            (&*this.cast::<RealMock>()).flips.fetch_add(1,Ordering::SeqCst);
+            S_OK
+        }
+        let mut vt=mock_table();
+        vt.lock=mock_lock;
+        vt.unlock=mock_unlock;
+        let mut desktop=real_mock(&vt);
+        let mut staging=real_mock(&vt);
+        let desktop_ptr=(&mut desktop as *mut RealMock).cast::<c_void>();
+        let staging_ptr=(&mut staging as *mut RealMock).cast::<c_void>();
+        unsafe{
+            let primary=new_graph_surface4(desktop_ptr,SurfaceRole::Primary,
+                Mode{width:640,height:480,bpp:16}).unwrap();
+            let iface=&**primary.cast::<*const Surface4VTable>();
+            let mut desc=[0u32;31];desc[0]=124;
+            assert_eq!((iface.lock)(primary,ptr::null_mut(),desc.as_mut_ptr().cast(),
+                0,ptr::null_mut()),E_NOTIMPL);
+            assert_eq!(desktop.blts.load(Ordering::SeqCst),0);
+            assert_eq!(arm_graph_primary_lock_surface(primary,ptr::null_mut()),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_lock_surface(primary,desktop_ptr),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_lock_surface(primary,staging_ptr),Ok(()));
+            assert_eq!(arm_graph_primary_lock_surface(primary,staging_ptr),Err(E_FAIL));
+            assert_eq!(staging.refs.load(Ordering::SeqCst),2); // one owned ref
+            assert_eq!((iface.lock)(primary,ptr::null_mut(),desc.as_mut_ptr().cast(),
+                0,ptr::null_mut()),S_OK);
+            assert_eq!((desc[2],desc[3],desc[4],desc[9],desc[21]),
+                (480,640,1280,0x1234,16));
+            assert_eq!(desc[26],0x1000_e238); // virtual PRIMARY
+            assert_eq!(staging.blts.load(Ordering::SeqCst),1);
+            assert_eq!(desktop.blts.load(Ordering::SeqCst),0);
+            assert_eq!((iface.unlock)(primary,ptr::null_mut()),S_OK);
+            assert_eq!(staging.flips.load(Ordering::SeqCst),1);
+            assert_eq!(desktop.flips.load(Ordering::SeqCst),0);
+            assert_eq!((iface.release)(primary),0);
+        }
+        assert_eq!(desktop.refs.load(Ordering::SeqCst),1);
+        assert_eq!(staging.refs.load(Ordering::SeqCst),1);
+    }
+
+    #[test]
     fn every_forwarded_backend_call_uses_the_actual_real_surface(){
         let table=mock_table();
         let mut real=real_mock(&table);
