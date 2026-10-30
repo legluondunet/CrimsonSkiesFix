@@ -137,7 +137,7 @@ fn dll_directory()->Option<PathBuf> {
 }
 
 pub fn log_path()->Option<PathBuf> {
-    // Same directory as ddraw.dll. Never touch the old CrimsonFix log.
+    // Same directory as ddraw.dll. Do not modify logs from earlier releases.
     let path=dll_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
@@ -322,7 +322,7 @@ mod persistent_ini_tests {
     #[test]
     fn creates_default_ini_only_once_without_overwriting_edits() {
         let unique=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let dir=std::env::temp_dir().join(format!("CrimsonFix-ini-test-{}-{unique}",std::process::id()));
+        let dir=std::env::temp_dir().join(format!("CrimsonSkiesFix-ini-test-{}-{unique}",std::process::id()));
         fs::create_dir(&dir).unwrap();
         let file=dir.join("CrimsonFix.ini");
         assert_eq!(create_ini_once(&file).unwrap(),true);

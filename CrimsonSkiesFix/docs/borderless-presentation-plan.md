@@ -61,7 +61,7 @@ and keep all logs opt-in under `[Debug] Log=1`.
 
 ## Stage A results — confirmed 2026-10-30
 
-The owner's `CrimsonFix(20261030-083017).log` from v0.1.9
+The owner's v0.1.9 diagnostic log, recorded on 2026-10-30,
 provides the following repeatable positive matches on both 640x480
 and 800x600 video modes:
 

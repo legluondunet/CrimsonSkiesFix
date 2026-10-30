@@ -15,8 +15,8 @@ use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Wr
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
-// All user-facing log messages must use this project name. The former
-// "CrimsonFix" token is valid only for legacy configuration migration.
+// All user-facing diagnostic messages use the canonical project name.
+// Historical INI names are recognized only by the import logic.
 const PROJECT_NAME:&str="CrimsonSkiesFix";
 const SYSTEM_DDRAW_RECURSION_ERROR:&str="ERROR: loading the system DirectDraw resolved back to CrimsonSkiesFix proxy; aborting to avoid recursion";
 

@@ -1,40 +1,43 @@
 # CrimsonSkiesFix
 
-Experimental **Windows x86 DirectDraw 3/4 compatibility proxy** for *Crimson Skies (2000)* on modern Windows and Wine/Proton.
+Experimental **32-bit Windows DirectDraw compatibility proxy** for *Crimson Skies (2000)* on Windows and Wine/Proton. This repository contains the DirectDraw `ddraw.dll` project only.
 
-This repository now focuses exclusively on the **`ddraw.dll` graphics compatibility project**.
+## Status
 
-The historical SafeDisc/unSafeDisc work (native Rust analysis, Python v0.8/v0.9 unwrapper, legacy compatibility patcher, research archives, documentation and dedicated CI) has moved to the independent repository: **[legluondunet/unsafedisk](https://github.com/legluondunet/unsafedisk)**, currently proposed for review in [unsafedisk PR #1](https://github.com/legluondunet/unsafedisk/pull/1).
+- Windows x86 DirectDraw proxy with opt-in diagnostics and experimental primary-`Flip` pacing
+- Direct3D3 scene/Flip instrumentation to study the game's rendering behavior
+- **Not yet a working borderless / native-widescreen solution**; 3D rendering, game simulation speed, and focus behavior need gameplay validation
 
-## Build the DirectDraw DLL
+## Build
 
 ```sh
 cd CrimsonSkiesFix
+rustup target add i686-pc-windows-msvc
 cargo test --target i686-pc-windows-msvc
 cargo build --release --target i686-pc-windows-msvc
 ```
 
-GitHub Actions: `.github/workflows/crimsonskiesfix-x86.yml`. It compiles **only** `CrimsonSkiesFix/**`.
+The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the DLL, runs tests, verifies its 32-bit PE format and packages the game-ready layout.
 
-## Installed game layout
+## Install
+
+Test with a separate copy of the unwrapped game executable:
 
 ```text
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonSkiesFix.log                # only if [Debug] Log=1; beside ddraw.dll
+  CrimsonSkiesFix.log                  # created only with [Debug] Log=1
   CrimsonSkiesFix/
-    CrimsonSkiesFix.ini              # persistent personal settings
-    CrimsonSkiesFix.ini.example      # only the template is packaged
+    CrimsonSkiesFix.ini.example        # shipped template
+    CrimsonSkiesFix.ini                # persistent user settings (not shipped)
     README.md
 ```
 
-Place `ddraw.dll` beside `CRIMSON.EXE` for proxy loading. Logging is disabled by default. The log, if enabled, is written next to the loaded DLL; configuration remains in `CrimsonSkiesFix/`.
+The log is written beside the loaded DLL, **not** inside the configuration folder. The active INI is created only once and preserved across updates. Older configuration files are imported on first run when appropriate, without overwriting or deleting originals. Logging and modern frame pacing are disabled by default.
 
-Older `CrimsonFix/CrimsonFix.ini` and root `CrimsonFix.ini` settings can be migrated automatically at first launch **without overwriting or deleting the originals**. Old logs are unchanged.
-
-Full installation, troubleshooting and limitations: [DLL README](CrimsonSkiesFix/README.md). This is an experimental compatibility layer: true borderless presentation and correct in-game graphics/performance still require gameplay verification.
+See [DLL installation, settings, diagnostics and limitations](CrimsonSkiesFix/README.md).
 
 ## License
 
-GPL-3.0-or-later — [LICENSE](LICENSE). Original SafeDisc research and its third-party notices are retained in [unsafedisk](https://github.com/legluondunet/unsafedisk).
+GPL-3.0-or-later — see [LICENSE](LICENSE). Provenance notices for the diagnostics code remain in the source documentation.

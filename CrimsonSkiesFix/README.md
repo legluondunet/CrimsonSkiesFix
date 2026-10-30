@@ -3,7 +3,7 @@
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
-not modify the original EXE, the main Rust patcher or unSafeDisc.
+not modify the original game executable.
 
 ## Installation — only one file at the game root
 
@@ -27,7 +27,7 @@ Windows or Wine system directories. Both Windows and Wine use the same
 32-bit Windows DLL, not a Linux .so. If Wine loads its own builtin
 ddraw.dll, set `WINEDLLOVERRIDES="ddraw=n,b"`.
 
-**Renamed from CrimsonFix:** The active configuration is now
+**Legacy INI migration:** The active configuration is now
 `CrimsonSkiesFix/CrimsonSkiesFix.ini`. On first launch, the DLL
 **copies** the existing `CrimsonFix/CrimsonFix.ini`, or earlier
 `CrimsonFix.ini` in the game root, only if the new INI does not exist.
@@ -194,25 +194,20 @@ For the next test, enable `[Debug] Log=1` and keep the previous
 `ModernFPSPacing` preference. Note that this build does **not**
 activate borderless or native widescreen rendering.
 
-## v0.1.15 — log branding consistency
+## v0.1.15 — consistent runtime log identity
 
-The runtime log uses **CrimsonSkiesFix**, not the older project name.
-One remaining recursion-guard error message had still mentioned
-"CrimsonFix proxy"; it now uses the same centralized project name as
-the startup header. A regression test checks both log identifiers.
-
-Historical migration paths mentioning `CrimsonFix/CrimsonFix.ini`
-are intentionally retained to copy old user settings. They are not
-the names of newly generated logs or of the current project.
+Runtime diagnostic headers and the DirectDraw recursion-guard message
+use the canonical **CrimsonSkiesFix** name. A regression test ensures
+these messages stay consistent. Legacy INI paths remain recognized
+solely for one-time import of user settings.
 
 ## v0.1.14 — observe Direct3D3 scenes and render-target switching
 
-After moving the SafeDisc Rust/Python research under `SafeDisc/`,
-the new DLL source is isolated at `CrimsonSkiesFix/`. Its log file
+The DLL source resides in `CrimsonSkiesFix/`. Its log file
 `CrimsonSkiesFix.log` is written **beside the loaded `ddraw.dll`**,
 while the persistent INI is
-`CrimsonSkiesFix/CrimsonSkiesFix.ini`. Old
-`CrimsonFix/CrimsonFix.ini` settings are copied once if needed.
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`. Legacy INI paths are
+considered only when the new settings file is absent.
 
 This version extends the passive IDirect3D3::CreateDevice hook:
 once the real `IDirect3DDevice3` has been created successfully, it

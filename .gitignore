@@ -1,16 +1,11 @@
+# Rust and packaged build output
 **/target/
 **/dist/
-*.exe
+
+# Generated DLL, executables, logs and local backups
 *.dll
+*.exe
+*.log
 *.bak
 *.bak2
-*.rof
-*.iso
-*.bin
-*.cue
-*.crimson-original.bak
-*.before-nul-guard
 *.tmp
-
-**/__pycache__/
-*.pyc
