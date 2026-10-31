@@ -26,7 +26,7 @@ def inspect(data: bytes) -> dict:
         out["error"] = "invalid DOS header"
         return out
     pe = struct.unpack_from("<I", data, 0x3C)[0]
-    if pe > len(data) - 0xF8 or data[pe:pe+4] != b"PE\\0\\0":
+    if pe > len(data) - 0xF8 or data[pe:pe+4] != b"PE\0\0":
         out["error"] = "invalid PE signature"
         return out
     machine = struct.unpack_from("<H", data, pe+4)[0]
@@ -47,7 +47,7 @@ def inspect(data: bytes) -> dict:
         if at+40 > len(data):
             out["error"] = "truncated section headers"
             return out
-        name=data[at:at+8].rstrip(b"\\0").decode("ascii","replace")
+        name=data[at:at+8].rstrip(b"\0").decode("ascii","replace")
         vsize,rva,raw_size,raw_off=struct.unpack_from("<IIII",data,at+8)
         sections.append((name,vsize,rva,raw_size,raw_off))
     def read_rva(rva: int, length: int):
