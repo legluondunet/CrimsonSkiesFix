@@ -204,6 +204,7 @@ struct Runtime {
     monitor:win32::Rect,
     generation:u64,
     exposed:bool,
+    native_widescreen_ready:bool,
     epoch:Option<Epoch>,
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
@@ -285,8 +286,24 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         log("WINDOWED-GAME: DD4 AddRef failed after DDSCL_NORMAL; cannot expose");
         return Some(E_FAIL);
     }
+    // Set the patched EXE's two canonical 3D dimensions before its
+    // first display-mode negotiation. These exact two fields also feed
+    // the patch's x87 horizontal-FOV calculation. The game original
+    // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
+    // Fail closed for unrecognized EXEs; never patch an arbitrary image.
+    let monitor_w=(monitor.right-monitor.left) as u32;
+    let monitor_h=(monitor.bottom-monitor.top) as u32;
+    let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
+        let result=crate::native_widescreen::apply_monitor_resolution(monitor_w,monitor_h);
+        log(&format!(
+            "WINDOWED-WIDE: patched-EXE signature and monitor {}x{} result={result:?}",
+            monitor_w,monitor_h));
+        matches!(result,
+            crate::native_widescreen::PatchResult::Patched |
+            crate::native_widescreen::PatchResult::AlreadyNative)
+    }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
-        monitor,generation:0,exposed:false,epoch:None});
+        monitor,generation:0,exposed:false,native_widescreen_ready,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
 }
@@ -301,7 +318,12 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
     let mode=Mode{width:w,height:h,bpp};
-    if !matches!((w,h,bpp),(640,480,16)|(800,600,16)){
+    let (mon_w,mon_h)=(
+        (runtime.monitor.right-runtime.monitor.left) as u32,
+        (runtime.monitor.bottom-runtime.monitor.top) as u32);
+    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
+        w==mon_w && h==mon_h && w>=960 && h>=600;
+    if !matches!((w,h,bpp),(640,480,16)|(800,600,16)) && !native_3d{
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
         // Recovery is permitted only while no virtual COM interface exists.
@@ -320,7 +342,8 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
         log("WINDOWED-GAME: old virtual chain retired; stale Flip/Blt disarmed");
     }
-    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,mode,runtime.generation+1);
+    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,
+        mode,runtime.generation+1,native_3d);
     match result {
         Ok(next)=>{
             runtime.generation+=1;
@@ -376,7 +399,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
 }
 unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
-    mode:Mode,generation:u64)->Result<Epoch,String>{
+    mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
     let client=(monitor.right as u32,monitor.bottom as u32);
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
     let clipper=new_clipper(dd4,hwnd,&real_primary)?;
@@ -397,11 +420,11 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     verify_primary_lock_staging(&primary_lock,mode)?;
     log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
         mode.width,mode.height));
-    let primary=Com::from_out(com_surface4_forward::new_graph_surface4(real_primary.ptr(),SurfaceRole::Primary,mode)
+    let primary=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_primary.ptr(),SurfaceRole::Primary,mode,native_3d)
         .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
-    let back=Com::from_out(com_surface4_forward::new_graph_surface4(real_back.ptr(),SurfaceRole::Backbuffer,mode)
+    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d)
         .map_err(|hr|format!("virtual backbuffer: {:#010x}",hr as u32))?)?;
-    let depth=Com::from_out(com_surface4_forward::new_graph_surface4(real_depth.ptr(),SurfaceRole::Depth,mode)
+    let depth=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_depth.ptr(),SurfaceRole::Depth,mode,native_3d)
         .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
     com_surface4_forward::arm_graph_primary_lock_surface(primary.ptr(),primary_lock.ptr())
         .map_err(|hr|format!("arm primary Lock staging: {:#010x}",hr as u32))?;
@@ -410,9 +433,16 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     com_surface4_forward::attach_graph_surface4(back.ptr(),depth.ptr())
         .map_err(|hr|format!("attach virtual Z32 {:#010x}",hr as u32))?;
 
-    let mut contract=AdapterContract::prepare(mode,client,Chain{
-        front_to_back:true,back_to_depth:true,mipmaps:false
-    }).map_err(|e|format!("preflight: {e:?}"))?;
+    let chain=Chain{front_to_back:true,back_to_depth:true,mipmaps:false};
+    let mut contract=if native_3d{
+        AdapterContract::prepare_native_3d(mode,client,chain)
+    }else{
+        AdapterContract::prepare(mode,client,chain)
+    }.map_err(|e|format!("preflight: {e:?}"))?;
+    if native_3d {
+        log(&format!(
+            "WINDOWED-WIDE: real D3D3 RGB565 color and Z32 surfaces allocated at native monitor {}x{}, viewport full, no 4:3 stretch",mode.width,mode.height));
+    }
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
     let mut backend=NativeWindowedBlt::from_borrowed_com(
