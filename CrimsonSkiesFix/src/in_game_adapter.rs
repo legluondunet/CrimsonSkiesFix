@@ -294,7 +294,12 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     let monitor_w=(monitor.right-monitor.left) as u32;
     let monitor_h=(monitor.bottom-monitor.top) as u32;
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
-        let result=crate::native_widescreen::apply_monitor_resolution(monitor_w,monitor_h);
+        let original_result=crate::native_widescreen::apply_monitor_resolution(monitor_w,monitor_h);
+        let result=if matches!(original_result,crate::native_widescreen::PatchResult::UnsupportedExecutable){
+            let res=crate::native_widescreen::apply_unwrapped_resolution(monitor_w,monitor_h);
+            log(&format!("WINDOWED-WIDE: unwrapped resolution-only 1024x768 preset result={res:?}; FOV unchanged"));
+            res
+        } else {original_result};
         log(&format!(
             "WINDOWED-WIDE: patched-EXE signature and monitor {}x{} result={result:?}",
             monitor_w,monitor_h));
