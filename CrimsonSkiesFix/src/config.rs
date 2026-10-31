@@ -15,6 +15,8 @@ pub const DEFAULT_INI: &str = concat!(
     "Log=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
     "SurfaceUsageTrace=0\n",
+    "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
+    "CrashBltTrace=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,11 +28,12 @@ pub struct Config {
     pub experimental_windowed_adapter: bool,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
+    pub crash_blt_trace: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, log_enabled: false, surface_usage_trace: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
     }
 }
 
@@ -68,6 +71,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
+            ("debug", "crashblttrace") =>
+                if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
             ("debug", "surfaceusagetrace") =>
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
@@ -89,7 +94,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, log_enabled:false, surface_usage_trace:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -97,6 +102,13 @@ mod tests {
         assert!(!parse("[Debug]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(parse("[Graphics]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=1\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
+    }
+    #[test]
+    fn crash_blt_trace_is_debug_only_and_off_by_default(){
+        assert!(!Config::default().crash_blt_trace);
+        assert!(!parse("[Graphics]\nCrashBltTrace=1").crash_blt_trace);
+        assert!(parse("[Debug]\nCrashBltTrace=1\nLog=1").crash_blt_trace);
+        assert!(!parse("[Debug]\nCrashBltTrace=1\nCrashBltTrace=0").crash_blt_trace);
     }
     #[test]
     fn modern_pacing_is_explicit_opt_in_and_graphics_only(){
