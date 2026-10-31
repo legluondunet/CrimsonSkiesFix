@@ -682,8 +682,26 @@ unsafe extern "system" fn modern_create_surface(
     let call:SurfaceFn=std::mem::transmute(addr);
     let hr=if cfg().experimental_windowed_adapter &&
         GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
-        in_game_adapter::create_surface(this,desc,out,outer)
-            .unwrap_or_else(||call(this,desc,out,outer))
+        if let Some(hr)=in_game_adapter::create_surface(this,desc,out,outer){
+            hr
+        }else if cfg().legacy_offscreen_rgb565{
+            // The game's observed 800x600 16bpp legacy artwork writes
+            // were landing in a native 32-bit DDSCL_NORMAL system-memory
+            // surface. Restrict correction to the EXACT observed DD4
+            // offscreen caps/descriptor/mode; clone descriptor so the
+            // game-provided DD4 arguments are never mutated.
+            if let Some(mut requested)=in_game_adapter::legacy_offscreen_rgb565(this,desc,outer){
+                let native_hr=call(this,requested.as_mut_ptr().cast(),out,outer);
+                log(&format!(
+                    "WINDOWED-COLOR: LegacyOffscreenRGB565 native image source {}x{} RGB565 creation hr={:#010x} (original game descriptor unchanged)",
+                    requested[3],requested[2],native_hr as u32));
+                native_hr
+            }else{
+                call(this,desc,out,outer)
+            }
+        }else{
+            call(this,desc,out,outer)
+        }
     }else{call(this,desc,out,outer)};
     if MODERN_SURFACE_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("MODERN-DDRAW: CreateSurface result={hr:#x} object_returned={} (unchanged)",
