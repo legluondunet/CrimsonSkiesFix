@@ -16,7 +16,8 @@ mod borderless_flip; // inactive, fail-closed Flip-to-Blt contract
 mod borderless_native_blt; // real shared DirectDraw4 Blt backend; inactive in game
 mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
 mod com_surface4_abi;
-mod color_probe; // default-off native RGB32->RGB565 source/destination comparison // inactive, verified 45-slot Surface4 ABI (Stage B3b)
+mod color_probe;
+mod color_capture; // default-off native RGB32->RGB565 source/destination comparison // inactive, verified 45-slot Surface4 ABI (Stage B3b)
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
@@ -29,6 +30,12 @@ fn color_probe_enabled()->bool{
     // Never initialize configuration/filesystem while a COM Blt is in
     // progress (or from ABI mock/unit tests).
     CONFIG.get().is_some_and(|c|c.log_enabled && c.color_probe)
+}
+fn color_capture_enabled()->bool{
+    CONFIG.get().is_some_and(|c|c.log_enabled && c.color_capture)
+}
+fn color_capture_path(label:&str)->Option<std::path::PathBuf>{
+    win32::color_capture_path(label)
 }
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
