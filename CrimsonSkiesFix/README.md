@@ -198,6 +198,26 @@ The separate pink/green 32-bit source-to-RGB565 conversion problem is
 
 ## v0.1.61 — targeted correction of the actual pink/green source image
 
+**Wine gameplay validation — 31 October 2026:** The owner tested v0.1.61
+with `LegacyOffscreenRGB565=1` under Wine 11.0/GE-Proton11-11,
+and supplied `image(20261031-035251).png` and matching
+`CrimsonSkiesFix(20261031-035259).log`. The screenshot now shows
+the FULL-WIDTH original Crimson Skies splash artwork, accurately red/gold
+logo, correctly colored gray dirigible, intact text, no pink/green
+speckling, and the correct 4:3 picture within a 1920x1080 desktop.
+The DLL log independently confirms the exact native game-owned
+800x600 RGB565 source creation succeeded (`hr=0x00000000`), the
+subsequent source has 16-bit RGB565 masks, while the 320x240 video
+source remains 32-bit XRGB; the virtual Primary Flip succeeds through
+at least frame 600 with no fatal DirectDraw errors reported.
+**This validates the specific intro-logo color correction on Wine/
+GE-Proton**, not indefinite game stability, native Windows parity, or
+every later game/movie surface. Retain the default-off switch until
+broader gameplay and native Windows testing. No further color-channel
+transformation is required for this tested image.
+
+
+
 **Root cause strongly supported by the three owner-supplied v0.1.60 BMP
 captures:** `Copy1-Source32.bmp` shows the Crimson Skies intro logo,
 dirigible and surrounding artwork with neon pink/green corruption,
