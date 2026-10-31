@@ -1317,6 +1317,15 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
 
 #[no_mangle]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    // Install before DirectDraw enumeration: the game can show the
+    // AskForVDev device chooser before a game HWND or DD4 exists.
+    static VIDEO_SELECTOR_ONCE:Once=Once::new();
+    VIDEO_SELECTOR_ONCE.call_once(||{
+        if cfg().native_3d_widescreen {
+            let applied=unsafe{native_widescreen::suppress_video_selector()};
+            log(&format!("STARTUP-VIDEO: AskForVDev bypass={} (HAL selection unchanged)",applied));
+        }
+    });
     let function=symbol(b"DirectDrawCreate\0");
     if function.is_null(){return DDERR_GENERIC;}
     let real:CreateFn=std::mem::transmute(function);
