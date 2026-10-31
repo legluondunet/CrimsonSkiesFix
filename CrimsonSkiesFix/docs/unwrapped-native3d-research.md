@@ -87,3 +87,11 @@ Next implementation criterion: exact x86 site and expected bytes, proof it is us
 ## Scope decision — resolution-only milestone
 
 For the next experimental implementation, **FOV and camera/projection code are out of scope by explicit request**. Research notes above about FOV are historical and do not authorize a camera patch. Focus on verifying the mode selector and native-dimension RGB565/Z32 DirectDraw resources, retaining 4:3 menus/videos. Do not enable unsafe width/height writes on the unwrapped binary until all affected mode paths and allocations are fingerprinted. A camera aspect or crop discrepancy is acceptable at this milestone and should be logged, not silently corrected.
+
+## Experimental resolution-only trial (unwrapped; no camera/FOV edits)
+
+The native 3D opt-in now attempts a **separate** six-site hardcoded 1024×768 preset patch after the already-patched EXE path rejects the process image. It rewrites only these immediate values: `0x41229`, `0x4122e`, `0x41241`, `0x41246`, `0x1a8fa7`, and `0x1a8fc9`. Preflight checks every original 5-byte instruction and PE header before writing. It restores page permissions and flushes the instruction cache. On failures, it tries to revert all changed sites.
+
+**This is a first functional probe of one resolution preset, not proof that the game will select 1920x1080.** The observed gameplay uses 640x480 and 800x600; those remain intentionally untouched and still use 4:3 presentation. The game may not expose or select the patched 1024 preset, and some additional resolution assumptions may remain.
+
+FOV and camera projection are completely untouched. If the native mode starts, the camera framing may be wrong. Only test in a disposable copy of the installation. The runtime option `Native3DWidescreen=0` disables this experiment.
