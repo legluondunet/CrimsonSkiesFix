@@ -10,6 +10,8 @@ pub const DEFAULT_INI: &str = concat!(
     "ModernFPSPacing=0\n",
     "; Experimental, incomplete DirectDraw4 3D windowed adapter (off by default).\n",
     "ExperimentalWindowedAdapter=0\n",
+    "; Optional recovery on game foreground return; experiment only.\n",
+    "FocusRepaint=0\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -26,6 +28,7 @@ pub struct Config {
     pub fps_limit: u32,
     pub modern_fps_pacing: bool,
     pub experimental_windowed_adapter: bool,
+    pub focus_repaint: bool,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -33,7 +36,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
     }
 }
 
@@ -67,6 +70,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.desktop_resolution = v; },
             ("graphics", "experimentalwindowedadapter") =>
                 if let Some(v) = enabled(value) { settings.experimental_windowed_adapter = v; },
+            ("graphics", "focusrepaint") =>
+                if let Some(v) = enabled(value) { settings.focus_repaint = v; },
             ("graphics", "modernfpspacing") =>
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
@@ -94,7 +99,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -102,6 +107,13 @@ mod tests {
         assert!(!parse("[Debug]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(parse("[Graphics]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=1\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
+    }
+    #[test]
+    fn focus_repaint_is_experimental_graphics_only_and_default_off(){
+        assert!(!Config::default().focus_repaint);
+        assert!(!parse("[Debug]\nFocusRepaint=1").focus_repaint);
+        assert!(parse("[Graphics]\nFocusRepaint=1").focus_repaint);
+        assert!(!parse("[Graphics]\nFocusRepaint=1\nFocusRepaint=0").focus_repaint);
     }
     #[test]
     fn crash_blt_trace_is_debug_only_and_off_by_default(){
