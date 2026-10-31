@@ -17,6 +17,9 @@
 //! and code signatures. Patch is default-off and must be live-tested.
 #![allow(dead_code)]
 use std::{ffi::c_void,ptr};
+#[path="startup_selector.rs"]
+mod startup_selector;
+pub unsafe fn suppress_video_selector()->bool{startup_selector::apply()}
 #[path="native_widescreen_full.rs"]
 mod full_patch;
 pub unsafe fn apply_unwrapped_full_patch(w:u32,h:u32)->PatchResult {full_patch::apply(w,h)}
