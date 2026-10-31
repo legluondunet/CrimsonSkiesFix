@@ -27,6 +27,7 @@ use crate::{
     borderless_native_blt::NativeWindowedBlt,
     presentation::Mode,
     window_exposure::{self,GameVisibility},
+    window_erase_guard,
 };
 const S_OK:i32=0;
 const E_NOINTERFACE:i32=0x8000_4002u32 as i32;
@@ -106,6 +107,8 @@ struct GraphFlipSession{
     window:usize,
     focus_repaint:bool,
     exposure:ExposureState,
+    erase_count_seen:usize,
+    paint_count_seen:usize,
 }
 
 /// Limit only the *real game* virtual Primary Flip, never intermediate
@@ -305,7 +308,8 @@ pub unsafe fn arm_graph_primary_flip(
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
-        fps_limit,last_present:None,window,focus_repaint,exposure:ExposureState::default()});
+        fps_limit,last_present:None,window,focus_repaint,exposure:ExposureState::default(),
+        erase_count_seen:0,paint_count_seen:0});
     Ok(())
 }
 
@@ -656,9 +660,31 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // A successful windowed Flip is the sole frame-present boundary.
         // Do not rely on the passive modern Flip hook: these synthetic COM
         // surfaces never call through that native interface.
-        // Observe visibility only for the explicitly enabled experimental
-        // recovery. Never subclass the game WndProc, erase Win32 paint
-        // regions or reenter a COM call from a window message callback.
+        // Sample atomic guard counters from the rendering thread; the
+        // optional WndProc callback itself never logs, paints, calls DD4
+        // or takes our Flip mutex. Suppressed WM_ERASEBKGND is evidence
+        // that Win32 requested an erase, NOT proof it caused the white
+        // screen. Log only the first events and each 120th thereafter.
+        if let Some(counts)=window_erase_guard::snapshot(session.window){
+            let total=counts.erased;
+            if total>session.erase_count_seen{
+                session.erase_count_seen=total;
+                if total<=12 || total%120==0{
+                    crate::log(&format!(
+                        "WINDOWED-GAME: WindowEraseGuard suppressed WM_ERASEBKGND total={total} wm_paint_total={}",counts.painted));
+                }
+            }
+            if counts.painted>session.paint_count_seen{
+                session.paint_count_seen=counts.painted;
+                if counts.painted<=12 || counts.painted%120==0{
+                    crate::log(&format!(
+                        "WINDOWED-GAME: WindowEraseGuard observed WM_PAINT total={} suppressed_erase_total={total}",
+                        counts.painted));
+                }
+            }
+        }
+        // Observe foreground status only for FocusRepaint. Do not
+        // erase paint regions or reenter COM from a window callback.
         let repaint=if session.focus_repaint{
             session.exposure.sample(
                 window_exposure::sample_game_window(session.window))
