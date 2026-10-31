@@ -26,7 +26,7 @@ use crate::{
     borderless_flip::{FlipBridgeError,FlipToBltBridge},
     borderless_native_blt::NativeWindowedBlt,
     presentation::Mode,
-    win32::{self,GameVisibility},
+    window_exposure::{self,GameVisibility},
 };
 const S_OK:i32=0;
 const E_NOINTERFACE:i32=0x8000_4002u32 as i32;
@@ -661,7 +661,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // regions or reenter a COM call from a window message callback.
         let repaint=if session.focus_repaint{
             session.exposure.sample(
-                win32::game_visibility(session.window as win32::Hwnd))
+                window_exposure::sample_game_window(session.window))
         }else{false};
         pace_graph_flip(session);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
@@ -1439,7 +1439,7 @@ mod tests{
             assert_eq!(graph_primary_completed_flips(p),None);
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false),Err(E_INVALIDARG));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Ok(()));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
