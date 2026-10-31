@@ -91,6 +91,8 @@ fn probe_line(line:&str){
 fn log(message:&str){
     probe_line(message);
 }
+// The standalone surface probe never locks RGB32 movie surfaces.
+fn color_probe_enabled()->bool{false}
 
 
 type Ptr=*mut c_void;
