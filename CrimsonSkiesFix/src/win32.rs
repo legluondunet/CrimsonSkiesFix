@@ -145,6 +145,14 @@ pub fn log_path()->Option<PathBuf> {
     Some(path)
 }
 
+pub fn crash_blt_trace_path()->Option<PathBuf> {
+    // Separate, bounded rolling trace, always beside the loaded proxy DLL.
+    // Do not overwrite or follow arbitrary preexisting symlinks.
+    let path=dll_directory()?.join("CrimsonSkiesFix-BltTrace.log");
+    if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
+    Some(path)
+}
+
 pub unsafe fn real_ddraw()->Option<*mut c_void> {
     let mut path=[0u16;32768];
     let n=GetSystemDirectoryW(path.as_mut_ptr(),path.len() as u32) as usize;
