@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use crate::presentation::{preflight,Chain,Mode,WindowedPresentationPlan};
+use crate::presentation::{preflight,preflight_native_3d,Chain,Mode,WindowedPresentationPlan};
 
 // Direct3D3::CreateDevice requires DDSCAPS_3DDEVICE on its real
 // IDirectDrawSurface4 render target (original DirectX 6 contract).
@@ -97,6 +97,19 @@ impl AdapterContract {
         ->Result<Self,ContractError>
     {
         let plan=preflight(mode,desktop.0,desktop.1,chain)
+            .ok_or(ContractError::UnsupportedModeOrChain)?;
+        if !plan.requires_surface_virtualization {
+            return Err(ContractError::UnsupportedModeOrChain);
+        }
+        Ok(Self {plan,phase:Phase::Preparing})
+    }
+
+    /// Only an EXE with a verified widescreen patch can opt into the
+    /// full-monitor render graph. The existing prepare() remains unchanged
+    /// and continues to reject native full-screen modes by default.
+    pub fn prepare_native_3d(mode:Mode,desktop:(u32,u32),chain:Chain)
+        ->Result<Self,ContractError>{
+        let plan=preflight_native_3d(mode,desktop.0,desktop.1,chain)
             .ok_or(ContractError::UnsupportedModeOrChain)?;
         if !plan.requires_surface_virtualization {
             return Err(ContractError::UnsupportedModeOrChain);
