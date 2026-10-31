@@ -25,6 +25,8 @@ mod borderless_native_blt;
 mod com_surface4_abi;
 #[path="../window_exposure.rs"]
 mod window_exposure;
+#[path="../window_erase_guard.rs"]
+mod window_erase_guard;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
