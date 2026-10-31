@@ -24,7 +24,12 @@ mod surface_usage; // opt-in passive COM surface audit for borderless prerequisi
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
-fn color_probe_enabled()->bool{cfg().log_enabled && cfg().color_probe}
+fn color_probe_enabled()->bool{
+    // The virtual game graph can only be created AFTER cfg() initializes.
+    // Never initialize configuration/filesystem while a COM Blt is in
+    // progress (or from ABI mock/unit tests).
+    CONFIG.get().is_some_and(|c|c.log_enabled && c.color_probe)
+}
 use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
