@@ -1,0 +1,132 @@
+//! Opt-in, narrowly scoped Win32 background-erase suppression experiment.
+//!
+//! Only the exact process-owned game HWND provided by the DD4 adapter can
+//! be subclassed. We do not paint, call DirectDraw, allocate or log inside
+//! the window procedure. All messages except WM_ERASEBKGND go untouched
+//! to the original procedure. It is unhooked during WM_NCDESTROY.
+//! This does not guarantee that WM_PAINT never paints white itself.
+#![allow(dead_code)]
+use std::{ffi::c_void,sync::atomic::{AtomicIsize,AtomicUsize,Ordering}};
+
+type Hwnd=*mut c_void;
+const GWL_WNDPROC:i32=-4;
+const WM_ERASEBKGND:u32=0x0014;
+const WM_PAINT:u32=0x000f;
+const WM_NCDESTROY:u32=0x0082;
+
+#[link(name="user32")]
+extern "system"{
+    fn IsWindow(hwnd:Hwnd)->i32;
+    fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
+    fn GetWindowLongW(hwnd:Hwnd,index:i32)->i32;
+    fn SetWindowLongW(hwnd:Hwnd,index:i32,value:i32)->i32;
+    fn CallWindowProcW(proc:isize,hwnd:Hwnd,msg:u32,wparam:usize,lparam:isize)->isize;
+    fn DefWindowProcW(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isize)->isize;
+}
+#[link(name="kernel32")]
+extern "system"{
+    fn GetCurrentProcessId()->u32;
+    fn GetLastError()->u32;
+    fn SetLastError(code:u32);
+}
+
+static HOOK_HWND:AtomicUsize=AtomicUsize::new(0);
+static PREVIOUS:AtomicIsize=AtomicIsize::new(0);
+static ERASE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static PAINT_COUNT:AtomicUsize=AtomicUsize::new(0);
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct WindowPaintStats{pub erased:usize,pub painted:usize}
+
+fn intercept_erase(message:u32,matching:bool)->bool{
+    message==WM_ERASEBKGND && matching
+}
+
+unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isize)->isize{
+    let matching=HOOK_HWND.load(Ordering::Acquire)==hwnd as usize;
+    let previous=PREVIOUS.load(Ordering::Acquire);
+
+    if matching && intercept_erase(msg,true){
+        ERASE_COUNT.fetch_add(1,Ordering::Relaxed);
+        return 1; // WM_ERASEBKGND handled: leave DirectDraw pixels intact.
+    }
+    if matching && msg==WM_PAINT{
+        PAINT_COUNT.fetch_add(1,Ordering::Relaxed);
+    }
+    if matching && msg==WM_NCDESTROY{
+        // Keep the original chain in place for the final destroy callback.
+        // Restore only when our hook is still the active window procedure.
+        if previous!=0 && GetWindowLongW(hwnd,GWL_WNDPROC)==guarded_proc as usize as i32{
+            let _=SetWindowLongW(hwnd,GWL_WNDPROC,previous as i32);
+        }
+        HOOK_HWND.store(0,Ordering::Release);
+        PREVIOUS.store(0,Ordering::Release);
+    }
+    if previous==0{
+        // Narrow installation race: do not recurse or dispatch via a NULL
+        // callback. The original is captured immediately after SetWindowLongW.
+        return DefWindowProcW(hwnd,msg,wparam,lparam);
+    }
+    CallWindowProcW(previous,hwnd,msg,wparam,lparam)
+}
+
+/// Install once on the exact user-supplied, process-owned gameplay HWND.
+/// Must only be invoked after borderless window setup and successful DD4
+/// geometry validation. No process-wide hook and no class brush changes.
+pub fn install(hwnd:usize)->Result<(),String>{
+    if hwnd==0{return Err("NULL HWND".into());}
+    let window=hwnd as Hwnd;
+    unsafe{
+        if IsWindow(window)==0{return Err("invalid game HWND".into());}
+        let mut pid=0;
+        if GetWindowThreadProcessId(window,&mut pid)==0 || pid!=GetCurrentProcessId(){
+            return Err("HWND not owned by this process".into());
+        }
+        let old=HOOK_HWND.load(Ordering::Acquire);
+        if old==hwnd{return if PREVIOUS.load(Ordering::Acquire)!=0{
+            Ok(())
+        }else{Err("window subclass still initializing".into())};}
+        if old!=0{return Err("another HWND already guarded".into());}
+        if HOOK_HWND.compare_exchange(0,hwnd,Ordering::AcqRel,Ordering::Acquire).is_err(){
+            return Err("concurrent hook installation".into());
+        }
+        SetLastError(0);
+        let previous=SetWindowLongW(window,GWL_WNDPROC,guarded_proc as usize as i32);
+        let error=GetLastError();
+        if previous==0 && error!=0{
+            HOOK_HWND.store(0,Ordering::Release);
+            return Err(format!("SetWindowLongW WNDPROC failed Win32={error}"));
+        }
+        if previous==0{
+            HOOK_HWND.store(0,Ordering::Release);
+            return Err("NULL previous game WndProc".into());
+        }
+        PREVIOUS.store(previous as isize,Ordering::Release);
+        Ok(())
+    }
+}
+
+pub fn snapshot(hwnd:usize)->Option<WindowPaintStats>{
+    (hwnd!=0 && HOOK_HWND.load(Ordering::Acquire)==hwnd &&
+        PREVIOUS.load(Ordering::Acquire)!=0).then_some(WindowPaintStats{
+            erased:ERASE_COUNT.load(Ordering::Acquire),
+            painted:PAINT_COUNT.load(Ordering::Acquire),
+        })
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn only_the_guarded_window_erase_message_is_suppressed(){
+        assert!(intercept_erase(WM_ERASEBKGND,true));
+        assert!(!intercept_erase(WM_ERASEBKGND,false));
+        for m in [WM_PAINT,WM_NCDESTROY,0,0x0006,0x0007,0x0010]{
+            assert!(!intercept_erase(m,true));
+        }
+    }
+    #[test]
+    fn guarded_window_stats_require_installed_window(){
+        assert!(snapshot(0).is_none());
+    }
+}
