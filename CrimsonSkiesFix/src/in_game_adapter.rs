@@ -505,7 +505,7 @@ const EXACT_LEGACY_IMAGE_FLAGS:u32=0x0011_0007; // CAPS|HEIGHT|WIDTH|CKSRCBLT|TE
 const EXACT_LEGACY_IMAGE_CAPS:u32=DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM;
 
 fn legacy_rgb565_descriptor(words:&[u32;31],mode:Mode)->Option<[u32;31]>{
-    if mode.bpp!=16 || !matches!((mode.width,mode.height),(640,480)|(800,600)){
+    if mode.bpp!=16 || (mode.width,mode.height)!=(800,600){
         return None;
     }
     if words[0]!=124 || words[1]!=EXACT_LEGACY_IMAGE_FLAGS ||
@@ -559,7 +559,7 @@ mod legacy_source_tests{
     }
     #[test]
     fn exact_game_rgb565_16bit_image_source_is_only_one_selected(){
-        for (w,h) in [(640,480),(800,600)]{
+        for (w,h) in [(800,600)]{
             let d=source_desc(w,h);
             let changed=legacy_rgb565_descriptor(&d,Mode{width:w,height:h,bpp:16}).unwrap();
             assert_eq!(d[1],EXACT_LEGACY_IMAGE_FLAGS); // no mutation
@@ -575,6 +575,7 @@ mod legacy_source_tests{
     fn refuses_other_formats_video_and_unsupported_surface_descriptors(){
         let mode=Mode{width:800,height:600,bpp:16};
         assert!(legacy_rgb565_descriptor(&source_desc(320,240),mode).is_none());
+        assert!(legacy_rgb565_descriptor(&source_desc(640,480),Mode{width:640,height:480,bpp:16}).is_none());
         assert!(legacy_rgb565_descriptor(&source_desc(800,600),
             Mode{width:800,height:600,bpp:32}).is_none());
         let baseline=source_desc(800,600);
