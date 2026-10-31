@@ -171,6 +171,17 @@ mod tests{
         assert_eq!(first_patch_mismatch(&image,IMAGE_BASE),Some("invalid-resolution-pair"));
     }
     #[test]
+    fn unwrapped_mode_signatures_are_rejected_without_mutation(){
+        let mut image=synthetic_patched_exe();
+        // Actual unwrapped 1.0.2.0 mode path uses push 768, push 1024,
+        // not indirect loads from the injected width/height globals.
+        image[0x41229..0x41233].copy_from_slice(
+            &[0x68,0,3,0,0,0x68,0,4,0,0]);
+        assert_eq!(first_patch_mismatch(&image,IMAGE_BASE),
+                   Some("mode-push-height-41229"));
+        assert!(!is_owner_supplied_patch(&image,IMAGE_BASE));
+    }
+    #[test]
     fn any_reasonable_native_landscape_size_can_replace_original_pair(){
         for (w,h) in [(1280,720),(1680,1050),(1920,1080),
                       (2560,1080),(3440,1440),(3840,2160),(5120,1440)]{
