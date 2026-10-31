@@ -33,7 +33,8 @@ impl NativeWindowedBlt {
     )->Result<Self,i32>{
         if primary.is_null()||source_surface.is_null()||
            client.0==0||client.1==0||
-           !matches!((source.width,source.height),(640,480)|(800,600))||
+           !(matches!((source.width,source.height),(640,480)|(800,600)) ||
+             (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,source})
     }
