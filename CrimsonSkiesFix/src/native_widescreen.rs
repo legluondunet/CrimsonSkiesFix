@@ -134,6 +134,69 @@ pub unsafe fn apply_monitor_resolution(width:u32,height:u32)->PatchResult{
     PatchResult::Patched
 }
 
+/// Experimental resolution-only update for the unwrapped 1.0.2.0 mode.
+/// This changes only the 1024x768 preset, never camera/FOV instructions.
+/// Call on the game initialization thread before mode discovery.
+pub unsafe fn apply_unwrapped_resolution(width:u32,height:u32)->PatchResult {
+    if !valid_landscape_dimensions(width,height){return PatchResult::InvalidMonitor;}
+    let base=GetModuleHandleW(ptr::null());
+    if base.is_null() || base as usize!=IMAGE_BASE{return PatchResult::UnsupportedExecutable;}
+    let image=std::slice::from_raw_parts(base.cast::<u8>(),IMAGE_SIZE);
+    if image.get(0..2)!=Some(b"MZ"){return PatchResult::UnsupportedExecutable;}
+    let Some(pe)=get32(image,0x3c).map(|v|v as usize) else{return PatchResult::UnsupportedExecutable};
+    if pe>0x400 || image.get(pe..pe+4)!=Some(b"PE\0\0") ||
+        image.get(pe+24..pe+26)!=Some(&[0x0b,0x01][..]) ||
+        get32(image,pe+24+56)!=Some(IMAGE_SIZE as u32) ||
+        get32(image,pe+24+28)!=Some(IMAGE_BASE as u32) {
+        return PatchResult::UnsupportedExecutable;
+    }
+    // All 6 exact instruction prefixes must match. The four immediate
+    // pushes belong to the 1024 preset setup; the two movs to mode dispatch.
+    // Do not alter 640x480/800x600 or any FOV/projection operation.
+    let sites:[(usize,[u8;5],u32);6]=[
+        (0x41229,[0x68,0,3,0,0],height),
+        (0x4122e,[0x68,0,4,0,0],width),
+        (0x41241,[0x68,0,3,0,0],height),
+        (0x41246,[0x68,0,4,0,0],width),
+        (0x1a8fa7,[0xb9,0,4,0,0],width),
+        (0x1a8fc9,[0xb9,0,3,0,0],height),
+    ];
+    if sites.iter().any(|(rva,expected,_)|image.get(*rva..*rva+5)!=Some(&expected[..])){
+        crate::log("WINDOWED-WIDE: unwrapped resolution-only signature mismatch; untouched");
+        return PatchResult::UnsupportedExecutable;
+    }
+    // Single VirtualProtect region includes all sites, but doing so would
+    // require changing protections across unrelated pages. Use one page
+    // per site, with rollback of prior sites upon any failure.
+    let mut applied:Vec<(usize,[u8;5],u32)>=Vec::new();
+    for &(rva,expected,value) in &sites {
+        let ptr=(base as usize+rva) as *mut c_void;
+        let mut old=0u32;
+        if VirtualProtect(ptr,5,PAGE_EXECUTE_READWRITE,&mut old)==0 {
+            for &(rollback_rva,original,_) in applied.iter().rev(){
+                let p=(base as usize+rollback_rva) as *mut c_void;
+                let mut saved=0u32;
+                if VirtualProtect(p,5,PAGE_EXECUTE_READWRITE,&mut saved)!=0 {
+                    ptr::copy_nonoverlapping(original.as_ptr(),p.cast::<u8>(),5);
+                    let mut restored=0u32;
+                    let _=VirtualProtect(p,5,saved,&mut restored);
+                }
+            }
+            return PatchResult::ProtectFailed;
+        }
+        let mut replacement=expected;
+        replacement[1..5].copy_from_slice(&value.to_le_bytes());
+        ptr::copy_nonoverlapping(replacement.as_ptr(),ptr.cast::<u8>(),5);
+        applied.push((rva,expected,value));
+        let mut ignored=0u32;
+        if VirtualProtect(ptr,5,old,&mut ignored)==0 {
+            crate::log("WINDOWED-WIDE: page protection restoration failed; unwrapped patch unsafe");
+            return PatchResult::RestoreProtectionFailed;
+        }
+    }
+    PatchResult::Patched
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
