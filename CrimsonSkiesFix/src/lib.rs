@@ -136,6 +136,7 @@ static FIRST_MODERN_NONPRIMARY_FLIP:Once=Once::new();
 static MODERN_FLIP_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLT_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_BLT_CRASH_TRACE_ID:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_BLT_SOURCE_UNWRAP_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_UNLOCK_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLTFAST_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_FLIP_START:OnceLock<Instant>=OnceLock::new();
@@ -809,8 +810,33 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
             "CRASH-BLT: ENTER id={trace_id} wine_tid={:#06x} dest={this:p} src={src:p} dest_rect={dst:p} src_rect={src_rect:p} flags={flags:#010x} fx={fx:p}",
             win32::GetCurrentThreadId()));
     }
+    // Wine assumes every IDirectDrawSurface4 source is its own native
+    // struct ddraw_surface. A game-supplied synthetic Surface4Forwarder
+    // must NOT cross this call boundary. The virtual primary contributes
+    // its logical 640/800 RGB565 Lock/Unlock staging (not desktop primary).
+    // Foreign/native Surface4 pointers continue through exactly unchanged.
+    let (native_src,was_facade)=match
+        com_surface4_forward::source_for_native_blt(src){
+        Ok(resolved)=>resolved,
+        Err(hr)=>{
+            let n=NATIVE_BLT_SOURCE_UNWRAP_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+            if n<=20{log(&format!(
+                "WINDOWED-GAME: native Blt rejected a retired/depth/unready virtual source count={n} hr={:#010x}",hr as u32));}
+            if tracing{crash_blt_line(trace_id,false,&format!(
+                "CRASH-BLT: REJECT id={trace_id} virtual_source=true hr={:#010x}",hr as u32));}
+            return hr;
+        }
+    };
+    if was_facade{
+        let n=NATIVE_BLT_SOURCE_UNWRAP_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+        if n<=20 || n%120==0{
+            log(&format!("WINDOWED-GAME: native Blt virtual Surface4 source safely unwrapped count={n} flags={flags:#010x}"));
+        }
+        if tracing{crash_blt_line(trace_id,false,&format!(
+            "CRASH-BLT: UNWRAP id={trace_id} original_src={src:p} native_src={native_src:p}"));}
+    }
     let call:BltFn=std::mem::transmute(addr);
-    let hr=call(this,dst,src,src_rect,flags,fx);
+    let hr=call(this,dst,native_src,src_rect,flags,fx);
     if tracing{
         crash_blt_line(trace_id,false,&format!("CRASH-BLT: EXIT id={trace_id} hr={:#010x}",hr as u32));
     }
