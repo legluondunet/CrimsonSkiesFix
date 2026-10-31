@@ -29,3 +29,36 @@ The existing runtime mutator is written for a *different*, already-widescreen-pa
 4. Test with a fixture based on the unwrapped EXE, then build on Windows i686 CI, and only afterward test the opt-in runtime hook under Wine and Windows.
 
 **Current branch only adds explanatory mismatch logs. It does not patch the unwrapped EXE or claim native widescreen works.**
+
+## Verified second-pass x86 disassembly (unwrapped EXE)
+
+The PE `.text` section has VMA 0x401000, file offset 0x1000, and raw size 0x2014bd. Therefore for the code RVA range quoted here, **RVA equals file offset** in this particular executable, but this must not be assumed for other PE sections.
+
+The first mode sequence at absolute VA `0x441229` is:
+
+```asm
+441229: 68 00 03 00 00     push 768
+44122e: 68 00 04 00 00     push 1024
+441233: e8 e8 fb ff ff     call 0x440e20
+441241: 68 00 03 00 00     push 768
+441246: 68 00 04 00 00     push 1024
+44124b: e8 60 fe ff ff     call 0x4410b0
+```
+
+Importantly, the current widescreen module's expected fingerprint RVAs 0x4122f and 0x41249 are *not aligned instruction starts* in the unwrapped file: they lie inside the immediate operands of `push 1024` at RVA 0x4122e and RVA 0x41246 respectively. Those are correct fingerprints of a *different, already patched* binary and cannot be transplanted as-is.
+
+A separate mode-selection dispatcher begins at VA `0x5a8ea0` (RVA `0x1a8ea0`), using an indexed jump table at `0x5a908c`. For the 1024×768 selection:
+
+```asm
+5a8fa7: b9 00 04 00 00       mov ecx,1024
+5a8fac: 8b c1                mov eax,ecx
+5a8fae: 89 0d bc 03 a1 00    mov [0xa103bc],ecx
+5a8fb4: 89 0d e0 03 a1 00    mov [0xa103e0],ecx
+5a8fc4: a3 04 04 a1 00       mov [0xa10404],eax
+5a8fc9: b9 00 03 00 00       mov ecx,768
+5a8fce: eb 6d                jmp 0x5a903d
+```
+
+Other supported modes share this dispatcher and write globals such as `0xa103bc`, `0xa103c0`, `0xa103e0`, `0xa10404`, and `0xa10408`. Their precise roles must be mapped through call-site analysis before changing them.
+
+The above is static evidence for mode selection **only**, not proof of a correct Hor+ camera implementation. No complete FOV-injection patch has been validated against the unwrapped binary. Avoid widening the executable signature matcher or writing blindly into the zero-filled region at RVA `0x2024bd`.
