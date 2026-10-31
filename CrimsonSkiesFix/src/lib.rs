@@ -15,7 +15,8 @@ mod borderless_contract;
 mod borderless_flip; // inactive, fail-closed Flip-to-Blt contract
 mod borderless_native_blt; // real shared DirectDraw4 Blt backend; inactive in game
 mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
-mod com_surface4_abi; // inactive, verified 45-slot Surface4 ABI (Stage B3b)
+mod com_surface4_abi;
+mod color_probe; // default-off native RGB32->RGB565 source/destination comparison // inactive, verified 45-slot Surface4 ABI (Stage B3b)
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
