@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.59 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.60 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -194,6 +194,58 @@ crash returns.
 
 The separate pink/green 32-bit source-to-RGB565 conversion problem is
 **not changed** by v0.1.56.
+
+## v0.1.60 — actual color conversion verified; locate original pixels
+
+The supplied `CrimsonSkiesFix(20261031-033532).log` (v0.1.59,
+Wine 11.0/GE-Proton11-11) contains 45 sampled XRGB8888 source / RGB565
+destination pixel pairs: 18 from two 1:1 copies and 27 from 3 scaled
+320x240 -> 800x600 movie copies (#3, #60, #120). The old color
+diagnostic expected simple **truncation** (`r>>3,g>>2,b>>3`) and
+reported 13 apparently bad pixels. Recomputed against **normalized
+rounding** (`r5=round(r*31/255), g6=round(g*63/255),
+b5=round(b*31/255)`): **45/45 match exactly**, including ALL 27
+samples of scaled video. Thus the old `mismatches` were a **false
+diagnostic alarm** caused by the tool's expected formula, not evidence
+of bad Wine conversion. The underlying video/intro pink-green problem
+remains unproven and unresolved; a correct source/dest pixel match
+cannot prove video source artwork is valid.
+
+The `ColorProbe` expectation has now been corrected to normalized
+rounding, with regression tests from the real log. To find where the
+visible corruption originates, a separate **default-off** `[Debug]
+ColorCapture=0` (requires `Log=1`) creates just THREE snapshots
+after the selected successful native Blts:
+
+- `CrimsonSkiesFix-Color-<PID>-Copy1-Source32.bmp`: first full
+  800x600 XRGB32 source before its 1:1 copy;
+- `CrimsonSkiesFix-Color-<PID>-Copy3-Source32.bmp`: first 320x240
+  XRGB32 video source before its stretch to RGB565;
+- `CrimsonSkiesFix-Color-<PID>-Copy3-Dest565.bmp`: 800x600 RGB565
+  backbuffer after that stretch, converted to 24-bit BMP for viewing.
+
+Capture takes read-only native DirectDraw locks and copies data into
+owned memory. File output uses a bounded standard BMP encoder,
+allowlisted deterministic labels, a PID suffix and create-new
+semantics beside the **loaded** game-local `ddraw.dll`: no overwriting
+other files or following preexisting symlinks. The game pixel buffer
+is not written. This is a *temporary and more intrusive*
+diagnostic—GPU readback and disk I/O may stall the game briefly; do
+not enable it for normal playing.
+
+Run once with existing graphics options (WindowEraseGuard=1,
+FocusRepaint=1, ExperimentalWindowedAdapter=1), `Log=1`,
+`ColorProbe=1`, `ColorCapture=1`, `CrashBltTrace=0`. After the
+suspect intro/splash/movie, upload the resulting BMP files and
+`CrimsonSkiesFix.log`. If the raw XRGB32 image is already
+pink/green, look upstream at its content/decoder or earlier
+lock/writes. If raw source is correct but stretched target is not,
+inspect which native transfer/graphics path wrote the target;
+if both are correct but screen corrupts, examine primary staging,
+presentation or compositor. Do not assume these first captures
+necessarily coincide with the exact affected logo/frame; if not,
+the diagnostic selection needs adapting. Return both opt-in debug
+flags to 0 after capture. **No game rendering changes** in v0.1.60.
 
 ## v0.1.59 — check the scaled movie pixels, not just the 1:1 images
 
