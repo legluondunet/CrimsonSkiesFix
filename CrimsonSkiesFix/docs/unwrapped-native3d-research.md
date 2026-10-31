@@ -62,3 +62,24 @@ A separate mode-selection dispatcher begins at VA `0x5a8ea0` (RVA `0x1a8ea0`), u
 Other supported modes share this dispatcher and write globals such as `0xa103bc`, `0xa103c0`, `0xa103e0`, `0xa10404`, and `0xa10408`. Their precise roles must be mapped through call-site analysis before changing them.
 
 The above is static evidence for mode selection **only**, not proof of a correct Hor+ camera implementation. No complete FOV-injection patch has been validated against the unwrapped binary. Avoid widening the executable signature matcher or writing blindly into the zero-filled region at RVA `0x2024bd`.
+
+## Third pass: execution branches and camera-hook requirements
+
+Direct `objdump -D -Mintel` on the supplied PE file independently confirms the x86 branch at VA `0x5a8fa7`:
+
+```asm
+5a8fa7  mov ecx,0x400         ; 1024
+5a8fac  mov eax,ecx
+5a8fae  mov [0xa103bc],ecx
+5a8fb4  mov [0xa103e0],ecx
+5a8fba  mov dword [0xa10308],0
+5a8fc4  mov [0xa10404],eax
+5a8fc9  mov ecx,0x300         ; 768
+5a8fce  jmp 0x5a903d
+```
+
+This code is a *mode dispatcher*, not necessarily the camera projection. Later entries at `0x5a8fd0` and `0x5a8ff5` also handle additional fixed widths. Replacing the immediate 1024/768 here without checking the selector and downstream shared state could affect the wrong rendering paths.
+
+For a credible 3D FOV patch we must first determine whether the game feeds the camera to a Direct3D viewport (`IDirect3DViewport3::SetViewport2`) or computes and submits transformed vertices/matrices itself. The hooked `IDirect3DDevice3` in our proxy does not offer a straightforward `SetTransform` hook equivalent to later D3D devices. We should trace the **actual viewport/camera call chain** rather than add a guessed matrix setter or patch one observed x87 constant.
+
+Next implementation criterion: exact x86 site and expected bytes, proof it is used only for the 3D camera, comparison of old/new horizontal field-of-view at 4:3 vs 16:9, and a rollback that does not rely on an incompatible patched binary's RVAs. No active runtime memory patch is introduced by this research.
