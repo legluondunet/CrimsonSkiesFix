@@ -172,9 +172,23 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
 pub unsafe fn new_graph_surface4(
     real:SurfaceThis,role:SurfaceRole,mode:Mode
 )->Result<SurfaceThis,i32>{
-    if !matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16)){
-        return Err(E_INVALIDARG);
-    }
+    new_graph_surface4_opt_in(real,role,mode,false)
+}
+
+/// The native 3D graph is created ONLY for a previously validated
+/// monitor-exact landscape mode from the fingerprinted patched EXE.
+/// Do not use this entrypoint for videos, menus or arbitrary dimensions.
+pub unsafe fn new_graph_surface4_opt_in(
+    real:SurfaceThis,role:SurfaceRole,mode:Mode,native_3d:bool
+)->Result<SurfaceThis,i32>{
+    let legacy=matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16));
+    let allow_native=native_3d && mode.bpp==16 &&
+        mode.width>=960 && mode.height>=600 &&
+        mode.width<=8192 && mode.height<=4320 &&
+        (mode.width as u64)*(mode.height as u64)<=33_554_432 &&
+        (mode.width as u64)*3>=(mode.height as u64)*4 &&
+        (mode.width as u64)<=(mode.height as u64)*4;
+    if !legacy && !allow_native{return Err(E_INVALIDARG);}
     let wrapped=new_forwarding_surface4(real)?;
     (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{role,mode});
     Ok(wrapped)
