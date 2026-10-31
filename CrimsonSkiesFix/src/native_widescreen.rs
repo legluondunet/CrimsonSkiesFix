@@ -136,6 +136,26 @@ pub unsafe fn apply_monitor_resolution(width:u32,height:u32)->PatchResult{
     PatchResult::Patched
 }
 
+/// Read-only fingerprint of the 800x600 selector in the unwrapped binary.
+/// The dispatcher is shared with other presentation paths. Do not rewrite
+/// these immediates until the game's 3D-versus-2D mode selection is known.
+pub unsafe fn probe_unwrapped_800x600_selector()->bool {
+    let base=GetModuleHandleW(ptr::null());
+    if base.is_null() || base as usize!=IMAGE_BASE {return false;}
+    let image=std::slice::from_raw_parts(base.cast::<u8>(),IMAGE_SIZE);
+    // RVA 1A8F7F: mov eax,800; RVA 1A8F9D: mov ecx,600.
+    // Unlike the earlier 1024 preset patch, these sites are active
+    // candidates for 800x600 but are not proven scene-only.
+    let recognized=image.get(0x1a8f7f..0x1a8f84)==Some(&[0xb8,0x20,0x03,0,0][..]) &&
+        image.get(0x1a8f9d..0x1a8fa2)==Some(&[0xb9,0x58,0x02,0,0][..]);
+    crate::log(if recognized {
+        "WINDOWED-WIDE: 800x600 mode dispatcher fingerprint verified; shared path left unchanged (FOV untouched)"
+    }else{
+        "WINDOWED-WIDE: 800x600 mode dispatcher fingerprint mismatch; no modification"
+    });
+    recognized
+}
+
 /// Experimental resolution-only update for the unwrapped 1.0.2.0 mode.
 /// This changes only the 1024x768 preset, never camera/FOV instructions.
 /// Call on the game initialization thread before mode discovery.
