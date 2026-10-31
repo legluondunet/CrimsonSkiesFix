@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.58 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.59 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -194,6 +194,40 @@ crash returns.
 
 The separate pink/green 32-bit source-to-RGB565 conversion problem is
 **not changed** by v0.1.56.
+
+## v0.1.59 — check the scaled movie pixels, not just the 1:1 images
+
+The supplied v0.1.58 game log `CrimsonSkiesFix(20261031-031702).log`
+proves two native 800x600 XRGB8888→800x600 RGB565 1:1 transfers
+produced **9/9 correct sampled pixels each** (`COLOR-PROBE:
+copy=1` and `copy=2`, both `mismatches=0`). Critically, the
+320x240 source video images copied into the 800x600 logical backbuffer
+were NOT checked: v0.1.58 logged `skipped scaled Blt 320x240 ->
+800x600` for copies 3, 60 and 120. A successful native Blt is not
+proof of faithful scaling or colors.
+
+v0.1.59 keeps the SAME default-off `[Debug] ColorProbe=0` switch
+and sampling cadence. For XRGB8888→RGB565 Blts with distinct source
+and destination rectangles, it now computes 9 corresponding source
+and destination pixel coordinates using the 16.16 fixed-point
+nearest-neighbor stepping of Wine 11.0's
+`wined3d/surface.c::surface_cpu_blt`. Wine logs that requested
+LINEAR filtering is unsupported in its CPU copy path; the actual CPU
+scaler uses point/nearest sampling. We only claim this mapping as a
+**candidate** until the live samples confirm which Wine path was
+used. Coordinates, source XRGB values, expected RGB565 values, and
+observed RGB565 pixels are logged as:
+`COLOR-PROBE: copy=N mode=scaled-cpu-nearest-candidate match=X/9
+mismatches=Y`.
+
+Only copies without color key, alpha, or effect flags qualify;
+unexpected formats and readback failures still fail closed.
+All native Blt calls remain completely unchanged. Lock/Unlock
+readback is still opt-in and may cause brief stalls, so perform the
+targeted introduction/movie test and then restore `ColorProbe=0`.
+A mismatch may also reflect a different Blt backend, a concurrent
+writer, or scaling semantics rather than necessarily a pixel-format
+bug; no game rendering correction is claimed.
 
 ## v0.1.58 — opt-in intro color diagnosis (no color changes)
 
