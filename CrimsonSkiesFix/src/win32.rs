@@ -49,10 +49,6 @@ extern "system" {
     fn GetWindowThreadProcessId(hwnd:Hwnd,process_id:*mut u32)->u32;
     fn EnumWindows(callback:unsafe extern "system" fn(Hwnd,isize)->i32,context:isize)->i32;
     fn IsWindowVisible(hwnd:Hwnd)->i32;
-    fn IsIconic(hwnd:Hwnd)->i32;
-    fn IsChild(parent:Hwnd,child:Hwnd)->i32;
-    fn GetForegroundWindow()->Hwnd;
-    fn GetUpdateRect(hwnd:Hwnd,rect:*mut Rect,erase:i32)->i32;
     fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
     fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
     fn GetClientRect(hwnd:Hwnd,rect:*mut Rect)->i32;
@@ -291,32 +287,6 @@ pub fn game_windows_snapshot()->String {
 // The early Crimson Skies SetCooperativeLevel calls may use a NULL HWND.
 // Report *why* we cannot adjust the window; never manipulate another
 // process's HWND, and never invent a guessed main window at startup.
-/// Read-only foreground and pending paint information for a process-owned
-/// game HWND. Do not invalidate/erase/BeginPaint from a DirectDraw Flip.
-/// This is sampled only by the default-off FocusRepaint experiment.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct GameVisibility {
-    pub foreground:bool,
-    pub pending_paint:bool,
-}
-
-pub fn game_visibility(hwnd:Hwnd)->Option<GameVisibility> {
-    if hwnd.is_null(){return None;}
-    unsafe {
-        if IsWindow(hwnd)==0{return None;}
-        let mut process_id=0;
-        if GetWindowThreadProcessId(hwnd,&mut process_id)==0 ||
-            process_id!=GetCurrentProcessId(){return None;}
-        let active=GetForegroundWindow();
-        let foreground=IsIconic(hwnd)==0 && IsWindowVisible(hwnd)!=0 &&
-            !active.is_null() && (active==hwnd || IsChild(hwnd,active)!=0);
-        Some(GameVisibility{
-            foreground,
-            pending_paint:GetUpdateRect(hwnd,std::ptr::null_mut(),0)!=0,
-        })
-    }
-}
-
 pub fn borderless_window(hwnd:Hwnd,area:Rect)->Result<(),String> {
     if hwnd.is_null() {return Err("deferred: NULL HWND supplied by game".into());}
     unsafe {
