@@ -591,7 +591,7 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if count<=4 {trace_native_copy_format(real_source,p4);}
-                if crate::cfg().log_enabled && crate::cfg().color_probe &&
+                if crate::color_probe_enabled() &&
                     crate::color_probe::should_probe(count) {
                     // Read-only, bounded sampled Lock/Unlock of the same
                     // native RGB32 source and RGB565 destination. This runs
