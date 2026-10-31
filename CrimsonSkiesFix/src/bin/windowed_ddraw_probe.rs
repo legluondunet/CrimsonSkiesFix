@@ -31,6 +31,8 @@ mod window_erase_guard;
 mod color_capture;
 #[path="../color_probe.rs"]
 mod color_probe;
+#[path="../native_widescreen.rs"]
+mod native_widescreen;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
