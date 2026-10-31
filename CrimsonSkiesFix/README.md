@@ -129,8 +129,19 @@ inside the WndProc callback. Debug counters (suppressed WM_ERASEBKGND,
 observed WM_PAINT) are reported by the ordinary render-thread
 `Flip` code when `Log=1`.
 
-This is an **untested hypothesis** about the white window, not an
-established cause or verified fix. If no WM_ERASEBKGND events are
+**Wine/GE-Proton validation (31 Oct 2026):** Two screenshots show the
+Crimson Skies main menu and hangar/mission menu staying visible behind
+an overlapping terminal, unlike the entirely white v0.1.56 window.
+The attached v0.1.57 game log confirms that the guard was installed,
+that **7 WM_ERASEBKGND messages were suppressed** and 7 WM_PAINT
+messages observed, with at least 720 successful virtual-primary Flips
+and no reported crash. This is strong practical evidence that the
+Win32 background erase contributed to the white-window symptom, but
+it does not exclude other contributing presentation issues or verify
+native-Windows behavior. The menu background video appears paused
+while the game lacks focus; the guard intentionally preserves
+WM_ACTIVATE and all other normal messages, so game-controlled focus
+suspension remains plausible, not an established regression. If no WM_ERASEBKGND events are
 reported, or the screen remains white with the guard enabled, the
 investigation must shift to Wine frontbuffer presentation, compositor
 or game WM_PAINT. The optional guard does not change pixel format,
