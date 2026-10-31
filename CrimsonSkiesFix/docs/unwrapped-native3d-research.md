@@ -95,3 +95,17 @@ The native 3D opt-in now attempts a **separate** six-site hardcoded 1024×768 pr
 **This is a first functional probe of one resolution preset, not proof that the game will select 1920x1080.** The observed gameplay uses 640x480 and 800x600; those remain intentionally untouched and still use 4:3 presentation. The game may not expose or select the patched 1024 preset, and some additional resolution assumptions may remain.
 
 FOV and camera projection are completely untouched. If the native mode starts, the camera framing may be wrong. Only test in a disposable copy of the installation. The runtime option `Native3DWidescreen=0` disables this experiment.
+
+## New owner-supplied patched reference: 1920x1200 including FOV
+
+On-disk comparison with `CRIMSON-UNWRAPPED.EXE` (SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) now has a second reference:
+
+- `CRIMSON(7).EXE`, SHA-256 `612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d`
+- Same file length: 2,580,480 bytes; same preferred image base 0x400000 and SizeOfImage 0x652000.
+- Exactly 314 differing bytes grouped into 38 contiguous regions.
+- Distinct patched regions include RVA 0x2B678, 0x2B67F, 0x41100, 0x41229, 0x4123C, 0x41263, 0x1A8EB1, 0x1A8FC9, 0x1AA08B, 0x2024BD–0x20254F.
+- The new injected x87 code at RVA 0x2024BD–0x20254A links to both resolution references and original program instructions. Dimensions are stored at RVA 0x20254B (0x780 = 1920) and 0x20254F (0x4B0 = 1200).
+
+**Scope update:** FOV is back in scope on explicit user request. Do not simply transplant the patched reference's code cave to the unwrapped EXE without verifying every relocated branch, data operand, and preimage; prefer a minimal fail-closed patch proven by a normalized binary-diff fixture. Our existing six-site immediate patch modifies a different sequence, so it must not run concurrently with any complete WSGF-style code transformation without explicit mode arbitration.
+
+A third reference with a different resolution would help distinguish variable width/height data from fixed aspect-ratio assumptions and code differences. Requested reference targets: 1920x1080 (16:9) and 2560x1080 or 3440x1440 (ultrawide), if available.
