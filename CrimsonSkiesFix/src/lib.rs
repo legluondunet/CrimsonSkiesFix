@@ -21,6 +21,7 @@ mod color_capture; // default-off native RGB32->RGB565 source/destination compar
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
+mod native_widescreen; // opt-in, strictly fingerprinted owner-provided widescreen EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
