@@ -12,6 +12,8 @@ pub const DEFAULT_INI: &str = concat!(
     "ExperimentalWindowedAdapter=0\n",
     "; Optional recovery on game foreground return; experiment only.\n",
     "FocusRepaint=0\n",
+    "; Experimental: suppress only WM_ERASEBKGND on the game HWND.\n",
+    "WindowEraseGuard=0\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -29,6 +31,7 @@ pub struct Config {
     pub modern_fps_pacing: bool,
     pub experimental_windowed_adapter: bool,
     pub focus_repaint: bool,
+    pub window_erase_guard: bool,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -36,7 +39,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
     }
 }
 
@@ -70,6 +73,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.desktop_resolution = v; },
             ("graphics", "experimentalwindowedadapter") =>
                 if let Some(v) = enabled(value) { settings.experimental_windowed_adapter = v; },
+            ("graphics", "windoweraseguard") =>
+                if let Some(v) = enabled(value) { settings.window_erase_guard = v; },
             ("graphics", "focusrepaint") =>
                 if let Some(v) = enabled(value) { settings.focus_repaint = v; },
             ("graphics", "modernfpspacing") =>
@@ -99,7 +104,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -107,6 +112,13 @@ mod tests {
         assert!(!parse("[Debug]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(parse("[Graphics]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=1\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
+    }
+    #[test]
+    fn window_erase_guard_is_opt_in_and_graphics_scoped(){
+        assert!(!Config::default().window_erase_guard);
+        assert!(!parse("[Debug]\nWindowEraseGuard=1").window_erase_guard);
+        assert!(parse("[Graphics]\nWindowEraseGuard=1").window_erase_guard);
+        assert!(!parse("[Graphics]\nWindowEraseGuard=1\nWindowEraseGuard=0").window_erase_guard);
     }
     #[test]
     fn focus_repaint_is_experimental_graphics_only_and_default_off(){
