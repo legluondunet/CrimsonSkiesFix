@@ -16,6 +16,8 @@ pub const DEFAULT_INI: &str = concat!(
     "WindowEraseGuard=0\n",
     "; Experimental: force RGB565 on exact game-sized legacy system-memory image surface.\n",
     "LegacyOffscreenRGB565=0\n",
+    "; Experimental widescreen only with fingerprinted owner-provided patched 1.0.2.0 EXE.\n",
+    "Native3DWidescreen=0\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -39,6 +41,7 @@ pub struct Config {
     pub focus_repaint: bool,
     pub window_erase_guard: bool,
     pub legacy_offscreen_rgb565: bool,
+    pub native_3d_widescreen: bool,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -48,7 +51,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, native_3d_widescreen: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -82,6 +85,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.desktop_resolution = v; },
             ("graphics", "experimentalwindowedadapter") =>
                 if let Some(v) = enabled(value) { settings.experimental_windowed_adapter = v; },
+            ("graphics", "native3dwidescreen") =>
+                if let Some(v) = enabled(value) { settings.native_3d_widescreen = v; },
             ("graphics", "legacyoffscreenrgb565") =>
                 if let Some(v) = enabled(value) { settings.legacy_offscreen_rgb565 = v; },
             ("graphics", "windoweraseguard") =>
@@ -119,7 +124,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, native_3d_widescreen:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -127,6 +132,13 @@ mod tests {
         assert!(!parse("[Debug]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(parse("[Graphics]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
         assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=1\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
+    }
+    #[test]
+    fn native_widescreen_is_opt_in_graphics_setting(){
+        assert!(!Config::default().native_3d_widescreen);
+        assert!(!parse("[Debug]\nNative3DWidescreen=1").native_3d_widescreen);
+        assert!(parse("[Graphics]\nNative3DWidescreen=1").native_3d_widescreen);
+        assert!(!parse("[Graphics]\nNative3DWidescreen=1\nNative3DWidescreen=0").native_3d_widescreen);
     }
     #[test]
     fn legacy_offscreen_rgb565_is_opt_in_and_graphics_only(){
