@@ -1115,7 +1115,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         let generation=1042u64 + epoch_index as u64;
         unsafe{
             com_surface4_forward::arm_graph_primary_flip(
-                gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h),None
+                gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h),None,0,false
             ).map_err(|hr|format!("COM-VFLIP: arm failed {:#010x}",hr as u32))?;
         }
         if unsafe{com_surface4_forward::graph_primary_completed_flips(gp.0)}!=Some(0){
