@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.60 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.61 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -69,6 +69,7 @@ ModernFPSPacing=0
 ExperimentalWindowedAdapter=0
 FocusRepaint=0
 WindowEraseGuard=0
+LegacyOffscreenRGB565=0
 
 [Debug]
 Log=0
@@ -194,6 +195,62 @@ crash returns.
 
 The separate pink/green 32-bit source-to-RGB565 conversion problem is
 **not changed** by v0.1.56.
+
+## v0.1.61 — targeted correction of the actual pink/green source image
+
+**Root cause strongly supported by the three owner-supplied v0.1.60 BMP
+captures:** `Copy1-Source32.bmp` shows the Crimson Skies intro logo,
+dirigible and surrounding artwork with neon pink/green corruption,
+occupying ONLY x=0..399 of its nominal 800-pixel wide 32-bit surface,
+while the bottom ends at scanline 500. The preexisting error is
+**already present in the native XRGB8888 source before any Blt**.
+Reinterpreting each XRGB32 DWORD's **low 16 bits as RGB565** recovers
+the correct original red/gold logo and grayscale airship, squeezed
+to half horizontal width because each DWORD contains two packed
+RGB565 pixels. The BMP24 capture discards the DWORD's top byte, so
+this reconstruction recovers only one of the two source pixels.
+The observed first-source image appears to contain 800 native
+16-bit horizontal pixels stored on each 800x600 native
+XRGB32 row, hence occupying 400 of 800 DWORD slots.
+
+The game creates this specific native DD4 surface with
+`dwFlags=0x00110007` (CAPS|HEIGHT|WIDTH|CKSRCBLT|TEXTURESTAGE),
+`dwCaps=0x00000840` (OFFSCREENPLAIN|SYSTEMMEMORY),
+logical dimensions 800x600 and **NO DDSD_PIXELFORMAT**. The physical
+desktop remains 32-bit under `DDSCL_NORMAL`, so Wine assigns
+XRGB8888 to the game-owned system-memory surface even though the
+classic 16-bit game populates it with RGB565 pixel pairs. Wine
+subsequently faithfully converts those *incorrectly described* RGB32
+pixels, explaining the visually corrupted intro. Independently,
+the 320x240 video source is correctly described as 32-bit and
+matches the RGB565 video destination in all sampled points; DO NOT
+change its format.
+
+**Isolated, default-off candidate fix `[Graphics]
+LegacyOffscreenRGB565=0`:** With
+`ExperimentalWindowedAdapter=1`, opt into `LegacyOffscreenRGB565=1`
+to make the original DD4 CreateSurface allocate the *exactly matching*
+800x600 game system-memory surface in native RGB565 format rather
+than inheriting the physical desktop's 32-bit format. It:
+- applies only on the verified game DD4 and active 800x600x16 graph;
+- matches EXACT descriptor flags=0x00110007 and caps=0x00000840;
+- clones the 124-byte DDSURFACEDESC2, preserving all caller data
+  except supplying the missing native DDPIXELFORMAT masks;
+- leaves the original caller descriptor, physical desktop, HAL/Z32
+  graph, 320x240 movie source, 3D textures and COM boundary untouched;
+- logs `WINDOWED-COLOR: LegacyOffscreenRGB565 native image source
+  800x600 RGB565 creation hr=0x00000000` on successful creation.
+
+**Not yet validated in game.** Test v0.1.61 with existing verified
+`FocusRepaint=1` and `WindowEraseGuard=1`; set
+`LegacyOffscreenRGB565=1`, `[Debug] Log=1`,
+`ColorProbe=0`, `ColorCapture=0` and view the original
+pink/green intro. Collect a new screenshot and log to confirm the
+native 800x600 source is now **16 bpp** and the logo colors/placement
+are restored. If a new startup error, video regression or crash
+appears, immediately set `LegacyOffscreenRGB565=0` to return to the
+old, stable v0.1.60 behavior. Do NOT merge without live validation
+and native Windows tests.
 
 ## v0.1.60 — actual color conversion verified; locate original pixels
 
