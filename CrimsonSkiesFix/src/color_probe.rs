@@ -12,6 +12,8 @@ use crate::com_surface4_abi::{Rect,Surface4VTable,SurfaceThis};
 const DDPF_RGB:u32=0x40;
 const DDLOCK_WAIT:u32=0x00000001;
 const DDLOCK_READONLY:u32=0x00000010;
+const DDBLT_WAIT:u32=0x01000000;
+const DDBLT_ASYNC:u32=0x00000200;
 const SWATCHES:[(u32,u32);9]=[
     (1,1),(4,1),(7,1),(1,4),(4,4),(7,4),(1,7),(4,7),(7,7)
 ];
@@ -54,6 +56,31 @@ fn same_extent(a:Rect,b:Rect)->bool{
     a.right-a.left==b.right-b.left && a.bottom-a.top==b.bottom-b.top
 }
 
+/// Wine 11.0 wined3d/surface.c::surface_cpu_blt uses a 16.16 fixed-point
+/// nearest-neighbor source step if software scaling is invoked, including
+/// when LINEAR is requested but unsupported in the software blitter.
+/// This is a DIAGNOSTIC EXPECTATION, not proof that a particular Blt
+/// used the CPU path; mismatches are hypotheses, not automatic bugs.
+fn cpu_nearest_source_axis(dest_offset:u32,src_extent:u32,dst_extent:u32)->u32{
+    let step=(u64::from(src_extent)<<16)/u64::from(dst_extent);
+    ((u64::from(dest_offset)*step)>>16)
+        .min(u64::from(src_extent)-1) as u32
+}
+
+fn matched_sample_positions(src:Rect,dst:Rect)
+    ->([(u32,u32);9],[(u32,u32);9]){
+    let sw=(src.right-src.left) as u32;
+    let sh=(src.bottom-src.top) as u32;
+    let dw=(dst.right-dst.left) as u32;
+    let dh=(dst.bottom-dst.top) as u32;
+    let dst_points=SWATCHES.map(|frac|sample_position(dst,frac));
+    let src_points=dst_points.map(|(dx,dy)|{
+        (src.left as u32+cpu_nearest_source_axis(dx-dst.left as u32,sw,dw),
+         src.top as u32+cpu_nearest_source_axis(dy-dst.top as u32,sh,dh))
+    });
+    (src_points,dst_points)
+}
+
 fn is_xrgb8888(d:&[u32;31])->bool{
     d[0]==124 && d[18]==32 && d[19]&DDPF_RGB!=0 &&
     d[21]==32 && (d[22],d[23],d[24])==(0x00ff0000,0x0000ff00,0x000000ff)
@@ -79,7 +106,8 @@ unsafe fn desc(p:SurfaceThis)->Result<[u32;31],String>{
 
 /// Lock, sample 9 pixels, and ALWAYS unlock before returning.
 /// Coordinates are absolute within the native 32-bit or 16-bit surface.
-unsafe fn read_swatches(p:SurfaceThis,region:Rect,bytes_per_pixel:usize)
+unsafe fn read_swatches(p:SurfaceThis,region:Rect,
+    coordinates:&[(u32,u32);9],bytes_per_pixel:usize)
     ->Result<[u32;9],String>{
     let mut locked=[0u32;31];locked[0]=124;
     let hr=(vtbl(p).lock)(p,ptr::null_mut(),locked.as_mut_ptr().cast(),
@@ -97,8 +125,11 @@ unsafe fn read_swatches(p:SurfaceThis,region:Rect,bytes_per_pixel:usize)
         let base=locked[9] as usize as *const u8;
         if base.is_null(){return Err("Lock NULL pixel pointer".into());}
         let mut pixels=[0u32;9];
-        for (i,frac) in SWATCHES.iter().copied().enumerate(){
-            let (x,y)=sample_position(region,frac);
+        for (i,(x,y)) in coordinates.iter().copied().enumerate(){
+            if x<region.left as u32 || x>=region.right as u32 ||
+               y<region.top as u32 || y>=region.bottom as u32{
+                return Err("sample outside requested region".into());
+            }
             let offset=(y as usize).checked_mul(pitch as usize)
                 .and_then(|row|row.checked_add(x as usize*bytes_per_pixel))
                 .ok_or("Lock pixel offset overflow")?;
@@ -118,14 +149,19 @@ unsafe fn read_swatches(p:SurfaceThis,region:Rect,bytes_per_pixel:usize)
     sampled
 }
 
-/// Compare only exact 1:1 XRGB8888->RGB565 native Blts; any scaling,
-/// color-key, alpha, or different pixel masks is reported but NOT sampled.
-/// If sampling succeeds, the pixel values distinguish native conversion
-/// mismatch from bad input data. This intentionally cannot prove the
-/// source image is the intended visual artwork.
+/// Compare native XRGB8888->RGB565 1:1 and scaled Blts. Scaling uses
+/// Wine 11.0 CPU nearest-neighbor fixed-point coordinates as a candidate
+/// model, NOT a verified assertion about Wine's chosen Blt backend.
+/// Skip keys/alpha/effects: those cannot be compared by plain conversion.
+/// This cannot establish whether the original movie pixels are correct.
 pub unsafe fn probe_native_blt(src:SurfaceThis,dst:SurfaceThis,
-    dst_rect:*mut Rect,src_rect:*mut Rect,copy_number:usize){
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,copy_number:usize){
     if src.is_null()||dst.is_null(){return;}
+    if flags&!(DDBLT_WAIT|DDBLT_ASYNC)!=0{
+        crate::log(&format!(
+            "COLOR-PROBE: copy={copy_number} skipped non-copy Blt effects flags={flags:#010x}"));
+        return;
+    }
     let (s,d)=match (desc(src),desc(dst)){
         (Ok(s),Ok(d))=>(s,d),
         (a,b)=>{
@@ -145,20 +181,16 @@ pub unsafe fn probe_native_blt(src:SurfaceThis,dst:SurfaceThis,
         crate::log(&format!("COLOR-PROBE: copy={copy_number} invalid source/destination rectangles"));
         return;
     };
-    if !same_extent(sr,dr){
-        crate::log(&format!(
-            "COLOR-PROBE: copy={copy_number} skipped scaled Blt {}x{} -> {}x{}; sample comparison requires one-to-one",
-            sr.right-sr.left,sr.bottom-sr.top,dr.right-dr.left,dr.bottom-dr.top));
-        return;
-    }
-    let src_pixels=match read_swatches(src,sr,4){
+    let mode=if same_extent(sr,dr){"one-to-one"}else{"scaled-cpu-nearest-candidate"};
+    let (src_points,dst_points)=matched_sample_positions(sr,dr);
+    let src_pixels=match read_swatches(src,sr,&src_points,4){
         Ok(p)=>p,
         Err(e)=>{
             crate::log(&format!("COLOR-PROBE: copy={copy_number} source read unavailable: {e}"));
             return;
         }
     };
-    let dst_pixels=match read_swatches(dst,dr,2){
+    let dst_pixels=match read_swatches(dst,dr,&dst_points,2){
         Ok(p)=>p,
         Err(e)=>{
             crate::log(&format!("COLOR-PROBE: copy={copy_number} destination read unavailable: {e}"));
@@ -173,11 +205,12 @@ pub unsafe fn probe_native_blt(src:SurfaceThis,dst:SurfaceThis,
         if expected!=observed{mismatches+=1;}
         use std::fmt::Write as _;
         let _=write!(&mut samples,
-            " p{i}=xrgb{:08x}/expected{:04x}/got{:04x}",
-            src_pixels[i],expected,observed);
+            " p{i}=src({},{})_xrgb{:08x}/dst({},{})_expected{:04x}/got{:04x}",
+            src_points[i].0,src_points[i].1,src_pixels[i],
+            dst_points[i].0,dst_points[i].1,expected,observed);
     }
     crate::log(&format!(
-        "COLOR-PROBE: copy={copy_number} match={}/9 mismatches={mismatches} src_rect={sr:?} dst_rect={dr:?} details:{samples}",
+        "COLOR-PROBE: copy={copy_number} mode={mode} match={}/9 mismatches={mismatches} src_rect={sr:?} dst_rect={dr:?} details:{samples}",
         9-mismatches));
 }
 
@@ -209,6 +242,28 @@ mod tests{
         assert!(rect_or_full(&mut shifted,800,600).is_some());
         shifted.right=801;
         assert!(rect_or_full(&mut shifted,800,600).is_none());
+    }
+    #[test]
+    fn wine_cpu_scaled_sampling_matches_16_16_step_without_rounding_up(){
+        assert_eq!(cpu_nearest_source_axis(0,320,800),0);
+        assert_eq!(cpu_nearest_source_axis(100,320,800),39);
+        assert_eq!(cpu_nearest_source_axis(400,320,800),159);
+        assert_eq!(cpu_nearest_source_axis(799,320,800),319);
+        assert_eq!(cpu_nearest_source_axis(75,240,600),29);
+        assert_eq!(cpu_nearest_source_axis(400,800,800),400);
+    }
+    #[test]
+    fn scaled_sample_coordinates_apply_both_rectangle_origins(){
+        let sr=Rect{left:12,top:30,right:332,bottom:270};
+        let dr=Rect{left:50,top:20,right:850,bottom:620};
+        let (sp,dp)=matched_sample_positions(sr,dr);
+        assert_eq!(dp[0],(150,95));
+        assert_eq!(sp[0],(51,59)); // 12+39, 30+29
+        assert_eq!(dp[4],(450,320));
+        assert_eq!(sp[4],(171,149)); // 12+159, 30+119
+        for (x,y) in sp{
+            assert!(x>=12&&x<332&&y>=30&&y<270);
+        }
     }
     #[test]
     fn formats_require_precise_rgb_masks(){
