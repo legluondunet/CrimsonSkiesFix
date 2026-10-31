@@ -27,6 +27,8 @@ mod com_surface4_abi;
 mod window_exposure;
 #[path="../window_erase_guard.rs"]
 mod window_erase_guard;
+#[path="../color_probe.rs"]
+mod color_probe;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
