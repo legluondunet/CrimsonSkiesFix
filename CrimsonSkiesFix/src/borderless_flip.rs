@@ -310,6 +310,15 @@ mod tests {
         assert_eq!(backend.events.len(),3);
     }
     #[test]
+    fn exact_native_mode_is_valid_but_scaled_mismatch_is_not(){
+        let native=Mode{width:1920,height:1080,bpp:16};
+        let full=Viewport{x:0,y:0,width:1920,height:1080};
+        assert!(geometry_valid(native,(1920,1080),full));
+        assert!(!geometry_valid(native,(2560,1440),full));
+        assert!(!geometry_valid(native,(1920,1080),Viewport{
+            x:240,y:0,width:1440,height:1080}));
+    }
+    #[test]
     fn eight_hundred_by_six_hundred_remains_fully_pillarboxed(){
         let m=mode800();
         let c=ready(m);
