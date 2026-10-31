@@ -23,6 +23,8 @@ mod borderless_flip;
 mod borderless_native_blt;
 #[path="../com_surface4_abi.rs"]
 mod com_surface4_abi;
+#[path="../window_exposure.rs"]
+mod window_exposure;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
