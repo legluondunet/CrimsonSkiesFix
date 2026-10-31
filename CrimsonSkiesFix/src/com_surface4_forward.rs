@@ -454,6 +454,41 @@ unsafe extern "system" fn forward_add_overlay_dirty_rect(this:SurfaceThis,p1:*mu
     (real_vtable(real).add_overlay_dirty_rect)(real,p1)
 }
 
+/// Resolve a source supplied to a *native destination* IDirectDrawSurface4::Blt.
+///
+/// Native Wine ddraw uses CONTAINING_RECORD on its Surface4 argument; it must
+/// never receive one of our synthetic Surface4Forwarder objects. This
+/// boundary is different from forward_blt(), whose destination is synthetic.
+///
+/// Return (source, true) only if the candidate was our facade. A foreign
+/// native COM interface passes through unchanged. A retired facade, a depth
+/// buffer, or a primary without its RGB565 staging source fails closed.
+/// Primary Lock/Unlock writes must be copied from staging, not from the
+/// 1920x1080 physical desktop primary.
+///
+/// # Safety
+/// The candidate must be a live, valid COM interface with a caller-held
+/// reference throughout the native Blt. This cannot authenticate a freed
+/// or arbitrary pointer. No AddRef or Release is performed here.
+pub unsafe fn source_for_native_blt(
+    candidate:SurfaceThis
+)->Result<(SurfaceThis,bool),i32>{
+    if candidate.is_null(){return Ok((ptr::null_mut(),false));}
+    if !is_our_forwarder(candidate){return Ok((candidate,false));}
+    let wrapper=&*candidate.cast::<Surface4Forwarder>();
+    if wrapper.retired.load(Ordering::Acquire){return Err(E_NOTIMPL);}
+    let real=match wrapper.graph {
+        Some(node)=>match node.role{
+            SurfaceRole::Primary=>wrapper.primary_lock_surface.load(Ordering::Acquire),
+            SurfaceRole::Backbuffer=>wrapper.real,
+            SurfaceRole::Depth=>return Err(E_NOTIMPL),
+        },
+        None=>wrapper.real,
+    };
+    if real.is_null(){return Err(E_NOTIMPL);}
+    Ok((real,true))
+}
+
 /// Turn a game-supplied Surface4 source into a *native* Source4 pointer.
 /// It is never safe to pass a synthetic COM facade into Wine's raw DD4 Blt.
 /// A real non-facade Surface4 belongs to the caller and is forwarded as-is;
@@ -993,6 +1028,42 @@ mod tests{
     fn real_mock<'a>(table:&'a Surface4VTable)->RealMock{
         RealMock{vtable:table,refs:AtomicU32::new(1),
                  blts:AtomicU32::new(0),flips:AtomicU32::new(0)}
+    }
+    #[test]
+    fn native_destination_blt_never_forwards_a_synthetic_graph_source(){
+        let table=mock_table();
+        let mut primary_real=real_mock(&table);
+        let mut staging_real=real_mock(&table);
+        let mut back_real=real_mock(&table);
+        let mut depth_real=real_mock(&table);
+        let primary_ptr=(&mut primary_real as *mut RealMock).cast();
+        let staging_ptr=(&mut staging_real as *mut RealMock).cast();
+        let back_ptr=(&mut back_real as *mut RealMock).cast();
+        let depth_ptr=(&mut depth_real as *mut RealMock).cast();
+        let mode=Mode{width:640,height:480,bpp:16};
+        unsafe{
+            assert_eq!(source_for_native_blt(ptr::null_mut()),Ok((ptr::null_mut(),false)));
+            assert_eq!(source_for_native_blt(back_ptr),Ok((back_ptr,false)));
+            let primary=new_graph_surface4(primary_ptr,SurfaceRole::Primary,mode).unwrap();
+            let back=new_graph_surface4(back_ptr,SurfaceRole::Backbuffer,mode).unwrap();
+            let depth=new_graph_surface4(depth_ptr,SurfaceRole::Depth,mode).unwrap();
+            // Prior to staging initialization a virtual primary is not a
+            // valid native Blt source.
+            assert_eq!(source_for_native_blt(primary),Err(E_NOTIMPL));
+            arm_graph_primary_lock_surface(primary,staging_ptr).unwrap();
+            assert_eq!(source_for_native_blt(primary),Ok((staging_ptr,true)));
+            assert_eq!(source_for_native_blt(back),Ok((back_ptr,true)));
+            assert_eq!(source_for_native_blt(depth),Err(E_NOTIMPL));
+            (*back.cast::<Surface4Forwarder>()).retired.store(true,Ordering::Release);
+            assert_eq!(source_for_native_blt(back),Err(E_NOTIMPL));
+            for wrapper in [primary,back,depth]{
+                assert_eq!(((*wrapper.cast::<Surface4Forwarder>()).vtable.as_ref().unwrap().release)(wrapper),0);
+            }
+            assert_eq!(primary_real.refs.load(Ordering::SeqCst),1);
+            assert_eq!(staging_real.refs.load(Ordering::SeqCst),1);
+            assert_eq!(back_real.refs.load(Ordering::SeqCst),1);
+            assert_eq!(depth_real.refs.load(Ordering::SeqCst),1);
+        }
     }
     #[test]
     fn all_45_slots_present_and_forwarding_identity_is_consistent(){
