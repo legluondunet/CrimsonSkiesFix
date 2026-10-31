@@ -596,7 +596,7 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                     // Read-only, bounded sampled Lock/Unlock of the same
                     // native RGB32 source and RGB565 destination. This runs
                     // AFTER Wine completed its Blt, never replaces it.
-                    crate::color_probe::probe_native_blt(real_source,current.real,p1,p3,count);
+                    crate::color_probe::probe_native_blt(real_source,current.real,p1,p3,p4,count);
                 }
                 if count==1 || count%120==0{
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
