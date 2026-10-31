@@ -136,6 +136,66 @@ pub fn preflight(mode:Mode,desktop_width:u32,desktop_height:u32,
     })
 }
 
+/// An opt-in widescreen-patched executable can request the monitor's
+/// physical landscape dimensions for 3D gameplay. The 640x480 and
+/// 800x600 menu/movie epochs remain strictly 4:3 and use preflight().
+///
+/// This does NOT stretch a low-resolution image: callers must allocate
+/// physical RGB565 3D render+Z targets at `mode` dimensions and confirm
+/// the signature-checked patched EXE provides the 3D/FOV mode switch.
+/// The viewport is full monitor only when the game's requested mode
+/// exactly matches the current monitor (no hardcoded resolution).
+pub fn preflight_native_3d(mode:Mode,desktop_width:u32,desktop_height:u32,
+    chain:Chain)->Option<WindowedPresentationPlan>{
+    if !chain.three_d_ready() || mode.bpp!=16 ||
+       mode.width!=desktop_width || mode.height!=desktop_height ||
+       mode.width<960 || mode.height<600 ||
+       mode.width>8192 || mode.height>4320 ||
+       (mode.width as u64)*(mode.height as u64)>33_554_432 ||
+       (mode.width as u64)*3 <(mode.height as u64)*4 ||
+       (mode.width as u64)> (mode.height as u64)*4{
+        return None;
+    }
+    Some(WindowedPresentationPlan{
+        internal:mode,desktop_width,desktop_height,
+        viewport:Viewport{x:0,y:0,width:desktop_width,height:desktop_height},
+        requires_surface_virtualization:true,
+    })
+}
+
+#[cfg(test)]
+mod native_3d_plan_tests{
+    use super::*;
+    fn complete_chain()->Chain{
+        Chain{front_to_back:true,back_to_depth:true,mipmaps:false}
+    }
+    #[test]
+    fn monitor_matched_landscape_is_full_native_three_d(){
+        for (w,h) in [(1280,720),(1920,1080),(1920,1200),
+                      (2560,1080),(3440,1440),(3840,2160)]{
+            let mode=Mode{width:w,height:h,bpp:16};
+            let native=preflight_native_3d(mode,w,h,complete_chain()).unwrap();
+            assert_eq!(native.internal,mode);
+            assert_eq!(native.viewport,Viewport{x:0,y:0,width:w,height:h});
+            // The legacy planner must never silently enable widescreen.
+            assert!(preflight(mode,w,h,complete_chain()).is_none());
+        }
+    }
+    #[test]
+    fn no_pseudo_widescreen_stretch_or_invalid_modes(){
+        for (w,h,monitor_w,monitor_h,bpp) in [
+            (800,600,1920,1080,16),(640,480,1280,720,16),
+            (1920,1080,2560,1440,16),(1080,1920,1080,1920,16),
+            (1920,1080,1920,1080,32),(10000,6000,10000,6000,16)
+        ]{
+            assert!(preflight_native_3d(Mode{width:w,height:h,bpp},
+                monitor_w,monitor_h,complete_chain()).is_none());
+        }
+        assert!(preflight_native_3d(Mode{width:1920,height:1080,bpp:16},
+            1920,1080,Chain::default()).is_none());
+    }
+}
+
 // Legacy Win32 (x86) DDSURFACEDESC2, 124 bytes / 31 DWORDs.
 // The layout is defined by Wine's DirectDraw SDK header: DDPIXELFORMAT
 // begins at DWORD 18 (byte offset 0x48), DDSCAPS2 at DWORD 26 (0x68).
