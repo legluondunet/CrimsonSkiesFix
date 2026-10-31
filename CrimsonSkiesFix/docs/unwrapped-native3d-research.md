@@ -83,3 +83,7 @@ This code is a *mode dispatcher*, not necessarily the camera projection. Later e
 For a credible 3D FOV patch we must first determine whether the game feeds the camera to a Direct3D viewport (`IDirect3DViewport3::SetViewport2`) or computes and submits transformed vertices/matrices itself. The hooked `IDirect3DDevice3` in our proxy does not offer a straightforward `SetTransform` hook equivalent to later D3D devices. We should trace the **actual viewport/camera call chain** rather than add a guessed matrix setter or patch one observed x87 constant.
 
 Next implementation criterion: exact x86 site and expected bytes, proof it is used only for the 3D camera, comparison of old/new horizontal field-of-view at 4:3 vs 16:9, and a rollback that does not rely on an incompatible patched binary's RVAs. No active runtime memory patch is introduced by this research.
+
+## Scope decision — resolution-only milestone
+
+For the next experimental implementation, **FOV and camera/projection code are out of scope by explicit request**. Research notes above about FOV are historical and do not authorize a camera patch. Focus on verifying the mode selector and native-dimension RGB565/Z32 DirectDraw resources, retaining 4:3 menus/videos. Do not enable unsafe width/height writes on the unwrapped binary until all affected mode paths and allocations are fingerprinted. A camera aspect or crop discrepancy is acceptable at this milestone and should be logged, not silently corrected.
