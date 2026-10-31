@@ -131,6 +131,7 @@ static FIRST_MODERN_PACED_FLIP:Once=Once::new();
 static FIRST_MODERN_NONPRIMARY_FLIP:Once=Once::new();
 static MODERN_FLIP_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLT_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_BLT_CRASH_TRACE_ID:AtomicUsize=AtomicUsize::new(0);
 static MODERN_UNLOCK_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLTFAST_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_FLIP_START:OnceLock<Instant>=OnceLock::new();
@@ -753,8 +754,28 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
         trace_game_windows("first modern Blt");
     });
     sample_render_calls("Blt",&MODERN_BLT_EVENTS,&MODERN_BLT_START,&MODERN_BLT_WINDOW);
+    // The real 2026-10-31 crash was an unhandled AV inside Wine's builtin
+    // ddraw Surface4::Blt, called from THIS hook: 0x7a25b619, null+0x280.
+    // Only an explicit debug opt-in logs each native Blt boundary. Logging
+    // BEFORE the original call lets a process-terminating AV leave the
+    // responsible source/destination addresses and flags on disk.
+    // Never dereference the COM pointers in the crash tracer itself.
+    let trace_id=if cfg().log_enabled && cfg().crash_blt_trace {
+        NATIVE_BLT_CRASH_TRACE_ID.fetch_add(1,Ordering::Relaxed)+1
+    }else{0};
+    let traced=trace_id!=0 && trace_id<=20_000;
+    if traced{
+        log(&format!(
+            "CRASH-BLT: ENTER id={trace_id} thread={:?} dest={this:p} src={src:p} dest_rect={dst:p} src_rect={src_rect:p} flags={flags:#010x} fx={fx:p}",
+            std::thread::current().id()));
+    }else if trace_id==20_001{
+        log("CRASH-BLT: bounded trace limit 20000 reached; further Blt calls unlogged");
+    }
     let call:BltFn=std::mem::transmute(addr);
     let hr=call(this,dst,src,src_rect,flags,fx);
+    if traced{
+        log(&format!("CRASH-BLT: EXIT id={trace_id} hr={:#010x}",hr as u32));
+    }
     record_surface_usage(this,surface_usage::Method::Blt,hr);
     if surface_usage_enabled(){
         let role=surface_usage::classify(modern_surface_caps(this));
