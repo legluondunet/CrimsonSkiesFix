@@ -48,37 +48,43 @@ fn check_abs_load(bytes:&[u8],rva:usize,prefix:[u8;2],target:usize)->bool{
 
 /// Testable signature match, no writes. Uses actual instruction bytes
 /// rather than just matching a resolution pair.
-fn is_owner_supplied_patch(bytes:&[u8],base:usize)->bool{
-    if base!=IMAGE_BASE || bytes.len()<WIDTH_RVA+8{return false;}
-    if bytes.get(0..2)!=Some(b"MZ"){return false;}
-    let Some(ntoff)=get32(bytes,0x3c).map(|x|x as usize) else{return false;};
-    if ntoff<0x40||ntoff>0x400{return false;}
-    if bytes.get(ntoff..ntoff+4)!=Some(b"PE\0\0") || 
-        bytes.get(ntoff+24..ntoff+26)!=Some(&[0x0b,0x01][..]) ||
-        get32(bytes,ntoff+24+56)!=Some(IMAGE_SIZE as u32) ||
-        get32(bytes,ntoff+24+28)!=Some(IMAGE_BASE as u32){
-        return false;
+fn first_patch_mismatch(bytes:&[u8],base:usize)->Option<&'static str>{
+    if base!=IMAGE_BASE{return Some("unexpected-image-base");}
+    if bytes.len()<WIDTH_RVA+8{return Some("image-too-small");}
+    if bytes.get(0..2)!=Some(b"MZ"){return Some("missing-MZ");}
+    let Some(ntoff)=get32(bytes,0x3c).map(|x|x as usize) else{return Some("missing-e_lfanew");};
+    if ntoff<0x40||ntoff>0x400{return Some("invalid-e_lfanew");}
+    if bytes.get(ntoff..ntoff+4)!=Some(b"PE\\0\\0"){return Some("missing-PE-signature");}
+    if bytes.get(ntoff+24..ntoff+26)!=Some(&[0x0b,0x01][..]){
+        return Some("not-PE32");
     }
-    let absolute_width=base+WIDTH_RVA;
-    let absolute_height=base+HEIGHT_RVA;
-    // WSGF-style game mode selection: push the two exact global DWORDs
-    // rather than hardcoded 1920/1080 immediates.
-    if !check_abs_load(bytes,0x41229,[0xff,0x35],absolute_height) ||
-       !check_abs_load(bytes,0x4122f,[0xff,0x35],absolute_width) ||
-       !check_abs_load(bytes,0x41243,[0xff,0x35],absolute_height) ||
-       !check_abs_load(bytes,0x41249,[0xff,0x35],absolute_width) ||
-       !check_abs_load(bytes,0x1a8eba,[0x8b,0x0d],absolute_width) ||
-       !check_abs_load(bytes,0x1a8fc9,[0x8b,0x0d],absolute_height) {
-        return false;
+    if get32(bytes,ntoff+24+56)!=Some(IMAGE_SIZE as u32){
+        return Some("unexpected-SizeOfImage");
     }
-    // Injected x87 code computing height/width for 3D FOV.
-    if !check_abs_load(bytes,0x2024bd,[0xdb,0x05],absolute_height) ||
-       !check_abs_load(bytes,0x2024c3,[0xda,0x35],absolute_width) {
-        return false;
+    if get32(bytes,ntoff+24+28)!=Some(IMAGE_BASE as u32){
+        return Some("unexpected-preferred-ImageBase");
+    }
+    let width=base+WIDTH_RVA;
+    let height=base+HEIGHT_RVA;
+    for (rva,prefix,target,reason) in [
+        (0x41229,[0xff,0x35],height,"mode-push-height-41229"),
+        (0x4122f,[0xff,0x35],width,"mode-push-width-4122f"),
+        (0x41243,[0xff,0x35],height,"mode-push-height-41243"),
+        (0x41249,[0xff,0x35],width,"mode-push-width-41249"),
+        (0x1a8eba,[0x8b,0x0d],width,"mode-global-width-1a8eba"),
+        (0x1a8fc9,[0x8b,0x0d],height,"mode-global-height-1a8fc9"),
+        (0x2024bd,[0xdb,0x05],height,"FOV-x87-height-2024bd"),
+        (0x2024c3,[0xda,0x35],width,"FOV-x87-width-2024c3")
+    ]{
+        if !check_abs_load(bytes,rva,prefix,target){return Some(reason);}
     }
     let (Some(w),Some(h))=(get32(bytes,WIDTH_RVA),get32(bytes,HEIGHT_RVA))
-        else{return false;};
-    valid_landscape_dimensions(w,h)
+        else{return Some("missing-resolution-pair");};
+    if !valid_landscape_dimensions(w,h){return Some("invalid-resolution-pair");}
+    None
+}
+fn is_owner_supplied_patch(bytes:&[u8],base:usize)->bool{
+    first_patch_mismatch(bytes,base).is_none()
 }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -102,10 +108,12 @@ pub unsafe fn apply_monitor_resolution(width:u32,height:u32)->PatchResult{
     }
     let base=GetModuleHandleW(ptr::null());
     if base.is_null() || base as usize!=IMAGE_BASE{
+        crate::log("WINDOWED-WIDE: recognition rejected reason=unexpected-image-base");
         return PatchResult::UnsupportedExecutable;
     }
     let data=std::slice::from_raw_parts(base.cast::<u8>(),IMAGE_SIZE);
-    if !is_owner_supplied_patch(data,base as usize){
+    if let Some(reason)=first_patch_mismatch(data,base as usize){
+        crate::log(&format!("WINDOWED-WIDE: recognition rejected reason={reason}; no EXE mutation"));
         return PatchResult::UnsupportedExecutable;
     }
     if get32(data,WIDTH_RVA)==Some(width) && get32(data,HEIGHT_RVA)==Some(height){
@@ -154,12 +162,13 @@ mod tests{
     fn exact_owner_executable_patch_signature_required(){
         let mut image=synthetic_patched_exe();
         assert!(is_owner_supplied_patch(&image,IMAGE_BASE));
+        assert_eq!(first_patch_mismatch(&image,IMAGE_BASE),None);
         assert!(!is_owner_supplied_patch(&image,IMAGE_BASE+0x10000));
         image[0x1a8eba]=0x90;
-        assert!(!is_owner_supplied_patch(&image,IMAGE_BASE));
+        assert_eq!(first_patch_mismatch(&image,IMAGE_BASE),Some("mode-global-width-1a8eba"));
         image[0x1a8eba]=0x8b;
         image[WIDTH_RVA..WIDTH_RVA+4].copy_from_slice(&0u32.to_le_bytes());
-        assert!(!is_owner_supplied_patch(&image,IMAGE_BASE));
+        assert_eq!(first_patch_mismatch(&image,IMAGE_BASE),Some("invalid-resolution-pair"));
     }
     #[test]
     fn any_reasonable_native_landscape_size_can_replace_original_pair(){
