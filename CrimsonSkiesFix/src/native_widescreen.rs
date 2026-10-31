@@ -17,6 +17,9 @@
 //! and code signatures. Patch is default-off and must be live-tested.
 #![allow(dead_code)]
 use std::{ffi::c_void,ptr};
+#[path="native_widescreen_full.rs"]
+mod full_patch;
+pub unsafe fn apply_unwrapped_full_patch(w:u32,h:u32)->PatchResult {full_patch::apply(w,h)}
 
 const IMAGE_BASE:usize=0x0040_0000;
 const IMAGE_SIZE:usize=0x0065_2000;
