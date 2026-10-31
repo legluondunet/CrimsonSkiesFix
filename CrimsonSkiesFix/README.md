@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.56 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.57 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -68,6 +68,7 @@ FPSLimit=60
 ModernFPSPacing=0
 ExperimentalWindowedAdapter=0
 FocusRepaint=0
+WindowEraseGuard=0
 
 [Debug]
 Log=0
@@ -101,6 +102,49 @@ Log=0
 - `[Debug] CrashBltTrace=0`: default-off verbose trace of each native DirectDraw Blt\n  just before and after the call. Set `1` only for a controlled crash\n  reproduction with `Log=1`, then reset to `0`. v0.1.54 stores\n  the most recent 2,048 native Blt calls in a rolling separate file\n  `CrimsonSkiesFix-BltTrace.log` next to `ddraw.dll` (it is overwritten\n  on each launch, rotated in-place every 2,048 Blts, and remains small).\n  It does not stop recording during lengthy gameplay but may slow the\n  game. An ENTER without its matching EXIT on the crashing Wine TID\n  identifies the last in-flight Blt (not necessarily the invalidation).\n- `[Debug] Log=0`: logging is **fully disabled by default**; no
   log file is created or modified. Set `Log=1` to create/overwrite
   `CrimsonSkiesFix.log` at the next game startup.
+
+## Experimental Win32 background erase guard — v0.1.57
+
+A real v0.1.56 run still showed a **completely white 1920x1080 game
+window while the terminal was foreground**, even though `Flip` reached
+960 and Wine returned successful DirectDraw HRESULTs. FocusRepaint
+logged just one full refresh on frame 1 of graphics epoch 2 and no
+later refresh: success at the DirectDraw API does not demonstrate that
+the displayed HWND retained the frame. Wine's
+`WINED3D_TEXF_LINEAR not supported in software blit` FIXME reports
+an unsupported *filter* in a CPU blit, not evidence of the white-window
+cause.
+
+A separate, default-off `[Graphics] WindowEraseGuard=0` experiment
+can be enabled with `WindowEraseGuard=1` and
+`ExperimentalWindowedAdapter=1`. It installs a restricted Win32
+WndProc subclass ONLY on the verified process-owned game HWND once
+the complete DD4 adapter has initialized. It returns 1 only for
+`WM_ERASEBKGND` to prevent Windows/Wine from filling the game
+background over DirectDraw pixels. It transparently forwards all
+other messages (including WM_PAINT, WM_ACTIVATE and input) to the
+original window procedure; on WM_NCDESTROY it restores the original
+procedure when still installed. No DirectDraw or logging calls occur
+inside the WndProc callback. Debug counters (suppressed WM_ERASEBKGND,
+observed WM_PAINT) are reported by the ordinary render-thread
+`Flip` code when `Log=1`.
+
+This is an **untested hypothesis** about the white window, not an
+established cause or verified fix. If no WM_ERASEBKGND events are
+reported, or the screen remains white with the guard enabled, the
+investigation must shift to Wine frontbuffer presentation, compositor
+or game WM_PAINT. The optional guard does not change pixel format,
+native COM source validation, crash protection or the anti-flicker
+one-time clear.
+
+For a controlled A/B run: with exactly the same settings, first
+reproduce with `WindowEraseGuard=0`, then set `WindowEraseGuard=1`
+(leave `FocusRepaint=1`, `[Debug] Log=1`, and
+`CrashBltTrace=0`). Cover/uncover, Alt+Tab, minimize/restore from
+menu and 3D mission. Record visual results and supply
+`CrimsonSkiesFix.log`. The two repaint/guard switches are independent.
+If any regression occurs, set `WindowEraseGuard=0` immediately.
+Do not classify repeated `surface_cpu_blt` filter FIXME as a crash.
 
 ## Experimental visibility restoration — v0.1.56
 
