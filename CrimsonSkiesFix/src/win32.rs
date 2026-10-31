@@ -34,6 +34,7 @@ extern "system" {
     fn GetLastError()->u32;
     fn SetLastError(code:u32);
     fn GetCurrentProcessId()->u32;
+    pub fn GetCurrentThreadId()->u32;
 }
 #[link(name = "user32")]
 extern "system" {
