@@ -766,8 +766,8 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
     let traced=trace_id!=0 && trace_id<=20_000;
     if traced{
         log(&format!(
-            "CRASH-BLT: ENTER id={trace_id} thread={:?} dest={this:p} src={src:p} dest_rect={dst:p} src_rect={src_rect:p} flags={flags:#010x} fx={fx:p}",
-            std::thread::current().id()));
+            "CRASH-BLT: ENTER id={trace_id} wine_tid={:#06x} dest={this:p} src={src:p} dest_rect={dst:p} src_rect={src_rect:p} flags={flags:#010x} fx={fx:p}",
+            win32::GetCurrentThreadId()));
     }else if trace_id==20_001{
         log("CRASH-BLT: bounded trace limit 20000 reached; further Blt calls unlogged");
     }
