@@ -54,7 +54,7 @@ fn first_patch_mismatch(bytes:&[u8],base:usize)->Option<&'static str>{
     if bytes.get(0..2)!=Some(b"MZ"){return Some("missing-MZ");}
     let Some(ntoff)=get32(bytes,0x3c).map(|x|x as usize) else{return Some("missing-e_lfanew");};
     if ntoff<0x40||ntoff>0x400{return Some("invalid-e_lfanew");}
-    if bytes.get(ntoff..ntoff+4)!=Some(b"PE\\0\\0"){return Some("missing-PE-signature");}
+    if bytes.get(ntoff..ntoff+4)!=Some(b"PE\0\0"){return Some("missing-PE-signature");}
     if bytes.get(ntoff+24..ntoff+26)!=Some(&[0x0b,0x01][..]){
         return Some("not-PE32");
     }
