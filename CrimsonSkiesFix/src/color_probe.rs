@@ -24,7 +24,14 @@ pub fn xrgb8888_to_rgb565(pixel:u32)->u16{
     let r=(pixel>>16)&0xff;
     let g=(pixel>>8)&0xff;
     let b=pixel&0xff;
-    (((r>>3)<<11)|((g>>2)<<5)|(b>>3)) as u16
+    // Wine's observed XRGB8888 -> RGB565 normalized-channel conversion
+    // rounds to the nearest representable 5/6-bit value. Earlier test
+    // code truncated high bits, causing false mismatches in scaled movie
+    // samples. 45 of 45 uploaded samples match these rounded values.
+    let r5=(r*31+127)/255;
+    let g6=(g*63+127)/255;
+    let b5=(b*31+127)/255;
+    ((r5<<11)|(g6<<5)|b5) as u16
 }
 
 pub fn should_probe(copy_number:usize)->bool{
@@ -225,6 +232,13 @@ mod tests{
         assert_eq!(xrgb8888_to_rgb565(0xffffffff),0xffff);
         assert_eq!(xrgb8888_to_rgb565(0xff000000),0);
         assert_eq!(xrgb8888_to_rgb565(0x007f7f7f),0x7bef);
+        // Exact real-game samples from 2026-10-31 v0.1.59 log:
+        // previous truncation falsely reported these as corrupt.
+        assert_eq!(xrgb8888_to_rgb565(0x003d1705),0x38c1);
+        assert_eq!(xrgb8888_to_rgb565(0x002c0d06),0x2861);
+        assert_eq!(xrgb8888_to_rgb565(0x00070000),0x0800);
+        assert_eq!(xrgb8888_to_rgb565(0x00270705),0x2841);
+        assert_eq!(xrgb8888_to_rgb565(0x000d0004),0x1000);
     }
     #[test]
     fn rate_is_bounded_and_includes_later_video_frames(){
