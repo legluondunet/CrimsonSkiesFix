@@ -26,6 +26,7 @@ use crate::{
     borderless_flip::{FlipBridgeError,FlipToBltBridge},
     borderless_native_blt::NativeWindowedBlt,
     presentation::Mode,
+    win32::{self,GameVisibility},
 };
 const S_OK:i32=0;
 const E_NOINTERFACE:i32=0x8000_4002u32 as i32;
@@ -73,6 +74,28 @@ impl VirtualGraphNode {
 /// primary->backbuffer->depth COM strong edges own the physical resources.
 /// The full three-object chain and native HWND/clipper MUST be verified
 /// before this is armed. There is deliberately no active game runtime caller.
+#[derive(Default)]
+struct ExposureState {
+    background_seen:bool,
+    update_region_seen:bool,
+}
+impl ExposureState {
+    // A one-shot restore is needed after a known foreground loss or when
+    // the Win32 update region becomes pending. A continuously invalid
+    // window must NOT provoke an erase+draw on every Flip (v0.1.50 flicker).
+    fn sample(&mut self,snapshot:Option<GameVisibility>)->bool {
+        let Some(visibility)=snapshot else{return false;};
+        let appeared=visibility.pending_paint && !self.update_region_seen;
+        self.update_region_seen=visibility.pending_paint;
+        if !visibility.foreground{
+            self.background_seen=true;
+            return false;
+        }
+        let restore=self.background_seen || appeared;
+        self.background_seen=false;
+        restore
+    }
+}
 struct GraphFlipSession{
     bridge:FlipToBltBridge,
     backend:NativeWindowedBlt,
@@ -80,6 +103,9 @@ struct GraphFlipSession{
     mode:Mode,
     fps_limit:Option<u32>, // None in standalone probe and COM unit tests
     last_present:Option<Instant>, // reset whenever the mode epoch changes
+    window:usize,
+    focus_repaint:bool,
+    exposure:ExposureState,
 }
 
 /// Limit only the *real game* virtual Primary Flip, never intermediate
@@ -246,7 +272,8 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
 /// The graph must outlive every in-flight COM method invocation.
 pub unsafe fn arm_graph_primary_flip(
     primary:SurfaceThis,contract:&AdapterContract,generation:u64,
-    origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>
+    origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>,
+    window:usize,focus_repaint:bool
 )->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
@@ -278,7 +305,7 @@ pub unsafe fn arm_graph_primary_flip(
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
-        fps_limit,last_present:None});
+        fps_limit,last_present:None,window,focus_repaint,exposure:ExposureState::default()});
     Ok(())
 }
 
@@ -629,10 +656,21 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // A successful windowed Flip is the sole frame-present boundary.
         // Do not rely on the passive modern Flip hook: these synthetic COM
         // surfaces never call through that native interface.
+        // Observe visibility only for the explicitly enabled experimental
+        // recovery. Never subclass the game WndProc, erase Win32 paint
+        // regions or reenter a COM call from a window message callback.
+        let repaint=if session.focus_repaint{
+            session.exposure.sample(
+                win32::game_visibility(session.window as win32::Hwnd))
+        }else{false};
         pace_graph_flip(session);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
-        return match bridge.present(*epoch,*mode,backend){
+        return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
+                if repaint{
+                    crate::log(&format!(
+                        "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
+                }
                 let count=GRAPH_FLIP_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if count==1 || count%120==0{
                     crate::log(&format!("WINDOWED-GAME: virtual Primary Flip presented frame={frame} global_flips={count}"));
@@ -1066,6 +1104,29 @@ mod tests{
         }
     }
     #[test]
+    fn focus_recovery_is_one_shot_and_repaint_region_edge_triggered(){
+        let mut state=ExposureState::default();
+        let focused=Some(GameVisibility{foreground:true,pending_paint:false});
+        let unfocused=Some(GameVisibility{foreground:false,pending_paint:false});
+        let pending=Some(GameVisibility{foreground:true,pending_paint:true});
+        assert!(!state.sample(None));
+        assert!(!state.sample(focused));
+        assert!(!state.sample(unfocused));
+        assert!(state.sample(focused)); // return from another foreground app
+        assert!(!state.sample(focused));
+        assert!(state.sample(pending)); // new Win32 paint region
+        assert!(!state.sample(pending)); // no per-frame black erase
+        assert!(!state.sample(focused));
+        assert!(state.sample(pending)); // a distinct invalidation
+    }
+    #[test]
+    fn no_focus_repaint_when_foreground_query_fails(){
+        let mut state=ExposureState::default();
+        assert!(!state.sample(Some(GameVisibility{foreground:false,pending_paint:true})));
+        assert!(!state.sample(None));
+        assert!(state.sample(Some(GameVisibility{foreground:true,pending_paint:false})));
+    }
+    #[test]
     fn all_45_slots_present_and_forwarding_identity_is_consistent(){
         assert_eq!(std::mem::size_of::<Surface4VTable>(),45*4);
         assert_eq!(std::mem::size_of::<usize>(),4);
@@ -1328,7 +1389,7 @@ mod tests{
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
             assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
-            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None).unwrap();
+            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None,0,false).unwrap();
             assert_eq!(retire_graph_primary_flip(p),Ok(0));
             assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
@@ -1376,8 +1437,8 @@ mod tests{
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!(graph_primary_completed_flips(p),None);
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None),Err(E_INVALIDARG));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None),Ok(()));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Ok(()));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None),Err(E_FAIL));
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
@@ -1393,7 +1454,7 @@ mod tests{
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
             assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
-            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
