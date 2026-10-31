@@ -42,8 +42,13 @@ pub trait WindowedBlt {
 /// Pure geometry gate shared by game-side contract and standalone probe.
 fn geometry_valid(mode:Mode,desktop:(u32,u32),viewport:Viewport)->bool{
     mode.bpp==16 &&
-    matches!((mode.width,mode.height),(640,480)|(800,600)) &&
-    fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport)
+    (
+        (matches!((mode.width,mode.height),(640,480)|(800,600)) &&
+         fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport))
+        ||
+        ((mode.width,mode.height)==desktop &&
+         viewport==Viewport{x:0,y:0,width:desktop.0,height:desktop.1})
+    )
 }
 
 /// Perform the two windowed Blts on the supplied *real* backend.
