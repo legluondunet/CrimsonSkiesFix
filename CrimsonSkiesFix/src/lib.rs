@@ -3,6 +3,7 @@
 #![cfg(windows)]
 mod config;
 mod win32;
+mod window_exposure;
 mod diagnostics;
 mod diagnostics_graphics;
 mod presentation;
