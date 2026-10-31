@@ -21,7 +21,7 @@ mod surface_usage; // opt-in passive COM surface audit for borderless prerequisi
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
-use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
+use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
@@ -104,6 +104,10 @@ const DDSCAPS_COMPLEX:u32=0x0000_0008;
 static MODULE:AtomicUsize=AtomicUsize::new(0);
 static CONFIG:OnceLock<Config>=OnceLock::new();
 static LOG:OnceLock<Mutex<File>>=OnceLock::new();
+// Only enabled for a controlled crash reproduction. The detailed source and
+// destination pointers are in a separate, bounded rotating file.
+static CRASH_BLT_LOG:OnceLock<Mutex<File>>=OnceLock::new();
+const CRASH_BLT_ROTATE_CALLS:usize=2048;
 static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
 static ORIGINALS:OnceLock<Mutex<HashMap<(usize,usize),usize>>>=OnceLock::new();
 static LAST_FRAME:Mutex<i64>=Mutex::new(0);
@@ -172,6 +176,27 @@ static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
+fn crash_blt_rotation_needed(id:usize)->bool {
+    id>1 && (id-1)%CRASH_BLT_ROTATE_CALLS==0
+}
+
+// All crash tracing uses a separate game-local file so the normal project
+// log stays small. Rewind once per 2048 completed/attempted native calls;
+// the most recent ENTER is retained even if Wine terminates inside Blt.
+// The lock is never held while entering Wine's original COM implementation.
+fn crash_blt_line(id:usize,is_enter:bool,line:&str){
+    let Some(lock)=CRASH_BLT_LOG.get() else{return;};
+    let Ok(mut file)=lock.lock() else{return;};
+    if is_enter && crash_blt_rotation_needed(id){
+        if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err(){
+            // A failed rewind is not allowed to change game graphics behavior.
+            return;
+        }
+        let _=writeln!(file,"CRASH-BLT: ROLLING SEGMENT starts_at_id={id} span={CRASH_BLT_ROTATE_CALLS}");
+    }
+    let _=writeln!(file,"{line}");
+}
+
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
         if let Ok(mut file)=log.lock(){let _=writeln!(file,"{message}");}
@@ -195,6 +220,22 @@ fn cfg()->Config {
                 log(&format!("{PROJECT_NAME} {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
+            }
+        }
+        // Read once at startup, never from DllMain. This file is intentionally
+        // independent of CrimsonSkiesFix.log: a fixed 20,000-call limit
+        // expired BEFORE the v0.1.53 gameplay crash.
+        if parsed.log_enabled && parsed.crash_blt_trace {
+            if let Some(path)=win32::crash_blt_trace_path(){
+                match OpenOptions::new().create(true).write(true).truncate(true).open(&path){
+                    Ok(file)=>{
+                        let _=CRASH_BLT_LOG.set(Mutex::new(file));
+                        log("CRASH-BLT: rolling trace active: CrimsonSkiesFix-BltTrace.log, latest 2048 native Blt calls retained");
+                    }
+                    Err(err)=>log(&format!("CRASH-BLT: cannot create rolling trace: {err}")),
+                }
+            }else{
+                log("CRASH-BLT: cannot resolve safe rolling trace path");
             }
         }
         parsed
@@ -754,27 +795,24 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
         trace_game_windows("first modern Blt");
     });
     sample_render_calls("Blt",&MODERN_BLT_EVENTS,&MODERN_BLT_START,&MODERN_BLT_WINDOW);
-    // The real 2026-10-31 crash was an unhandled AV inside Wine's builtin
-    // ddraw Surface4::Blt, called from THIS hook: 0x7a25b619, null+0x280.
-    // Only an explicit debug opt-in logs each native Blt boundary. Logging
-    // BEFORE the original call lets a process-terminating AV leave the
-    // responsible source/destination addresses and flags on disk.
-    // Never dereference the COM pointers in the crash tracer itself.
-    let trace_id=if cfg().log_enabled && cfg().crash_blt_trace {
+    // The reproduced fatal 0xC0000005 inside Wine builtin ddraw+0x3B619
+    // happens during this original Surface4::Blt call. A fixed 20k
+    // entry limit proved insufficient during normal gameplay, so a
+    // separate rolling trace now preserves the most recent calls.
+    // Pointer values are logged but NEVER dereferenced by this tracer.
+    let tracing=cfg().log_enabled && cfg().crash_blt_trace && CRASH_BLT_LOG.get().is_some();
+    let trace_id=if tracing{
         NATIVE_BLT_CRASH_TRACE_ID.fetch_add(1,Ordering::Relaxed)+1
     }else{0};
-    let traced=trace_id!=0 && trace_id<=20_000;
-    if traced{
-        log(&format!(
+    if tracing{
+        crash_blt_line(trace_id,true,&format!(
             "CRASH-BLT: ENTER id={trace_id} wine_tid={:#06x} dest={this:p} src={src:p} dest_rect={dst:p} src_rect={src_rect:p} flags={flags:#010x} fx={fx:p}",
             win32::GetCurrentThreadId()));
-    }else if trace_id==20_001{
-        log("CRASH-BLT: bounded trace limit 20000 reached; further Blt calls unlogged");
     }
     let call:BltFn=std::mem::transmute(addr);
     let hr=call(this,dst,src,src_rect,flags,fx);
-    if traced{
-        log(&format!("CRASH-BLT: EXIT id={trace_id} hr={:#010x}",hr as u32));
+    if tracing{
+        crash_blt_line(trace_id,false,&format!("CRASH-BLT: EXIT id={trace_id} hr={:#010x}",hr as u32));
     }
     record_surface_usage(this,surface_usage::Method::Blt,hr);
     if surface_usage_enabled(){
@@ -1266,6 +1304,16 @@ pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*m
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn crash_blt_rolling_trace_keeps_logging_after_twenty_thousand_calls(){
+        assert!(!crash_blt_rotation_needed(1));
+        assert!(!crash_blt_rotation_needed(2048));
+        assert!(crash_blt_rotation_needed(2049));
+        assert!(crash_blt_rotation_needed(4097));
+        assert!(!crash_blt_rotation_needed(20_000));
+        assert!(!crash_blt_rotation_needed(0));
+        assert_eq!(CRASH_BLT_ROTATE_CALLS,2048);
+    }
     #[test]
     fn log_identity_has_no_deprecated_project_name() {
         assert_eq!(PROJECT_NAME,"CrimsonSkiesFix");
