@@ -117,6 +117,15 @@ impl FlipToBltBridge {
     pub fn present<B:WindowedBlt>(&mut self,generation:u64,mode:Mode,backend:&mut B)
         ->Result<u64,FlipBridgeError>
     {
+        self.present_with_refresh(generation,mode,backend,false)
+    }
+
+    /// Repaint the full game window only on explicit visibility restoration.
+    /// Normal frames still stretch just the 4:3 viewport, avoiding the black
+    /// flicker that occurred when the whole desktop was cleared each Flip.
+    pub fn present_with_refresh<B:WindowedBlt>(&mut self,generation:u64,mode:Mode,
+        backend:&mut B,visibility_refresh:bool)->Result<u64,FlipBridgeError>
+    {
         if self.fault.is_some(){return Err(FlipBridgeError::AlreadyFaulted);}
         let failure=if generation!=self.generation {
             Some(FlipBridgeError::WrongGeneration)
@@ -140,7 +149,7 @@ impl FlipToBltBridge {
         // bounds and the pillarbox viewport are fixed for this epoch.
         // Clear once on the first frame, then update only the viewport.
         // Each new mode has its own freshly initialized bridge.
-        let outcome=if self.complete_frames==0{
+        let outcome=if self.complete_frames==0 || visibility_refresh{
             execute_windowed_blt_pair(
                 backend,self.internal,self.desktop,self.viewport
             )
@@ -252,6 +261,33 @@ mod tests {
         assert_eq!(backend.events[2],Event::Stretch(m,bridge.viewport()));
         assert_eq!(backend.events[120],Event::Stretch(m,bridge.viewport()));
         assert_eq!(backend.events.iter().filter(|x|matches!(x,Event::Black(_, _))).count(),1);
+    }
+    #[test]
+    fn explicit_visibility_return_repaints_once_without_every_frame_clear(){
+        let m=mode640();let c=ready(m);
+        let mut bridge=FlipToBltBridge::from_exposed(&c,55).unwrap();
+        let mut backend=FakeBlt::default();
+        assert_eq!(bridge.present(55,m,&mut backend),Ok(1));
+        assert_eq!(bridge.present(55,m,&mut backend),Ok(2));
+        assert_eq!(bridge.present_with_refresh(55,m,&mut backend,true),Ok(3));
+        assert_eq!(bridge.present(55,m,&mut backend),Ok(4));
+        assert_eq!(backend.events.len(),6);
+        assert_eq!(backend.events.iter().filter(|x|matches!(x,Event::Black(_, _))).count(),2);
+        assert_eq!(backend.events[3],Event::Black(1920,1080));
+        assert_eq!(backend.events[4],Event::Stretch(m,bridge.viewport()));
+        assert_eq!(bridge.stats(),FlipStats{complete_frames:4,fault:None});
+    }
+    #[test]
+    fn refresh_clear_failure_does_not_acknowledge_frame(){
+        let m=mode640();let c=ready(m);
+        let mut bridge=FlipToBltBridge::from_exposed(&c,56).unwrap();
+        let mut backend=FakeBlt::default();
+        assert_eq!(bridge.present(56,m,&mut backend),Ok(1));
+        backend.fail_black=Some(-61);
+        assert_eq!(bridge.present_with_refresh(56,m,&mut backend,true),
+                   Err(FlipBridgeError::ClearBlackFailed(-61)));
+        assert_eq!(bridge.stats().complete_frames,1);
+        assert_eq!(bridge.present(56,m,&mut backend),Err(FlipBridgeError::AlreadyFaulted));
     }
     #[test]
     fn later_stretch_error_is_latched_without_black_clear_or_frame_ack(){
