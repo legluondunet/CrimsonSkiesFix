@@ -21,6 +21,8 @@ pub const DEFAULT_INI: &str = concat!(
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
     "CrashBltTrace=0\n",
+    "; Optional diagnostic: read 9 RGB32/RGB565 pixel pairs after selected native Blts.\n",
+    "ColorProbe=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +37,12 @@ pub struct Config {
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
+    pub color_probe: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false }
     }
 }
 
@@ -81,6 +84,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
+            ("debug", "colorprobe") =>
+                if let Some(v) = enabled(value) { settings.color_probe = v; },
             ("debug", "crashblttrace") =>
                 if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
             ("debug", "surfaceusagetrace") =>
@@ -104,7 +109,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -126,6 +131,13 @@ mod tests {
         assert!(!parse("[Debug]\nFocusRepaint=1").focus_repaint);
         assert!(parse("[Graphics]\nFocusRepaint=1").focus_repaint);
         assert!(!parse("[Graphics]\nFocusRepaint=1\nFocusRepaint=0").focus_repaint);
+    }
+    #[test]
+    fn color_probe_is_debug_only_default_off(){
+        assert!(!Config::default().color_probe);
+        assert!(!parse("[Graphics]\nColorProbe=1").color_probe);
+        assert!(parse("[Debug]\nColorProbe=1\nLog=1").color_probe);
+        assert!(!parse("[Debug]\nColorProbe=1\nColorProbe=0").color_probe);
     }
     #[test]
     fn crash_blt_trace_is_debug_only_and_off_by_default(){
