@@ -4,7 +4,7 @@
 //! to the loaded proxy DLL. This module never writes to source surfaces.
 //! It can stall while locking GPU resources; disabled by default.
 #![allow(dead_code)]
-use std::{ffi::c_void,io::Write,fs::OpenOptions,ptr};
+use std::{io::Write,fs::OpenOptions,ptr};
 use crate::com_surface4_abi::{SurfaceThis,Surface4VTable};
 
 const RGB_FLAG:u32=0x40;
