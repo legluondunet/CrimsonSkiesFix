@@ -153,6 +153,17 @@ pub fn crash_blt_trace_path()->Option<PathBuf> {
     Some(path)
 }
 
+/// Strictly allowlisted capture names, next to the actual loaded proxy.
+pub fn color_capture_path(label:&str)->Option<PathBuf>{
+    if !matches!(label,"Copy1-Source32"|"Copy3-Source32"|"Copy3-Dest565"){
+        return None;
+    }
+    let path=dll_directory()?.join(format!(
+        "CrimsonSkiesFix-Color-{}-{label}.bmp",unsafe{GetCurrentProcessId()}));
+    if fs::symlink_metadata(&path).is_ok(){return None;}
+    Some(path)
+}
+
 pub unsafe fn real_ddraw()->Option<*mut c_void> {
     let mut path=[0u16;32768];
     let n=GetSystemDirectoryW(path.as_mut_ptr(),path.len() as u32) as usize;
