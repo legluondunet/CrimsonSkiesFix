@@ -6,7 +6,7 @@
 //! Lock/Unlock of GPU resources may stall or fail under Wine; opt-in only.
 //! Failure to sample is not evidence that the native conversion is correct.
 #![allow(dead_code)]
-use std::{ffi::c_void,ptr};
+use std::ptr;
 use crate::com_surface4_abi::{Rect,Surface4VTable,SurfaceThis};
 
 const DDPF_RGB:u32=0x40;
