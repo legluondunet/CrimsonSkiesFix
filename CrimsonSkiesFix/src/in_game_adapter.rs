@@ -345,6 +345,16 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
                 return Some(E_FAIL);
             }
+            if crate::cfg().window_erase_guard {
+                // This experiment is only installed AFTER validating the
+                // exact process-owned game window and normal DD4 graph.
+                // A failure is logged, never hidden, but the game continues
+                // with the previously validated v0.1.55 display behavior.
+                match crate::window_erase_guard::install(runtime.hwnd){
+                    Ok(())=>log("WINDOWED-GAME: WindowEraseGuard installed on verified game HWND (WM_ERASEBKGND only)"),
+                    Err(err)=>log(&format!("WINDOWED-GAME: WindowEraseGuard unavailable: {err}")),
+                }
+            }
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
             Some(0)
