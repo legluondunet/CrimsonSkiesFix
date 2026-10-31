@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.57 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.58 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -194,6 +194,52 @@ crash returns.
 
 The separate pink/green 32-bit source-to-RGB565 conversion problem is
 **not changed** by v0.1.56.
+
+## v0.1.58 — opt-in intro color diagnosis (no color changes)
+
+The earlier corrupted Crimson Skies title artwork contains strong
+magenta/green speckling, not simply swapped red and blue. Game logs
+show that real native 32-bit XRGB source surfaces (800x600 and
+320x240, masks R=0x00FF0000/G=0x0000FF00/B=0x000000FF)
+are copied by IDirectDrawSurface4::Blt into the virtual
+game's native **16-bit RGB565** offscreen backbuffer. All Wine native
+copies returned S_OK, but a successful HRESULT alone says nothing
+about the underlying pixel channels.
+
+New default-off `[Debug] ColorProbe=0` (requires `Log=1`)
+samples NINE source and destination pixel pairs **after**
+selected successful native source-copy Blts, at copies 1–3 and
+every 60 up to 1200. It is strictly limited to matching
+one-to-one 32-bit XRGB8888 to 16-bit RGB565 operations, canonical
+RGB masks, and valid source/destination rectangles. Scaled copies,
+other formats, un-lockable resources, or unexpected pitches are
+logged as skipped/unavailable rather than guessed. Sampling uses
+temporary native read-only DirectDraw4 Lock/Unlock calls on the
+current game thread (no asynchronous workers or additional COM refs);
+**it may cause a brief GPU stall and is diagnostic only**. The game
+pixels are never intentionally written or transformed; the actual
+native Blt remains unchanged. If either Lock fails, the original
+successful Blt result is retained.
+
+`COLOR-PROBE: copy=N match=X/9 mismatches=Y` and per-swatch
+`xrgb.../expected.../got...` values in `CrimsonSkiesFix.log`
+allow us to determine whether Wine converts the current source
+RGB channels correctly. If the expected and observed RGB565
+values match while the screenshot still looks wrong, the problem
+must be upstream of conversion or downstream of this backbuffer,
+not in these sampled Blt pixel values. Mismatches suggest a
+conversion/filter/presentation issue requiring targeted follow-up;
+they do NOT automatically prove Wine is at fault.
+
+**Next test:** enable `ColorProbe=1` and `Log=1`, leave
+`ExperimentalWindowedAdapter=1`, `FocusRepaint=1` and
+`WindowEraseGuard=1` as previously validated, and retain
+`CrashBltTrace=0`. View the title/logo animation with the
+corrupt magenta/green pixels, capture a screenshot if it remains
+corrupt, then send `CrimsonSkiesFix.log`. Disable `ColorProbe`
+again after this targeted diagnostic, as readback of 3D surfaces
+is more intrusive than ordinary passive logging. No claim is
+made that v0.1.58 fixes the color.
 
 ## Private-by-default diagnostics (reused from Spider-Man)
 
