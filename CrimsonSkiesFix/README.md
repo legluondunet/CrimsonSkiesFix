@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.55 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.56 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -67,6 +67,7 @@ DesktopResolution=1
 FPSLimit=60
 ModernFPSPacing=0
 ExperimentalWindowedAdapter=0
+FocusRepaint=0
 
 [Debug]
 Log=0
@@ -100,6 +101,44 @@ Log=0
 - `[Debug] CrashBltTrace=0`: default-off verbose trace of each native DirectDraw Blt\n  just before and after the call. Set `1` only for a controlled crash\n  reproduction with `Log=1`, then reset to `0`. v0.1.54 stores\n  the most recent 2,048 native Blt calls in a rolling separate file\n  `CrimsonSkiesFix-BltTrace.log` next to `ddraw.dll` (it is overwritten\n  on each launch, rotated in-place every 2,048 Blts, and remains small).\n  It does not stop recording during lengthy gameplay but may slow the\n  game. An ENTER without its matching EXIT on the crashing Wine TID\n  identifies the last in-flight Blt (not necessarily the invalidation).\n- `[Debug] Log=0`: logging is **fully disabled by default**; no
   log file is created or modified. Set `Log=1` to create/overwrite
   `CrimsonSkiesFix.log` at the next game startup.
+
+## Experimental visibility restoration — v0.1.56
+
+The v0.1.55 COM source guard successfully ran during gameplay and the former
+Wine native `Blt` access violation has **not** been reproduced; it is not
+proven impossible. Keep that stability fix active.
+
+v0.1.56 adds an independent **default-off** `[Graphics] FocusRepaint=0`
+experiment, effective only while `ExperimentalWindowedAdapter=1`. Set
+`FocusRepaint=1` to test a white or blank game surface after Alt+Tab,
+restoring the game window, or exposure/invalidation. On each virtual
+primary `Flip` it makes read-only Win32 queries of the verified game HWND
+(foreground status and pending paint region). After a witnessed
+foreground loss/return, or the **leading edge** of a new pending Win32
+paint region, the next Flip performs exactly one complete black-clear
+and RGB565 4:3 viewport stretch. Subsequent Flips remain viewport-only,
+preserving v0.1.51's no-per-frame-clear anti-flicker change.
+
+No WndProc subclassing, Win32 painting/erasing, background thread,
+DD4 resource reconstruction, or game executable patch is involved. It
+is deliberately not claimed as a verified fix: if the game stops
+flipping while occluded and has no pending paint region when resumed,
+the transition may not be observed. Native Windows and Wine results
+must be tested. On regression set `FocusRepaint=0` to return to the
+v0.1.55 presentation behavior without changing any other setting.
+
+**Test plan:** with the same game and settings, first test
+`FocusRepaint=0`, then `FocusRepaint=1`. During both menu and a 3D
+mission, Alt+Tab to an overlapping window, cover/uncover the game,
+minimize/restore and return to the game. Check for recovered pixels,
+unwanted full-screen black flashes, sustained white, lost focus and
+crashes. When enabled with `[Debug] Log=1`, successful one-shot events
+are logged as `WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded`.
+Leave `CrashBltTrace=0` for ordinary focus testing unless a native
+crash returns.
+
+The separate pink/green 32-bit source-to-RGB565 conversion problem is
+**not changed** by v0.1.56.
 
 ## Private-by-default diagnostics (reused from Spider-Man)
 
