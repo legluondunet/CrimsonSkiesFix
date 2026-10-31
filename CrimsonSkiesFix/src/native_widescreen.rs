@@ -28,6 +28,8 @@ const PAGE_EXECUTE_READWRITE:u32=0x40;
 extern "system"{
     fn GetModuleHandleW(module:*const u16)->*mut c_void;
     fn VirtualProtect(address:*mut c_void,len:usize,new:u32,old:*mut u32)->i32;
+    fn GetCurrentProcess()->*mut c_void;
+    fn FlushInstructionCache(process:*mut c_void,address:*const c_void,len:usize)->i32;
 }
 
 fn valid_landscape_dimensions(w:u32,h:u32)->bool{
@@ -165,35 +167,52 @@ pub unsafe fn apply_unwrapped_resolution(width:u32,height:u32)->PatchResult {
         crate::log("WINDOWED-WIDE: unwrapped resolution-only signature mismatch; untouched");
         return PatchResult::UnsupportedExecutable;
     }
-    // Single VirtualProtect region includes all sites, but doing so would
-    // require changing protections across unrelated pages. Use one page
-    // per site, with rollback of prior sites upon any failure.
-    let mut applied:Vec<(usize,[u8;5],u32)>=Vec::new();
+    // Validate all sites before mutating any; all modifications are within
+    // the game's two known 1024x768 preset code paths.
+    let mut changed:Vec<(usize,[u8;5])>=Vec::new();
+    let mut failure=None;
     for &(rva,expected,value) in &sites {
-        let ptr=(base as usize+rva) as *mut c_void;
+        let target=(base as usize+rva) as *mut c_void;
         let mut old=0u32;
-        if VirtualProtect(ptr,5,PAGE_EXECUTE_READWRITE,&mut old)==0 {
-            for &(rollback_rva,original,_) in applied.iter().rev(){
-                let p=(base as usize+rollback_rva) as *mut c_void;
-                let mut saved=0u32;
-                if VirtualProtect(p,5,PAGE_EXECUTE_READWRITE,&mut saved)!=0 {
-                    ptr::copy_nonoverlapping(original.as_ptr(),p.cast::<u8>(),5);
-                    let mut restored=0u32;
-                    let _=VirtualProtect(p,5,saved,&mut restored);
-                }
-            }
-            return PatchResult::ProtectFailed;
+        if VirtualProtect(target,5,PAGE_EXECUTE_READWRITE,&mut old)==0 {
+            failure=Some(PatchResult::ProtectFailed);
+            break;
         }
         let mut replacement=expected;
         replacement[1..5].copy_from_slice(&value.to_le_bytes());
-        ptr::copy_nonoverlapping(replacement.as_ptr(),ptr.cast::<u8>(),5);
-        applied.push((rva,expected,value));
+        ptr::copy_nonoverlapping(replacement.as_ptr(),target.cast::<u8>(),5);
+        changed.push((rva,expected));
+        let flush=FlushInstructionCache(GetCurrentProcess(),target.cast_const(),5);
         let mut ignored=0u32;
-        if VirtualProtect(ptr,5,old,&mut ignored)==0 {
-            crate::log("WINDOWED-WIDE: page protection restoration failed; unwrapped patch unsafe");
-            return PatchResult::RestoreProtectionFailed;
+        let restore=VirtualProtect(target,5,old,&mut ignored);
+        if flush==0 || restore==0 {
+            failure=Some(PatchResult::RestoreProtectionFailed);
+            break;
         }
     }
+    if let Some(reason)=failure {
+        let mut rollback_ok=true;
+        for &(rva,expected) in changed.iter().rev() {
+            let target=(base as usize+rva) as *mut c_void;
+            let mut old=0u32;
+            if VirtualProtect(target,5,PAGE_EXECUTE_READWRITE,&mut old)==0 {
+                rollback_ok=false;
+                continue;
+            }
+            ptr::copy_nonoverlapping(expected.as_ptr(),target.cast::<u8>(),5);
+            let flush=FlushInstructionCache(GetCurrentProcess(),target.cast_const(),5);
+            let mut ignored=0u32;
+            let restore=VirtualProtect(target,5,old,&mut ignored);
+            if flush==0 || restore==0 { rollback_ok=false; }
+        }
+        crate::log(if rollback_ok{
+            "WINDOWED-WIDE: unwrapped mode patch failed and rolled back"
+        }else{
+            "WINDOWED-WIDE: CRITICAL incomplete rollback; do not continue 3D"
+        });
+        return reason;
+    }
+    crate::log("WINDOWED-WIDE: experimental unwrapped 1024 preset dimensions patched; FOV untouched");
     PatchResult::Patched
 }
 
