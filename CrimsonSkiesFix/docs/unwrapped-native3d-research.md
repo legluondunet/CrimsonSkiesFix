@@ -109,3 +109,18 @@ On-disk comparison with `CRIMSON-UNWRAPPED.EXE` (SHA-256 `43540fc97347210d6f4c10
 **Scope update:** FOV is back in scope on explicit user request. Do not simply transplant the patched reference's code cave to the unwrapped EXE without verifying every relocated branch, data operand, and preimage; prefer a minimal fail-closed patch proven by a normalized binary-diff fixture. Our existing six-site immediate patch modifies a different sequence, so it must not run concurrently with any complete WSGF-style code transformation without explicit mode arbitration.
 
 A third reference with a different resolution would help distinguish variable width/height data from fixed aspect-ratio assumptions and code differences. Requested reference targets: 1920x1080 (16:9) and 2560x1080 or 3440x1440 (ultrawide), if available.
+
+## Multi-resolution gold-standard archive — 29 patched EXEs
+
+The user-provided `Resolution Hack and FOV Fix - No HUD Stretch.7z` contains **29 PE32 executables**, one per resolution, 1024x600 through 7680x1440. An exhaustive byte-level comparison established:
+
+- Every EXE is exactly **2,580,480 bytes**.
+- The archive's `1920x1080/CRIMSON.EXE` is byte-for-byte identical to the existing reference `CRIMSON(5).EXE` (SHA-256 `5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67`).
+- The archive's `1920x1200/CRIMSON.EXE` is byte-for-byte identical to the just-supplied `CRIMSON(7).EXE` (SHA-256 `612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d`).
+- Across **all 29**, only **four individual bytes differ**, occupying two 32-bit little-endian values at file offsets / (for this section) RVAs `0x20254B` and `0x20254F`.
+- The first DWORD equals each folder's width and the second DWORD equals the folder's height. Example `1920x1080`: `80 07 00 00 38 04 00 00`; `1920x1200`: `80 07 00 00 B0 04 00 00`; `3440x1440`: `70 0D 00 00 A0 05 00 00`.
+- The **entire instruction-code patch is invariant across all 29 resolutions**, including changes for FOV and unstretched HUD. Only those two data DWORDs vary.
+
+**Consequences:** no need to reverse engineer a resolution-specific FOV algorithm or request more resolution examples. The existing supported runtime mutator `apply_monitor_resolution` already has the correct width/height pair offsets for the fully patched EXE. The actual missing capability is safely applying (in memory) the **common, resolution-invariant code transformation** to the owner's unwrapped EXE and then populating the two DWORDs. The earlier six-site `apply_unwrapped_resolution` is an incomplete alternative; do not stack it with the full transformation.
+
+For an implementation, derive the 29-way common differences from a single explicitly fingerprinted unwrapped source and a fully patched reference; apply patch operations transactionally with preimage checks, individual protection restores, instruction-cache flush, and rollback. Never commit original or patched proprietary EXEs into the repository.
