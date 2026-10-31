@@ -489,6 +489,106 @@ mod logical_mode_tests{
     }
 }
 
+// Confirmed from 2026-10-31 full-frame readback: the game generated
+// 800 pixels of 16-bit RGB565 in each scanline, yet the real unmodified
+// DDSCL_NORMAL/Wine CreateSurface with no explicit DDPIXELFORMAT built a
+// 32-bit system-memory surface. The 800px source therefore occupied
+// exactly 400 32-bit pixels, with magenta/green colors when interpreted
+// as RGB32. Decoding low 16 bits of each DWORD restores the artwork.
+//
+// Only the *observed* user-game legacy 800x600 source is eligible.
+// Offscreen video frames 320x240 (and textures, depth, render targets,
+// other caps/descriptor flags) retain their original native formats.
+// Do NOT mutate the game's original desc, and never change the physical
+// desktop display mode. This remains default-off pending live test.
+const EXACT_LEGACY_IMAGE_FLAGS:u32=0x0011_0007; // CAPS|HEIGHT|WIDTH|CKSRCBLT|TEXTURESTAGE
+const EXACT_LEGACY_IMAGE_CAPS:u32=DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM;
+
+fn legacy_rgb565_descriptor(words:&[u32;31],mode:Mode)->Option<[u32;31]>{
+    if mode.bpp!=16 || !matches!((mode.width,mode.height),(640,480)|(800,600)){
+        return None;
+    }
+    if words[0]!=124 || words[1]!=EXACT_LEGACY_IMAGE_FLAGS ||
+       words[26]!=EXACT_LEGACY_IMAGE_CAPS ||
+       words[2]!=mode.height || words[3]!=mode.width{
+        return None;
+    }
+    // No game-requested pixel format is present (DDSD_PIXELFORMAT unset).
+    // Insert exact native 16-bit RGB565 masks, preserving color-key flags
+    // and all caller-requested caps and texture-stage data.
+    let mut d=*words;
+    d[1]|=DDSD_PIXELFORMAT;
+    d[18..26].fill(0);
+    d[18]=32;   // DDPIXELFORMAT.dwSize
+    d[19]=0x40; // DDPF_RGB
+    d[21]=16;
+    d[22]=0xf800;
+    d[23]=0x07e0;
+    d[24]=0x001f;
+    Some(d)
+}
+
+/// Return a modified COPY of the game descriptor for only the matching
+/// native DD4 offscreen system-memory image source. Never call Wine here:
+/// the existing original DD4 CreateSurface must create and own the object.
+pub unsafe fn legacy_offscreen_rgb565(dd4:*mut c_void,desc:*mut c_void,
+    outer:*mut c_void)->Option<[u32;31]>{
+    if dd4.is_null() || desc.is_null() || !outer.is_null(){return None;}
+    let words=desc.cast::<u32>();
+    if *words!=124{return None;}
+    let Ok(state)=RUNTIME.lock() else{return None};
+    let runtime=state.as_ref()?;
+    if runtime.dd4!=dd4 as usize || !runtime.exposed{return None;}
+    let epoch=runtime.epoch.as_ref()?;
+    let input=&*(words as *const [u32;31]);
+    legacy_rgb565_descriptor(input,epoch.mode)
+}
+
+#[cfg(test)]
+mod legacy_source_tests{
+    use super::*;
+    fn source_desc(width:u32,height:u32)->[u32;31]{
+        let mut d=[0u32;31];
+        d[0]=124;
+        d[1]=EXACT_LEGACY_IMAGE_FLAGS;
+        d[2]=height;d[3]=width;
+        d[26]=EXACT_LEGACY_IMAGE_CAPS;
+        // The game did not request explicit PF; preserve existing payload.
+        d[27]=0x12345678;
+        d
+    }
+    #[test]
+    fn exact_game_rgb565_16bit_image_source_is_only_one_selected(){
+        for (w,h) in [(640,480),(800,600)]{
+            let d=source_desc(w,h);
+            let changed=legacy_rgb565_descriptor(&d,Mode{width:w,height:h,bpp:16}).unwrap();
+            assert_eq!(d[1],EXACT_LEGACY_IMAGE_FLAGS); // no mutation
+            assert_eq!(changed[1],EXACT_LEGACY_IMAGE_FLAGS|DDSD_PIXELFORMAT);
+            assert_eq!((changed[18],changed[19],changed[21]),(32,0x40,16));
+            assert_eq!((changed[22],changed[23],changed[24],changed[25]),
+                       (0xf800,0x07e0,0x001f,0));
+            assert_eq!((changed[2],changed[3],changed[26],changed[27]),
+                       (h,w,EXACT_LEGACY_IMAGE_CAPS,0x12345678));
+        }
+    }
+    #[test]
+    fn refuses_other_formats_video_and_unsupported_surface_descriptors(){
+        let mode=Mode{width:800,height:600,bpp:16};
+        assert!(legacy_rgb565_descriptor(&source_desc(320,240),mode).is_none());
+        assert!(legacy_rgb565_descriptor(&source_desc(800,600),
+            Mode{width:800,height:600,bpp:32}).is_none());
+        let baseline=source_desc(800,600);
+        for (slot,value) in [(0,108),(1,EXACT_LEGACY_IMAGE_FLAGS|DDSD_PIXELFORMAT),
+                             (1,EXACT_LEGACY_IMAGE_FLAGS&!0x10000),
+                             (26,DD_CAPS_OFFSCREEN|DD_CAPS_VIDEOMEM),
+                             (26,DD_CAPS_SYSTEMMEM)]{
+            let mut other=baseline;other[slot]=value;
+            assert!(legacy_rgb565_descriptor(&other,mode).is_none(),
+                    "bad descriptor unexpectedly matched slot {slot}");
+        }
+    }
+}
+
 /// Called before the native DD4 CreateSurface. Only replace the exact
 /// one-backbuffer primary (or explicit matching Z32) on the game DD4.
 pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
