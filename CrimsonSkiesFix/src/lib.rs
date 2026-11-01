@@ -280,8 +280,12 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // values. Only a single unambiguous primary monitor permits this path.
     static EARLY_NATIVE_ONCE:Once=Once::new();
     if config.experimental_windowed_adapter && config.native_3d_widescreen {
-        EARLY_NATIVE_ONCE.call_once(||unsafe{
-            native_widescreen::prime_native_widescreen_early();
+        EARLY_NATIVE_ONCE.call_once(||{
+            if let Some((w,h))=win32::sole_primary_monitor_dimensions(){
+                unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
+            }else{
+                log("WINDOWED-WIDE: early patch deferred; monitor count or geometry ambiguous");
+            }
         });
     }
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
