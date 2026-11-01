@@ -13,6 +13,47 @@ pub unsafe fn suppress_video_selector()->bool{startup_selector::apply()}
 mod full_patch;
 pub unsafe fn apply_unwrapped_full_patch(w:u32,h:u32)->PatchResult{full_patch::apply(w,h)}
 
+use std::sync::OnceLock;
+
+// The historical prepatched EXE had the FOV/HUD code present when the
+// process started. Applying that same transformation only at the game's
+// late DD4 exclusive negotiation can miss 4:3 HUD/camera initialization.
+// Prime on the earliest DirectDraw export when exactly one monitor exists,
+// before DirectDraw setup, never in DllMain. Defer on multi-monitor hosts.
+static EARLY_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
+
+pub unsafe fn prime_native_widescreen_early(){
+    if EARLY_NATIVE_PATCH.get().is_some(){return;}
+    let Some((w,h))=crate::win32::sole_primary_monitor_dimensions() else{
+        crate::log("WINDOWED-WIDE: early patch deferred; monitor count or geometry ambiguous");
+        return;
+    };
+    // apply() itself verifies exact PE headers and every original byte,
+    // and performs fail-closed memory protection and rollback.
+    let result=full_patch::apply(w,h);
+    let _=EARLY_NATIVE_PATCH.set((w,h,result));
+    crate::log(&format!(
+        "WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor={}x{} result={result:?}",
+        w,h
+    ));
+}
+
+pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
+    if let Some(&(early_w,early_h,result))=EARLY_NATIVE_PATCH.get(){
+        if (early_w,early_h)!=(w,h){
+            crate::log("WINDOWED-WIDE: early monitor and game HWND monitor differ; native mode refused");
+            return PatchResult::InvalidMonitor;
+        }
+        crate::log(&format!(
+            "WINDOWED-WIDE: reused early native FOV/HUD patch; monitor={}x{} result={result:?}",
+            w,h
+        ));
+        return result; // NEVER apply a second time to already-patched bytes.
+    }
+    // Multi-monitor fallback retains the previous, late HWND-specific path.
+    full_patch::apply(w,h)
+}
+
 const IMAGE_BASE:usize=0x0040_0000;
 const IMAGE_SIZE:usize=0x0065_2000;
 const WIDTH_RVA:usize=0x0020_254b;
