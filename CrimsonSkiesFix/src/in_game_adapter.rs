@@ -195,6 +195,9 @@ struct Epoch {
     physical_lock_primary:Com, // independent logical RGB565 primary staging
     physical_back:Com, // native D3D3 RGB565 backbuffer; retained for identity checks
     physical_depth:Com,
+    // Dedicated offscreen menu image, never exposed to the game. The
+    // strong COM reference outlives the borrowed pointer in the Flip graph.
+    menu_scratch:Option<Com>,
     clipper:Com,
 }
 struct Runtime {
@@ -420,6 +423,20 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     prove_hal(dd4,&real_back)?;
     let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
         mode.width,mode.height,Some(16)))?;
+    // Menu logo is composited on a PRIVATE RGB565 surface and then copied
+    // to the physical primary in the same frame. The game's D3D backbuffer
+    // remains untouched, even during a playing animated menu background.
+    // If unavailable, graphics/gameplay continue without the version label.
+    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)){
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+            mode.width,mode.height,Some(16))) {
+            Ok(surface)=>Some(surface),
+            Err(error)=>{
+                log(&format!("MENU-BRANDING: offscreen scratch unavailable: {error}"));
+                None
+            }
+        }
+    }else{None};
     verify_primary_lock_staging(&primary_lock,mode)?;
     log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
         mode.width,mode.height));
@@ -463,11 +480,12 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     }).map_err(|e|format!("graph evidence: {e:?}"))?;
     com_surface4_forward::arm_graph_primary_flip(
         primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit),
-        hwnd as usize,crate::cfg().focus_repaint
+        hwnd as usize,crate::cfg().focus_repaint,
+        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
-        physical_depth:real_depth,clipper})
+        physical_depth:real_depth,menu_scratch,clipper})
 }
 // Give the game its *logical* DD4 mode, not the desktop's physical mode.
 // Crimson Skies requests 640x480x16 (or 800x600x16), while our real
