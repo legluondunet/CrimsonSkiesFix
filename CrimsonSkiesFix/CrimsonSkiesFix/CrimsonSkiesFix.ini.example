@@ -11,7 +11,7 @@ ModernFPSPacing=0
 ; FPSLimit is clamped to 1..60.
 
 [Debug]
-; 0 = no CrimsonSkiesFix.log is created beside ddraw.dll.
+; 0 = normal diagnostics disabled; rejected EXE hashes are ALWAYS logged.
 ; 1 = write CrimsonSkiesFix.log beside ddraw.dll.
 Log=0
 ; Optional: passive surface-method audit, requires Log=1. No graphic changes.
