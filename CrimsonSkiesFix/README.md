@@ -1,10 +1,20 @@
-# CrimsonSkiesFix 0.1.65 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.66 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.66 — monitor launch selection and build identity (experimental)
+
+The DLL now captures the monitor under the pointer on its **first DirectDraw export** and freezes that selection; it does not follow later cursor movement. For the existing opt-in windowed adapter, the game-owned HWND is validated before being moved to that monitor's **actual virtual desktop origin**, including nonzero and negative coordinates. Render-buffer sizes and client geometry use `right-left` and `bottom-top`, not absolute `right` and `bottom`. The early FOV/HUD patch reads the same frozen monitor's dimensions, and later DirectDraw4 negotiation reuses them. This replaces the previous primary-screen (0,0) assumption.
+
+This captures the pointer's monitor at DirectDraw startup, **not an OS-provided "monitor that launched the process"** (Windows has no general equivalent). Test with displays on either side of the primary, including negative coordinates. The windowed 4:3 menus and videos still retain their logical 640x480/800x600 rendering and centered aspect-correct presentation.
+
+The build now embeds `CrimsonSkiesFix VERSION-SHORTCOMMIT` (actual source head commit in CI) and logs it during initialization. **Drawing this text only on the main menu is not implemented yet.** The game uses its own script-driven custom widgets, and the native video options for `Graphics` and `Resolution` likewise still need a verified GUI event hook to safely lock their lists and replace the visible resolution with the selected monitor dimensions. Their existing settings remain untouched in this experimental build; do not claim them disabled.
+
+**Status:** Windows x86 compile/unit tests and real multi-monitor Wine/Windows runtime tests are separate gates. No merge until the user validates the new monitor placement and no regression in 4:3 videos or gameplay.
 
 ## v0.1.65 — experimental early native FOV/HUD initialization
 
