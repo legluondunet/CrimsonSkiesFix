@@ -12,6 +12,8 @@ const IMAGE_BASE:usize=0x0040_0000;
 const REGISTRATION_PUSH:usize=0x0040_75D6;
 const ORIGINAL_BYTES:[u8;5]=[0x68,0x70,0x76,0x40,0x00];
 const ORIGINAL_CALLBACK:usize=0x0040_7670;
+const SELECTED_DEVICE:usize=0x0064_B490;
+const SELECTED_MODE:usize=0x0064_B48C;
 const PAGE_EXECUTE_READWRITE:u32=0x40;
 const MAX_EVENTS:u32=80;
 static EVENTS:AtomicU32=AtomicU32::new(0);
@@ -35,17 +37,23 @@ unsafe extern "system" fn observe_callback(
     // After the original call the event structure may be invalid, so
     // inspect the ID first, without dereferencing nested object pointers.
     let command=if third.is_null(){u32::MAX}else{ptr::read_unaligned(third)};
+    let record=should_trace(command,EVENTS.load(Ordering::Relaxed),
+        crate::menu_video_probe::legacy_ui_active());
+    let before=if record{Some((
+        ptr::read_volatile(SELECTED_DEVICE as *const u32),
+        ptr::read_volatile(SELECTED_MODE as *const u32)
+    ))}else{None};
     let original:unsafe extern "system" fn(usize,usize,*const u32)->u32=
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
-    if should_trace(command,EVENTS.load(Ordering::Relaxed),
-        crate::menu_video_probe::legacy_ui_active())
-    {
+    if let Some((device_before,mode_before))=before{
         let index=EVENTS.fetch_add(1,Ordering::Relaxed);
         if index<MAX_EVENTS && crate::cfg().log_enabled {
+            let device_after=ptr::read_volatile(SELECTED_DEVICE as *const u32);
+            let mode_after=ptr::read_volatile(SELECTED_MODE as *const u32);
             log(&format!(
-                "MENU-GOS-EVENT: command={} result={} ui_4by3=true [pass-through; no widget input changed]",
-                command,result
+                "MENU-GOS-EVENT: command={} result={} device={}->{} mode_index={}->{} ui_4by3=true [pass-through]",
+                command,result,device_before,device_after,mode_before,mode_after
             ));
         }
     }
