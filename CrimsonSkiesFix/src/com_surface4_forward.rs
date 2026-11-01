@@ -721,7 +721,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         pace_graph_flip(session);
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
-        crate::menu_video_probe::observe_preferences_flip();
+        crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         if crate::menu_brand::is_main_menu_active(){
             backend.prepare_menu_frame();
