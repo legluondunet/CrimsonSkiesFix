@@ -5,6 +5,7 @@ mod config;
 mod build_info;
 mod menu_scene;
 mod menu_video_probe;
+mod menu_mode_event;
 mod menu_brand;
 mod win32;
 mod window_exposure;
@@ -1369,6 +1370,16 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
     }
+    // Read-only exact event trace: observe the game's own resolution
+    // callback even if the selected mode index remains unchanged. No
+    // script input is blocked, and this is only installed for diagnostics.
+    static VIDEO_EVENT_ONCE:Once=Once::new();
+    VIDEO_EVENT_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            let installed=unsafe{menu_mode_event::install()};
+            log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
+        }
+    });
     // Install before DirectDraw enumeration: the game can show the
     // AskForVDev device chooser before a game HWND or DD4 exists.
     static VIDEO_SELECTOR_ONCE:Once=Once::new();
