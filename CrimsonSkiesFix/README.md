@@ -1,10 +1,52 @@
-# CrimsonSkiesFix 0.1.71 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.72 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.72 — exact Video selection event trace (read-only)
+
+The owner's v0.1.71 log demonstrates that the video-state probe is
+working, but only reports `selected_device=0, selected_mode_index=0`
+before the menu loads, then `selected_device=1,
+selected_mode_index=0` after MainMenu loads. No distinct mode-index
+change occurs in the recorded period. Without the actual callback
+invocation, this does **not** establish whether the user clicked or
+opened a Resolution selector, requested its current value, or never
+issued a mode-changing selection.
+
+The supported v1.02 EXE has an original, byte-exact `CALL rel32`
+at `0x00407811` targeting the game `0x00419420` callback; the
+dispatcher maps original `gosCallback` command 15 to this branch.
+This build installs an **opt-in, pass-through** observer for only
+that call, **after SHA-256 authentication** and only with
+`ExperimentalWindowedAdapter=1` and `[Debug] Log=1`.
+
+The wrapper forwards every request to the real legacy mode handler
+with exactly the same argument and result, then logs requested mode
+and the original mode-table index before/after:
+`MENU-VIDEO-EVENT: gosCallback video-mode request=...
+index_before=... index_after=... changed=...`. There is a bounded
+48-event ceiling, strict original x86 preimage validation,
+memory-protection restoration and error logging. The event monitor
+does **not** disable either dropdown or change resolution modes;
+it can establish whether the resolution selection event actually
+fires even if the recorded index remains unchanged. The prior
+`MENU-VIDEO-PROBE` on 4:3 menu frames also remains in place.
+
+**Test:** enter Preferences > Video, open and select entries from
+`Graphics` and `Resolution`, then return to MainMenu. Compare
+`MENU-VIDEO-EVENT` with `MENU-VIDEO-PROBE` lines. Do not confuse
+a mode-table index (0, 1, etc.) with the selected monitor's
+1920x1080 physical dimensions. No click-zone guessing or game
+resource modifications are introduced.
+
+**Still pending:** truly disabled game UI widget behavior and visible
+native-monitor `Resolution` label, until the original event/widget
+identities are verified. All validated v0.1.69 menu-branding and
+native 3D/FOV/HUD rendering is intentionally unchanged.
 
 ## v0.1.71 — fix the silent Preferences video diagnostic (read-only)
 
