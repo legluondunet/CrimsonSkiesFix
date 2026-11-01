@@ -30,11 +30,21 @@ fn image_verified()->bool{
         device==DEVICE_READ && mode==MODE_READ
     }
 }
-pub fn observe_preferences_flip(){
+fn is_legacy_ui_mode(w:u32,h:u32)->bool{
+    // The game uses a fixed 4:3 virtual 640x480 or 800x600 surface for
+    // menus. Never assume the observed script tag includes every submenu.
+    matches!((w,h),(640,480)|(800,600))
+}
+pub fn observe_ui_flip(w:u32,h:u32){
     if !crate::cfg().log_enabled || !crate::cfg().experimental_windowed_adapter{return;}
     let state=STATE.get_or_init(||Mutex::new(State::default()));
     let Ok(mut state)=state.try_lock() else{return;};
-    if !menu_scene::preferences_active(){state.last=None;return;}
+    if !is_legacy_ui_mode(w,h){
+        state.last=None;
+        return;
+    }
+    // Only the verified original EXE is admitted by exe_gate. Verify two
+    // immutable instruction preimages before ever reading these globals.
     let valid=*state.valid.get_or_insert_with(image_verified);
     if !valid{
         if state.changes==0{
@@ -46,7 +56,11 @@ pub fn observe_preferences_flip(){
     let device=unsafe{ptr::read_volatile(SELECTED_DEVICE as *const u32)};
     let index=unsafe{ptr::read_volatile(SELECTED_MODE as *const u32)};
     if !changed(&mut state,(device,index)){return;}
-    log(&format!("MENU-VIDEO-PROBE: Preferences selected_device={device} selected_mode_index={index} [READ-ONLY; not desktop resolution]"));
+    let scene=if menu_scene::preferences_active(){"Preferences"}
+       else if menu_scene::main_menu_active(){"MainMenu-or-unobserved-submenu"}
+       else{"unidentified"};
+    log(&format!("MENU-VIDEO-PROBE: ui={}x{} scene={} selected_device={} selected_mode_index={} [READ-ONLY; index is NOT desktop dimensions]",
+        w,h,scene,device,index));
 }
 #[cfg(test)]
 mod tests{
@@ -59,6 +73,14 @@ mod tests{
         assert!(changed(&mut state,(1,1)));
         state.changes=MAX_TRANSITIONS;
         assert!(!changed(&mut state,(2,3)));
+    }
+    #[test]
+    fn traces_only_legacy_ui_frame_geometry(){
+        assert!(is_legacy_ui_mode(800,600));
+        assert!(is_legacy_ui_mode(640,480));
+        assert!(!is_legacy_ui_mode(1920,1080));
+        assert!(!is_legacy_ui_mode(2560,1440));
+        assert!(!is_legacy_ui_mode(320,240));
     }
     #[test]
     fn x86_preimages_reference_exact_script_variables(){
