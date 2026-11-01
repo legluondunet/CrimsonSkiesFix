@@ -50,6 +50,10 @@ impl Rect{
         if w<=0||h<=0{return None;}
         Some((u32::try_from(w).ok()?,u32::try_from(h).ok()?))
     }
+    pub fn client_geometry(&self)->Option<(i32,i32,u32,u32)>{
+        let (w,h)=self.dimensions()?;
+        Some((self.left,self.top,w,h))
+    }
 }
 
 // Frozen at the first DirectDraw export, before the game creates or
@@ -399,6 +403,8 @@ mod monitor_geometry_tests {
     fn resolutions_are_dimensions_not_absolute_right_bottom(){
         assert_eq!(Rect{left:1920,top:0,right:4480,bottom:1440}.dimensions(),Some((2560,1440)));
         assert_eq!(Rect{left:-2560,top:-200,right:0,bottom:1240}.dimensions(),Some((2560,1440)));
+        assert_eq!(Rect{left:-2560,top:-200,right:0,bottom:1240}.client_geometry(),
+                   Some((-2560,-200,2560,1440)));
         assert_eq!(Rect{left:0,top:0,right:1920,bottom:1080}.dimensions(),Some((1920,1080)));
         assert_eq!(Rect{left:400,top:300,right:100,bottom:200}.dimensions(),None);
     }
