@@ -10,10 +10,11 @@ Experimental **32-bit Windows DirectDraw compatibility proxy** for *Crimson Skie
 
 ## Supported game executable
 
-Only the unmodified Crimson Skies **v1.02** executable is accepted.
+Only the exact verified, unmodified Crimson Skies **v1.02** executable is accepted.
 The DirectDraw proxy checks the on-disk SHA-256 **before installing graphics hooks**.
 Third-party widescreen-patched executables, protected EXEs and other game
-versions are refused with an error dialog. The detected SHA-256 is recorded in
+versions are refused with an error dialog showing both hashes. Clicking OK
+closes the game process without a subsequent DirectX error. The detected SHA-256 is recorded in
 `CrimsonSkiesFix.log` even when normal logging is disabled (if writable).
 
 - **EXE size:** 2,580,480 bytes
@@ -41,7 +42,7 @@ The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles t
 
 ## Install
 
-Test with the exact unmodified SafeDisc-free Crimson Skies v1.02 executable produced by our private research tool (other EXE hashes are rejected):
+Test with the exact verified, unmodified SafeDisc-free Crimson Skies v1.02 executable (other EXE hashes are rejected):
 
 ```text
 Crimson Skies/
