@@ -64,7 +64,10 @@ pub fn capture_launch_monitor()->Option<Rect>{
     LAUNCH_MONITOR.get().copied()
 }
 pub fn launch_monitor_or_game_window(hwnd:Hwnd)->Option<Rect>{
-    LAUNCH_MONITOR.get().copied().or_else(||monitor_for_game_window(hwnd))
+    // Never accept a foreign or destroyed HWND solely because the launch
+    // monitor was captured previously.
+    let hwnd_monitor=monitor_for_game_window(hwnd)?;
+    Some(LAUNCH_MONITOR.get().copied().unwrap_or(hwnd_monitor))
 }
 
 #[link(name = "kernel32")]
