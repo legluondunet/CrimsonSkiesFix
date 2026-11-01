@@ -95,6 +95,13 @@ fn probe_line(line:&str){
 fn log(message:&str){
     probe_line(message);
 }
+// The standalone probe has no game process or MainMenu state. The
+// shared virtual Surface4 module's optional menu drawing hook is inert.
+mod menu_brand {
+    use std::ffi::c_void;
+    pub fn draw_main_menu(_hwnd:*mut c_void){}
+}
+
 // The standalone surface probe never locks RGB32 movie surfaces.
 fn color_probe_enabled()->bool{false}
 fn color_capture_enabled()->bool{false}
