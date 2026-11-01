@@ -73,6 +73,13 @@ impl NativeWindowedBlt {
     pub fn clear_menu_frame(&mut self){
         self.menu_prepared=false;
     }
+    fn source_for_present(&self)->Ptr{
+        if self.menu_prepared && !self.menu_scratch.is_null(){
+            self.menu_scratch
+        }else{
+            self.source_surface
+        }
+    }
     /// The real windowed primary is owned by the live Flip session.
     /// The menu brander borrows this pointer only after successful Blt,
     /// never keeps or releases the COM interface.
@@ -117,7 +124,7 @@ impl WindowedBlt for NativeWindowedBlt {
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
         let dest=self.screen_rect(view)?;
-        let source=if self.menu_prepared{self.menu_scratch}else{self.source_surface};
+        let source=self.source_for_present();
         unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())}
     }
 }
@@ -152,6 +159,29 @@ mod tests{
         let p=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at};
         let s=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at:0};
         (vt,p,s)
+    }
+    #[test]
+    fn original_frame_is_presented_unless_menu_composition_succeeded(){
+        let (_vt,mut primary,mut original)=objects(0);
+        let mut scratch=FakeSurface{
+            vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at:0
+        };
+        let original_ptr=(&mut original as *mut FakeSurface).cast();
+        let scratch_ptr=(&mut scratch as *mut FakeSurface).cast();
+        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut primary as *mut FakeSurface).cast(),original_ptr,
+            (0,0),(1920,1080),mode()
+        ).unwrap()};
+        assert_eq!(backend.source_for_present(),original_ptr);
+        backend.set_menu_scratch(scratch_ptr);
+        assert_eq!(backend.source_for_present(),original_ptr);
+        backend.menu_prepared=true;
+        assert_eq!(backend.source_for_present(),scratch_ptr);
+        backend.clear_menu_frame();
+        assert_eq!(backend.source_for_present(),original_ptr);
+        backend.set_menu_scratch(ptr::null_mut());
+        backend.menu_prepared=true; // even inconsistent flags fail closed
+        assert_eq!(backend.source_for_present(),original_ptr);
     }
     #[test]
     fn real_surface4_slot5_dispatch_and_flags(){
