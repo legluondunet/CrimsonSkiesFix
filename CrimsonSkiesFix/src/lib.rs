@@ -3,6 +3,8 @@
 #![cfg(windows)]
 mod config;
 mod build_info;
+mod menu_scene;
+mod menu_brand;
 mod win32;
 mod window_exposure;
 mod window_erase_guard;
@@ -305,6 +307,15 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             }else{
                 log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
             }
+        });
+    }
+    // Observe the exact in-game MainMenu/Preferences script transitions
+    // only after strict game executable authentication.
+    if config.experimental_windowed_adapter {
+        static MENU_SCENE_ONCE:Once=Once::new();
+        MENU_SCENE_ONCE.call_once(||{
+            let installed=unsafe{menu_scene::install()};
+            log(&format!("MENU-SCENE: hook_available={installed}"));
         });
     }
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
