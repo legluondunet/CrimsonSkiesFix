@@ -238,7 +238,8 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
                 let same=identical_game_cooperative_request(
                     runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
                     dd4 as usize,hwnd as usize,flags);
-                let expected=(0,0,runtime.monitor.right as u32,runtime.monitor.bottom as u32);
+                let Some((width,height))=runtime.monitor.dimensions() else{return Some(E_FAIL)};
+                 let expected=(runtime.monitor.left,runtime.monitor.top,width,height);
                 if same && win32::game_client_geometry(hwnd)==Some(expected){
                     log("WINDOWED-GAME: repeated identical game DD4 exclusive cooperative request acknowledged; native DDSCL_NORMAL and virtual graph preserved");
                     return Some(0);
@@ -258,14 +259,16 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
         return None;
     }
-    let Some(monitor)=win32::monitor_for_game_window(hwnd) else{
+    let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
         log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
         return None;
     };
-    if monitor.left!=0 || monitor.top!=0 || monitor.right<=0 || monitor.bottom<=0 {
-        log("WINDOWED-GAME: opt-in requires origin (0,0) primary monitor, falling back before exposure");
+    let Some((monitor_w,monitor_h))=monitor.dimensions() else{
+        log("WINDOWED-GAME: invalid launch monitor dimensions; original path retained");
         return None;
-    }
+    };
+    log(&format!("WINDOWED-GAME: target monitor origin={},{} size={}x{}",
+        monitor.left,monitor.top,monitor_w,monitor_h));
     let Ok(mut guard)=RUNTIME.lock() else{return None;};
     if guard.as_ref().is_some_and(|state|state.exposed){
         log("WINDOWED-GAME: repeated cooperative call while graph exposed: fail closed");
@@ -291,8 +294,8 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // the patch's x87 horizontal-FOV calculation. The game original
     // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
-    let monitor_w=(monitor.right-monitor.left) as u32;
-    let monitor_h=(monitor.bottom-monitor.top) as u32;
+    // Geometry was checked above, including monitors with negative origins.
+    let (monitor_w,monitor_h)=(monitor_w,monitor_h);
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
         // Only the original unwrapped EXE, authenticated by exe_gate,
         // can reach this path. No support for third-party widescreen EXEs.
@@ -402,7 +405,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
 }
 unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
-    let client=(monitor.right as u32,monitor.bottom as u32);
+    let client=monitor.dimensions().ok_or("invalid target monitor geometry")?;
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
     let clipper=new_clipper(dd4,hwnd,&real_primary)?;
     let real_back=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,
