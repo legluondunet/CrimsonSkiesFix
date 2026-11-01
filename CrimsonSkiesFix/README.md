@@ -1,10 +1,53 @@
-# CrimsonSkiesFix 0.1.69 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.70 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.70 — Video Preferences controls: exact-state research (read-only)
+
+The *working v0.1.69 offscreen MainMenu signature* is preserved as the
+visual reference. The video controls are **not yet locked** in this
+build, nor does the Resolution dropdown show desktop dimensions.
+
+Static analysis of the **single accepted clean v1.02 EXE** identifies
+two independently stored GUI backing values:
+
+- `nSelectedVideoDevice` is registered as a GOS script variable at
+  `0x64B490`, with an exact x86 read instruction at `0x419208`.
+- The game-selected resolution/mode **index** is at `0x64B48C`, read
+  from `0x419235`. This is a legacy mode-table index, **not** the
+  selected monitor's width/height. The available list still comes
+  from the original game UI.
+
+With `ExperimentalWindowedAdapter=1` and `[Debug] Log=1`,
+`menu_video_probe.rs` observes these values in `Preferences`
+during a game-owned virtual Flip. It validates both original x86
+instruction preimages, limits transition logging, and never writes to
+those values. Look for:
+`MENU-VIDEO-PROBE: Preferences selected_device=... selected_mode_index=...`
+when entering Video and changing either dropdown.
+
+A companion script (`tools/audit_video_menu.py`) searches the user's
+own installed game folder for relevant GOS UI filenames and bounded
+text/resource markers. It refuses an unrecognized EXE, reports only
+**relative** paths plus hashes/short text contexts, and **does not**
+copy, redistribute or change game files. On the user's own PC:
+
+```sh
+python CrimsonSkiesFix/tools/audit_video_menu.py "/path/to/Crimson Skies" \
+  -o video-ui-audit.json
+```
+
+Use both the diagnostic log and resource audit to locate **exact**
+`Graphics` and `Resolution` control IDs and their callback path.
+Then implement a widget-specific disabled state, current-monitor
+resolution label and fail-closed tests. No global mouse blocking,
+screen-coordinate guessing, or alteration of game-owned mode lists
+is permitted. Do not merge until all controls are functional and
+verified under Wine and Windows.
 
 ## v0.1.69 — atomic offscreen menu signature composition (experimental)
 
