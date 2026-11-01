@@ -1,5 +1,5 @@
 //! Exact MainMenu-only build signature drawn directly onto the real
-//! DirectDraw4 primary surface. GDI GetDC(HWND) is not composited with the
+//! DirectDraw4 RGB565 scratch surface. GDI GetDC(HWND) is not composited with the
 //! DirectDraw primary reliably under Wine, even when DrawTextW succeeds.
 //! Never place the label in the 4:3 black pillarbox or during gameplay.
 use std::{ffi::c_void,sync::{OnceLock,atomic::{AtomicBool,Ordering}}};
@@ -48,22 +48,23 @@ fn report_error(message:&str){
         log(&format!("MENU-BRANDING: primary Surface4 drawing unavailable: {message}"));
     }
 }
-/// Call only after a successful real primary windowed Blt. The live caller
-/// owns the COM pointers and render thread. This method borrows the surface,
-/// does not change DD cooperative level or alter game input/scene contents.
-pub fn draw_main_menu(primary:Surface,viewport:Rect){
-    if !menu_scene::main_menu_active()||primary.is_null(){return;}
-    let Some(mut destination)=label_rect(viewport) else{return;};
+/// Draw on a dedicated offscreen RGB565 scratch surface before it is copied
+/// onto the real primary. The scratch is re-filled from the unchanged game
+/// backbuffer every frame, so the signature and animated background form a
+/// single present operation and never alter game-owned surface contents.
+pub fn draw_main_menu(primary:Surface,viewport:Rect)->bool{
+    if !menu_scene::main_menu_active()||primary.is_null(){return false;}
+    let Some(mut destination)=label_rect(viewport) else{return false;};
     unsafe{
         let table=*(primary.cast::<*const usize>());
-        if table.is_null(){report_error("missing COM vtable");return;}
+        if table.is_null(){report_error("missing COM vtable");return false;}
         let get_dc:SurfaceGetDc=std::mem::transmute(*table.add(GET_DC_SLOT));
         let release_dc:SurfaceReleaseDc=std::mem::transmute(*table.add(RELEASE_DC_SLOT));
         let mut dc=std::ptr::null_mut();
         let hr=get_dc(primary,&mut dc);
         if hr<0 || dc.is_null(){
             report_error(&format!("IDirectDrawSurface4::GetDC hr={hr:#010x}"));
-            return;
+            return false;
         }
         let font=GetStockObject(DEFAULT_GUI_FONT);
         let original=if font.is_null(){std::ptr::null_mut()}else{SelectObject(dc,font)};
@@ -81,8 +82,12 @@ pub fn draw_main_menu(primary:Surface,viewport:Rect){
         let release_hr=release_dc(primary,dc);
         if drawn<=0||release_hr<0{
             report_error(&format!("DrawTextW lines={drawn} ReleaseDC hr={release_hr:#010x}"));
-        }else if !REPORTED.swap(true,Ordering::Relaxed){
-            log(&format!("MENU-BRANDING: DirectDraw4 primary Surface4 text submitted in active MainMenu: {}",build_info::label()));
+            false
+        }else{
+            if !REPORTED.swap(true,Ordering::Relaxed){
+                log(&format!("MENU-BRANDING: offscreen RGB565 menu text composited before primary Blt: {}",build_info::label()));
+            }
+            true
         }
     }
 }
