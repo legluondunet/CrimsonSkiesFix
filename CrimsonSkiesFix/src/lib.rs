@@ -275,7 +275,15 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // Reject unknown game executables before loading system DirectDraw or
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
-    let _=cfg();
+    let config=cfg();
+    // Prime the verified image patch before game startup caches 4:3 HUD/FOV
+    // values. Only a single unambiguous primary monitor permits this path.
+    static EARLY_NATIVE_ONCE:Once=Once::new();
+    if config.experimental_windowed_adapter && config.native_3d_widescreen {
+        EARLY_NATIVE_ONCE.call_once(||unsafe{
+            native_widescreen::prime_native_widescreen_early();
+        });
+    }
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
     win32::system_export(real,name)
 }
