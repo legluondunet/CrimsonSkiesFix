@@ -2,6 +2,7 @@
 //! Place this built DLL under the name ddraw.dll beside CRIMSON.EXE.
 #![cfg(windows)]
 mod config;
+mod build_info;
 mod win32;
 mod window_exposure;
 mod window_erase_guard;
@@ -236,7 +237,7 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("{PROJECT_NAME} {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
+                log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
