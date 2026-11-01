@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.63 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.64 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -6,10 +6,9 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
-## Supported game executable — strict check (v0.1.63)
+## Supported game executable — strict check (v0.1.64)
 
-**Only the unmodified, SafeDisc-free Crimson Skies v1.02 executable
-reconstructed by our `unsafedisk` tool is accepted.** The original
+**Only the exact verified, unmodified SafeDisc-free Crimson Skies v1.02 executable is accepted.** The original
 SafeDisc-wrapped retail launcher, older versions, and third-party
 already-widescreen/FOV-patched EXEs are **not supported**.
 
@@ -21,9 +20,10 @@ already-widescreen/FOV-patched EXEs are **not supported**.
 
 Before installing any graphics hooks or changing game memory, the DLL
 calculates the **raw SHA-256 of the executable on disk**. Any different
-hash (or an unreadable file) is **refused**: DirectDraw initialization
-returns an error and a Windows error dialog identifies the expected
-and detected hashes. The error is written beside `ddraw.dll` to
+hash (or an unreadable file) is **refused**: the DLL shows a concise
+Windows error dialog with the expected and detected SHA-256 values.
+Once the user clicks OK, the game process exits immediately rather than
+continuing into its misleading DirectX initialization error. The error is written beside `ddraw.dll` to
 `CrimsonSkiesFix.log` **even with `[Debug] Log=0`** (as long as
 the directory is writable). The refusal never overwrites or modifies
 the game EXE. Unknown executables do not fall back to the
