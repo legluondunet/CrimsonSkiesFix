@@ -240,95 +240,22 @@ crash returns.
 The separate pink/green 32-bit source-to-RGB565 conversion problem is
 **not changed** by v0.1.56.
 
-## v0.1.62 — dynamic monitor-native 3D using supplied widescreen-patched EXE
+## Historical v0.1.62 experiment — superseded by v0.1.63
 
-**Status: first opt-in code integration; Windows i686 CI and actual
-user gameplay validation are required before claiming functionality.**
-No fixed user resolution is required by the DLL. Native monitor
-dimensions come at runtime from the process-owned game's HWND and
-`MonitorFromWindow` / `GetMonitorInfoW`.
+The v0.1.62 experiment used a separately supplied, already-widescreen-patched
+EXE to identify the shared width/height fields and FOV/HUD transformations.
+**That executable is no longer supported. Do not install or test the old
+prepatched EXE with the current DLL.**
 
-The owner supplied `CRIMSON(5).EXE` (2,580,480 bytes, SHA-256
-`5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67`),
-an **already widescreen-patched** version of the 1.0.2.0 game.
-Static x86 PE analysis (no execution) proves two shared dimension
-DWORDs at RVA `0x0020254b` and `0x0020254f` of image base
-`0x00400000`. Their initialized values in the supplied file
-are 1920 and 1080. Game mode-selection code at RVAs `0x41229`,
-`0x4122f`, `0x41243`, `0x41249`,
-`0x1a8eba`, `0x1a8fc9` reads these exact DWORDs.
-The inserted x87 FOV code at RVA `0x002024bd` computes
-`height/width` from the very same dimensions; additional
-code at RVA `0x2024d9` computes the inverse aspect and Hor+ camera
-angles. This provides unusually strong evidence that changing
-**the pair** at runtime can adapt *both* mode size and FOV.
-
-New `[Graphics] Native3DWidescreen=0` is **strictly default-off**.
-When enabled during the verified game DD4 cooperative negotiation,
-the DLL checks the running main executable's PE32 architecture,
-image size and preferred base, plus eight independent instruction
-signatures that reference the shared resolution pair, and checks
-the current pair's plausibility. It **REFUSES to modify any other
-EXE**. For the matching image, one protected memory operation writes
-the **actual monitor width and height** to those two 32-bit values
-before scene initialization, then restores memory protections.
-No on-disk game EXE bytes are modified. A nonmatching or relocated
-binary never receives a blind patch.
-
-The v0.1.61 render graph continues to use logical 640x480 and
-800x600 RGB565 for intros, menus, 320x240 video scaling and other
-4:3 content; presentation still fits these to a centered 4:3
-viewport with black bars. When the verified patched game later
-requests the monitor's *exact* landscape dimensions and 16bpp,
-the new conditional 3D path allocates genuinely native-dimension
-RGB565 color/backbuffer + Z32 Direct3D3 HAL resources and the
-complete virtual Surface4 COM graph and presents directly to the
-full monitor viewport **without stretching a low-resolution image**.
-The 3D camera's Hor+ FOV calculation is kept in the already patched
-EXE and uses the now runtime-updated dimensions. This is not
-yet a general-purpose injection of the widescreen instructions
-into an unpatched game; **the supplied prepatched EXE is required
-for this isolated first experiment**.
-
-Safety and scope:
-- Both the existing `ExperimentalWindowedAdapter=1` and the new
-  `Native3DWidescreen=1` must be enabled.
-- Current target must be an eligible landscape monitor and the game
-  must request **exactly its current width and height**; no
-  arbitrary new user resolution or an unsafe 4:3 distortion.
-- Unknown EXE, failed memory-protection restoration, invalid
-  resolution or unsupported DirectDraw geometry fails closed
-  instead of changing a random process.
-- All original v0.1.55 COM source safety, v0.1.57 white-screen
-  erase guard, v0.1.61 RGB565 logo/source correction, FPS
-  pacing and color diagnostics remain independent.
-- As always, the game is 32-bit; extremely high native resolutions
-  can exhaust memory or legacy Direct3D resources. Do not promise
-  4K/ultrawide success without in-game testing.
-
-**First controlled test**: keep a separate backup of the user's
-working unpatched/unwrapped `CRIMSON-UNWRAPPED.EXE` and install
-the user-supplied widescreen-patched EXE as the active game
-executable in Lutris. Install the v0.1.62 experimental `ddraw.dll`,
-set `ExperimentalWindowedAdapter=1`,
-`Native3DWidescreen=1`, `LegacyOffscreenRGB565=1`,
-`FocusRepaint=1`, `WindowEraseGuard=1` and `Log=1`.
-Disable `ColorProbe`, `ColorCapture` and `CrashBltTrace`.
-The log should report `WINDOWED-WIDE: patched-EXE signature
-and monitor WxH result=Patched` (or `AlreadyNative`),
-then an initial 800x600x16 menu/intro and, when starting an actual
-mission, `WINDOWED-WIDE: real D3D3 RGB565 color and Z32 surfaces
-allocated at native monitor WxH, viewport full`. Screenshot both
-menu and gameplay. If a failure occurs, turn the option OFF and
-restore the previously working EXE + DLL; do not modify the original
-game files in-place.
-
-**Important unresolved work:** after the first real 3D test,
-check HUD/sprites, in-game cutscenes, 3D projection and mode
-transitions, then compare with *matching original* unpatched
-executable before attempting to make stock EXE use native 3D.
-No permanent on-disk patch should be introduced without separate
-validation.
+Since v0.1.63, the only accepted on-disk executable is the **clean, unmodified
+SafeDisc-free v1.02 EXE** (2,580,480 bytes; SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`).
+The DLL checks this hash before any graphics hooking and, if opted in, attempts
+the resolution/FOV/HUD changes **in memory** on that exact image. Use the
+[current executable requirements](#supported-game-executable--strict-check-v0163)
+and current experimental settings above; in-game widescreen/FOV behavior remains
+subject to user validation. The full historical v0.1.62 investigation remains
+available in Git history, but its installation instructions are obsolete.
 
 ## v0.1.61 — targeted correction of the actual pink/green source image
 
