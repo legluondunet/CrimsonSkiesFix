@@ -1,10 +1,36 @@
-# CrimsonSkiesFix 0.1.67 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.68 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.68 — target the DirectDraw primary (menu-label visibility regression)
+
+On Wine/GE-Proton, v0.1.67 logged `MENU-SCENE: entered MainMenu` and
+`MENU-BRANDING: draw requested on active MainMenu`, but the screenshot
+showed **no project label**. `DrawTextW(GetDC(HWND))` succeeded according
+to Win32, yet its pixels were not necessarily composited with the DirectDraw
+primary. The display framebuffer is still owned by DirectDraw.
+
+The new experiment draws the signature into the actual live
+`IDirectDrawSurface4` primary surface via its `GetDC` and `ReleaseDC`
+COM methods **after** the real windowed primary Blt completes. The
+label is placed inside the aspect-correct viewport (the 4:3 game image,
+not the black side pillars), near the lower-right margin. The label
+is attempted only when `MainMenu` is active, and the game EXE and
+original rendering pipeline are unchanged. Errors return without
+interrupting normal presentation or game input.
+
+The log now distinguishes `MENU-BRANDING: DirectDraw4 primary Surface4
+text submitted` from `MENU-BRANDING: primary Surface4 drawing unavailable:
+IDirectDrawSurface4::GetDC hr=...`. Even success is only proof of a DC
+draw submission; **test visually under Wine**. The verified transition
+to MainMenu was already working in v0.1.67.
+
+The `Graphics` and `Resolution` widgets of Preferences > Video
+remain separate, unfinished work.
 
 ## v0.1.67 — main-menu-only version label experiment
 
