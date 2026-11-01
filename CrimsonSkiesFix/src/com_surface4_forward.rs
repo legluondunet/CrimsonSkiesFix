@@ -723,7 +723,12 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             Ok(frame)=>{
                 // On success only, draw the label if the game's exact
                 // script dispatcher last selected MainMenu.
-                crate::menu_brand::draw_main_menu(menu_hwnd);
+                if crate::menu_scene::main_menu_active(){
+                    if let Some(viewport)=backend.overlay_viewport(){
+                        crate::menu_brand::draw_main_menu(
+                            backend.primary_for_overlay(),viewport);
+                    }
+                }
                 if repaint{
                     crate::log(&format!(
                         "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
