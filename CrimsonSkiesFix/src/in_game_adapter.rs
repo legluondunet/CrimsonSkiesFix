@@ -367,7 +367,8 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             }
             // The host compositor may refuse/alter requested client bounds.
             // Do not start presenting to an assumed desktop-sized rectangle.
-            let expected=(0,0,area.right as u32,area.bottom as u32);
+            let Some((client_w,client_h))=area.dimensions() else{return Some(E_FAIL)};
+            let expected=(area.left,area.top,client_w,client_h);
             if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
                 log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
                 return Some(E_FAIL);
