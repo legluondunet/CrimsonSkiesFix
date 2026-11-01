@@ -49,25 +49,25 @@ pub fn report_copy_failure(hr:i32){
 }
 fn report_error(message:&str){
     if !REPORTED_ERROR.swap(true,Ordering::Relaxed){
-        log(&format!("MENU-BRANDING: primary Surface4 drawing unavailable: {message}"));
+        log(&format!("MENU-BRANDING: offscreen RGB565 Surface4 drawing unavailable: {message}"));
     }
 }
 /// Draw on a dedicated offscreen RGB565 scratch surface before it is copied
 /// onto the real primary. The scratch is re-filled from the unchanged game
 /// backbuffer every frame, so the signature and animated background form a
 /// single present operation and never alter game-owned surface contents.
-pub fn draw_main_menu(primary:Surface,viewport:Rect)->bool{
-    if !menu_scene::main_menu_active()||primary.is_null(){return false;}
+pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
+    if !menu_scene::main_menu_active()||scratch.is_null(){return false;}
     let Some(mut destination)=label_rect(viewport) else{return false;};
     unsafe{
-        let table=*(primary.cast::<*const usize>());
+        let table=*(scratch.cast::<*const usize>());
         if table.is_null(){report_error("missing COM vtable");return false;}
         let get_dc:SurfaceGetDc=std::mem::transmute(*table.add(GET_DC_SLOT));
         let release_dc:SurfaceReleaseDc=std::mem::transmute(*table.add(RELEASE_DC_SLOT));
         let mut dc=std::ptr::null_mut();
-        let hr=get_dc(primary,&mut dc);
+        let hr=get_dc(scratch,&mut dc);
         if hr<0 || dc.is_null(){
-            report_error(&format!("IDirectDrawSurface4::GetDC hr={hr:#010x}"));
+            report_error(&format!("offscreen IDirectDrawSurface4::GetDC hr={hr:#010x}"));
             return false;
         }
         let font=GetStockObject(DEFAULT_GUI_FONT);
@@ -83,7 +83,7 @@ pub fn draw_main_menu(primary:Surface,viewport:Rect)->bool{
         if old_color!=0xffff_ffff{let _=SetTextColor(dc,old_color);}
         if prev_mode!=0{let _=SetBkMode(dc,prev_mode);}
         if !original.is_null(){let _=SelectObject(dc,original);}
-        let release_hr=release_dc(primary,dc);
+        let release_hr=release_dc(scratch,dc);
         if drawn<=0||release_hr<0{
             report_error(&format!("DrawTextW lines={drawn} ReleaseDC hr={release_hr:#010x}"));
             false
