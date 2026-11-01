@@ -1,10 +1,53 @@
-# CrimsonSkiesFix 0.1.72 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.73 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.73 — narrow in-menu resolution backend guard (experimental)
+
+The owner-tested v0.1.72 log proves that two `gosCallback`
+command-15 selections reach our authenticated call-site observer:
+`request=0` changes the game's legacy mode-table index **0 → 1**,
+then `request=1` changes it **1 → 0**, while the 1920×1080 desktop
+and 800×600 virtual UI remain unchanged. The exact original event
+interception is therefore verified under GE-Proton.
+
+In v0.1.73, the hook now **returns without invoking the original mode
+selection handler** only if *all* of the following are true:
+
+- The strict SHA-256 gate accepted the sole supported clean v1.02 EXE
+  and the original `CALL rel32` preimage at `0x00407811` matched.
+- `ExperimentalWindowedAdapter=1`,
+  `Native3DWidescreen=1` and `DesktopResolution=1`.
+- The verified MainMenu script has already been entered.
+- The live virtual primary Flip is rendering a 640×480 or 800×600
+  logical UI frame, not native-resolution gameplay.
+
+In this specific menu context, command 15 leaves the selected
+legacy mode index unchanged and the caller still copies its existing
+valid resolution table. Otherwise, the original handler and all of
+its effects run unmodified. **No game EXE or preference files are
+written on disk**, no arbitrary keyboard/mouse interception is used.
+
+A successful menu-only blocked request is logged as
+`MENU-VIDEO-EVENT: request=N index_before=X index_after=X
+blocked=true changed=false`. The original handler should still
+run in non-menu contexts. An additional unit test enforces the
+all-conditions-required logic.
+
+**Important limitation:** this is a **backend value lock only**. The
+game's custom `Resolution` dropdown can still react visually to
+clicks, and its displayed text is not yet replaced with the actual
+monitor's resolution. The separate `Graphics` dropdown is likewise
+not disabled. Do not claim the full Video menu UX is fixed until
+these original custom widget controls and labels are verified.
+
+Compare with the owner-validated v0.1.69 menu signature and 3D/HUD
+baseline. Keep PR #9 as draft and do not merge before testing
+under Wine and Windows.
 
 ## v0.1.72 — exact Video selection event trace (read-only)
 
