@@ -290,7 +290,7 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
 pub unsafe fn arm_graph_primary_flip(
     primary:SurfaceThis,contract:&AdapterContract,generation:u64,
     origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>,
-    window:usize,focus_repaint:bool
+    window:usize,focus_repaint:bool,menu_scratch:*mut c_void
 )->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
@@ -316,9 +316,10 @@ pub unsafe fn arm_graph_primary_flip(
     // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
     let bridge=FlipToBltBridge::from_exposed(contract,generation)
         .map_err(|_|E_FAIL)?;
-    let backend=NativeWindowedBlt::from_borrowed_com(
+    let mut backend=NativeWindowedBlt::from_borrowed_com(
         p.real,b.real,origin,client,node.mode
     ).map_err(|_|E_INVALIDARG)?;
+    backend.set_menu_scratch(menu_scratch);
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
@@ -719,16 +720,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         }else{false};
         pace_graph_flip(session);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
+        if crate::menu_brand::is_main_menu_active(){
+            backend.prepare_menu_frame();
+        }else{
+            backend.clear_menu_frame();
+        }
         return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
-                // On success only, draw the label if the game's exact
-                // script dispatcher last selected MainMenu.
-                if let Some(viewport)=backend.overlay_viewport(){
-                    // Menu gating is inside the implementation; the
-                    // standalone probe supplies a deliberately inert stub.
-                    crate::menu_brand::draw_main_menu(
-                        backend.primary_for_overlay(),viewport);
-                }
                 if repaint{
                     crate::log(&format!(
                         "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
