@@ -21,7 +21,8 @@ mod color_capture; // default-off native RGB32->RGB565 source/destination compar
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
-mod native_widescreen; // opt-in, strictly fingerprinted owner-provided widescreen EXE
+mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
+mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
@@ -271,6 +272,9 @@ fn real_module()->Option<*mut c_void> {
 }
 
 unsafe fn symbol(name:&[u8])->*const c_void {
+    // Reject unknown game executables before loading system DirectDraw or
+    // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
+    if !exe_gate::verify_once(){return ptr::null();}
     let _=cfg();
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
     win32::system_export(real,name)
@@ -1317,6 +1321,11 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
 
 #[no_mangle]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    // Must run before the optional startup selector's in-memory patch.
+    if !exe_gate::verify_once(){
+        if !out.is_null(){*out=ptr::null_mut();}
+        return DDERR_GENERIC;
+    }
     // Install before DirectDraw enumeration: the game can show the
     // AskForVDev device chooser before a game HWND or DD4 exists.
     static VIDEO_SELECTOR_ONCE:Once=Once::new();
