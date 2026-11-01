@@ -16,7 +16,7 @@ pub const DEFAULT_INI: &str = concat!(
     "WindowEraseGuard=0\n",
     "; Experimental: force RGB565 on exact game-sized legacy system-memory image surface.\n",
     "LegacyOffscreenRGB565=0\n",
-    "; Experimental widescreen only with fingerprinted owner-provided patched 1.0.2.0 EXE.\n",
+    "; Experimental native widescreen/FOV for the exact unmodified unsafedisk 1.02 EXE only.\n",
     "Native3DWidescreen=0\n",
     "\n",
     "[Debug]\n",
