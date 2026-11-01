@@ -1,10 +1,44 @@
-# CrimsonSkiesFix 0.1.70 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.71 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.71 — fix the silent Preferences video diagnostic (read-only)
+
+The owner-supplied v0.1.70 log shows the game rendering the correct
+1920x1080 desktop and virtual 800x600 4:3 MainMenu, with a successful
+flicker-free offscreen version label. **No `entered Preferences` or
+`MENU-VIDEO-PROBE` entries appear in that log.** The probe was
+incorrectly conditional on our narrow four-call script observer
+recognizing `Preferences`; not every nested menu has that transition.
+The lack of probe lines does *not* establish that the user did not
+interact with video settings.
+
+In v0.1.71, the exact authenticated game image is still required and
+its original device/index load instructions must still match their
+byte-exact preimages before any memory read. However, the read-only
+probe now samples only the game's **640x480 or 800x600 logical UI
+Flip** (when `[Debug] Log=1`), without requiring any particular script
+scene tag. It logs the *first sample and only distinct device/index
+changes*, capped at 32 events; it never writes to the game memory.
+`scene=MainMenu-or-unobserved-submenu` is a diagnostic *hint*, not
+proof that the MainMenu is currently visible.
+
+Search the log for
+`MENU-VIDEO-PROBE: ui=800x600 scene=... selected_device=...
+selected_mode_index=...`. Compare before/after choosing the `Graphics`
+and `Resolution` lists. If no variable changes appear, it may be
+necessary to trace the verified `0x00407811` resolution callback in
+the UI interpreter rather than inferring anything from snapshots.
+
+**This is a diagnostic build, not the promised disabled dropdowns or
+desktop resolution label.** The validated 0.1.69 MainMenu version
+watermark, aspect-correct 4:3 movie/UI and native 3D resolution/FOV/HUD
+are unchanged. PR #9 remains draft and should not be merged until
+the actual menu Video widgets are implemented and visually verified.
 
 ## v0.1.70 — Video Preferences controls: exact-state research (read-only)
 
