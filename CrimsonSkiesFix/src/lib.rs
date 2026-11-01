@@ -1375,7 +1375,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     // script input is blocked, and this is only installed for diagnostics.
     static VIDEO_EVENT_ONCE:Once=Once::new();
     VIDEO_EVENT_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
             let installed=unsafe{menu_mode_event::install()};
             log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
         }
