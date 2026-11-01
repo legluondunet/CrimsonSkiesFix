@@ -238,8 +238,7 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
                 let same=identical_game_cooperative_request(
                     runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
                     dd4 as usize,hwnd as usize,flags);
-                let Some((width,height))=runtime.monitor.dimensions() else{return Some(E_FAIL)};
-                 let expected=(runtime.monitor.left,runtime.monitor.top,width,height);
+                let Some(expected)=runtime.monitor.client_geometry() else{return Some(E_FAIL)};
                 if same && win32::game_client_geometry(hwnd)==Some(expected){
                     log("WINDOWED-GAME: repeated identical game DD4 exclusive cooperative request acknowledged; native DDSCL_NORMAL and virtual graph preserved");
                     return Some(0);
@@ -367,8 +366,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             }
             // The host compositor may refuse/alter requested client bounds.
             // Do not start presenting to an assumed desktop-sized rectangle.
-            let Some((client_w,client_h))=area.dimensions() else{return Some(E_FAIL)};
-            let expected=(area.left,area.top,client_w,client_h);
+            let Some(expected)=area.client_geometry() else{return Some(E_FAIL)};
             if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
                 log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
                 return Some(E_FAIL);
