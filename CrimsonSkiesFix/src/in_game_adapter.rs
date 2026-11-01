@@ -295,7 +295,6 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
     // Geometry was checked above, including monitors with negative origins.
-    let (monitor_w,monitor_h)=(monitor_w,monitor_h);
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
         // Only the original unwrapped EXE, authenticated by exe_gate,
         // can reach this path. No support for third-party widescreen EXEs.
