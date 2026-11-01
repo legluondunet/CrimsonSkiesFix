@@ -1,5 +1,5 @@
 //! Fail-closed acceptance gate for the single owner-verified Crimson Skies
-//! 1.02 executable produced by unsafedisk. Runs at the first DirectDraw export,
+//! 1.02 executable. Runs at the first DirectDraw export,
 //! never from DllMain or under the Windows loader lock.
 //! Reads the EXE on disk, does not modify it, and does not inspect game content.
 use std::{
@@ -89,6 +89,12 @@ fn write_rejection(line:&str)->bool{
     }
 }
 
+fn rejection_message(actual:&str)->String {
+    format!(
+        "Only the executable with the following SHA-256 is supported:\n{EXPECTED_SHA256}\n\nYour executable:\n{actual}"
+    )
+}
+
 fn dialog(text:&str){
     let caption:Vec<u16>="CrimsonSkiesFix - Unsupported executable".encode_utf16().chain([0]).collect();
     let message:Vec<u16>=text.encode_utf16().chain([0]).collect();
@@ -108,13 +114,14 @@ pub fn verify_once()->bool{
         let line=format!(
             "EXE-GATE: REJECTED reason={reason}; expected_sha256={EXPECTED_SHA256}; actual_sha256={actual}; expected_size={EXPECTED_SIZE}; actual_size={size}; no DirectDraw hooks installed"
         );
-        let logged=write_rejection(&line);
-        dialog(&format!(
-            "Unsupported Crimson Skies executable.\n\nOnly the unmodified 1.02 executable produced by unsafedisk is accepted.\n\nExpected SHA-256:\n{EXPECTED_SHA256}\n\nDetected SHA-256:\n{actual}\n\n{reason}\n\n{}",
-            if logged{"Rejection recorded in CrimsonSkiesFix.log beside ddraw.dll."}
-            else{"WARNING: CrimsonSkiesFix.log could not be written. Check folder permissions."}
-        ));
-        false
+        // Preserve the rejection hash in the diagnostic log, without exposing
+        // log internals or executable provenance in the user-facing dialog.
+        let _=write_rejection(&line);
+        dialog(&rejection_message(&actual));
+        // Returning DDERR_GENERIC lets the game display a misleading
+        // "Reinstall DirectX" dialog. A rejected EXE must never resume.
+        // This code runs on the first DirectDraw export, not inside DllMain.
+        std::process::exit(1);
     })
 }
 
@@ -125,6 +132,17 @@ mod tests{
     fn sha256_known_vectors(){
         assert_eq!(sha256(b""),"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(sha256(b"abc"),"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+    #[test]
+    fn rejection_dialog_has_no_provenance_or_logging_details(){
+        let actual="5578a15ce072d09655be43419829a7530ed6c71fa5a8778fd9d4661770b39d67";
+        let message=rejection_message(actual);
+        assert_eq!(message,format!(
+            "Only the executable with the following SHA-256 is supported:\n{EXPECTED_SHA256}\n\nYour executable:\n{actual}"
+        ));
+        assert!(!message.contains("unsafedisk"));
+        assert!(!message.contains("log"));
+        assert!(!message.contains("rejection"));
     }
     #[test]
     fn accepts_exact_owner_exe_only(){
