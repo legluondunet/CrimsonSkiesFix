@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.64 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.65 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -6,7 +6,17 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
-## Supported game executable — strict check (v0.1.64)
+## v0.1.65 — experimental early native FOV/HUD initialization
+
+**Motivation:** owner screenshots on v0.1.64 show visibly horizontal-oval round HUD gauges and disproportionate cinematic bars at native 1920x1080, despite a successful exact in-memory reference delta and a 1:1 1920x1080 RGB565/Z32 rendering epoch. This is a visual regression requiring validation, not evidence of success.
+
+**Hypothesis:** previously, the supported prepatched reference EXE had all widescreen instructions active from process startup. The new exact clean-EXE memory patch was only applied during the later game-owned DirectDraw4 exclusive cooperative request, after earlier game initialization could have cached 4:3 UI/projection values.
+
+**Controlled experiment:** with both `ExperimentalWindowedAdapter=1` and `Native3DWidescreen=1`, the first exported DirectDraw call now applies the *same strict, preimage-checked, full FOV/HUD memory delta* before entering the system DirectDraw code, but **only when Windows reports exactly one monitor with valid primary geometry**. No file is modified, no patch runs in `DllMain`, and all existing byte/PE checks, protection restoration and rollback remain in place. The later game HWND-specific stage reuses the result if its monitor matches. A mismatch fails closed. Multi-monitor setups retain the old deferred HWND path; no guessing based on cursor location.
+
+The test log should show `WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor=1920x1080 result=Patched`, followed later by `reused early native FOV/HUD patch`. Compare **the same cutscene**, three circular HUD gauges, and the 3D aircraft proportions against v0.1.64. This is a timing hypothesis, not a proven proportions fix. Return to v0.1.64 if the regression persists or worsens. Do not merge before owner runtime validation.
+
+## Supported game executable — strict check (v0.1.65)
 
 **Only the exact verified, unmodified SafeDisc-free Crimson Skies v1.02 executable is accepted.** The original
 SafeDisc-wrapped retail launcher, older versions, and third-party
