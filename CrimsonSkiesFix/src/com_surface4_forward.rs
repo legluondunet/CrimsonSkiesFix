@@ -718,9 +718,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 window_exposure::sample_game_window(session.window))
         }else{false};
         pace_graph_flip(session);
+        let menu_hwnd=session.window as *mut c_void;
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
+                // On success only, draw the label if the game's exact
+                // script dispatcher last selected MainMenu.
+                crate::menu_brand::draw_main_menu(menu_hwnd);
                 if repaint{
                     crate::log(&format!(
                         "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
