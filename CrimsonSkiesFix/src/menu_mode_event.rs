@@ -1,9 +1,8 @@
-//! Read-only observer for the original game's "set video mode" gosCallback
-//! dispatch. Unlike frame snapshots, logs the original event invocation
-//! even when the requested legacy mode index does not actually change.
-//!
-//! Never block or replace user input here: this is an experimental
-//! diagnostic hook, authenticated to the single supported v1.02 EXE.
+//! Strictly scoped backend lock for the old game's "set video mode"
+//! gosCallback event, authenticated to the single supported v1.02 EXE.
+//! The GUI widget may still be clickable; actual game mode changes are
+//! ignored only inside active MainMenu-family 4:3 UI. Outside that
+//! context the original handler runs with every side effect unchanged.
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU32,Ordering};
@@ -30,18 +29,40 @@ fn rel_call(site:usize,target:usize)->[u8;5]{
     [0xe8,disp[0],disp[1],disp[2],disp[3]]
 }
 fn should_log(n:u32)->bool{n<MAX_LOGS}
+fn should_guard_mode(experimental:bool,native:bool,desktop:bool,
+                     menu_active:bool,legacy_ui:bool)->bool{
+    experimental && native && desktop && menu_active && legacy_ui
+}
+fn guard_enabled()->bool{
+    let config=crate::cfg();
+    should_guard_mode(
+        config.experimental_windowed_adapter,
+        config.native_3d_widescreen,
+        config.desktop_resolution,
+        crate::menu_scene::main_menu_active(),
+        crate::menu_video_probe::legacy_ui_active()
+    )
+}
+
 /// The original uses a single DWORD argument and `ret 4`. It ignores
 /// ECX even though the gosCallback dispatcher sets a game-object value.
 unsafe extern "system" fn observe_mode_request(value:u32){
     let before=ptr::read_volatile(SELECTED_MODE as *const u32);
-    let original:unsafe extern "system" fn(u32)=std::mem::transmute(ORIGINAL_TARGET);
-    original(value); // retain every original side effect, including table normalization
+    // Command 15 originates from the game's resolution selector.
+    // Returning without calling the handler keeps the original mode index
+    // and the caller's subsequent mode-table copy internally consistent.
+    // This does not yet grey out the custom UI list itself.
+    let blocked=guard_enabled();
+    if !blocked {
+        let original:unsafe extern "system" fn(u32)=std::mem::transmute(ORIGINAL_TARGET);
+        original(value); // Original startup and non-menu behavior preserved.
+    }
     let after=ptr::read_volatile(SELECTED_MODE as *const u32);
     let count=EVENTS.fetch_add(1,Ordering::Relaxed);
     if should_log(count) && crate::cfg().log_enabled {
         log(&format!(
-            "MENU-VIDEO-EVENT: gosCallback video-mode request={} index_before={} index_after={} changed={} [READ-ONLY; no menu input suppressed]",
-            value,before,after,before!=after
+            "MENU-VIDEO-EVENT: request={} index_before={} index_after={} blocked={} changed={} [strict menu-only backend guard]",
+            value,before,after,blocked,before!=after
         ));
     }
 }
@@ -78,7 +99,7 @@ pub unsafe fn install()->bool{
         log("MENU-VIDEO-EVENT: mode observer installation failed; original call restored where possible");
         return false;
     }
-    log("MENU-VIDEO-EVENT: exact gosCallback mode-selection call observed (pass-through, read-only)");
+    log("MENU-VIDEO-EVENT: exact gosCallback mode-selection guard installed; original handler retained outside active 4:3 MainMenu");
     true
 }
 
@@ -88,6 +109,17 @@ mod tests{
     #[test]
     fn original_call_is_exactly_reconstructed(){
         assert_eq!(rel_call(CALL_SITE,ORIGINAL_TARGET),ORIGINAL_CALL);
+    }
+    #[test]
+    fn only_active_mainmenu_family_ui_may_guard_video_mode(){
+        assert!(should_guard_mode(true,true,true,true,true));
+        for flags in [
+            (false,true,true,true,true),(true,false,true,true,true),
+            (true,true,false,true,true),(true,true,true,false,true),
+            (true,true,true,true,false)
+        ]{
+            assert!(!should_guard_mode(flags.0,flags.1,flags.2,flags.3,flags.4));
+        }
     }
     #[test]
     fn event_logging_has_strict_upper_bound(){
