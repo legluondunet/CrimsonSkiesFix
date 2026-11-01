@@ -38,6 +38,17 @@ impl NativeWindowedBlt {
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,source})
     }
+    /// The real windowed primary is owned by the live Flip session.
+    /// The menu brander borrows this pointer only after successful Blt,
+    /// never keeps or releases the COM interface.
+    pub fn primary_for_overlay(&self)->Ptr{self.primary}
+    /// Keep the label inside the aspect-correct 4:3 content, not in
+    /// the physical desktop pillarbox or a guessed HWND rectangle.
+    pub fn overlay_viewport(&self)->Option<Rect>{
+        let fit=crate::presentation::fit_viewport(
+            self.source.width,self.source.height,self.client.0,self.client.1)?;
+        self.screen_rect(fit).ok()
+    }
     fn screen_rect(&self,view:Viewport)->Result<Rect,i32>{
         if view.width==0||view.height==0||
            view.x.checked_add(view.width).is_none_or(|x|x>self.client.0)||
