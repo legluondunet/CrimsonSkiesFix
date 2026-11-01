@@ -1,7 +1,7 @@
 //! Read-only observation of the verified v1.02 executable's two video
 //! preference variables. Does not modify UI, choices or graphical state.
 //! No guessed click rectangles or broad input interception.
-use std::{ptr,sync::{Mutex,OnceLock}};
+use std::{ptr,sync::{Mutex,OnceLock,atomic::{AtomicBool,Ordering}}};
 use crate::{log,menu_scene};
 
 const IMAGE_BASE:usize=0x400000;
@@ -16,6 +16,10 @@ const MAX_TRANSITIONS:u32=32;
 #[derive(Default)]
 struct State {last:Option<(u32,u32)>,changes:u32,valid:Option<bool>}
 static STATE:OnceLock<Mutex<State>>=OnceLock::new();
+static LEGACY_UI_ACTIVE:AtomicBool=AtomicBool::new(false);
+/// Updated for every virtual primary Flip, independently of Log=1.
+pub fn legacy_ui_active()->bool{LEGACY_UI_ACTIVE.load(Ordering::Acquire)}
+
 
 fn changed(state:&mut State,now:(u32,u32))->bool{
     if state.last==Some(now)||state.changes>=MAX_TRANSITIONS{return false;}
@@ -36,6 +40,7 @@ fn is_legacy_ui_mode(w:u32,h:u32)->bool{
     matches!((w,h),(640,480)|(800,600))
 }
 pub fn observe_ui_flip(w:u32,h:u32){
+    LEGACY_UI_ACTIVE.store(is_legacy_ui_mode(w,h),Ordering::Release);
     if !crate::cfg().log_enabled || !crate::cfg().experimental_windowed_adapter{return;}
     let state=STATE.get_or_init(||Mutex::new(State::default()));
     let Ok(mut state)=state.try_lock() else{return;};
