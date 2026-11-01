@@ -5,17 +5,60 @@ modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## Supported game executable — strict check (v0.1.63)
+
+**Only the unmodified, SafeDisc-free Crimson Skies v1.02 executable
+reconstructed by our `unsafedisk` tool is accepted.** The original
+SafeDisc-wrapped retail launcher, older versions, and third-party
+already-widescreen/FOV-patched EXEs are **not supported**.
+
+| Required file | Exact value |
+|---|---|
+| Game EXE | `CRIMSON.EXE` |
+| Size | `2,580,480` bytes |
+| SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
+
+Before installing any graphics hooks or changing game memory, the DLL
+calculates the **raw SHA-256 of the executable on disk**. Any different
+hash (or an unreadable file) is **refused**: DirectDraw initialization
+returns an error and a Windows error dialog identifies the expected
+and detected hashes. The error is written beside `ddraw.dll` to
+`CrimsonSkiesFix.log` **even with `[Debug] Log=0`** (as long as
+the directory is writable). The refusal never overwrites or modifies
+the game EXE. Unknown executables do not fall back to the
+normal/unmodified DirectDraw implementation through this proxy.
+
+Our DLL is intended to **adapt the verified executable in memory** to
+the active monitor's resolution, camera FOV and HUD, retaining 4:3 for
+menus and videos. This is experimental, controlled by
+`ExperimentalWindowedAdapter=1` and `Native3DWidescreen=1`;
+**native 3D gameplay with the full automatic patch is not yet validated**.
+The EXE on disk keeps the exact SHA-256 above.
+
+To check the game executable yourself:
+
+```sh
+sha256sum CRIMSON.EXE
+```
+
+Windows PowerShell:
+
+```powershell
+Get-FileHash .\CRIMSON.EXE -Algorithm SHA256
+```
+
 ## Installation — only one file at the game root
 
 Extract the Windows x86 artifact into **a copy** of the game directory
-containing the already-unwrapped Crimson Skies 1.0.2.0. The intended
+containing the exact verified unmodified Crimson Skies 1.0.2.0 EXE above. The intended
 layout is:
 
 ```text
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonSkiesFix.log           # created when Log=1 or ExperimentalWindowedAdapter=1
+  CrimsonSkiesFix.log           # created for Log=1, adapter mode, or EXE rejection
   CrimsonSkiesFix/
     CrimsonSkiesFix.ini.example # shipped with the ZIP; safe to overwrite
     README.md
