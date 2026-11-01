@@ -1,10 +1,42 @@
-# CrimsonSkiesFix 0.1.68 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.69 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.69 — atomic offscreen menu signature composition (experimental)
+
+The owner confirmed the v0.1.68 signature **is visible but flickers slightly**
+while an animated background video plays behind the game's MainMenu.
+The runtime log confirms MainMenu detection, successful primary-surface
+`DrawTextW` and continuing virtual primary Flip calls. This is
+consistent with interleaved movie updates and drawing directly on the
+already-visible DirectDraw primary.
+
+In v0.1.69 the DLL owns a fresh **private, RGB565 system-memory offscreen
+scratch** for the game's 640×480/800×600 menu epoch. On every MainMenu
+Flip, it copies the complete unchanged native backbuffer to the scratch,
+draws `CrimsonSkiesFix VERSION-SHORTCOMMIT` via the scratch's DirectDraw4
+`GetDC`/`ReleaseDC`, and then displays the **composited picture in a
+single normal primary Blt**. In all other scenes, or whenever the scratch
+copy or text draw fails, the original real backbuffer is presented
+unchanged. The game's own 3D render target and video decoder are never
+overwritten; no independent HWND or visible-primary GDI overlay is used.
+The menu signature stays in the lower right of the aspect-correct 4:3
+viewport.
+
+The new diagnostic is
+`MENU-BRANDING: offscreen RGB565 menu text composited before primary Blt`.
+Any scratch-copy/GetDC/ReleaseDC error is logged once and bypasses
+the overlay. **No runtime flicker-free claim is made until owner
+screenshots/video under Wine confirm it.** The 60 FPS Flip pacing,
+resolution/FOV and strict EXE SHA-256 policy remain unchanged.
+
+The separate requests to disable `Graphics` and `Resolution` in
+Preferences > Video and to display the selected desktop resolution in
+that menu remain pending. Do not merge this experimental PR yet.
 
 ## v0.1.68 — target the DirectDraw primary (menu-label visibility regression)
 
