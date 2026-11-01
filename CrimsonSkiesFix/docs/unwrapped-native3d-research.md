@@ -1,5 +1,17 @@
 # Native 3D widescreen: unwrapped 1.0.2.0 research
 
+> **Current status (v0.1.63, 1 November 2026):** This document preserves
+> the chronology of experiments, including abandoned resolution-only and
+> prepatched-EXE approaches. Those older sections are **historical, not
+> current installation or implementation instructions**. The current DLL
+> accepts only the exact unmodified SafeDisc-free v1.02 EXE (SHA-256
+> `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`),
+> rejects every other EXE before installing graphics hooks, and provides an
+> opt-in, experimental full in-memory resolution/FOV/HUD patch. Refer to
+> [the current installation guide](../README.md). Native 3D gameplay
+> remains unvalidated on the new path.
+
+
 ## Observed candidate
 
 User-provided `CRIMSON-UNWRAPPED.EXE`:
