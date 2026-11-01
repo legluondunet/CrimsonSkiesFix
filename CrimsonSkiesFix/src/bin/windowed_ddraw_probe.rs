@@ -99,7 +99,7 @@ fn log(message:&str){
 // shared virtual Surface4 module's optional menu drawing hook is inert.
 mod menu_brand {
     use std::ffi::c_void;
-    pub fn draw_main_menu(_hwnd:*mut c_void){}
+    pub fn draw_main_menu(_surface:*mut c_void,_viewport:super::borderless_native_blt::Rect){}
 }
 
 // The standalone surface probe never locks RGB32 movie surfaces.
