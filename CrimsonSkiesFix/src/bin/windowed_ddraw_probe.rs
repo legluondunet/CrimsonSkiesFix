@@ -98,7 +98,7 @@ fn log(message:&str){
 // The standalone probe has no game process or MainMenu state. The
 // shared virtual Surface4 module's optional menu drawing hook is inert.
 mod menu_video_probe{
-    pub fn observe_preferences_flip(){} // standalone probe has no game executable
+    pub fn observe_ui_flip(_width:u32,_height:u32){} // standalone probe has no game executable
 }
 mod menu_brand {
     use std::ffi::c_void;
