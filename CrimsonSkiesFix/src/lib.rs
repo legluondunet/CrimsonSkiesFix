@@ -4,6 +4,7 @@
 mod config;
 mod build_info;
 mod menu_scene;
+mod menu_video_probe;
 mod menu_brand;
 mod win32;
 mod window_exposure;
