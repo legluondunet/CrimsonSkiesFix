@@ -294,15 +294,11 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     let monitor_w=(monitor.right-monitor.left) as u32;
     let monitor_h=(monitor.bottom-monitor.top) as u32;
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
-        let original_result=crate::native_widescreen::apply_monitor_resolution(monitor_w,monitor_h);
-        let result=if matches!(original_result,crate::native_widescreen::PatchResult::UnsupportedExecutable){
-            let _selector_800_verified=crate::native_widescreen::probe_unwrapped_800x600_selector();
-            let res=crate::native_widescreen::apply_unwrapped_full_patch(monitor_w,monitor_h);
-            log(&format!("WINDOWED-WIDE: full unwrapped resolution+FOV+HUD patch result={res:?}"));
-            res
-        } else {original_result};
+        // Only the original unwrapped EXE, authenticated by exe_gate,
+        // can reach this path. No support for third-party widescreen EXEs.
+        let result=crate::native_widescreen::apply_unwrapped_full_patch(monitor_w,monitor_h);
         log(&format!(
-            "WINDOWED-WIDE: patched-EXE signature and monitor {}x{} result={result:?}",
+            "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
             monitor_w,monitor_h));
         matches!(result,
             crate::native_widescreen::PatchResult::Patched |
