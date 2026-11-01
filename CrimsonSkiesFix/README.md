@@ -33,8 +33,9 @@ selection changes, input filters, game-file edits or GUI overlays**.
 
 When registered early enough and the virtual 4:3 menu is active,
 relevant commands 8–30 can produce up to 80 diagnostic lines:
-`MENU-GOS-EVENT: command=N result=R ui_4by3=true
-[pass-through; no widget input changed]`. The observer explicitly
+`MENU-GOS-EVENT: command=N result=R device=A->B
+mode_index=C->D ui_4by3=true [pass-through]`, including both
+read-only variables before and after the original callback. The observer explicitly
 cannot affect already-registered callbacks, so if no such lines
 appear after Video menu interaction, we should not assume no commands
 were sent; that means this registration timing approach needs review.
