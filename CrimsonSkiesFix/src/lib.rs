@@ -276,15 +276,33 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
-    // Prime the verified image patch before game startup caches 4:3 HUD/FOV
-    // values. Only a single unambiguous primary monitor permits this path.
+    // Freeze the screen under the cursor at the first game DirectDraw call.
+    // It represents the launch screen, not the cursor's later location.
+    // The actual game HWND is validated separately before it can be moved.
+    if config.experimental_windowed_adapter {
+        static SCREEN_ONCE:Once=Once::new();
+        SCREEN_ONCE.call_once(||{
+            if let Some(rect)=win32::capture_launch_monitor(){
+                if let Some((w,h))=rect.dimensions(){
+                    log(&format!("WINDOWED-GAME: launch monitor origin={},{} size={}x{}",
+                        rect.left,rect.top,w,h));
+                }
+            }else{
+                log("WINDOWED-GAME: launch monitor unknown; game HWND monitor will be used");
+            }
+        });
+    }
+    // Apply the FOV/HUD delta at the earliest DirectDraw export with the
+    // same monitor geometry later used by the actual game's window.
     static EARLY_NATIVE_ONCE:Once=Once::new();
     if config.experimental_windowed_adapter && config.native_3d_widescreen {
         EARLY_NATIVE_ONCE.call_once(||{
-            if let Some((w,h))=win32::sole_primary_monitor_dimensions(){
+            let size=win32::capture_launch_monitor().and_then(|r|r.dimensions())
+                .or_else(win32::sole_primary_monitor_dimensions);
+            if let Some((w,h))=size {
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
             }else{
-                log("WINDOWED-WIDE: early patch deferred; monitor count or geometry ambiguous");
+                log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
             }
         });
     }
@@ -426,7 +444,7 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
     if !hwnd.is_null() && cfg().log_enabled && PRE_EXCLUSIVE_DESKTOP.get().is_none(){
         // Critical: capture monitor dimensions BEFORE exclusive DirectDraw
         // SetDisplayMode shrinks the Wine mode and game HWND to 640/800.
-        if let Some(area)=win32::monitor_for_game_window(hwnd){
+        if let Some(area)=win32::launch_monitor_or_game_window(hwnd){
             let w=area.right.saturating_sub(area.left) as u32;
             let h=area.bottom.saturating_sub(area.top) as u32;
             if w>0 && h>0 {
