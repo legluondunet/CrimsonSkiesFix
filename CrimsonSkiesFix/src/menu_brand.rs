@@ -43,6 +43,10 @@ fn label_rect(view:Rect)->Option<Rect>{
     let bottom=view.bottom.saturating_sub(18);
     (left<right&&top<bottom).then_some(Rect{left,top,right,bottom})
 }
+pub fn is_main_menu_active()->bool{menu_scene::main_menu_active()}
+pub fn report_copy_failure(hr:i32){
+    report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
+}
 fn report_error(message:&str){
     if !REPORTED_ERROR.swap(true,Ordering::Relaxed){
         log(&format!("MENU-BRANDING: primary Surface4 drawing unavailable: {message}"));
