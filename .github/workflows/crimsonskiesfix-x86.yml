@@ -24,8 +24,12 @@ jobs:
       - name: Install Rust i686 MSVC target
         run: rustup target add i686-pc-windows-msvc
       - name: Unit tests in 32-bit mode
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: cargo test --target i686-pc-windows-msvc
       - name: Compile release DirectDraw proxy
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: cargo build --release --target i686-pc-windows-msvc
       - name: Verify PE machine is Intel x86
         shell: pwsh
