@@ -1,10 +1,44 @@
-# CrimsonSkiesFix 0.1.66 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.67 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.67 — main-menu-only version label experiment
+
+The exact verified v1.02 EXE has four original `CALL rel32` instructions
+that load game menus. Only after the executable passes the strict SHA-256
+gate, a byte-exact in-memory hook observes those calls and recognizes the
+`MainMenu` and `Preferences` script pointers. A mismatch disables the
+menu observer entirely. The original script loader is always called
+unchanged, and the game EXE on disk is never modified.
+
+With `ExperimentalWindowedAdapter=1`, after a successful windowed
+DirectDraw primary Flip, the DLL requests a transparent Win32 text draw
+in the lower-right corner of the game client area **only if the MainMenu
+script is active**: `CrimsonSkiesFix VERSION-SHORTCOMMIT`. The version
+and eight-character commit are embedded from the actual CI source head.
+This is an experiment: GDI/DirectDraw compositing varies between Wine and
+Windows, and a successful draw call does not prove the label is visible.
+The game UI, textures, mouse input and frame pacing are not modified.
+
+Look for `MENU-SCENE: hook_available=true`, `MENU-SCENE: entered MainMenu`
+and `MENU-BRANDING: draw requested on active MainMenu` in the log.
+If the label is absent, flickers, or appears in a different game screen,
+send that log along with a screenshot. If the script-hook checks fail,
+the label remains disabled without affecting the game's menu.
+
+**Still pending:** prevent selection of the `Graphics` and
+`Resolution` custom drop-down lists and replace the visible Resolution
+value with the selected monitor's physical dimensions. The original game
+`Preferences` menu loads external UI resources, rather than standard
+Win32 combo boxes; the project does not yet identify those exact widget
+structures/events. The monitor dimensions themselves are already
+available (logged at startup). Do not claim that the in-menu settings
+are currently locked or rewritten. Both changes need a separate verified
+widget-specific implementation before merging.
 
 ## v0.1.66 — monitor launch selection and build identity (experimental)
 
