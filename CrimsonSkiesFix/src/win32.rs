@@ -10,6 +10,28 @@ pub const GWL_STYLE: i32 = -16;
 pub const WS_POPUP: u32 = 0x8000_0000;
 pub const WS_VISIBLE: u32 = 0x1000_0000;
 
+#[link(name="user32")]
+extern "system" {
+    fn GetSystemMetrics(index:i32)->i32;
+}
+
+// No HWND exists when the game first calls DirectDraw. A one-monitor
+// installation has a deterministic primary monitor; on multi-monitor
+// systems do NOT guess based on the mouse, and defer to the game HWND.
+fn sole_monitor_metrics(count:i32,width:i32,height:i32)->Option<(u32,u32)> {
+    if count!=1 || width<=0 || height<=0{return None;}
+    Some((u32::try_from(width).ok()?,u32::try_from(height).ok()?))
+}
+pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
+    unsafe {
+        sole_monitor_metrics(
+            GetSystemMetrics(80), // SM_CMONITORS
+            GetSystemMetrics(0),  // SM_CXSCREEN
+            GetSystemMetrics(1),  // SM_CYSCREEN
+        )
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Point { pub x:i32, pub y:i32 }
@@ -340,6 +362,20 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
     let mut discarded=0;
     VirtualProtect(slot.cast(),std::mem::size_of::<usize>(),previous,&mut discarded);
     true
+}
+
+#[cfg(test)]
+mod early_monitor_tests{
+    use super::*;
+    #[test]
+    fn early_monitor_only_when_unambiguous(){
+        assert_eq!(sole_monitor_metrics(1,1920,1080),Some((1920,1080)));
+        assert_eq!(sole_monitor_metrics(1,3440,1440),Some((3440,1440)));
+        for (n,w,h) in [(0,1920,1080),(2,1920,1080),
+                         (1,0,1080),(1,1920,0),(1,-1,1080)] {
+            assert_eq!(sole_monitor_metrics(n,w,h),None);
+        }
+    }
 }
 
 #[cfg(test)]
