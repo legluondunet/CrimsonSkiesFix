@@ -21,6 +21,10 @@ pub struct NativeWindowedBlt {
     origin:(i32,i32),
     client:(u32,u32),
     source:Mode,
+    // Borrowed DD4 offscreen RGB565 scratch owned by the current game epoch.
+    // Never use it outside the matching native Surface4 graph lifetime.
+    menu_scratch:Ptr,
+    menu_prepared:bool,
 }
 impl NativeWindowedBlt {
     /// SAFETY: caller retains live IDirectDrawSurface4 COM references to
@@ -36,7 +40,38 @@ impl NativeWindowedBlt {
            !(matches!((source.width,source.height),(640,480)|(800,600)) ||
              (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
-        Ok(Self{primary,source_surface,origin,client,source})
+        Ok(Self{primary,source_surface,origin,client,source,menu_scratch:ptr::null_mut(),menu_prepared:false})
+    }
+    /// Called during graph initialization; the caller retains the strong
+    /// COM ownership until the entire epoch is retired.
+    pub fn set_menu_scratch(&mut self,scratch:Ptr){
+        self.menu_scratch=scratch;
+        self.menu_prepared=false;
+    }
+
+    /// A menu frame is copied and labeled entirely offscreen, then promoted
+    /// by the existing single Blt. The copy never touches the game's own
+    /// 3D/backbuffer surface and cannot outlive a Flip session.
+    pub fn prepare_menu_frame(&mut self){
+        self.menu_prepared=false;
+        if self.menu_scratch.is_null(){return;}
+        let dest=self.menu_scratch;
+        let source=self.source_surface;
+        let copied=unsafe{
+            let table=*(dest.cast::<*const usize>());
+            if table.is_null(){return;}
+            let blt:Blt=std::mem::transmute(*table.add(5));
+            blt(dest,ptr::null(),source,ptr::null(),WAIT,ptr::null_mut())
+        };
+        if copied<0{
+            crate::menu_brand::report_copy_failure(copied);
+            return;
+        }
+        let viewport=Rect{left:0,top:0,right:self.source.width as i32,bottom:self.source.height as i32};
+        self.menu_prepared=crate::menu_brand::draw_main_menu(dest,viewport);
+    }
+    pub fn clear_menu_frame(&mut self){
+        self.menu_prepared=false;
     }
     /// The real windowed primary is owned by the live Flip session.
     /// The menu brander borrows this pointer only after successful Blt,
@@ -82,7 +117,8 @@ impl WindowedBlt for NativeWindowedBlt {
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
         let dest=self.screen_rect(view)?;
-        unsafe{self.blt(&dest,self.source_surface,WAIT,ptr::null_mut())}
+        let source=if self.menu_prepared{self.menu_scratch}else{self.source_surface};
+        unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())}
     }
 }
 
