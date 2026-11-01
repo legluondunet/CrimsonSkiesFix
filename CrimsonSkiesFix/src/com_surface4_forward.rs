@@ -1449,7 +1449,7 @@ mod tests{
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
             assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
-            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None,0,false).unwrap();
+            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None,0,false,ptr::null_mut()).unwrap();
             assert_eq!(retire_graph_primary_flip(p),Ok(0));
             assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
@@ -1497,9 +1497,9 @@ mod tests{
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!(graph_primary_completed_flips(p),None);
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false),Err(E_INVALIDARG));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Ok(()));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false,ptr::null_mut()),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Ok(()));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
@@ -1514,7 +1514,7 @@ mod tests{
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
             assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
-            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
