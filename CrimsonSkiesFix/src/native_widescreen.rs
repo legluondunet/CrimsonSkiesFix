@@ -22,12 +22,8 @@ use std::sync::OnceLock;
 // before DirectDraw setup, never in DllMain. Defer on multi-monitor hosts.
 static EARLY_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
 
-pub unsafe fn prime_native_widescreen_early(){
+pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     if EARLY_NATIVE_PATCH.get().is_some(){return;}
-    let Some((w,h))=crate::win32::sole_primary_monitor_dimensions() else{
-        crate::log("WINDOWED-WIDE: early patch deferred; monitor count or geometry ambiguous");
-        return;
-    };
     // apply() itself verifies exact PE headers and every original byte,
     // and performs fail-closed memory protection and rollback.
     let result=full_patch::apply(w,h);
