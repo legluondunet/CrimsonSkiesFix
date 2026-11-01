@@ -1,10 +1,56 @@
-# CrimsonSkiesFix 0.1.73 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.74 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.74 — original Video UI callback research (read-only)
+
+The owner-provided v0.1.73 Wine log **validates** the narrow backend
+resolution-mode guard: commands `request=0` and `request=1` both
+report `blocked=true changed=false index_before=0 index_after=0`,
+while 1920×1080 3D and the validated offscreen MainMenu version label
+continue to function.
+
+The remaining requests concern the game's **custom Video GUI widgets**,
+not the internal mode table: visually disabling `Graphics` and
+`Resolution`, and displaying the active monitor's desktop dimensions
+inside the latter. The exact widget IDs/events are not yet known, so
+we must not infer them from generic mouse coordinates.
+
+This experimental build adds a separate, **read-only and bounded**
+observer of the original GOS script callback registration at
+`0x004075D6`. This location contains the exact instruction
+`PUSH 0x00407670`, where `0x00407670` is the original
+`gosCallback` dispatcher. After the strict EXE hash gate, and only
+when `ExperimentalWindowedAdapter=1` plus `[Debug] Log=1`,
+the DLL redirects the *registration pointer* to a pass-through
+wrapper that always calls the original dispatcher, preserving its
+arguments, return value and side effects. There are **no new
+selection changes, input filters, game-file edits or GUI overlays**.
+
+When registered early enough and the virtual 4:3 menu is active,
+relevant commands 8–30 can produce up to 80 diagnostic lines:
+`MENU-GOS-EVENT: command=N result=R ui_4by3=true
+[pass-through; no widget input changed]`. The observer explicitly
+cannot affect already-registered callbacks, so if no such lines
+appear after Video menu interaction, we should not assume no commands
+were sent; that means this registration timing approach needs review.
+Exact original instruction bytes and page protections are checked,
+and installation failure is logged with a recovery attempt.
+
+**Testing:** with `Log=1`, visit Preferences > Video. Open and
+operate the `Graphics` and `Resolution` selectors separately,
+then adjust another Video option for a control comparison. Share
+the resulting log. The proven v0.1.73 resolution *backend lock*
+remains enabled. Neither dropdown is yet visually disabled and
+`Resolution` still shows the game's old label. This is diagnostic,
+not a claim that those UI requests are complete.
+
+PR #9 stays draft. The 0.1.69 validated menu branding and native
+FOV/HUD widescreen remain unchanged.
 
 ## v0.1.73 — narrow in-menu resolution backend guard (experimental)
 
