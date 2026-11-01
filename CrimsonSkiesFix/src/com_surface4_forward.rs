@@ -723,11 +723,11 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             Ok(frame)=>{
                 // On success only, draw the label if the game's exact
                 // script dispatcher last selected MainMenu.
-                if crate::menu_scene::main_menu_active(){
-                    if let Some(viewport)=backend.overlay_viewport(){
-                        crate::menu_brand::draw_main_menu(
-                            backend.primary_for_overlay(),viewport);
-                    }
+                if let Some(viewport)=backend.overlay_viewport(){
+                    // Menu gating is inside the implementation; the
+                    // standalone probe supplies a deliberately inert stub.
+                    crate::menu_brand::draw_main_menu(
+                        backend.primary_for_overlay(),viewport);
                 }
                 if repaint{
                     crate::log(&format!(
