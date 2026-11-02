@@ -1371,12 +1371,11 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
     }
-    // Passive GOS callback trace for custom Video-menu event discovery.
-    // It changes only the verified registration pointer and forwards all
-    // commands to the game's original callback. No menu action is blocked.
+    // Install the verified GOS callback even if Log=0: the command-14
+    // Graphics guard and menu-visibility state must not depend on logging.
     static GOS_MENU_EVENT_ONCE:Once=Once::new();
     GOS_MENU_EVENT_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
             let active=unsafe{menu_gos_event::install()};
             log(&format!("MENU-GOS-EVENT: hook_available={active}"));
         }
