@@ -54,6 +54,18 @@ pub fn on_main_menu_script_loaded(){
     }
 }
 
+/// The *rendered* Campaign-button artwork is a stronger signal of the
+/// unobstructed MainMenu than GOS command 13, which can also be issued
+/// during unrelated transitions. Restore only our internal UI hint;
+/// never modify the game or its Preferences transaction.
+pub(crate) fn on_main_menu_art_verified(){
+    if VIDEO_PREFERENCES_OPEN.swap(false,Ordering::AcqRel) &&
+        crate::cfg().log_enabled
+    {
+        log("MENU-BRANDING: Campaign artwork verified; stale GOS Preferences visibility hint cleared");
+    }
+}
+
 
 fn next_video_dialog_state(previous:bool,command:u32,in_ui:bool)->bool{
     if !in_ui{return previous;}
