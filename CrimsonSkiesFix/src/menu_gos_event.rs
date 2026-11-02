@@ -34,6 +34,19 @@ pub fn main_menu_unobstructed()->bool{
     !VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire)
 }
 
+/// A confirmed reload of the game's original MainMenu script is the
+/// authoritative signal for returning from a nested preferences screen.
+/// Command 13 is *not* a reliable screen-transition signal: the game calls
+/// it several times when editing/reopening menus.
+pub fn on_main_menu_script_loaded(){
+    if VIDEO_PREFERENCES_OPEN.swap(false,Ordering::AcqRel) &&
+       crate::cfg().log_enabled
+    {
+        log("MENU-BRANDING: MainMenu script loaded again; hidden preference state cleared");
+    }
+}
+
+
 fn next_video_dialog_state(previous:bool,command:u32,in_ui:bool)->bool{
     if !in_ui{return previous;}
     match command{
