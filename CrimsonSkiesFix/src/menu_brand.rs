@@ -21,6 +21,7 @@ const DT_NOPREFIX:u32=0x800;
 static LABEL:OnceLock<Vec<u16>>=OnceLock::new();
 static REPORTED:AtomicBool=AtomicBool::new(false);
 static REPORTED_ERROR:AtomicBool=AtomicBool::new(false);
+static ART_STATE:std::sync::atomic::AtomicU8=std::sync::atomic::AtomicU8::new(0);
 
 #[link(name="user32")]
 extern "system" {
@@ -67,11 +68,19 @@ fn main_menu_art_present(dc:Hdc,viewport:Rect)->bool{
         (332,304),(320,290),(320,310),(340,300)
     ];
     let mut gold=0u32;
+    let mut invalid=0u32;
     for (x,y) in samples {
         let px=viewport.left+(x*width)/800;
         let py=viewport.top+(y*height)/600;
         let color=unsafe{GetPixel(dc,px,py)};
+        if color==0xffff_ffff{invalid+=1;}
         if is_campaign_gold(color){gold+=1;}
+    }
+    // Some Wine GDI surface implementations support DrawTextW while
+    // disallowing GetPixel. In that *specific* case retain the previous
+    // known-good MainMenu gating instead of losing all branding.
+    if invalid==8 {
+        return crate::menu_gos_event::main_menu_unobstructed();
     }
     gold>=6
 }
@@ -108,6 +117,15 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
             return false;
         }
         let visible=main_menu_art_present(dc,viewport);
+        let scene=if visible{2}else{1};
+        let old=ART_STATE.swap(scene,Ordering::AcqRel);
+        if old!=scene && crate::cfg().log_enabled{
+            log(if visible{
+                "MENU-BRANDING: confirmed native MainMenu Campaign artwork; watermark eligible"
+            }else{
+                "MENU-BRANDING: native MainMenu artwork absent; watermark hidden"
+            });
+        }
         if !visible {
             // Genuine Video/other dialogs do not have the gold campaign
             // button at these sampled positions. No text is drawn.
