@@ -26,6 +26,14 @@ static EVENTS:AtomicU32=AtomicU32::new(0);
 static OBSERVER_INSTALLED:AtomicBool=AtomicBool::new(false);
 static VIDEO_PREFERENCES_OPEN:AtomicBool=AtomicBool::new(false);
 
+/// The original GOS command 13 began editing the Preferences transaction.
+/// Diagnostic hint only: this does not prove which tab or exact widget
+/// is visible. Never use it alone to block input or change game state.
+pub(crate) fn preferences_transaction_active()->bool{
+    VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire)
+}
+
+
 /// The game's MainMenu script remains loaded while its Video dialog is
 /// visible. The scene tag alone therefore does not prove that the main
 /// menu is unobstructed. If the observer is unavailable, omit branding.
