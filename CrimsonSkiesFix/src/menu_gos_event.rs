@@ -25,12 +25,16 @@ const MAX_EVENTS:u32=80;
 static EVENTS:AtomicU32=AtomicU32::new(0);
 static OBSERVER_INSTALLED:AtomicBool=AtomicBool::new(false);
 static VIDEO_PREFERENCES_OPEN:AtomicBool=AtomicBool::new(false);
+/// Diagnostic-only script data session, independent of the separate
+/// Campaign-art branding heuristic. The latter may clear its visual
+/// hint on an intermediate frame while the Video script is still live.
+static PREFERENCES_DATA_SESSION:AtomicBool=AtomicBool::new(false);
 
 /// The original GOS command 13 began editing the Preferences transaction.
 /// Diagnostic hint only: this does not prove which tab or exact widget
 /// is visible. Never use it alone to block input or change game state.
 pub(crate) fn preferences_transaction_active()->bool{
-    VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire)
+    PREFERENCES_DATA_SESSION.load(Ordering::Acquire)
 }
 
 
@@ -47,6 +51,7 @@ pub fn main_menu_unobstructed()->bool{
 /// Command 13 is *not* a reliable screen-transition signal: the game calls
 /// it several times when editing/reopening menus.
 pub fn on_main_menu_script_loaded(){
+    PREFERENCES_DATA_SESSION.store(false,Ordering::Release);
     if VIDEO_PREFERENCES_OPEN.swap(false,Ordering::AcqRel) &&
        crate::cfg().log_enabled
     {
@@ -150,6 +155,9 @@ unsafe extern "system" fn observe_callback(
     let result=original(first,second,third);
     let in_ui=crate::menu_video_probe::legacy_ui_active();
     if in_ui && matches!(command,13|14|16){
+        let was_data=PREFERENCES_DATA_SESSION.load(Ordering::Acquire);
+        let now_data=next_video_dialog_state(was_data,command,in_ui);
+        PREFERENCES_DATA_SESSION.store(now_data,Ordering::Release);
         let previous=VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire);
         let next=next_video_dialog_state(previous,command,in_ui);
         VIDEO_PREFERENCES_OPEN.store(next,Ordering::Release);
