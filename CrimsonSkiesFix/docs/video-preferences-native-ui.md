@@ -251,3 +251,64 @@ would also break Viewing Range, Effects Level, Lighting, etc.
 The final fix must target the actual two GUI selections/labels,
 not blindly suppress opcode `0x855`.
 
+
+## v0.1.84 Wine log → exact GOS Video list handlers (2 Nov 2026)
+
+Owner's `CrimsonSkiesFix(9).log` (413 lines, 0.1.84-a8915707,
+Wine 11.0 / GE-Proton11-11) confirms 1920x1080 desktop and real HAL,
+800x600 virtual menu, intact watermark, and native GOS callbacks:
+`gosPageInit` and `gosLocalize` emit page transitions and
+resource IDs 1078..1082, 1099..1117 and 4001.
+`uiData(0x855)` is observed with **operation=get**,
+pending graphics/mode 1/0 unchanged, other video field mask=0.
+Mode requests 0 and 1 are both blocked by the existing guard;
+command 14 applies with unchanged pending graphics/mode.
+No log proves the visual selectors are disabled or the native
+dimensions shown. The set operation of `uiData(0x855)`
+was not observed in this session.
+
+### Confirmed resolution text owner: `uiData(0x845)`
+
+Disassembly of the *one exact accepted* SHA-verified 1.02 EXE:
+
+| Address | Original instruction | Interpretation |
+|---|---|---|
+| `0x0040CEF7` | `mov eax,[ebx]; cmp eax,edx` | Reads supplied index; `edx=-1` is count sentinel |
+| `0x0040CEFD` | `mov ecx,[0x64B498]` | Returns mode count on sentinel |
+| `0x0040CF14` | `mov eax,[eax*4+0x64B49C]` | Loads mode packed `(height<<16) | width` |
+| `0x0040CF1D` | `shr edx,16` | Derives height |
+| `0x0040CF21` | `and eax,0xffff` | Derives width |
+| `0x0040CF2B` | `push 0x206` | Format-string resource ID |
+| `0x0040CF31` | `call 0x4054B0` | Formats the dimensions into temporary text |
+| `0x0040CF41` | `call 0x403350` | Assigns formatted text into GOS script output |
+
+This is fundamentally different from `0x00444ADE`, which belongs
+to a separate Win32 startup video chooser and is not what
+Preferences displays. A future UI string override should target
+the *output of the 0x845 formatter* after verifying the original
+GOS list ownership, while leaving the original mode table,
+selected index, 4:3 internal geometry, and all other settings
+unchanged. Never replace `0x64836C` with pixel width.
+
+### Five-choice list: `uiData(0x847)`
+
+Opcode `0x847` dispatches to `0x0040CFE4`, returns fixed
+item count 5, and in its label branch looks up localized
+resource `index + 0x72` via `0x4050C0`. **This is a
+five-choice menu but not yet conclusively the Graphics device
+list** (which showed two options in the owner's screenshots).
+Do not label it as Graphics or disable it on that assumption.
+
+The diagnostic data-session flag now tracks command 13 through
+command 14/16 independently of the Campaign-art visibility flag;
+the latter can clear on transient menu artwork and previously
+suppressed callbacks. This change is **read-only** and does not
+affect the validated MainMenu watermark.
+
+New `src/menu_ui_list_probe.rs` logs bounded exact 0x845/0x847
+list requests, with original incoming index, returned count,
+original packed width/height, and item resource. It verifies
+the original x86 handler preimages, forwards all calls
+unaltered, and does not read arbitrary game object pointers.
+Await Wine runtime correlation before editing an actual widget.
+
