@@ -722,6 +722,12 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
+        // Periodically scan only windows owned by this game for already
+        // instantiated Video ComboBoxes. Unlike an IAT-only hook this
+        // works when their item lists were created before DirectDrawCreate.
+        if matches!((session.mode.width,session.mode.height),(640,480)|(800,600)){
+            crate::menu_native_combo::scan_on_menu_frame();
+        }
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         if crate::menu_brand::is_main_menu_active(){
             backend.prepare_menu_frame();
