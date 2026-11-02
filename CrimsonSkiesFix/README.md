@@ -1,10 +1,63 @@
-# CrimsonSkiesFix 0.1.74 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.75 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.75 — discover the **pending** Graphics / Resolution values (read-only)
+
+The owner-supplied v0.1.74 Wine/GE-Proton log verifies that our
+pass-through `gosCallback` observer activates and records commands
+**13, 14 and 15**. Command 15 is the two user-tested Resolution
+requests; both remain blocked by the already-validated strict backend
+mode guard. Command 13 runs before the requests, and 14 follows them.
+
+Re-examination of the accepted unmodified v1.02 x86 image exposes a
+**second, UI-editable video preferences structure**:
+
+- **Active** settings start at `0x0064B450`. Within them,
+  `active_device=0x0064B490` and `active_mode=0x0064B48C`.
+- The **pending** menu settings start at `0x00648330`. Within them,
+  `pending_device=0x00648370` and `pending_mode=0x0064836C`.
+- `gosCallback` command **13** calls `0x00418D30`, then copies
+  `0x81` DWORDs from active to pending (`0x004077B6–0x004077C5`).
+- Command **14** copies `0x81` DWORDs from pending to active,
+  then calls `0x00419160` to apply preferences
+  (`0x004077D9–0x004077EF`).
+- A separate interpreter function **reads and writes** both pending
+  indices: `0x0040CCE8 / 0x0040CD64` access the pending device,
+  and `0x0040CCF2 / 0x0040CD6E` the pending mode.
+
+This explains why a `Graphics` selection could affect the editable
+menu list without changing `active_device` until Apply.
+
+The new v0.1.75 trace checks the **exact original pending-variable read
+instruction bytes** before accessing these globals, then logs only
+distinct `active_device/active_mode/pending_device/pending_mode`
+tuples during the 800×600 (or 640×480) virtual UI. The existing GOS
+event trace also records those pairs before/after commands 13, 14, 15,
+limited to 80 events. All reads remain **strictly passive**: no
+writes to the executable, mode tables or pending settings.
+
+Expected lines:
+`MENU-VIDEO-PROBE: ... active_device=N active_mode_index=N pending_device=N pending_mode_index=N`
+and
+`MENU-GOS-EVENT: command=13 stage=prepare-preferences ...`,
+`command=14 stage=apply-preferences ...`.
+
+**Still pending:** the actual visually disabled `Graphics` and
+`Resolution` GUI controls, and showing the current monitor's desktop
+dimensions in the Resolution field. Neither is implemented by this
+read-only build. This new evidence is needed before considering a
+widget-specific setter hook: simply overriding the active device
+would not guard the pending menu state, and a legacy mode index is
+not an actual desktop width/height.
+
+Keep the owner-validated v0.1.69 flicker-free version label and
+the confirmed v0.1.73 resolution backend lock. PR #9 remains draft;
+no merges before the Video GUI integration is complete.
 
 ## v0.1.74 — original Video UI callback research (read-only)
 
