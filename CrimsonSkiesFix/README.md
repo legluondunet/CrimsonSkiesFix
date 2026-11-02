@@ -6,6 +6,38 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.83 — MainMenu signature return validated under Wine
+
+**Owner validation (2 November 2026):** The owner explicitly confirmed
+that the signature stays present on MainMenu after returning from a
+game. Their `CrimsonSkiesFix(8).log`, using
+`CrimsonSkiesFix 0.1.83-9d5ea7d4` under Wine 11.0 /
+GE-Proton11-11 on a 1920×1080 monitor, independently verifies
+initial composition and two later reentries:
+- Initial `MENU-BRANDING: offscreen RGB565 menu text composited
+  before primary Blt` followed by
+  `signature frame actually presented by native RGB565 primary Blt`.
+- After returning from gameplay, `MENU-SCENE: other script`
+  occurs, but `MENU-BRANDING: confirmed native MainMenu Campaign
+  artwork`, `MainMenu signature COMPOSITED after return;
+  reentry=2 script_main=false`, and successful primary Blt confirm
+  reappearance despite stale script identity.
+- Another return produces `reentry=3 script_main=false`,
+  accompanied by `Campaign artwork verified; stale GOS Preferences
+  visibility hint cleared` and successful primary Blt.
+
+**Status:** MainMenu signature at startup and after a game, and its
+absence when the Campaign artwork is not present, are **validated on
+the owner's Wine/GE-Proton configuration**. Do not interpret this as
+validation on every Windows setup or monitor arrangement. No new
+branding-related code is needed for this particular reported issue.
+
+The separate **Preferences > Video** UI work is still open:
+Graphics and Resolution dropdowns remain visually interactive,
+and the Resolution label still shows the legacy mode instead of
+the desktop dimensions. Keep draft PR #9 unmerged until that work
+is completed and tested.
+
 ## v0.1.83 — restore signature after gameplay → MainMenu (experimental)
 
 The owner reports that after finishing gameplay and returning to the
