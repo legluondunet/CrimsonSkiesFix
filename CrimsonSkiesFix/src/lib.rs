@@ -8,6 +8,7 @@ mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
 mod menu_ui_trace;
+mod menu_ui_list_probe;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
