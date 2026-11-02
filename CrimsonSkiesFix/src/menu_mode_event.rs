@@ -33,7 +33,7 @@ fn should_guard_mode(experimental:bool,native:bool,desktop:bool,
                      menu_active:bool,legacy_ui:bool)->bool{
     experimental && native && desktop && menu_active && legacy_ui
 }
-fn guard_enabled()->bool{
+pub(crate) fn guard_enabled()->bool{
     let config=crate::cfg();
     should_guard_mode(
         config.experimental_windowed_adapter,
