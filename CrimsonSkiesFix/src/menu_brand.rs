@@ -32,6 +32,7 @@ extern "system" {
     fn SelectObject(dc:Hdc,object:*mut c_void)->*mut c_void;
     fn SetBkMode(dc:Hdc,mode:i32)->i32;
     fn SetTextColor(dc:Hdc,color:u32)->u32;
+    fn GetPixel(dc:Hdc,x:i32,y:i32)->u32;
 }
 fn label_rect(view:Rect)->Option<Rect>{
     let width=view.right.checked_sub(view.left)?;
@@ -43,8 +44,42 @@ fn label_rect(view:Rect)->Option<Rect>{
     let bottom=view.bottom.saturating_sub(18);
     (left<right&&top<bottom).then_some(Rect{left,top,right,bottom})
 }
+/// Confirm the stable gold Campaign-button artwork instead of relying on
+/// GOS command 13 (which is used by multiple nested menu transitions).
+/// Positions are normalized from the exact game's native 800x600 4:3 UI,
+/// derived from owner-provided MainMenu vs Video screenshots. Fail closed:
+/// unknown colors / missing pixels mean no watermark. No input interception.
+fn is_campaign_gold(color:u32)->bool{
+    if color==0xffff_ffff{return false;} // GDI CLR_INVALID
+    let r=(color&0xff) as u32;
+    let g=((color>>8)&0xff) as u32;
+    let b=((color>>16)&0xff) as u32;
+    r>105 && g>70 && r*100>g*108 && g*100>b*128
+}
+fn main_menu_art_present(dc:Hdc,viewport:Rect)->bool{
+    let width=viewport.right-viewport.left;
+    let height=viewport.bottom-viewport.top;
+    if width<640||height<480{return false;}
+    // Eight interior points across the solid Campaign button, carefully
+    // avoiding its caption, borders and the looping background movie.
+    let samples:[(i32,i32);8]=[
+        (308,296),(314,298),(320,300),(326,302),
+        (332,304),(320,290),(320,310),(340,300)
+    ];
+    let mut gold=0u32;
+    for (x,y) in samples {
+        let px=viewport.left+(x*width)/800;
+        let py=viewport.top+(y*height)/600;
+        let color=unsafe{GetPixel(dc,px,py)};
+        if is_campaign_gold(color){gold+=1;}
+    }
+    gold>=6
+}
 pub fn is_main_menu_active()->bool{
-    menu_scene::main_menu_active() && crate::menu_gos_event::main_menu_unobstructed()
+    // The script is still MainMenu while nested Video preferences are
+    // visible. We additionally verify static MainMenu artwork pixels in
+    // the actual copied RGB565 frame before allowing any text.
+    menu_scene::main_menu_active()
 }
 pub fn report_copy_failure(hr:i32){
     report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
@@ -70,6 +105,13 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
         let hr=get_dc(scratch,&mut dc);
         if hr<0 || dc.is_null(){
             report_error(&format!("offscreen IDirectDrawSurface4::GetDC hr={hr:#010x}"));
+            return false;
+        }
+        let visible=main_menu_art_present(dc,viewport);
+        if !visible {
+            // Genuine Video/other dialogs do not have the gold campaign
+            // button at these sampled positions. No text is drawn.
+            let _=release_dc(scratch,dc);
             return false;
         }
         let font=GetStockObject(DEFAULT_GUI_FONT);
@@ -100,6 +142,17 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scene_art_classifier_distinguishes_campaign_gold_from_video_panel(){
+        fn col(r:u32,g:u32,b:u32)->u32{r|(g<<8)|(b<<16)}
+        for rgb in [(173,138,82),(189,138,66),(222,186,99),(167,140,79)]{
+            assert!(is_campaign_gold(col(rgb.0,rgb.1,rgb.2)));
+        }
+        for rgb in [(54,51,38),(16,16,4),(41,1,3),(140,0,0),(66,62,36)]{
+            assert!(!is_campaign_gold(col(rgb.0,rgb.1,rgb.2)));
+        }
+        assert!(!is_campaign_gold(0xffff_ffff));
+    }
     #[test]
     fn label_stays_inside_true_4_by_3_viewport(){
         for (l,t,r,b) in [(240,0,1680,1080),(-1600,0,0,900),(0,0,800,600)]{
