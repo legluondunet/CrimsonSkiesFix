@@ -6,6 +6,66 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.85 — exact original GOS resolution-label builder identified
+
+The owner-tested `CrimsonSkiesFix(9).log` from v0.1.84 reports
+that the new read-only page and localization hooks installed, and
+provides a strong correlation between the in-game Preferences > Video
+screen and its native GOS text/resources:
+
+- Preferences page startup localized 1078..1082 (five distinct IDs).
+- A later page requested 1099..1117 (19 consecutive localized IDs).
+- `uiData(0x855)` was called to **read** nine pending video fields:
+  active/pending device=1, mode index=0, seven-option change mask=0.
+- `uiData` calls 0x844, 0x845, 0x83F, 0x840, 0x841, 0x842 and
+  0x847 occur near the resolution widgets.
+- `gosCallback` mode requests 0 and 1 were both
+  **blocked=true, changed=false** as intended.
+- The apply guard command 14 ran with unchanged pending
+  Graphics=1 and Resolution index=0. No changed pending device
+  was tested in this file.
+- The RGB565 MainMenu watermark still draws and presents
+  successfully, including after returning from Preferences.
+
+**New precise disassembly discovery** from the one SHA-256-verified
+unwrapped 1.02 EXE (full original 2,580,480 bytes):
+
+`uiData` opcode **0x845** dispatches to `0x0040CEF7`:
+- If the supplied index equals `0xFFFFFFFF`, it returns the
+  original resolution-mode count stored at `0x0064B498`.
+- Otherwise it reads a packed 32-bit `height<<16|width`
+  value from `0x0064B49C + index*4`, splits its low/high
+  halves and calls formatter `0x004054B0` with string-resource
+  template **0x206**, then passes the resulting string through
+  `0x00403350` to the script output.
+- This is a **specific confirmed original resolution-label
+  construction path**, unlike the failed static-string patch
+  in v0.1.77 or the non-existent Win32 ComboBoxes of v0.1.80.
+  The backend mode index is not itself a pixel width.
+
+Opcode **0x847** dispatches to `0x0040CFE4`, returns a
+fixed count of **five** options, and localizes item IDs
+`0x72 + index`. **Its exact visual widget is not yet
+verified**; do not label it as Graphics merely because it is
+called near the Video page.
+
+**v0.1.85 instrumentation:** Added read-only
+`src/menu_ui_list_probe.rs` to record original 0x845/0x847
+list requests, including count/index and validated packed
+resolution dimensions, capped at 32 events per list type.
+Both original opcode instruction preimages are byte-checked.
+The newly separated diagnostic Preferences data-session state
+is not reset by the independent Campaign-art watermark detector;
+only native command 14/16 or actual MainMenu script reload
+end that trace. No menu values, list counts, text, pointers,
+screen geometry, mode table, game files or input are changed.
+
+**Still outstanding:** visually disable Graphics and Resolution
+and display the actual launch-monitor dimensions in the
+Resolution *widget*, while preserving all unrelated settings.
+This is still a diagnostic build, not a final UI patch.
+Do not merge PR #9 before Wine and Windows validation.
+
 ## v0.1.84 — identify the real GOS Video UI page and text owner
 
 The owner's v0.1.83 Wine/GE-Proton tests explicitly validated
