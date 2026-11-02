@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.82 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.83 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
