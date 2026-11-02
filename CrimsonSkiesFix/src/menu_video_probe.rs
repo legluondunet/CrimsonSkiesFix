@@ -46,6 +46,11 @@ fn image_verified()->bool{
         pending_device==DEVICE_ACCESS_BYTES && pending_mode==MODE_ACCESS_BYTES
     }
 }
+/// Revalidate the game's exact original video-setting access instructions
+/// immediately before any selective Preferences commit protection. The
+/// authenticated EXE gate alone does not prove these instructions survived.
+pub(crate) fn verified_video_fields()->bool{image_verified()}
+
 fn is_legacy_ui_mode(w:u32,h:u32)->bool{
     // The game uses a fixed 4:3 virtual 640x480 or 800x600 surface for
     // menus. Never assume the observed script tag includes every submenu.
