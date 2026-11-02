@@ -1,7 +1,7 @@
 //! Exact single-EXE script transition observer. This is deliberately
 //! limited to four verified CALL rel32 instructions in the game's menu
 //! dispatcher. It never intercepts general memory, UI input, or COM.
-use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicU8,Ordering}};
+use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicU8,Ordering}};
 use crate::log;
 
 const BASE:usize=0x400000;
@@ -12,6 +12,12 @@ const OTHER:u8=0;
 const MAIN:u8=1;
 const PREFERENCES:u8=2;
 static CURRENT:AtomicU8=AtomicU8::new(OTHER);
+/// Once the original MainMenu script has actually been loaded, the game
+/// may return to its rendered menu without issuing another of the four
+/// tracked script-loader calls. Only 4:3 menu frames are eligible for a
+/// further conservative pixel-art check.
+static MAIN_SEEN:AtomicBool=AtomicBool::new(false);
+pub fn main_menu_was_seen()->bool{MAIN_SEEN.load(Ordering::Acquire)}
 const PAGE_EXECUTE_READWRITE:u32=0x40;
 
 const SITES:[(usize,[u8;5]);4]=[
@@ -37,6 +43,9 @@ pub fn preferences_active()->bool{CURRENT.load(Ordering::Acquire)==PREFERENCES}
 
 unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
     let scene=scene_from_pointer(name as usize);
+    if scene==MAIN {
+        MAIN_SEEN.store(true,Ordering::Release);
+    }
     let old=CURRENT.swap(scene,Ordering::AcqRel);
     if old!=scene {
         log(match scene {
@@ -104,6 +113,7 @@ pub unsafe fn install()->bool {
             let _=VirtualProtect(page as *mut c_void,0x1000,previous,&mut unused);
         }
         CURRENT.store(OTHER,Ordering::Release);
+        MAIN_SEEN.store(false,Ordering::Release);
         log("MENU-SCENE: installation failed; restoring original calls");
         return false;
     }
@@ -114,6 +124,14 @@ pub unsafe fn install()->bool {
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn script_scene_and_historical_main_visibility_are_distinct(){
+        // MAIN_SEEN must survive a transition to OTHER, because the
+        // UI can return without a second call to a hooked script loader.
+        let seen_main=true;
+        assert!(seen_main && scene_from_pointer(0)==OTHER);
+        assert!(seen_main && scene_from_pointer(PREFERENCES_PTR)==PREFERENCES);
+    }
     #[test]
     fn script_name_identity_is_exact(){
         assert_eq!(scene_from_pointer(MAIN_MENU_PTR),MAIN);
