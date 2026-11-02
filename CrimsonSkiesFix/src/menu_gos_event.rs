@@ -1,10 +1,14 @@
-//! Read-only observer of the game's registered gosCallback events.
+//! Bounded observer of the game's registered gosCallback events,
+//! with a narrow commit-time graphics/mode guard for the original Video
+//! Preferences transaction. Non-video options still apply unchanged.
 //!
 //! In the exact supported 1.02 image, 0x004075D6 is a PUSH imm32 of
 //! the original callback 0x00407670, used by the script registration
 //! call at 0x004075E0. We replace only the registration pointer in
 //! memory so the engine still calls the original callback with its
-//! complete arguments and return value. No menu action is blocked here.
+//! complete arguments and return value. During verified menu command 14,
+//! only the pending Graphics and Resolution fields are reset to their
+//! currently active values before the original apply routine runs.
 //! This complements the verified command-15 Resolution backend guard.
 use std::{ffi::c_void,ptr,sync::atomic::{AtomicU32,Ordering}};
 use crate::log;
@@ -29,6 +33,17 @@ extern "system" {
 }
 
 fn include_event(command:u32)->bool{(8..=30).contains(&command)}
+fn preserve_active_video_fields(
+    command:u32,guard_active:bool,preimages_ok:bool,
+    active:(u32,u32),pending:(u32,u32)
+)->(u32,u32) {
+    if command==14 && guard_active && preimages_ok {active} else {pending}
+}
+fn video_apply_guard(command:u32)->bool{
+    command==14 &&
+    crate::menu_mode_event::guard_enabled() &&
+    crate::menu_video_probe::verified_video_fields()
+}
 fn should_trace(command:u32,n:u32,ui:bool)->bool{
     include_event(command)&&n<MAX_EVENTS&&ui
 }
@@ -47,6 +62,36 @@ unsafe extern "system" fn observe_callback(
         ptr::read_volatile(PENDING_DEVICE as *const u32),
         ptr::read_volatile(PENDING_MODE as *const u32)
     ))}else{None};
+    // GOS command 14 commits the 0x81-DWORD pending Preferences
+    // structure into the active one. Restore ONLY the two video
+    // device/mode fields just before that original transaction. This
+    // preserves all other options (brightness, detail, etc.) and never
+    // writes to the game EXE or its legacy mode-table contents.
+    // All flags, scene checks, original byte preimages and main-menu
+    // surface preconditions must hold, otherwise preserve original input.
+    let restrict=video_apply_guard(command);
+    let (active_dev,active_mode)=(
+        ptr::read_volatile(SELECTED_DEVICE as *const u32),
+        ptr::read_volatile(SELECTED_MODE as *const u32)
+    );
+    let (old_pending_dev,old_pending_mode)=(
+        ptr::read_volatile(PENDING_DEVICE as *const u32),
+        ptr::read_volatile(PENDING_MODE as *const u32)
+    );
+    let (new_pending_dev,new_pending_mode)=preserve_active_video_fields(
+        command,restrict,restrict,(active_dev,active_mode),
+        (old_pending_dev,old_pending_mode)
+    );
+    if restrict {
+        ptr::write_volatile(PENDING_DEVICE as *mut u32,new_pending_dev);
+        ptr::write_volatile(PENDING_MODE as *mut u32,new_pending_mode);
+        if crate::cfg().log_enabled {
+            log(&format!(
+                "MENU-VIDEO-LOCK: command=14 blocked pending Graphics {}->{} and Resolution index {}->{}; other preferences unchanged",
+                old_pending_dev,new_pending_dev,old_pending_mode,new_pending_mode
+            ));
+        }
+    }
     let original:unsafe extern "system" fn(usize,usize,*const u32)->u32=
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
@@ -107,6 +152,15 @@ pub unsafe fn install()->bool{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn only_original_video_fields_reset_for_menu_apply(){
+        assert_eq!(preserve_active_video_fields(14,true,true,(1,0),(2,4)),(1,0));
+        for command in [13,15,16] {
+            assert_eq!(preserve_active_video_fields(command,true,true,(1,0),(2,4)),(2,4));
+        }
+        assert_eq!(preserve_active_video_fields(14,false,true,(1,0),(2,4)),(2,4));
+        assert_eq!(preserve_active_video_fields(14,true,false,(1,0),(2,4)),(2,4));
+    }
     #[test]
     fn exact_registration_preimage(){
         assert_eq!(ORIGINAL_BYTES[0],0x68);
