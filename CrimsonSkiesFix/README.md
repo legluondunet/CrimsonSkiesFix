@@ -64,6 +64,12 @@ which exact script command belongs to which widget.
 Only then should a per-widget disable or visible desktop
 resolution override be implemented.
 
+For independent, read-only verification on the one accepted clean EXE,
+use `python3 tools/inspect_gos_ui.py /path/to/CRIMSON.EXE`.
+The script verifies the full SHA-256, exact original GOS callback
+registration bytes and the `uiData` opcode-to-handler tables, without
+running the game or requiring Wine.
+
 The v0.1.73 mode-request and v0.1.76 apply guards, the
 owner-confirmed 0.1.78 MainMenu signature, native resolution
 and aspect-correct 4:3 menu remain unchanged. **The visual
