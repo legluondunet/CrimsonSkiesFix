@@ -29,7 +29,26 @@ static LAST_DATA_SIGNATURE:AtomicU32=AtomicU32::new(u32::MAX);
 static LAST_CONTROL_SIGNATURE:AtomicU32=AtomicU32::new(u32::MAX);
 static VIDEO_LAST_STATE:AtomicU32=AtomicU32::new(u32::MAX);
 static VIDEO_STATE_LOGS:AtomicU32=AtomicU32::new(0);
+static VIDEO_SET_CALLS:AtomicU32=AtomicU32::new(0);
 const MAX_VIDEO_STATES:u32=32;
+/// Nine exact pending DWORD fields read and written by uiData(0x855).
+/// The first two are the only fields our backend safeguards protect.
+const VIDEO_PENDING_FIELDS:[usize;9]=[
+    0x0064_8370, // graphics device
+    0x0064_836c, // resolution mode index (NOT desktop pixels)
+    0x0064_8354,0x0064_8358,0x0064_8350,
+    0x0064_8364,0x0064_8368,0x0064_835c,0x0064_8360,
+];
+fn changed_other_video_mask(before:&[u32;9],after:&[u32;9])->u8{
+    let mut mask=0u8;
+    for index in 2..9{
+        if before[index]!=after[index]{mask|=1<<(index-2);}
+    }
+    mask
+}
+unsafe fn pending_video_snapshot()->[u32;9]{
+    std::array::from_fn(|i|ptr::read_volatile(VIDEO_PENDING_FIELDS[i] as *const u32))
+}
 
 #[link(name="kernel32")]
 extern "system" {
@@ -68,7 +87,10 @@ fn is_menu_trace_enabled()->bool{
     let c=crate::cfg();
     c.log_enabled && c.experimental_windowed_adapter &&
     crate::menu_video_probe::legacy_ui_active() &&
-    crate::menu_scene::main_menu_active() &&
+    // Actual MainMenu may return without one of the original 4
+    // script-loader callbacks. Script identity can then be OTHER even
+    // while the 4:3 Video Preferences page is genuinely visible.
+    crate::menu_scene::main_menu_was_seen() &&
     // The GOS command 13 is the Preferences transaction boundary,
     // but does not conclusively identify the Video *tab*.
     crate::menu_gos_event::preferences_transaction_active()
@@ -96,27 +118,28 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
     let video_before=if matches!(maybe,Some((0x855,_))) &&
         crate::menu_video_probe::verified_video_fields()
     {
-        Some((
-            ptr::read_volatile(crate::menu_video_probe::PENDING_DEVICE as *const u32),
-            ptr::read_volatile(crate::menu_video_probe::PENDING_MODE as *const u32)
-        ))
+        Some(pending_video_snapshot())
     }else{None};
     let original:ScriptFn=std::mem::transmute(UI_DATA_ORIGINAL);
     let result=original(a,b,command);
-    if let (Some((device_before,mode_before)),Some((0x855,arg)))=(video_before,maybe){
-        let device_after=ptr::read_volatile(crate::menu_video_probe::PENDING_DEVICE as *const u32);
-        let mode_after=ptr::read_volatile(crate::menu_video_probe::PENDING_MODE as *const u32);
-        let signature=(device_after.min(0xffff)<<16)|mode_after.min(0xffff);
-        let first_state=VIDEO_LAST_STATE.swap(signature,Ordering::Relaxed)!=signature;
-        if first_state || device_before!=device_after || mode_before!=mode_after {
-            if VIDEO_STATE_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+    if let (Some(before),Some((0x855,arg)))=(video_before,maybe){
+        let after=pending_video_snapshot();
+        let signature=(after[0].min(0xffff)<<16)|after[1].min(0xffff);
+        let state_changed=VIDEO_LAST_STATE.swap(signature,Ordering::Relaxed)!=signature;
+        let any_change=before!=after;
+        // Setters need a trace even if both protected indices were
+        // unchanged. Otherwise edits to other Video options are invisible.
+        let setter_sample=arg!=0 && VIDEO_SET_CALLS.fetch_add(1,Ordering::Relaxed)<24;
+        if (state_changed || any_change || setter_sample) &&
+            VIDEO_STATE_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
                 |n|if n<MAX_VIDEO_STATES{Some(n+1)}else{None}).is_ok()
-            {
-                let operation=if arg==0{"get"}else{"set"};
-                log(&format!(
-                    "MENU-GOS-UI-VIDEO: uiData opcode=0x855 operation={operation} pending_device={device_before}->{device_after} pending_mode={mode_before}->{mode_after} [original handler preserved]"
-                ));
-            }
+        {
+            let operation=if arg==0{"get"}else{"set"};
+            let other_mask=changed_other_video_mask(&before,&after);
+            log(&format!(
+                "MENU-GOS-UI-VIDEO: uiData opcode=0x855 operation={operation} pending_device={}->{}, pending_mode={}->{}, other_settings_changed_mask=0x{other_mask:02x} [original handler preserved]",
+                before[0],after[0],before[1],after[1]
+            ));
         }
     }
     if let Some((code,arg))=maybe{
@@ -196,6 +219,26 @@ pub unsafe fn install()->(bool,bool){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn exact_nine_pending_video_fields_are_distinct(){
+        assert_eq!(VIDEO_PENDING_FIELDS[0],crate::menu_video_probe::PENDING_DEVICE);
+        assert_eq!(VIDEO_PENDING_FIELDS[1],crate::menu_video_probe::PENDING_MODE);
+        let mut sorted=VIDEO_PENDING_FIELDS;
+        sorted.sort_unstable();
+        assert!(sorted.windows(2).all(|w|w[0]!=w[1]));
+    }
+    #[test]
+    fn change_mask_preserves_independence_of_other_seven_options(){
+        let a=[1,0,3,4,5,6,7,8,9];
+        let mut b=a;
+        b[0]=2;
+        b[1]=3;
+        assert_eq!(changed_other_video_mask(&a,&b),0);
+        b[4]=99;
+        assert_eq!(changed_other_video_mask(&a,&b),1<<2);
+        b[8]=0;
+        assert_eq!(changed_other_video_mask(&a,&b),(1<<2)|(1<<6));
+    }
     #[test]
     fn only_expected_script_opcodes_traced(){
         assert!(ui_data_code(0x7d0));
