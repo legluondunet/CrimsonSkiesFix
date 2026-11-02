@@ -10,7 +10,7 @@
 //! only the pending Graphics and Resolution fields are reset to their
 //! currently active values before the original apply routine runs.
 //! This complements the verified command-15 Resolution backend guard.
-use std::{ffi::c_void,ptr,sync::atomic::{AtomicU32,Ordering}};
+use std::{ffi::c_void,ptr,sync::atomic::{AtomicBool,AtomicU32,Ordering}};
 use crate::log;
 const IMAGE_BASE:usize=0x0040_0000;
 const REGISTRATION_PUSH:usize=0x0040_75D6;
@@ -23,6 +23,25 @@ const PENDING_MODE:usize=crate::menu_video_probe::PENDING_MODE;
 const PAGE_EXECUTE_READWRITE:u32=0x40;
 const MAX_EVENTS:u32=80;
 static EVENTS:AtomicU32=AtomicU32::new(0);
+static OBSERVER_INSTALLED:AtomicBool=AtomicBool::new(false);
+static VIDEO_PREFERENCES_OPEN:AtomicBool=AtomicBool::new(false);
+
+/// The game's MainMenu script remains loaded while its Video dialog is
+/// visible. The scene tag alone therefore does not prove that the main
+/// menu is unobstructed. If the observer is unavailable, omit branding.
+pub fn main_menu_unobstructed()->bool{
+    OBSERVER_INSTALLED.load(Ordering::Acquire) &&
+    !VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire)
+}
+
+fn next_video_dialog_state(previous:bool,command:u32,in_ui:bool)->bool{
+    if !in_ui{return previous;}
+    match command{
+        13=>true, // game's original prepare Video Preferences transaction
+        14|16=>false, // original Apply / Cancel handlers
+        _=>previous
+    }
+}
 
 #[link(name="kernel32")]
 extern "system" {
@@ -96,6 +115,19 @@ unsafe extern "system" fn observe_callback(
     let original:unsafe extern "system" fn(usize,usize,*const u32)->u32=
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
+    let in_ui=crate::menu_video_probe::legacy_ui_active();
+    if in_ui && matches!(command,13|14|16){
+        let previous=VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire);
+        let next=next_video_dialog_state(previous,command,in_ui);
+        VIDEO_PREFERENCES_OPEN.store(next,Ordering::Release);
+        if previous!=next && crate::cfg().log_enabled {
+            log(if next {
+                "MENU-BRANDING: Video Preferences opened; MainMenu label hidden"
+            } else {
+                "MENU-BRANDING: Video Preferences closed; MainMenu label eligible again"
+            });
+        }
+    }
     if let Some((device_before,mode_before,pending_device_before,pending_mode_before))=before{
         let index=EVENTS.fetch_add(1,Ordering::Relaxed);
         if index<MAX_EVENTS && crate::cfg().log_enabled {
@@ -147,6 +179,7 @@ pub unsafe fn install()->bool{
         log("MENU-GOS-EVENT: registration hook failed; original bytes restored where possible");
         return false;
     }
+    OBSERVER_INSTALLED.store(true,Ordering::Release);
     log("MENU-GOS-EVENT: exact callback registration observer installed; existing registrations are not retroactively changed");
     true
 }
@@ -166,6 +199,16 @@ mod tests{
     fn exact_registration_preimage(){
         assert_eq!(ORIGINAL_BYTES[0],0x68);
         assert_eq!(&ORIGINAL_BYTES[1..],&(ORIGINAL_CALLBACK as u32).to_le_bytes());
+    }
+    #[test]
+    fn version_label_is_hidden_during_video_dialog_and_restored_after_exit(){
+        assert!(next_video_dialog_state(false,13,true));
+        assert!(next_video_dialog_state(true,15,true));
+        assert!(!next_video_dialog_state(true,14,true));
+        assert!(!next_video_dialog_state(true,16,true));
+        assert!(!next_video_dialog_state(false,16,true));
+        assert!(next_video_dialog_state(true,13,false)); // no menu state spoofing outside UI
+        assert!(!next_video_dialog_state(false,13,false));
     }
     #[test]
     fn bounded_video_related_menu_callbacks(){
