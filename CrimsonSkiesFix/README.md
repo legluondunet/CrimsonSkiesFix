@@ -6,6 +6,65 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.79 — target actual Win32 Video ComboBoxes (experimental)
+
+The owner confirms v0.1.78 appears to fix the MainMenu version/commit
+watermark returning after visiting Preferences, with no watermark on
+the Video panel. Wine log independently records the new
+`MENU-BRANDING: confirmed native MainMenu Campaign artwork` and
+`native MainMenu artwork absent` transitions in the same session.
+The exact original v0.1.69 offscreen RGB565 composition is unchanged.
+This is validation on the owner's tested configuration, not a claim of
+exhaustive multi-monitor or Windows compatibility.
+
+**Important x86 discovery from the exact accepted v1.02 EXE:**
+The original `0x00444900` Video control constructor and
+`0x00444A50` mode-list helper call the game's imported **Win32
+`SendMessageA`** at `0x00A20488`, including the actual native
+ComboBox messages `CB_ADDSTRING=0x143`, `CB_SETITEMDATA=0x151`
+and `CB_SETCURSEL=0x14E`. This disproves the earlier assumption
+that these dropdowns must be non-Win32 GOS-only widgets.
+The static `0x00623A1C` `640 x 480` string modified by v0.1.77
+is an optional fallback item, not the guaranteed current visible
+label: the constructor also builds dynamically generated mode names.
+That is why changing only that static source string could not fix the
+real UI in the owner's screenshot.
+
+**New experiment:** The v0.1.79 DLL removes that ineffective
+source-string mutation and instead hooks only the exact supported
+EXE's **SendMessageA IAT slot**, after SHA validation and verifying
+the original x86 IAT-load instruction. The hook forwards all
+unrelated messages byte-for-byte to original `SendMessageA`. For
+native `ComboBox` windows, when `CB_ADDSTRING` inserts an original
+legacy resolution option (e.g. `640 x 480`, `800 x 600`),
+its **visible list-item text** is substituted with the actual launch
+monitor dimensions, e.g. `1920x1080`, without altering the
+original item index or `CB_SETITEMDATA` numeric mode mapping.
+On seeing exact original Graphics options `Software Render` or
+`DirectDraw HAL`, or any resolution option, the corresponding
+**native ComboBox** is disabled via `EnableWindow(FALSE)`.
+Other Video controls are not disabled or relabeled.
+
+This approach does **not** block arbitrary mouse coordinates or
+change DirectDraw display sizes, FOV/HUD, game mode tables or the
+original accepted EXE on disk. The pre-existing command-15 resolution
+guard and command-14 Graphics commit guard remain as a fallback.
+
+**Caveats:** This is not yet validated in Wine. The original EXE may
+resolve `SendMessageA` to a different import thunk, or custom
+subclasses may expose a nonstandard class name; if so, the new hook
+fails closed or does not match those controls, and original behavior
+is retained. Success requires owner screenshots showing the
+**Resolution field** with native dimensions **and** both disabled
+dropdown arrows, plus logging:
+`MENU-NATIVE-COMBO: ... Resolution native ComboBox disabled`
+and `... Graphics native ComboBox disabled`.
+Check that the other Video options and `Accept Changes` remain
+usable, gameplay remains at the native desktop resolution, and the
+MainMenu watermark is not displayed over nested panels.
+
+Do not merge PR #9 until these actual menu behaviors are tested.
+
 ## v0.1.78 — MainMenu return experiment; native Resolution text still unresolved
 
 The v0.1.77 owner screenshot/log verifies the Video Preferences watermark
