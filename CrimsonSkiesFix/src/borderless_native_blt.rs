@@ -54,16 +54,23 @@ impl NativeWindowedBlt {
     /// 3D/backbuffer surface and cannot outlive a Flip session.
     pub fn prepare_menu_frame(&mut self){
         self.menu_prepared=false;
-        if self.menu_scratch.is_null(){return;}
+        if self.menu_scratch.is_null(){
+            crate::menu_brand::mark_not_drawn();
+            return;
+        }
         let dest=self.menu_scratch;
         let source=self.source_surface;
         let copied=unsafe{
             let table=*(dest.cast::<*const usize>());
-            if table.is_null(){return;}
+            if table.is_null(){
+                crate::menu_brand::mark_not_drawn();
+                return;
+            }
             let blt:Blt=std::mem::transmute(*table.add(5));
             blt(dest,ptr::null(),source,ptr::null(),WAIT,ptr::null_mut())
         };
         if copied<0{
+            crate::menu_brand::mark_not_drawn();
             crate::menu_brand::report_copy_failure(copied);
             return;
         }
