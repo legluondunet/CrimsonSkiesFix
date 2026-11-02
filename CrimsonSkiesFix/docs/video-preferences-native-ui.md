@@ -214,3 +214,40 @@ Resolution and using Viewing Range. No input blocking or text
 overrides are implemented by this observer; preserving existing
 backend guards is intentional.
 
+
+### Exact Video script transfer IDs recovered from `uiData`
+
+The compressed `uiData` dispatcher (tables `0x0040F788` and
+`0x0040F5B4`) can be inverted against the original executable:
+
+| `uiData` opcode | Handler VA | Confirmed action |
+|---|---|---|
+| `0x83E` | `0x0040CDE2` | Copies `0x81` DWORDs from active `0x0064B450` to pending `0x00648330` video settings |
+| `0x855` | `0x0040CCE1` | Reads or writes **nine** pending video settings, including Graphics `0x00648370` and Resolution mode index `0x0064836C` |
+| `0x850` | `0x0040CC71` | Reads or writes three additional settings at `0x00648528..0x00648530`; not proven to be Graphics/Resolution |
+| `0x83F` | `0x0040D018` | Another script operation; widget ownership not yet established |
+
+In the `0x855` handler, a zero second descriptor DWORD goes to
+`0x0040CCE8`, where pending values are read into output
+parameters. A nonzero second DWORD branches to `0x0040CD62`,
+where the values supplied by the script are assigned to the
+pending structure; individual assignments occur at
+`0x0040CD64` (device) and `0x0040CD6E` (mode index),
+alongside seven other video option fields. This is the **first
+exact, independently decoded GOS opcode-level link** to the
+Video Preferences data structure.
+
+The v0.1.82 trace now reports a separate bounded event
+`MENU-GOS-UI-VIDEO: uiData opcode=0x855 operation=get|set
+pending_device=A->B pending_mode=C->D` when these values first
+appear or change. It calls the genuine original handler with
+the untouched three arguments. No script pointers are printed,
+no selection is blocked, and no UI text is replaced.
+
+This does **not** identify the original widget's input or
+text render component: one `uiData 0x855` call transports
+**nine settings together**, so refusing that entire opcode
+would also break Viewing Range, Effects Level, Lighting, etc.
+The final fix must target the actual two GUI selections/labels,
+not blindly suppress opcode `0x855`.
+
