@@ -151,6 +151,10 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
             let _=release_dc(scratch,dc);
             return false;
         }
+        // A previous gosCallback(13) can leave an internal "Preferences"
+        // hint set after Return to Menu. Campaign artwork is stronger
+        // evidence of the current visible scene. Clear only that hint.
+        crate::menu_gos_event::on_main_menu_art_verified();
         let font=GetStockObject(DEFAULT_GUI_FONT);
         let original=if font.is_null(){std::ptr::null_mut()}else{SelectObject(dc,font)};
         let prev_mode=SetBkMode(dc,TRANSPARENT);
