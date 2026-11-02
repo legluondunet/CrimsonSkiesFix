@@ -25,7 +25,9 @@ const CB_INSERTSTRING:u32=0x014a;
 const CB_SETCURSEL:u32=0x014e;
 const GWL_STYLE:i32=-16;
 const CBS_SORT:u32=0x0100;
-const MAX_COMBOS:usize=80;
+const CBS_OWNERDRAWFIXED:u32=0x0010;
+const CBS_OWNERDRAWVARIABLE:u32=0x0020;
+const CBS_HASSTRINGS:u32=0x0200;
 const MAX_ITEMS:usize=32;
 const PAGE_READWRITE:u32=0x04;
 
@@ -116,6 +118,11 @@ fn current_original()->Option<SendMessageA>{
     if address==0{None}else{Some(unsafe{std::mem::transmute(address)})}
 }
 unsafe fn read_combo_items(hwnd:Hwnd,sender:SendMessageA)->Option<Vec<(usize,String)>>{
+    let style=GetWindowLongA(hwnd,GWL_STYLE) as u32;
+    // An owner-draw ComboBox without CBS_HASSTRINGS returns item-data
+    // pointers, not text; never interpret those DWORDs as C strings.
+    if style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)!=0 &&
+       style & CBS_HASSTRINGS==0{return None;}
     let count=sender(hwnd,CB_GETCOUNT,0,0);
     if count<=0 || count as usize>MAX_ITEMS{return None;}
     let mut items=Vec::new();
@@ -139,7 +146,7 @@ fn classify_combo_items(items:&[(usize,String)])->Option<&'static str>{
     None
 }
 unsafe fn replace_selected_resolution(hwnd:Hwnd,sender:SendMessageA,items:&[(usize,String)]) -> bool {
-    if GetWindowLongA(hwnd,GWL_STYLE) as u32&CBS_SORT!=0{return false;}
+    if (GetWindowLongA(hwnd,GWL_STYLE) as u32 & CBS_SORT)!=0{return false;}
     let selected=sender(hwnd,CB_GETCURSEL,0,0);
     if selected<0{return false;}
     let Some((index,old_label))=items.iter().find(|(i,_)|*i==selected as usize) else{return false;};
