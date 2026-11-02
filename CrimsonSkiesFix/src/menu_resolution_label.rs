@@ -1,7 +1,8 @@
-//! Replace only the original Video Preferences "640 x 480" UI string
-//! with the active launch monitor dimensions. Does not alter any game
-//! mode IDs, 4:3 UI surfaces, HAL selection or persistent preferences.
-//! Supported exact 1.02 EXE only, installed before menu construction.
+//! Change a verified legacy mode-list *source* string only, not its
+//! pre-existing UI widget text. Under Wine v0.1.77 this mutation succeeded
+//! but the Video menu STILL displayed "640 x 480": it is not a confirmed
+//! resolution-display fix. Keep the independent original game mode table
+//! and native DirectDraw resolution unchanged.
 use std::{ffi::c_void,ptr};
 use crate::log;
 
@@ -67,7 +68,7 @@ pub unsafe fn install(width:u32,height:u32)->bool{
         log("MENU-RESOLUTION-LABEL: page protection restore failed; fallback attempted");
         return false;
     }
-    log(&format!("MENU-RESOLUTION-LABEL: original 640 x 480 UI item renamed to {width}x{height}; game mode-table unchanged"));
+    log(&format!("MENU-RESOLUTION-LABEL: legacy 640 x 480 source bytes changed to {width}x{height}; visible Video widget may use an earlier or separate cached string (not verified)"));
     true
 }
 #[cfg(test)]
