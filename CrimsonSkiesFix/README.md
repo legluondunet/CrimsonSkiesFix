@@ -6,6 +6,65 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.84 — identify the real GOS Video UI page and text owner
+
+The owner's v0.1.83 Wine/GE-Proton tests explicitly validated
+MainMenu watermark at launch and after returning from gameplay.
+This diagnostic build **retains all v0.1.83 gameplay/rendering
+features without modifying the on-screen Video dropdowns yet**.
+
+Our previous read-only `uiData(0x855)` trace was overly restrictive:
+after gameplay, the original script dispatcher can report
+`scene=OTHER` while the game displays the MainMenu family UI
+(the exact regression repaired in v0.1.83). Therefore
+`menu_ui_trace.rs` now requires the original MainMenu script to
+**have been observed at least once**, a real 640x480/800x600 menu
+frame and the GOS Preferences transaction hint. It does not
+require the stale script scene to still equal `MAIN`.
+
+Static x86 disassembly verifies that `uiData(0x855)` reads or
+writes **nine** separate 32-bit Video Preferences fields:
+`0x648370` (Graphics device), `0x64836c` (Resolution mode
+index), and seven others at `0x648354`, `0x648358`,
+`0x648350`, `0x648364`, `0x648368`, `0x64835c`,
+`0x648360`. On every sampled setter (max 24), it reports
+the exact Graphics and Resolution before/after values plus a
+**seven-bit other-settings change mask**. No preference value,
+input buffer, option, or original callback output is changed.
+This allows comparisons with unrelated settings such as
+Viewing Range without ever blocking their shared opcode.
+
+The exact original 1.02 executable also registers:
+- `gosPageInit`: `0x00407630: PUSH 0x00403680`
+- `gosLocalize`: `0x0040764E: PUSH 0x00404630`
+
+The new `src/menu_ui_pages.rs` provides separate, byte-verified,
+strictly pass-through observers of these two GOS APIs:
+`MENU-GOS-PAGE: gosPageInit invoked` reports bounded
+page-initialization occurrences after the MainMenu was first
+observed. `MENU-GOS-LOCALIZE: localized resource_id=N`
+records at most 80 small original numeric text-resource IDs
+inside the Preferences transaction. It does **not** read
+or replace localized text strings, display buffers, user input,
+button properties or game settings. No arbitrary pointer value
+is logged.
+
+These traces help distinguish page initialization/text requests
+from the nine-setting transport call, and may identify which
+resource must ultimately own the `640 x 480` visual label and
+the custom dropdown disabled state. The previously attempted
+Win32 ComboBox interception remains **removed**.
+
+**Owner test:** launch with `[Debug] Log=1`, open
+Preferences > Video, expand Graphics, select another entry
+but do not apply; expand Resolution, select another entry;
+change Viewing Range as a comparison, then apply and return
+to MainMenu. Send the new `CrimsonSkiesFix.log`.
+Do not rely on this build for the final appearance: **Graphics
+and Resolution still open and the UI still shows a legacy
+resolution label**. Existing commit-time and mode-request
+backend guards are unchanged. PR #9 remains draft/unmerged.
+
 ## v0.1.83 — MainMenu signature return validated under Wine
 
 **Owner validation (2 November 2026):** The owner explicitly confirmed
