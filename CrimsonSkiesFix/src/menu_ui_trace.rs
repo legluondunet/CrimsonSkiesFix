@@ -49,6 +49,11 @@ fn short_arg(value:u32)->Option<u32>{
         Some(value)
     }else{None}
 }
+fn result_kind(value:u32)->&'static str{
+    match value{
+        0=>"zero",1=>"one",2..=128=>"small-integer",_=>"other"
+    }
+}
 fn is_menu_trace_enabled()->bool{
     let c=crate::cfg();
     c.log_enabled && c.experimental_windowed_adapter &&
@@ -82,7 +87,7 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
         {
             let param=short_arg(arg).map(|x|x.to_string())
                 .unwrap_or_else(||"non-scalar".to_string());
-            log(&format!("MENU-GOS-UI: function=uiData opcode={code:#x} arg_class={param} result={result} [read-only pass-through]"));
+            log(&format!("MENU-GOS-UI: function=uiData opcode={code:#x} arg_class={param} result_class={} [read-only pass-through]",result_kind(result)));
         }
     }
     result
@@ -100,7 +105,7 @@ unsafe extern "system" fn ui_control_passthrough(a:usize,b:usize,command:*const 
         {
             let param=short_arg(arg).map(|x|x.to_string())
                 .unwrap_or_else(||"non-scalar".to_string());
-            log(&format!("MENU-GOS-UI: function=uiControl opcode={code:#x} arg_class={param} result={result} [read-only pass-through]"));
+            log(&format!("MENU-GOS-UI: function=uiControl opcode={code:#x} arg_class={param} result_class={} [read-only pass-through]",result_kind(result)));
         }
     }
     result
