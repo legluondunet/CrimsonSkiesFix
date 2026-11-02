@@ -6,6 +6,71 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.82 — observe native GOS uiData / uiControl callbacks (read-only)
+
+New static analysis of the *original owner-supplied* unwrapped
+Crimson Skies 1.02 executable (SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
+confirms the GOS script function registration sequence:
+
+- `gosCallback` (existing proven observer): `0x004075D6`,
+  handler `0x00407670`.
+- `uiData`: `0x004075F4: PUSH 0x004093A0`, original handler
+  at `0x004093A0`.
+- `uiControl`: `0x00407612: PUSH 0x00404960`, original handler
+  at `0x00404960`.
+
+The two newly investigated functions accept **three stack arguments**
+and return using `RET 0xC`. `uiData` reads an operation code
+from its script descriptor and uses a jump table at
+`0x0040F518` for `0x7D0..0x7F6`, plus additional cases.
+`uiControl` dispatches `0x85D` subcommands `0..8`
+using table `0x00404EA0` and other discrete opcodes.
+This establishes concrete script entry points but **not yet**
+that either handles the Video Graphics or Resolution widget.
+
+A new `src/menu_ui_trace.rs` provides *bounded, strictly
+pass-through* registration observers for these two functions.
+They install only with `ExperimentalWindowedAdapter=1` and
+`[Debug] Log=1` after the same mandatory EXE SHA gate.
+The original in-memory registration `PUSH imm32` bytes are
+verified and page protections are restored; on any mismatch
+the original handler is retained. Both wrappers forward the
+exact 3 arguments and native DWORD return. Neither handler's
+input/output or game preference state is changed.
+
+Only after original `gosCallback` command 13 has started the
+Preferences transaction, while the game is presenting its
+640×480/800×600 menu with the original MainMenu script loaded,
+are diagnostic entries eligible:
+
+```text
+MENU-GOS-UI: function=uiControl opcode=0x85d arg_class=...
+MENU-GOS-UI: function=uiData opcode=0x7d0 arg_class=...
+```
+
+Logging is deduplicated and limited to 72 `uiControl`
+and 96 `uiData` opcode/argument-signature transitions.
+Unknown pointers and large native return values are **never
+dereferenced or printed as addresses**; logs classify them
+only as scalar/non-scalar or result category.
+
+**Testing goal:** first open Video Preferences; separately
+open Graphics and Resolution, interact with each list, then
+change *Viewing Range* as a control comparison. Inspect
+`MENU-GOS-UI` entries and the existing
+`MENU-GOS-EVENT`/ `MENU-VIDEO-PROBE` values to identify
+which exact script command belongs to which widget.
+Only then should a per-widget disable or visible desktop
+resolution override be implemented.
+
+The v0.1.73 mode-request and v0.1.76 apply guards, the
+owner-confirmed 0.1.78 MainMenu signature, native resolution
+and aspect-correct 4:3 menu remain unchanged. **The visual
+Graphics and Resolution dropdowns still open, and Resolution
+still displays 640 x 480.** This is an instrumentation build,
+not the final requested UI fix. PR #9 remains draft.
+
 ## v0.1.81 — remove nonfunctional Windows ComboBox experiment
 
 The owner supplied the v0.1.80 Wine trace, which conclusively
