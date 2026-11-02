@@ -6,6 +6,44 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.78 — MainMenu return experiment; native Resolution text still unresolved
+
+The v0.1.77 owner screenshot/log verifies the Video Preferences watermark
+is hidden correctly and the real desktop remains 1920x1080, but reports
+two unresolved bugs:
+
+- After returning from Preferences to the original MainMenu, the project
+  version/commit label **does not come back**.
+- Video > Resolution **still displays `640 x 480`**, including its open
+  dropdown, despite the log saying that the source bytes
+  `0x00623A1C: "640 x 480"` were changed to `1920x1080`.
+
+The original 1.02 x86 game registers a source string used when populating
+a legacy video list via `0x00444ADE: PUSH 0x00623A1C`. The successful
+memory patch confirms that string's bytes changed; it does **not**
+demonstrate that the UI widget updates or even uses the same live copy.
+The log was corrected to report only the memory-source mutation, not
+a visually changed dropdown. **This remains unfinished**; do not claim
+that `1920x1080` is shown until actual UI validation.
+
+The existing script observer compared scene *identity* and logged only
+when it changed. It therefore cannot detect consecutive `MainMenu`
+loader calls with the same script pointer. The v0.1.78 experimental
+change additionally resets the Video-dialog branding suppression when
+the exact original `MainMenu` script loader is **called again**, even
+if scene identity was already `MainMenu`. A new diagnostic
+`MENU-SCENE: MainMenu script requested again without scene identity change`
+confirms this return path, if present. The offscreen RGB565 rendering
+and confirmed hiding inside Video are unchanged. If no second original
+script load occurs, this alone **will not restore** the label: the
+actual native UI transition signal must then be identified.
+
+The two custom Video dropdown arrows still open, even though the
+back-end applies native Resolution/Graphics guards. Further widget-level
+analysis is needed to disable them and show the desktop dimensions.
+No screen-coordinate hit boxes, broad input interception or game-file
+patches were introduced. Leave PR #9 as draft until complete.
+
 ## v0.1.77 — prevent watermark overlap in Video dialog; monitor-resolution label experiment
 
 The owner's side-by-side screenshots of Preferences > Video and its open
