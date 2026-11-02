@@ -22,6 +22,7 @@ static LABEL:OnceLock<Vec<u16>>=OnceLock::new();
 static REPORTED:AtomicBool=AtomicBool::new(false);
 static REPORTED_ERROR:AtomicBool=AtomicBool::new(false);
 static ART_STATE:std::sync::atomic::AtomicU8=std::sync::atomic::AtomicU8::new(0);
+static GETPIXEL_UNAVAILABLE:AtomicBool=AtomicBool::new(false);
 
 #[link(name="user32")]
 extern "system" {
@@ -80,6 +81,9 @@ fn main_menu_art_present(dc:Hdc,viewport:Rect)->bool{
     // disallowing GetPixel. In that *specific* case retain the previous
     // known-good MainMenu gating instead of losing all branding.
     if invalid==8 {
+        if !GETPIXEL_UNAVAILABLE.swap(true,Ordering::Relaxed) {
+            log("MENU-BRANDING: offscreen GetPixel unsupported; falling back to original GOS dialog guard");
+        }
         return crate::menu_gos_event::main_menu_unobstructed();
     }
     gold>=6
