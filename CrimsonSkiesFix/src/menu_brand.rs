@@ -23,6 +23,11 @@ static REPORTED:AtomicBool=AtomicBool::new(false);
 static REPORTED_ERROR:AtomicBool=AtomicBool::new(false);
 static ART_STATE:std::sync::atomic::AtomicU8=std::sync::atomic::AtomicU8::new(0);
 static GETPIXEL_UNAVAILABLE:AtomicBool=AtomicBool::new(false);
+/// A successful DrawTextW must be tracked per menu visit; the original
+/// REPORTED only logged the *first* successful composition in a process.
+static DRAWN_LAST_FRAME:AtomicBool=AtomicBool::new(false);
+static RESUME_DRAW_COUNT:std::sync::atomic::AtomicU32=
+    std::sync::atomic::AtomicU32::new(0);
 
 #[link(name="user32")]
 extern "system" {
@@ -88,11 +93,20 @@ fn main_menu_art_present(dc:Hdc,viewport:Rect)->bool{
     }
     gold>=6
 }
-pub fn is_main_menu_active()->bool{
-    // The script is still MainMenu while nested Video preferences are
-    // visible. We additionally verify static MainMenu artwork pixels in
-    // the actual copied RGB565 frame before allowing any text.
-    menu_scene::main_menu_active()
+fn should_inspect_game_frame(width:u32,height:u32,seen_main:bool)->bool{
+    matches!((width,height),(640,480)|(800,600)) && seen_main
+}
+/// The last script identity is not reliable on return from gameplay:
+/// probe *only* genuine 4:3 UI frames after a verified MainMenu was
+/// observed. A separate original-Campaign-artwork test prevents
+/// drawing on Video Preferences and other non-MainMenu screens.
+pub fn should_probe_menu_frame(width:u32,height:u32)->bool{
+    should_inspect_game_frame(width,height,menu_scene::main_menu_was_seen())
+}
+/// Mark a skipped/non-main-menu frame so the next verified successful
+/// composition can be logged as a distinct return-to-menu event.
+pub fn mark_not_drawn(){
+    DRAWN_LAST_FRAME.store(false,Ordering::Release);
 }
 pub fn report_copy_failure(hr:i32){
     report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
@@ -107,7 +121,7 @@ fn report_error(message:&str){
 /// backbuffer every frame, so the signature and animated background form a
 /// single present operation and never alter game-owned surface contents.
 pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
-    if !is_main_menu_active()||scratch.is_null(){return false;}
+    if scratch.is_null(){mark_not_drawn();return false;}
     let Some(mut destination)=label_rect(viewport) else{return false;};
     unsafe{
         let table=*(scratch.cast::<*const usize>());
@@ -133,6 +147,7 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
         if !visible {
             // Genuine Video/other dialogs do not have the gold campaign
             // button at these sampled positions. No text is drawn.
+            mark_not_drawn();
             let _=release_dc(scratch,dc);
             return false;
         }
@@ -151,11 +166,20 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
         if !original.is_null(){let _=SelectObject(dc,original);}
         let release_hr=release_dc(scratch,dc);
         if drawn<=0||release_hr<0{
+            mark_not_drawn();
             report_error(&format!("DrawTextW lines={drawn} ReleaseDC hr={release_hr:#010x}"));
             false
         }else{
-            if !REPORTED.swap(true,Ordering::Relaxed){
+            let first=!REPORTED.swap(true,Ordering::Relaxed);
+            let reentered=!DRAWN_LAST_FRAME.swap(true,Ordering::AcqRel);
+            if first {
                 log(&format!("MENU-BRANDING: offscreen RGB565 menu text composited before primary Blt: {}",build_info::label()));
+            }else if reentered && crate::cfg().log_enabled {
+                let n=RESUME_DRAW_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+                if n<=16 {
+                    log(&format!("MENU-BRANDING: MainMenu signature COMPOSITED after return; reentry={n} script_main={} label={}",
+                        menu_scene::main_menu_active(),build_info::label()));
+                }
             }
             true
         }
@@ -164,6 +188,14 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn returning_to_main_menu_does_not_require_a_new_script_load(){
+        assert!(should_inspect_game_frame(800,600,true));
+        assert!(should_inspect_game_frame(640,480,true));
+        assert!(!should_inspect_game_frame(800,600,false));
+        assert!(!should_inspect_game_frame(1920,1080,true));
+        assert!(!should_inspect_game_frame(320,240,true));
+    }
     #[test]
     fn scene_art_classifier_distinguishes_campaign_gold_from_video_panel(){
         fn col(r:u32,g:u32,b:u32)->u32{r|(g<<8)|(b<<16)}
