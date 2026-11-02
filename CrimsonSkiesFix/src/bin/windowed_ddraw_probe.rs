@@ -102,7 +102,11 @@ mod menu_video_probe{
 }
 mod menu_brand {
     use std::ffi::c_void;
-    pub fn is_main_menu_active()->bool{false}
+    // Standalone DD4 surface probe has no Crimson Skies script or
+    // game-owned MainMenu artwork. All branding is deliberately inert.
+    pub fn should_probe_menu_frame(_width:u32,_height:u32)->bool{false}
+    pub fn mark_not_drawn(){}
+    pub fn note_branded_presented(){}
     pub fn report_copy_failure(_hr:i32){}
     pub fn draw_main_menu(_surface:*mut c_void,_viewport:super::borderless_native_blt::Rect)->bool{false}
 }
