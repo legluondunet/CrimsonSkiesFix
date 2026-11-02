@@ -6,6 +6,55 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.83 — restore signature after gameplay → MainMenu (experimental)
+
+The owner reports that after finishing gameplay and returning to the
+main menu the build label disappears. In the owner's v0.1.82 Wine
+journal, the first menu is branded, but after subsequent Preferences
+transactions the original GOS command **13** marks the internal
+`Video Preferences opened` hint again while **the actual Campaign
+menu artwork is later recognized**. The last line of the 343-line log
+is `MENU-BRANDING: confirmed native MainMenu Campaign artwork;
+watermark eligible`, not a second verified primary presentation.
+The original code only reported the first successful offscreen
+signature composition per process, so a missing later log cannot
+indicate whether the second attempt drew or presented successfully.
+
+The original menu-scene observer also watches just four verified
+script-loader CALL instructions. It can miss a return from gameplay
+which restores MainMenu without calling any of those sites.
+`menu_scene` therefore now remembers whether a **genuine MainMenu
+script was ever observed**. On later 640x480/800x600 RGB565 frames,
+the renderer is allowed to probe the unchanged private scratch
+even if the last observed script identity is stale. The build
+label is composed **only if the same 8-point Campaign-button artwork
+test confirms the actual MainMenu**. It is not shown in gameplay
+at native desktop dimensions, Video Preferences or unrelated menus
+where those art points are absent. If in doubt, present the original
+game frame unmodified. It does not change input interception, game
+resources, DirectDraw geometry or the backend video guards.
+
+When actual MainMenu artwork is verified, any stale internal GOS
+Preferences-visibility hint from command 13 is cleared. This
+affects only the DLL's own scene diagnostics, **not** the game's
+Preferences variables.
+
+To distinguish offscreen drawing from actual presentation, the
+logging now reports transitions on **each** successful MainMenu
+return, rather than only the very first frame:
+`MENU-BRANDING: MainMenu signature COMPOSITED after return;`
+and, after successful native primary Blt,
+`MENU-BRANDING: signature frame actually presented by native RGB565
+primary Blt`. Only these after-return diagnostics can help
+distinguish successful drawing from frame delivery; the in-game
+visual result still requires confirmation under Wine.
+
+**Validation requested:** start on MainMenu, open Preferences and
+return, start a game and return to MainMenu, repeat and inspect
+the new messages along with a screenshot. No PR merge until
+this behavior is confirmed. The custom Graphics/Resolution
+dropdowns and current-monitor UI text are still unfinished.
+
 ## v0.1.82 — observe native GOS uiData / uiControl callbacks (read-only)
 
 New static analysis of the *original owner-supplied* unwrapped
