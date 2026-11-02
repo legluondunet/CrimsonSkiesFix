@@ -6,6 +6,43 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.81 — remove nonfunctional Windows ComboBox experiment
+
+The owner supplied the v0.1.80 Wine trace, which conclusively
+shows that while the `SendMessageA` import hook installed
+(`hook_available=true`), it captured only **1** generic call and
+**0** `CB_ADDSTRING` messages. Eight complete process-owned window
+scans found **0** native Win32 ComboBox controls, both before and
+during Video Preferences. No Graphics/Resolution control was disabled
+and `Resolution` still showed the legacy `640 x 480`.
+
+That experimental Win32-only approach was **not working**. This
+revision removes its IAT patch, its periodic process-window enumeration,
+the complete `menu_native_combo.rs` source module and the standalone
+probe stub. No desktop monitor or game window enumeration occurs on
+each menu Flip anymore.
+
+The accepted 1.02 EXE does have Win32 `CB_ADDSTRING` code at
+`0x00444900`, apparently for a **different, startup video-device
+chooser**, not the game's DirectDraw-rendered in-game Preferences
+panel. The verified GOS callback path is command 13 to prepare,
+14 to apply and 15 to request a resolution mode, while the interpreter
+reads/writes pending device/mode values at `0x0040CCE8` and
+`0x0040CCF2` / `0x0040CD64` and `0x0040CD6E`.
+See `docs/video-preferences-native-ui.md` for reproducible
+binary evidence, the precise original executable hash and the
+remaining widget-level research needed.
+
+**Known incompleteness:** the on-screen Graphics/Resolution lists are
+still interactive and Resolution still shows the game's legacy
+mode text instead of the current desktop dimensions. The original
+v0.1.73 resolution backend guard and v0.1.76 Graphics commit guard
+remain, as do the owner-validated v0.1.78 watermark behavior and
+native 3D 1920×1080 FOV/HUD. Do not merge draft PR #9 until the
+original GOS Video UI widgets, their input callbacks and displayed
+label owner have been established and tested in-game. This is a
+cleanup / reverse-engineering release, **not** a visual Video menu fix.
+
 ## v0.1.80 — discover already-created native Video ComboBoxes (experimental)
 
 The owner-tested v0.1.79 log confirms `MENU-NATIVE-COMBO:
