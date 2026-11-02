@@ -43,7 +43,9 @@ fn label_rect(view:Rect)->Option<Rect>{
     let bottom=view.bottom.saturating_sub(18);
     (left<right&&top<bottom).then_some(Rect{left,top,right,bottom})
 }
-pub fn is_main_menu_active()->bool{menu_scene::main_menu_active()}
+pub fn is_main_menu_active()->bool{
+    menu_scene::main_menu_active() && crate::menu_gos_event::main_menu_unobstructed()
+}
 pub fn report_copy_failure(hr:i32){
     report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
 }
@@ -57,7 +59,7 @@ fn report_error(message:&str){
 /// backbuffer every frame, so the signature and animated background form a
 /// single present operation and never alter game-owned surface contents.
 pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
-    if !menu_scene::main_menu_active()||scratch.is_null(){return false;}
+    if !is_main_menu_active()||scratch.is_null(){return false;}
     let Some(mut destination)=label_rect(viewport) else{return false;};
     unsafe{
         let table=*(scratch.cast::<*const usize>());
