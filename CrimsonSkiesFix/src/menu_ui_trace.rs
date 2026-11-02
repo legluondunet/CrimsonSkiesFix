@@ -27,6 +27,9 @@ static DATA_LOGS:AtomicU32=AtomicU32::new(0);
 static CONTROL_LOGS:AtomicU32=AtomicU32::new(0);
 static LAST_DATA_SIGNATURE:AtomicU32=AtomicU32::new(u32::MAX);
 static LAST_CONTROL_SIGNATURE:AtomicU32=AtomicU32::new(u32::MAX);
+static VIDEO_LAST_STATE:AtomicU32=AtomicU32::new(u32::MAX);
+static VIDEO_STATE_LOGS:AtomicU32=AtomicU32::new(0);
+const MAX_VIDEO_STATES:u32=32;
 
 #[link(name="kernel32")]
 extern "system" {
@@ -86,8 +89,36 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
         Some((ptr::read_unaligned(command),
               ptr::read_unaligned(command.add(1))))
     }else{None};
+    // Disassembly: uiData opcode 0x855 enters 0x40CCE1, reads
+    // [0x648370]/[0x64836C] when arg+4 == 0, writes those *pending*
+    // video indices when arg+4 != 0. Record changes without touching
+    // script output pointers or any other video option.
+    let video_before=if matches!(maybe,Some((0x855,_))) &&
+        crate::menu_video_probe::verified_video_fields()
+    {
+        Some((
+            ptr::read_volatile(crate::menu_video_probe::PENDING_DEVICE as *const u32),
+            ptr::read_volatile(crate::menu_video_probe::PENDING_MODE as *const u32)
+        ))
+    }else{None};
     let original:ScriptFn=std::mem::transmute(UI_DATA_ORIGINAL);
     let result=original(a,b,command);
+    if let (Some((device_before,mode_before)),Some((0x855,arg)))=(video_before,maybe){
+        let device_after=ptr::read_volatile(crate::menu_video_probe::PENDING_DEVICE as *const u32);
+        let mode_after=ptr::read_volatile(crate::menu_video_probe::PENDING_MODE as *const u32);
+        let signature=(device_after.min(0xffff)<<16)|mode_after.min(0xffff);
+        let first_state=VIDEO_LAST_STATE.swap(signature,Ordering::Relaxed)!=signature;
+        if first_state || device_before!=device_after || mode_before!=mode_after {
+            if VIDEO_STATE_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+                |n|if n<MAX_VIDEO_STATES{Some(n+1)}else{None}).is_ok()
+            {
+                let operation=if arg==0{"get"}else{"set"};
+                log(&format!(
+                    "MENU-GOS-UI-VIDEO: uiData opcode=0x855 operation={operation} pending_device={device_before}->{device_after} pending_mode={mode_before}->{mode_after} [original handler preserved]"
+                ));
+            }
+        }
+    }
     if let Some((code,arg))=maybe{
         if ui_data_code(code) &&
             should_emit(code,arg,&LAST_DATA_SIGNATURE,&DATA_LOGS,MAX_DATA_EVENTS)
@@ -175,6 +206,7 @@ mod tests{
         assert!(ui_data_code(0x96d));
         assert!(ui_data_code(0x9c9));
         assert!(!ui_data_code(0xc24));
+        assert!(ui_data_code(0x855));
         assert!(ui_control_code(0x85d));
         assert!(ui_control_code(0xc24));
         assert!(!ui_control_code(0x7d1));
