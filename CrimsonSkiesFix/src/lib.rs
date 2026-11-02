@@ -8,6 +8,7 @@ mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
 mod menu_ui_trace;
+mod menu_ui_pages;
 mod menu_brand;
 mod win32;
 mod window_exposure;
@@ -1388,6 +1389,16 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if cfg().experimental_windowed_adapter && cfg().log_enabled {
             let (data,control)=unsafe{menu_ui_trace::install()};
             log(&format!("MENU-GOS-UI: data_registered={data} control_registered={control}"));
+        }
+    });
+    // Separate exact GOS page/localization hooks: diagnostic only.
+    // Capture which original script resources are requested while
+    // Video Preferences is active; no strings or UI state modified.
+    static GOS_UI_PAGES_ONCE:Once=Once::new();
+    GOS_UI_PAGES_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            let (pages,localize)=unsafe{menu_ui_pages::install()};
+            log(&format!("MENU-GOS-PAGE: page_registered={pages} localize_registered={localize}"));
         }
     });
     // The command-15 mode guard is separately constrained to the
