@@ -80,6 +80,9 @@ impl NativeWindowedBlt {
     pub fn clear_menu_frame(&mut self){
         self.menu_prepared=false;
     }
+    /// Whether the next successful present uses the separately composed
+    /// MainMenu frame rather than the original unchanged game backbuffer.
+    pub fn menu_frame_prepared(&self)->bool{self.menu_prepared && !self.menu_scratch.is_null()}
     fn source_for_present(&self)->Ptr{
         if self.menu_prepared && !self.menu_scratch.is_null(){
             self.menu_scratch
