@@ -26,6 +26,7 @@ static GETPIXEL_UNAVAILABLE:AtomicBool=AtomicBool::new(false);
 /// A successful DrawTextW must be tracked per menu visit; the original
 /// REPORTED only logged the *first* successful composition in a process.
 static DRAWN_LAST_FRAME:AtomicBool=AtomicBool::new(false);
+static PENDING_PRESENT_CONFIRMATION:AtomicBool=AtomicBool::new(false);
 static RESUME_DRAW_COUNT:std::sync::atomic::AtomicU32=
     std::sync::atomic::AtomicU32::new(0);
 
@@ -107,6 +108,17 @@ pub fn should_probe_menu_frame(width:u32,height:u32)->bool{
 /// composition can be logged as a distinct return-to-menu event.
 pub fn mark_not_drawn(){
     DRAWN_LAST_FRAME.store(false,Ordering::Release);
+    PENDING_PRESENT_CONFIRMATION.store(false,Ordering::Release);
+}
+/// Called only after the bridge returns a *successful* RGB565 primary
+/// presentation with the prepared private scratch as source. This
+/// distinguishes offscreen DrawTextW success from actual Blt success.
+pub fn note_branded_presented(){
+    if PENDING_PRESENT_CONFIRMATION.swap(false,Ordering::AcqRel) &&
+        crate::cfg().log_enabled
+    {
+        log("MENU-BRANDING: signature frame actually presented by native RGB565 primary Blt");
+    }
 }
 pub fn report_copy_failure(hr:i32){
     report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
@@ -176,6 +188,9 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
         }else{
             let first=!REPORTED.swap(true,Ordering::Relaxed);
             let reentered=!DRAWN_LAST_FRAME.swap(true,Ordering::AcqRel);
+            if reentered{
+                PENDING_PRESENT_CONFIRMATION.store(true,Ordering::Release);
+            }
             if first {
                 log(&format!("MENU-BRANDING: offscreen RGB565 menu text composited before primary Blt: {}",build_info::label()));
             }else if reentered && crate::cfg().log_enabled {
