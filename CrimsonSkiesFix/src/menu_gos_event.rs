@@ -69,25 +69,26 @@ unsafe extern "system" fn observe_callback(
     // writes to the game EXE or its legacy mode-table contents.
     // All flags, scene checks, original byte preimages and main-menu
     // surface preconditions must hold, otherwise preserve original input.
-    let restrict=video_apply_guard(command);
-    let (active_dev,active_mode)=(
-        ptr::read_volatile(SELECTED_DEVICE as *const u32),
-        ptr::read_volatile(SELECTED_MODE as *const u32)
-    );
-    let (old_pending_dev,old_pending_mode)=(
-        ptr::read_volatile(PENDING_DEVICE as *const u32),
-        ptr::read_volatile(PENDING_MODE as *const u32)
-    );
-    let (new_pending_dev,new_pending_mode)=preserve_active_video_fields(
-        command,restrict,restrict,(active_dev,active_mode),
-        (old_pending_dev,old_pending_mode)
-    );
-    if restrict {
+    if video_apply_guard(command) {
+        // Do not access the pending fields at all outside the verified
+        // Video Preferences apply path (including startup/gameplay).
+        let (active_dev,active_mode)=(
+            ptr::read_volatile(SELECTED_DEVICE as *const u32),
+            ptr::read_volatile(SELECTED_MODE as *const u32)
+        );
+        let (old_pending_dev,old_pending_mode)=(
+            ptr::read_volatile(PENDING_DEVICE as *const u32),
+            ptr::read_volatile(PENDING_MODE as *const u32)
+        );
+        let (new_pending_dev,new_pending_mode)=preserve_active_video_fields(
+            command,true,true,(active_dev,active_mode),
+            (old_pending_dev,old_pending_mode)
+        );
         ptr::write_volatile(PENDING_DEVICE as *mut u32,new_pending_dev);
         ptr::write_volatile(PENDING_MODE as *mut u32,new_pending_mode);
         if crate::cfg().log_enabled {
             log(&format!(
-                "MENU-VIDEO-LOCK: command=14 blocked pending Graphics {}->{} and Resolution index {}->{}; other preferences unchanged",
+                "MENU-VIDEO-LOCK: command=14 reset pending Graphics {}->{} and Resolution index {}->{}; other preferences unchanged",
                 old_pending_dev,new_pending_dev,old_pending_mode,new_pending_mode
             ));
         }
