@@ -6,6 +6,64 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.80 — discover already-created native Video ComboBoxes (experimental)
+
+The owner-tested v0.1.79 log confirms `MENU-NATIVE-COMBO:
+hook_available=true` and the game continues running at native
+1920×1080 with the Menu signature, **but neither the Graphics nor
+Resolution list became disabled**. No
+`MENU-NATIVE-COMBO: Graphics native ComboBox disabled` nor the
+corresponding Resolution record appeared. That means the import
+hook installation itself succeeded but **does not prove any actual
+`CB_ADDSTRING` messages were observed**. The prior code logged only
+matched controls, not whether it was ever invoked.
+
+The exact supported EXE disassembly confirms the `0x00444900`
+graphics control setup and `0x00444A50` resolution helper use
+`SendMessageA` at the verified import `0x00A20488`.
+One plausible explanation is that some Win32 ComboBoxes were
+constructed *before* the first DirectDrawCreate and thus before
+the IAT hook. Another possibility is that those messages reach a
+different thunk, or the live GUI uses an unexpected window class.
+None is proven by the v0.1.79 log.
+
+**New bounded fallback:** During a logical 640×480/800×600
+MainMenu-family frame, at most once per 90 frames, enumerate only
+top-level windows owned by the **current game process**, their native
+Win32 child windows and ComboBox item texts. Identify Graphics only
+when the *same native ComboBox* contains both exact original
+`DirectDraw HAL` and `Software Render` options; identify
+Resolution only when all its entries are valid `WIDTH x HEIGHT`
+mode strings. Never infer controls from screen coordinates, owner
+drawn item data, window titles or unrelated processes. A matched
+Graphics box is disabled by `EnableWindow(FALSE)`. On a matched
+Resolution box, replace the **selected item** with the actual
+monitor dimensions using `CB_DELETESTRING`/`CB_INSERTSTRING`,
+and preserve its original `CB_GETITEMDATA` and selected index
+before disabling. Skip sorted lists and owner-draw no-string
+controls, since updating their labels without their native
+handlers would be unsafe.
+
+The existing IAT hook now also counts all intercepted
+`SendMessageA` calls and `CB_ADDSTRING` calls and reports their
+class for at most eight calls, without logging arbitrary user
+window text. The bounded scan inventory logs:
+`MENU-NATIVE-COMBO: owned-window-scan=N windows=...
+native_combos=... recognized_graphics=...
+recognized_resolution=... uninspectable=...
+iat_calls=... iat_addstring=...`.
+It distinguishes absent callbacks from native-class mismatch
+and an already-created control.
+
+**This is a new experiment, not a verified fix.** If the UI is
+not an inspectable Win32 ComboBox or its strings are represented
+by owner-draw item data, no external controls are changed. The
+v0.1.73/0.1.76 backend mode and graphics apply guards remain in
+place. The v0.1.69 offscreen watermark and validated v0.1.78
+menu-detection logic are unchanged. Check the new scan and
+interception diagnostics together with screenshots before
+considering PR #9 for merging.
+
 ## v0.1.79 — target actual Win32 Video ComboBoxes (experimental)
 
 The owner confirms v0.1.78 appears to fix the MainMenu version/commit
