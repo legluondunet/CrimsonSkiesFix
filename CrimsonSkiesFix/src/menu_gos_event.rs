@@ -14,6 +14,8 @@ const ORIGINAL_BYTES:[u8;5]=[0x68,0x70,0x76,0x40,0x00];
 const ORIGINAL_CALLBACK:usize=0x0040_7670;
 const SELECTED_DEVICE:usize=0x0064_B490;
 const SELECTED_MODE:usize=0x0064_B48C;
+const PENDING_DEVICE:usize=crate::menu_video_probe::PENDING_DEVICE;
+const PENDING_MODE:usize=crate::menu_video_probe::PENDING_MODE;
 const PAGE_EXECUTE_READWRITE:u32=0x40;
 const MAX_EVENTS:u32=80;
 static EVENTS:AtomicU32=AtomicU32::new(0);
@@ -41,19 +43,25 @@ unsafe extern "system" fn observe_callback(
         crate::menu_video_probe::legacy_ui_active());
     let before=if record{Some((
         ptr::read_volatile(SELECTED_DEVICE as *const u32),
-        ptr::read_volatile(SELECTED_MODE as *const u32)
+        ptr::read_volatile(SELECTED_MODE as *const u32),
+        ptr::read_volatile(PENDING_DEVICE as *const u32),
+        ptr::read_volatile(PENDING_MODE as *const u32)
     ))}else{None};
     let original:unsafe extern "system" fn(usize,usize,*const u32)->u32=
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
-    if let Some((device_before,mode_before))=before{
+    if let Some((device_before,mode_before,pending_device_before,pending_mode_before))=before{
         let index=EVENTS.fetch_add(1,Ordering::Relaxed);
         if index<MAX_EVENTS && crate::cfg().log_enabled {
             let device_after=ptr::read_volatile(SELECTED_DEVICE as *const u32);
             let mode_after=ptr::read_volatile(SELECTED_MODE as *const u32);
+            let pending_device_after=ptr::read_volatile(PENDING_DEVICE as *const u32);
+            let pending_mode_after=ptr::read_volatile(PENDING_MODE as *const u32);
+            let stage=match command {13=>"prepare-preferences",14=>"apply-preferences",15=>"mode-request",_=>"other"};
             log(&format!(
-                "MENU-GOS-EVENT: command={} result={} device={}->{} mode_index={}->{} ui_4by3=true [pass-through]",
-                command,result,device_before,device_after,mode_before,mode_after
+                "MENU-GOS-EVENT: command={} stage={} result={} active_device={}->{} active_mode={}->{} pending_device={}->{} pending_mode={}->{} ui_4by3=true [pass-through]",
+                command,stage,result,device_before,device_after,mode_before,mode_after,
+                pending_device_before,pending_device_after,pending_mode_before,pending_mode_after
             ));
         }
     }
