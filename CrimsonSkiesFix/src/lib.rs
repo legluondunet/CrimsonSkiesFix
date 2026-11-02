@@ -7,7 +7,6 @@ mod menu_scene;
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
-mod menu_native_combo;
 mod menu_brand;
 mod win32;
 mod window_exposure;
@@ -1388,22 +1387,6 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
             let installed=unsafe{menu_mode_event::install()};
             log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
-        }
-    });
-    // Target the game's *real Win32 ComboBox* SendMessageA calls,
-    // not a static text copy which never changed the visible UI.
-    // Original strings, item indices and selected values remain intact.
-    static MENU_NATIVE_COMBO_ONCE:Once=Once::new();
-    MENU_NATIVE_COMBO_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().desktop_resolution &&
-            cfg().native_3d_widescreen {
-            let dimensions=win32::capture_launch_monitor().and_then(|area|area.dimensions());
-            if let Some((width,height))=dimensions {
-                let installed=unsafe{menu_native_combo::install(width,height)};
-                log(&format!("MENU-NATIVE-COMBO: hook_available={installed}"));
-            }else{
-                log("MENU-NATIVE-COMBO: launch monitor unavailable; original controls retained");
-            }
         }
     });
     // Install before DirectDraw enumeration: the game can show the
