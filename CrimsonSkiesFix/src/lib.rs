@@ -7,7 +7,7 @@ mod menu_scene;
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
-mod menu_resolution_label;
+mod menu_native_combo;
 mod menu_brand;
 mod win32;
 mod window_exposure;
@@ -1390,17 +1390,19 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
             log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
         }
     });
-    // Build the original 640 x 480 list item from the selected monitor's
-    // actual pixels without altering the 640x480/800x600 menu render modes.
-    static MENU_RESOLUTION_ONCE:Once=Once::new();
-    MENU_RESOLUTION_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().desktop_resolution {
+    // Target the game's *real Win32 ComboBox* SendMessageA calls,
+    // not a static text copy which never changed the visible UI.
+    // Original strings, item indices and selected values remain intact.
+    static MENU_NATIVE_COMBO_ONCE:Once=Once::new();
+    MENU_NATIVE_COMBO_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().desktop_resolution &&
+            cfg().native_3d_widescreen {
             let dimensions=win32::capture_launch_monitor().and_then(|area|area.dimensions());
             if let Some((width,height))=dimensions {
-                let applied=unsafe{menu_resolution_label::install(width,height)};
-                log(&format!("MENU-RESOLUTION-LABEL: hooked={applied}"));
+                let installed=unsafe{menu_native_combo::install(width,height)};
+                log(&format!("MENU-NATIVE-COMBO: hook_available={installed}"));
             }else{
-                log("MENU-RESOLUTION-LABEL: launch monitor unavailable; original text retained");
+                log("MENU-NATIVE-COMBO: launch monitor unavailable; original controls retained");
             }
         }
     });
