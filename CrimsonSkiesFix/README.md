@@ -38,6 +38,31 @@ and confirmed hiding inside Video are unchanged. If no second original
 script load occurs, this alone **will not restore** the label: the
 actual native UI transition signal must then be identified.
 
+**Additional frame-level validation:** Because original GOS command 13
+is reused for multiple nested GUI transitions (and the original
+MainMenu script may not be reloaded on Return to Menu), the version
+overlay now verifies that the game's stationary **Campaign button**
+actually appears in the 800×600 RGB565 menu image. Eight fixed
+normalized sample points inside the button's gold fill were checked
+against owner screenshots from two separate animated MainMenu frames
+(all eight matched) and three Video/Preferences frames (at most two
+matched). Only when **at least six** pass the conservative gold-color
+test is the watermark composed on the offscreen frame. The test is
+rendering-only: it never changes UI input, game values, menu content
+or desktop geometry. Every transition in this check is logged as
+`MENU-BRANDING: confirmed native MainMenu Campaign artwork` or
+`MENU-BRANDING: native MainMenu artwork absent`.
+
+A Wine implementation that cannot read RGB pixels through this
+offscreen GDI DC falls back to the previous strict GOS dialog-state
+guard (and logs still help identify the issue). The visual classifier
+is an **experiment on the exact supported menu artwork**, not proof
+that all game screens and display setups behave identically. Runtime
+testing must confirm the label is visible on the genuine menu
+**both before and after** visiting Preferences, and absent in the
+Video/Preferences panels. If a different menu has similar artwork,
+the classifier must be refined before merging.
+
 The two custom Video dropdown arrows still open, even though the
 back-end applies native Resolution/Graphics guards. Further widget-level
 analysis is needed to disable them and show the desktop dimensions.
