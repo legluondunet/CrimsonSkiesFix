@@ -48,6 +48,15 @@ unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
     let original:unsafe extern "C" fn(*const c_char,u32,u32)=
         std::mem::transmute(SCRIPT_LOADER);
     original(name,capacity,flags);
+    // Nested Preferences does not necessarily replace CURRENT=MainMenu.
+    // When the actual MainMenu script is requested again, allow its
+    // watermark to return even if CURRENT was already MAIN before.
+    if scene==MAIN {
+        if old==MAIN && crate::cfg().log_enabled {
+            log("MENU-SCENE: MainMenu script requested again without scene identity change");
+        }
+        crate::menu_gos_event::on_main_menu_script_loaded();
+    }
 }
 
 fn rel_call(site:usize,target:usize)->[u8;5]{
