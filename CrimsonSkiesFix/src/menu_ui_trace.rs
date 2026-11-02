@@ -38,11 +38,13 @@ extern "system" {
 
 fn ui_data_code(code:u32)->bool{
     // uiData has TWO opcode dispatch stages:
-    // 0x7D0..0x833 via direct jump table at 0x40F518,
-    // 0x834..0x96D via the compressed table at 0x40F788/0x40F5B4,
-    // plus one special 0x9C9 branch. Omitting the second stage would
-    // miss many genuine custom menu widget operations.
-    (0x7d0..=0x96d).contains(&code) || code==0x9c9
+    // 0x7D0..0x7F6 via direct jump table at 0x40F518,
+    // 0x833 via a separate special branch,
+    // 0x834..0x96D via compressed table 0x40F788/0x40F5B4,
+    // and 0x9C9 via a later special branch.
+    // The gap 0x7F7..0x832 goes to the original default handler.
+    (0x7d0..=0x7f6).contains(&code) || code==0x833 ||
+      (0x834..=0x96d).contains(&code) || code==0x9c9
 }
 fn ui_control_code(code:u32)->bool{
     matches!(code,6|0x85d|0x85e|0x860|0x868|0x899|0x96e
@@ -166,6 +168,7 @@ mod tests{
     #[test]
     fn only_expected_script_opcodes_traced(){
         assert!(ui_data_code(0x7d0));
+        assert!(!ui_data_code(0x7f7));
         assert!(ui_data_code(0x833));
         assert!(ui_data_code(0x834));
         assert!(ui_data_code(0x85d));
