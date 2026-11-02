@@ -723,10 +723,17 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
-        if crate::menu_brand::is_main_menu_active(){
+        // The original script dispatcher reports only four CALL sites.
+        // Returning from gameplay can restore the genuine MainMenu
+        // artwork without reissuing one of those script-loader calls.
+        // Probe only an authenticated 4:3 menu frame *after* MainMenu
+        // was observed once. The offscreen Campaign-art test decides
+        // whether text is actually drawn; all other frames stay unedited.
+        if crate::menu_brand::should_probe_menu_frame(session.mode.width,session.mode.height){
             backend.prepare_menu_frame();
         }else{
             backend.clear_menu_frame();
+            crate::menu_brand::mark_not_drawn();
         }
         return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
