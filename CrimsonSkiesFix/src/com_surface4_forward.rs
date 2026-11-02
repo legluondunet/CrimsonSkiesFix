@@ -729,7 +729,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Probe only an authenticated 4:3 menu frame *after* MainMenu
         // was observed once. The offscreen Campaign-art test decides
         // whether text is actually drawn; all other frames stay unedited.
-        if crate::menu_brand::should_probe_menu_frame(session.mode.width,session.mode.height){
+        if crate::menu_brand::should_probe_menu_frame(mode.width,mode.height){
             backend.prepare_menu_frame();
         }else{
             backend.clear_menu_frame();
