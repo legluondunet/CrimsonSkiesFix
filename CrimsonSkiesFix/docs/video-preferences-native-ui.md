@@ -112,3 +112,59 @@ failed Win32 approach; it does not claim the two menus are disabled.
 PR #9 remains draft and unmerged.
 
 legluondunet assisted by ChatGPT (OpenAI)
+
+## New verified GOS UI entry points (2 November 2026, v0.1.81 review)
+
+The uploaded v0.1.81 `CrimsonSkiesFix(6).log` confirms the removed
+Win32 interception is no longer installed. It also establishes native
+1920×1080 DirectDraw/D3D3 with 800×600 virtual RGB565 menu, successful
+MainMenu offscreen branding, suppression in Video Preferences and later
+recognition of MainMenu artwork. The active and pending video fields
+stay `device=1 / mode_index=0` in this session; it does **not**
+exercise a changed graphics selection or visibly fix the lists.
+
+**Further direct analysis of the owner's original clean 1.02 EXE**
+(SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
+revealed that the game registers multiple **native GOS script functions**
+right beside `gosCallback`:
+
+| Original registration instruction | GOS symbol (string VA) | Original handler VA | Opcode bytes at registration |
+|---|---|---|---|
+| `0x004075D6` | `gosCallback` (`0x0061F150`) | `0x00407670` | `68 70 76 40 00` |
+| `0x004075F4` | `uiData` (`0x0061F15C`) | `0x004093A0` | `68 A0 93 40 00` |
+| `0x00407612` | `uiControl` (`0x0061F164`) | `0x00404960` | `68 60 49 40 00` |
+| `0x00407630` | `gosPageInit` (`0x0061F170`) | `0x00403680` | `68 80 36 40 00` |
+| `0x0040764E` | `gosLocalize` (`0x0061F17C`) | `0x00404630` | `68 30 46 40 00` |
+
+The registration code at `0x004075E0`, `0x004075FE`,
+`0x0040761C`, `0x0040763A`, and `0x00407658` calls the
+same script function registration helper `0x00406FF0`, then
+registers the returned descriptor through `0x005D3AD0`.
+The function names, addresses, original registration bytes and
+dispatch into handlers were verified from the exact EXE's binary,
+not inferred from screenshots or a search result.
+
+Disassembly of `uiControl` at `0x00404960` shows it reads the first
+DWORD of its third argument as a script operation code and dispatches
+on values including `6`, `0x85D`, `0x85E`, `0x868`, `0x9C6`;
+it uses a jump table at `0x00404EA0` for `0x85D` subcommands.
+Likewise, `uiData` at `0x004093A0` dispatches a family of script
+opcodes beginning at `0x7D0` through a table at `0x0040F518`.
+These functions end in `ret 0xC` and use the three-argument GOS
+callback convention, making a **pass-through, read-only registration
+observer** a feasible next diagnostic experiment.
+
+**Interpretation boundary:** Identifying these GOS script API handlers
+does not yet identify the two specific Video dropdown instances or
+their display-string owner. A future trace should narrowly and
+separately associate `uiControl` and `uiData` opcodes with entering
+the Video tab, opening each dropdown and opening an unrelated option,
+without guessing pointer types or swallowing any call. Only then
+should a widget-specific disabling or label-setting implementation be
+attempted. The verified `gosLocalize` script entry point is another
+possible text ownership route, but no causal link to the Resolution
+field is established yet.
+
+No user-facing DLL behavior was changed based on this finding.
+The present v0.1.81 release remains the validated cleanup baseline.
+
