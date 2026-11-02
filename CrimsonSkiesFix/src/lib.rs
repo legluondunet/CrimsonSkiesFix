@@ -7,6 +7,7 @@ mod menu_scene;
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
+mod menu_ui_trace;
 mod menu_brand;
 mod win32;
 mod window_exposure;
@@ -1378,6 +1379,15 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
             let active=unsafe{menu_gos_event::install()};
             log(&format!("MENU-GOS-EVENT: hook_available={active}"));
+        }
+    });
+    // Passive GOS UI tracing is off with Log=0; unlike the verified
+    // backend guards, it never changes native GUI behavior.
+    static GOS_UI_TRACE_ONCE:Once=Once::new();
+    GOS_UI_TRACE_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            let (data,control)=unsafe{menu_ui_trace::install()};
+            log(&format!("MENU-GOS-UI: data_registered={data} control_registered={control}"));
         }
     });
     // The command-15 mode guard is separately constrained to the
