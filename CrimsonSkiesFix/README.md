@@ -1,10 +1,66 @@
-# CrimsonSkiesFix 0.1.76 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.77 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
+
+## v0.1.77 — prevent watermark overlap in Video dialog; monitor-resolution label experiment
+
+The owner's side-by-side screenshots of Preferences > Video and its open
+Graphics dropdown prove three remaining UI problems in v0.1.76:
+
+1. Graphics still opens and offers `Software Render` and `DirectDraw HAL`.
+2. Resolution still displays `640 x 480`, not the physical desktop
+   `1920x1080`.
+3. The offscreen version signature is drawn over the **Cancel Changes**
+   button in Video Preferences, despite having been requested on
+   **MainMenu only**.
+
+The script observer tracks `MainMenu`, but the game opens Video
+Preferences **within that same script**. The existing GOS event observer
+now tracks the exact original transaction lifecycle: command 13 enters
+the Video Preferences editing transaction, and command 14/16 applies
+or cancels it. Only after forwarding the original callback, the
+renderer updates a state bit. The offscreen version label is now
+rendered only for an unobstructed MainMenu, not when this Video dialog
+is active. No changes to the owner-validated flicker-free RGB565
+composition. If the callback observer cannot be installed, watermark
+drawing fails closed instead of covering another menu.
+
+The GOS registration observer is also now installed independently
+of `Log=1` whenever all three native video options are enabled:
+the pre-existing command-14 Graphics commit guard must **not**
+silently stop working when diagnostic logging is disabled.
+
+**New exact-resolution-label experiment:** The validated 1.02 EXE
+contains a `PUSH 0x00623A1C` instruction at `0x00444ADE`
+in the original **Video Preferences mode-list constructor**.
+That data pointer contains the literal `640 x 480\0\0\0`.
+The DLL checks both original byte sequences and the authenticated
+game image, then replaces **only that UI text slot** with
+`WIDTHxHEIGHT`, using the actual launch monitor size (for example
+`1920x1080`) in the original 12-byte storage. The backend
+mode index, DirectDraw geometry, 4:3 menus, HAL selection and
+all other list options are untouched. On preimage/size mismatch, the
+original text is kept. This is an early experiment: the native
+control may use an independent cached label, so visual confirmation
+is essential. Other legacy entries remain as originally displayed.
+
+**Not complete:** The arrow widgets for `Graphics` and `Resolution`
+can still be opened. The backend mode guard and commit-time Graphics
+guard are retained, but neither custom dropdown has yet been natively
+disabled. Do not mistake changing a label for disabling an input
+widget. No guessed click-coordinate overlay is used.
+
+Under Wine, verify (1) the watermark disappears while Video is open,
+(2) `Resolution` displays native monitor dimensions,
+(3) the watermark reappears only upon leaving Video for the genuine
+MainMenu, and (4) all other video options remain usable. If the
+label does not change, look for `MENU-RESOLUTION-LABEL` diagnostics.
+Do not merge draft PR #9 until all requested native UI controls
+and tests have been validated.
 
 ## v0.1.76 — protected Video Preferences Apply (experimental)
 
