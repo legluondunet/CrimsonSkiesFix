@@ -120,8 +120,19 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
     {
         Some(pending_video_snapshot())
     }else{None};
+    // The script's 0x845 and 0x847 list handlers read a pointer to
+    // the requested item index. Observe it before/after the original,
+    // never alter the index, count, item text or game mode table.
+    let list_request=maybe.and_then(|(code,descriptor)|{
+        if matches!(code,0x845|0x847){
+            crate::menu_ui_list_probe::before(code,descriptor).map(|index|(code,descriptor,index))
+        }else{None}
+    });
     let original:ScriptFn=std::mem::transmute(UI_DATA_ORIGINAL);
     let result=original(a,b,command);
+    if let Some((code,descriptor,index))=list_request {
+        crate::menu_ui_list_probe::after(code,descriptor,index);
+    }
     if let (Some(before),Some((0x855,arg)))=(video_before,maybe){
         let after=pending_video_snapshot();
         let signature=(after[0].min(0xffff)<<16)|after[1].min(0xffff);
