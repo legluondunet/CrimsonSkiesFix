@@ -168,3 +168,49 @@ field is established yet.
 No user-facing DLL behavior was changed based on this finding.
 The present v0.1.81 release remains the validated cleanup baseline.
 
+
+## v0.1.82 diagnostic implementation — script opcode boundaries
+
+Byte-for-byte disassembly of the owner-supplied clean 1.02 EXE
+established the following exact dispatch ranges; these are
+**native GOS interpreter opcodes**, not widget IDs:
+
+- `uiControl` at `0x00404960` reads its script operation at
+  `[arg3+0]`, then uses the jump table `0x00404EA0` for
+  `0x85D` subcommands 0–8 at `[arg3+4]`; other direct operations
+  include `0x85E`, `0x860`, `0x868`, `0x899`,
+  `0x96E`, `0x9C5..0x9C8` and `0xC1C..0xC24`.
+- `uiData` at `0x004093A0` first reads its operation and
+  next parameter from `[arg3+0]` and `[arg3+4]`.
+  The 39-entry direct table at `0x0040F518` covers
+  `0x7D0..0x7F6`; `0x833` has an additional direct
+  branch. A **second dispatch stage** (previously overlooked)
+  covers `0x834..0x96D` using an indexed byte table at
+  `0x0040F788` followed by a common target table at
+  `0x0040F5B4`. That compressed stage maps 314 possible
+  opcodes onto 117 distinct handlers; many code values map to
+  the common default `0x0040F507`. The higher `0x9C9`
+  has a distinct special case.
+- Both handlers return with `RET 0xC`, so a strict
+  three-argument stdcall pass-through wrapper preserves the original
+  calling convention. The new observer also retains the original
+  function arguments and return value, logging only numeric opcode,
+  small/scalar second-parameter category and return *class*.
+
+The new `CrimsonSkiesFix/src/menu_ui_trace.rs` registers these
+read-only observers at the original `PUSH imm32` sites after
+successful executable SHA-256 verification, when `[Debug] Log=1`.
+The log gate additionally requires a 640×480/800×600 virtual frame
+and an existing GOS Preferences transaction (command 13). Entries
+are capped to 96 `uiData` and 72 `uiControl` changed signatures.
+Unknown pointer values are **not** logged as addresses. The
+observer is disabled completely when logging is off.
+
+**Experiment status:** Static instruction-byte checks and Windows
+x86 compilation tests do not prove the relevant callbacks are
+invoked by the Video tab. Owner Wine runtime traces are required
+to associate a particular command with opening Graphics, opening
+Resolution and using Viewing Range. No input blocking or text
+overrides are implemented by this observer; preserving existing
+backend guards is intentional.
+
