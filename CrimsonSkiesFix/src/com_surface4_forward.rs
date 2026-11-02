@@ -735,8 +735,12 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             backend.clear_menu_frame();
             crate::menu_brand::mark_not_drawn();
         }
+        let composed=backend.menu_frame_prepared();
         return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
+                if composed{
+                    crate::menu_brand::note_branded_presented();
+                }
                 if repaint{
                     crate::log(&format!(
                         "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
