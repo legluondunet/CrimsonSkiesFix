@@ -6,7 +6,7 @@
 //! We intercept only the authenticated EXE's SendMessageA import slot.
 //! Game indices, item data and original message side effects are retained.
 use std::{ffi::{c_char,c_void,CStr,CString},ptr,
-    sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
+    sync::atomic::{AtomicBool,AtomicU32,AtomicUsize,Ordering}};
 use crate::log;
 
 const IMAGE_BASE:usize=0x0040_0000;
@@ -14,6 +14,19 @@ const SEND_MESSAGE_IAT:usize=0x00A2_0488;
 const RESOLUTION_CALL:usize=0x0044_49AE;
 const RESOLUTION_CALL_BYTES:[u8;6]=[0x8b,0x2d,0x88,0x04,0xa2,0x00];
 const CB_ADDSTRING:u32=0x0143;
+const CB_GETCOUNT:u32=0x0146;
+const CB_GETLBTEXT:u32=0x0148;
+const CB_GETLBTEXTLEN:u32=0x0149;
+const CB_GETCURSEL:u32=0x0147;
+const CB_GETITEMDATA:u32=0x0150;
+const CB_SETITEMDATA:u32=0x0151;
+const CB_DELETESTRING:u32=0x0144;
+const CB_INSERTSTRING:u32=0x014a;
+const CB_SETCURSEL:u32=0x014e;
+const GWL_STYLE:i32=-16;
+const CBS_SORT:u32=0x0100;
+const MAX_COMBOS:usize=80;
+const MAX_ITEMS:usize=32;
 const PAGE_READWRITE:u32=0x04;
 
 type Hwnd=*mut c_void;
@@ -24,6 +37,10 @@ static GRAPHICS_HWND:AtomicUsize=AtomicUsize::new(0);
 static LABEL:AtomicUsize=AtomicUsize::new(0); // owned once, never freed in process
 static RESOLUTION_REPORTED:AtomicBool=AtomicBool::new(false);
 static GRAPHICS_REPORTED:AtomicBool=AtomicBool::new(false);
+static IAT_CALLS:AtomicU32=AtomicU32::new(0);
+static IAT_INSERTS:AtomicU32=AtomicU32::new(0);
+static SCAN_COUNT:AtomicU32=AtomicU32::new(0);
+static FRAME_COUNT:AtomicU32=AtomicU32::new(0);
 
 #[link(name="kernel32")]
 extern "system" {
@@ -31,6 +48,7 @@ extern "system" {
     fn GetModuleHandleA(name:*const c_char)->*mut c_void;
     fn GetProcAddress(module:*mut c_void,name:*const c_char)->*mut c_void;
     fn VirtualProtect(address:*mut c_void,size:usize,new:u32,old:*mut u32)->i32;
+    fn GetCurrentProcessId()->u32;
 }
 #[link(name="user32")]
 extern "system" {
@@ -38,6 +56,10 @@ extern "system" {
     fn EnableWindow(hwnd:Hwnd,enabled:i32)->i32;
     fn IsWindowEnabled(hwnd:Hwnd)->i32;
     fn IsWindow(hwnd:Hwnd)->i32;
+    fn EnumWindows(callback:unsafe extern "system" fn(Hwnd,isize)->i32,lparam:isize)->i32;
+    fn EnumChildWindows(parent:Hwnd,callback:unsafe extern "system" fn(Hwnd,isize)->i32,lparam:isize)->i32;
+    fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
+    fn GetWindowLongA(hwnd:Hwnd,index:i32)->i32;
 }
 fn is_resolution_option(text:&str)->bool {
     // Actual game samples: "320 x 240", "640 x 480", "800 x 600",
@@ -77,6 +99,127 @@ fn disable_exact_combo(hwnd:Hwnd,slot:&AtomicUsize,reported:&AtomicBool,kind:&st
         }
     }
 }
+/// Enumerate existing game-owned child ComboBoxes. This catches controls
+/// created before the first DirectDrawCreate (and therefore before the
+/// imported SendMessageA hook could observe their CB_ADDSTRING messages).
+/// Identification comes from the *full native item list*, not coordinates.
+struct Scan {
+    pid:u32,
+    visited:u32,
+    combos:u32,
+    graphics:u32,
+    resolution:u32,
+    invalid:u32,
+}
+fn current_original()->Option<SendMessageA>{
+    let address=ORIGINAL.load(Ordering::Acquire);
+    if address==0{None}else{Some(unsafe{std::mem::transmute(address)})}
+}
+unsafe fn read_combo_items(hwnd:Hwnd,sender:SendMessageA)->Option<Vec<(usize,String)>>{
+    let count=sender(hwnd,CB_GETCOUNT,0,0);
+    if count<=0 || count as usize>MAX_ITEMS{return None;}
+    let mut items=Vec::new();
+    for index in 0..count as usize{
+        let len=sender(hwnd,CB_GETLBTEXTLEN,index,0);
+        if len<0 || len>=96{return None;}
+        let mut buf=[0i8;100];
+        let got=sender(hwnd,CB_GETLBTEXT,index,buf.as_mut_ptr() as isize);
+        if got<0 || got>=100{return None;}
+        let word=CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
+        items.push((index,word));
+    }
+    Some(items)
+}
+fn classify_combo_items(items:&[(usize,String)])->Option<&'static str>{
+    let graphics=items.iter().any(|(_,x)|x.eq_ignore_ascii_case("DirectDraw HAL")) &&
+                 items.iter().any(|(_,x)|x.eq_ignore_ascii_case("Software Render"));
+    if graphics{return Some("Graphics");}
+    let resolutions=items.iter().filter(|(_,x)|is_resolution_option(x)).count();
+    if resolutions>0 && resolutions==items.len(){return Some("Resolution");}
+    None
+}
+unsafe fn replace_selected_resolution(hwnd:Hwnd,sender:SendMessageA,items:&[(usize,String)]) -> bool {
+    if GetWindowLongA(hwnd,GWL_STYLE) as u32&CBS_SORT!=0{return false;}
+    let selected=sender(hwnd,CB_GETCURSEL,0,0);
+    if selected<0{return false;}
+    let Some((index,old_label))=items.iter().find(|(i,_)|*i==selected as usize) else{return false;};
+    if !is_resolution_option(old_label){return false;}
+    let replacement=LABEL.load(Ordering::Acquire);
+    if replacement==0{return false;}
+    let data=sender(hwnd,CB_GETITEMDATA,*index,0);
+    let deleted=sender(hwnd,CB_DELETESTRING,*index,0);
+    if deleted<0{return false;}
+    let inserted=sender(hwnd,CB_INSERTSTRING,*index,replacement as isize);
+    if inserted<0{
+        if let Ok(original)=CString::new(old_label.as_str()){
+            let restored=sender(hwnd,CB_INSERTSTRING,*index,original.as_ptr() as isize);
+            if restored>=0{
+                let _=sender(hwnd,CB_SETITEMDATA,restored as usize,data);
+                let _=sender(hwnd,CB_SETCURSEL,restored as usize,0);
+            }
+        }
+        return false;
+    }
+    let _=sender(hwnd,CB_SETITEMDATA,inserted as usize,data);
+    let _=sender(hwnd,CB_SETCURSEL,inserted as usize,0);
+    inserted as usize==*index
+}
+unsafe extern "system" fn each_game_combo(hwnd:Hwnd,context:isize)->i32{
+    let scan=&mut *(context as *mut Scan);
+    if scan.visited>=512{return 0;}
+    scan.visited+=1;
+    if !is_native_combo(hwnd){return 1;}
+    scan.combos+=1;
+    let Some(sender)=current_original() else{return 0;};
+    let Some(items)=read_combo_items(hwnd,sender) else{scan.invalid+=1;return 1;};
+    match classify_combo_items(&items){
+        Some("Graphics")=>{
+            scan.graphics+=1;
+            disable_exact_combo(hwnd,&GRAPHICS_HWND,&GRAPHICS_REPORTED,"Graphics");
+        }
+        Some("Resolution")=>{
+            scan.resolution+=1;
+            let renamed=replace_selected_resolution(hwnd,sender,&items);
+            if renamed{log("MENU-NATIVE-COMBO: Resolution selected item updated using original CB messages and item data preserved");}
+            disable_exact_combo(hwnd,&RESOLUTION_HWND,&RESOLUTION_REPORTED,"Resolution");
+        }
+        _=>{}
+    }
+    1
+}
+unsafe extern "system" fn each_game_root(hwnd:Hwnd,context:isize)->i32{
+    let scan=&mut *(context as *mut Scan);
+    let mut pid=0u32;
+    let _=GetWindowThreadProcessId(hwnd,&mut pid);
+    if pid!=scan.pid{return 1;}
+    // Process-owned top-level windows may themselves be ComboBoxes,
+    // and enumerating their descendants finds child controls.
+    let _=each_game_combo(hwnd,context);
+    let _=EnumChildWindows(hwnd,each_game_combo,context);
+    1
+}
+pub fn scan_on_menu_frame(){
+    if !crate::menu_scene::main_menu_active(){return;}
+    let count=FRAME_COUNT.fetch_add(1,Ordering::Relaxed);
+    if count%90!=0{return;}
+    unsafe{
+        if current_original().is_none(){return;}
+        let mut scan=Scan{pid:GetCurrentProcessId(),visited:0,combos:0,
+                          graphics:0,resolution:0,invalid:0};
+        let _=EnumWindows(each_game_root,&mut scan as *mut Scan as isize);
+        let attempt=SCAN_COUNT.fetch_add(1,Ordering::Relaxed);
+        // Only bounded diagnostic inventory. Never print HWNDs or
+        // arbitrary window texts, and never inspect a foreign process.
+        if attempt<8 || (scan.graphics>0 && scan.resolution>0 && attempt==8){
+            log(&format!(
+                "MENU-NATIVE-COMBO: owned-window-scan={} windows={} native_combos={} recognized_graphics={} recognized_resolution={} uninspectable={} iat_calls={} iat_addstring={}",
+                attempt+1,scan.visited,scan.combos,scan.graphics,scan.resolution,scan.invalid,
+                IAT_CALLS.load(Ordering::Relaxed),IAT_INSERTS.load(Ordering::Relaxed)
+            ));
+        }
+    }
+}
+
 /// IAT wrapper is x86 stdcall just like SendMessageA. Every message
 /// not recognized as one of the two exact ComboBox types is unmodified.
 unsafe extern "system" fn intercept_send_message(
@@ -85,6 +228,14 @@ unsafe extern "system" fn intercept_send_message(
     let original_addr=ORIGINAL.load(Ordering::Acquire);
     if original_addr==0{return 0;} // installation publishes original before patch
     let original:SendMessageA=std::mem::transmute(original_addr);
+    IAT_CALLS.fetch_add(1,Ordering::Relaxed);
+    if message==CB_ADDSTRING {
+        let count=IAT_INSERTS.fetch_add(1,Ordering::Relaxed);
+        if count<8 && crate::cfg().log_enabled{
+            let class=if is_native_combo(hwnd){"ComboBox"}else{"other-or-invalid"};
+            log(&format!("MENU-NATIVE-COMBO: intercepted CB_ADDSTRING class={class} nonnull_text={}",lparam!=0));
+        }
+    }
     if message!=CB_ADDSTRING || lparam==0 || !is_native_combo(hwnd){
         return original(hwnd,message,wparam,lparam);
     }
@@ -182,6 +333,17 @@ mod tests {
         assert!(is_graphics_option("DirectDraw HAL"));
         assert!(!is_graphics_option("High"));
         assert!(!is_graphics_option("Shadows"));
+    }
+    #[test]
+    fn whole_list_classification_rejects_single_unrelated_item(){
+        let gfx=vec![(0,"Software Render".into()),(1,"DirectDraw HAL".into())];
+        let modes=vec![(0,"640 x 480".into())];
+        let other=vec![(0,"High".into()),(1,"Low".into())];
+        let mixed=vec![(0,"640 x 480".into()),(1,"High".into())];
+        assert_eq!(classify_combo_items(&gfx),Some("Graphics"));
+        assert_eq!(classify_combo_items(&modes),Some("Resolution"));
+        assert_eq!(classify_combo_items(&other),None);
+        assert_eq!(classify_combo_items(&mixed),None);
     }
     #[test]
     fn exact_original_iat_instruction(){
