@@ -6,6 +6,47 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+## v0.1.76 — protected Video Preferences Apply (experimental)
+
+The owner-supplied v0.1.75 log verifies exact active/pending traces:
+`active_device=1, active_mode_index=0, pending_device=1,
+pending_mode_index=0` throughout the observed menu interaction.
+The GOS sequence is `command=13 (prepare)`, `15 (mode request)`
+twice, then `14 (apply)` and `13 (prepare)` again. Both
+`request=0` and `request=1` were already blocked by the v0.1.73
+mode-backend guard. No different pending Graphics device was observed;
+this is **not** evidence that its drop-down was inaccessible.
+
+The v0.1.76 experiment adds a separate safety check at the **exact
+GOS Preferences Apply transaction** (`command=14`). Only after all
+existing native-widescreen/desktop/menu/800×600 strict conditions
+and original x86 device/mode read preimages pass, it restores
+**the two pending fields only** from active values just before the
+game's original `gosCallback` applies the 0x81-DWORD preferences.
+Other options in the pending structure are untouched and remain
+handled by the original game code. The existing resolution backend
+guard is kept.
+
+Expected when pressing Apply in the verified menu:
+`MENU-VIDEO-LOCK: command=14 reset pending Graphics X->Y and
+Resolution index A->B; other preferences unchanged`.
+
+This should prevent an edit to Graphics from being **committed to
+the active game state** even if the UI's custom list still allows
+clicking and highlighting other entries. It does **not** lock the
+visible dropdown widgets, grey them out, or replace their text with
+the actual monitor resolution: those remaining native UI changes
+are still pending exact widget control/render identification.
+No arbitrary mouse-zone blocks, mutation of the on-disk EXE, or
+replacement of the game's full settings table are used.
+
+Please test under Wine (1) trying Graphics alternatives then applying,
+(2) Resolution alternatives then applying, (3) a different Video
+setting such as brightness/detail to confirm other options still
+commit, and (4) entering gameplay. Continue using the validated
+v0.1.69 offscreen version-label baseline. PR #9 remains draft
+and unmerged.
+
 ## v0.1.75 — discover the **pending** Graphics / Resolution values (read-only)
 
 The owner-supplied v0.1.74 Wine/GE-Proton log verifies that our
