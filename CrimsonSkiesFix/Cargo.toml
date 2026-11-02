@@ -1,6 +1,6 @@
 [package]
 name = "crimson-skies-fix"
-version = "0.1.83"
+version = "0.1.84"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Experimental 32-bit DirectDraw proxy for Crimson Skies"
