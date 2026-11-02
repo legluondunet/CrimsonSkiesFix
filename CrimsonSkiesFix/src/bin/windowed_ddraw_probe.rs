@@ -97,11 +97,6 @@ fn log(message:&str){
 }
 // The standalone probe has no game process or MainMenu state. The
 // shared virtual Surface4 module's optional menu drawing hook is inert.
-mod menu_native_combo {
-    // The standalone DirectDraw surface probe has no Crimson Skies
-    // executable, menu HWNDs or native Video control instances.
-    pub fn scan_on_menu_frame(){}
-}
 mod menu_video_probe{
     pub fn observe_ui_flip(_width:u32,_height:u32){} // standalone probe has no game executable
 }
