@@ -1,6 +1,7 @@
 //! Strictly scoped backend lock for the old game's "set video mode"
 //! gosCallback event, authenticated to the single supported v1.02 EXE.
-//! The GUI widget may still be clickable; actual game mode changes are
+//! If the native optional GOS ROF overlay is disabled, the original
+//! GUI widget may still be clickable; actual game mode changes are
 //! ignored only inside active MainMenu-family 4:3 UI. Outside that
 //! context the original handler runs with every side effect unchanged.
 use std::ffi::c_void;
@@ -54,7 +55,7 @@ unsafe extern "system" fn observe_mode_request(value:u32){
     // owner-tested 0x844 Graphics list contains two choices.
     // Returning without calling this handler preserves the original
     // resolution index and the subsequent mode-table copy, but does
-    // NOT grey out the GOS Graphics/Resolution widgets.
+    // NOT itself grey out the GOS widgets (separate native GOS overlay).
     let blocked=guard_enabled();
     if !blocked {
         let original:unsafe extern "system" fn(u32)=std::mem::transmute(ORIGINAL_TARGET);
