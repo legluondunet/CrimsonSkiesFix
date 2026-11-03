@@ -7,6 +7,47 @@ not modify the original game executable.
 
 
 
+## Experimental native GOS dropdown lock (owner opt-in, not part of DLL)
+
+Analysis of the owner-supplied \`CTL.SCRIPT\` and
+\`SHAREDITEMS.SCRIPT\` proves the original dropdown \`@ctl@PM\`
+understands \`mail(10000, object)\`: it clears the input region,
+disables its child arrows and dims the selected value to
+\`0xff808080\`. \`10018\` re-enables the control. The actual
+Graphics and Resolution GOS objects are \`HVA\` and \`IVA\`.
+
+An **optional reversible experiment** is implemented in
+\`tools/patch_gos_video_overlay.py\` (requires the sibling
+\`tools/inspect_gos_rof.py\` module). It builds a two-member
+\`crimptch.rof\` overlay that preserves the existing AIRFRAME patch
+and adds an original VIDEO script with native disable messages.
+The source script and game binaries are never bundled into the repo.
+**No game file changes in the preview command.** The tool verifies
+the original exe/ROF/script SHA-256 before generating a preview:
+
+\`\`\`sh
+python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
+  "/path/to/Crimson Skies" --preview video-disabled-preview.rof
+\`\`\`
+
+**Only for an explicit user-initiated runtime trial**, installing
+the modified *small patch overlay* creates a permanent original
+backup before replacement (the 60 MB crimson.rof and game EXE remain
+unchanged). Revert with \`--restore\`:
+
+\`\`\`sh
+python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
+  "/path/to/Crimson Skies" --install
+python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
+  "/path/to/Crimson Skies" --restore
+\`\`\`
+
+This experiment tests the original engine's native disabled state.
+It is **not yet implemented as an automatic in-memory DLL change**,
+and has not yet been tested in the owner's running game. Therefore
+keep PR #9 in draft and don't merge before owner validation. The
+v0.1.88 DLL baseline remains unchanged.
+
 ## Video dropdowns confirmed from owner's original script — next control-class test
 
 The owner extracted the original `Video.script` and `LAYOUT.CSV`
