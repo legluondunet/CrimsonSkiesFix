@@ -31,6 +31,7 @@ MAX_EXTRACT = 4 * 1024 * 1024
 MAX_REPORT_PATHS = 32
 TARGETS = {
     "ASSETS/SCRIPTS/PREFERENCES.SCRIPT": "Preferences.script",
+    "ASSETS/SCRIPTS/VIDEO.SCRIPT": "Video.script",
     "ASSETS/LAYOUT.CSV": "LAYOUT.CSV",
     "ASSETS/SCRIPTS/MAINMENU.SCRIPT": "MainMenu.script",
     "ASSETS/SCRIPTS/SCRIPTLOADER.SCRIPT": "ScriptLoader.script",
@@ -237,6 +238,7 @@ def make_fixture() -> bytes:
         "ASSETS": {
             "SCRIPTS": {
                 "PREFERENCES.SCRIPT": b"gui_create prefs;",
+                "VIDEO.SCRIPT": b"gui_create video;",
                 "MAINMENU.SCRIPT": b"main",
             },
             "LAYOUT.CSV": b"[@Preferences@]\r\nPF_D_GRAPHICS=D,...\r\n",
@@ -248,7 +250,7 @@ def make_fixture() -> bytes:
 def self_test() -> None:
     binary = make_fixture()
     arc = RofArchive(binary)
-    assert len(arc.members) == 3
+    assert len(arc.members) == 4
     assert arc.read("ASSETS/SCRIPTS/PREFERENCES.SCRIPT") == b"gui_create prefs;"
     assert arc.read("assets/layout.csv").startswith(b"[@Preferences@]")
     assert arc.read("missing") is None
@@ -258,9 +260,10 @@ def self_test() -> None:
         (root / "GOSDATA" / "ASSETS" / "CRIMSON.ROF").write_bytes(binary)
         out = root / "review.zip"
         result = bundle(root, out)
-        assert result["member_count"] == 3
+        assert result["member_count"] == 4
         with zipfile.ZipFile(out) as z:
             assert z.read("Preferences.script") == b"gui_create prefs;"
+            assert z.read("Video.script") == b"gui_create video;"
             assert z.read("LAYOUT.CSV").startswith(b"[@Preferences@]")
             assert "gos-rof-report.json" in z.namelist()
         try:
