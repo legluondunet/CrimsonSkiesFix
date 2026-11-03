@@ -817,3 +817,46 @@ nor that the two selectors stay grey after all menu
 transitions. Keep PR #9 draft; do not merge without tests.
 
 legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Owner runtime validation — native GOS selector disable via ROF overlay (2026-11-03)
+
+**Status: confirmed working by the owner** (“ça marche!!!”), after
+installing the reversible GOS override made by
+`tools/patch_gos_video_overlay.py` into the original
+`GOSDATA/ASSETS/crimptch.rof`. The GameOS native
+`mail(10000, HVA)` and `mail(10000, IVA)` state produces the
+desired disabled Graphics / Resolution controls under the owner's
+Manjaro Linux / Wine 11.0 / GE-Proton 11-12 setup.
+
+The owner attached `CrimsonSkiesFix(20261103-195640).log`.
+This independently reports:
+- validated v0.1.88 DLL baseline (`0.1.88-5b39d344`),
+  1920x1080 / 120 Hz Radeon RX 6600M;
+- native 1920x1080 D3D3 HAL geometry and Z surfaces at startup
+  (log lines 105-152), with original internal 800x600 GOS UI
+  subsequently created (lines 186-228);
+- GOS graphics dropdown `uiData(0x844)` still enumerates two
+  devices (lines 345-348);
+- GOS resolution `uiData(0x845)` still enumerates one original
+  640x480 table entry, while the text-only formatter correctly
+  reports `native label=1920x1080` (lines 349-352);
+- verified MainMenu version label displayed before the preferences
+  transition (lines 280-283), and redrawn after returning to
+  MainMenu with `reentry=1` (lines 403-407);
+- no observed GOS mode-switch command 15 or backend index change
+  during the captured interactions. This is consistent with native
+  widget disablement, but the log has **no explicit telemetry**
+  describing the GOS disabled property: visual/interaction success
+  comes from the owner's firsthand confirmation.
+
+**What is validated:** the opt-in ROF overlay works with the existing
+v0.1.88 DLL under this Wine/GE-Proton installation. **What is not
+yet validated:** integration into the `ddraw.dll` runtime,
+other Windows/Wine configurations, repeated screen transitions,
+or that every other video option was changed and applied in this test.
+The owner can use `--restore` to revert the overlay independently.
+No merge has been performed. The PR remains draft pending decisions
+about production integration and further coverage.
+
+legluondunet assisted by ChatGPT (OpenAI)
