@@ -4,8 +4,10 @@
 //! In uiData(0x845), the game pushes (height, width, resource 0x206,
 //! output buffer) and calls its original CDECL formatter at 0x4054B0.
 //! Intercept ONLY that exact CALL site. Forward every other call
-//! unchanged; when the verified GOS Video Preferences page is open,
+//! unchanged; during the authenticated GOS Preferences data transaction,
 //! substitute the launch monitor's dimensions as formatter arguments.
+//! Do not depend on the more fragile Campaign-art visibility hint:
+//! original GOS scripts can rebuild labels across menu transitions.
 //! Never touch the GOS mode table, selection index, text buffers, 4:3
 //! menu surfaces or DirectDraw mode. This changes display text only.
 use std::{
@@ -66,15 +68,29 @@ fn replacement(
     monitor.filter(|&(w, h)| supported_dimensions(w, h) && (w, h) != original)
 }
 
+fn label_transaction_context(
+    experimental: bool, native: bool, desktop: bool,
+    menu_seen: bool, legacy_ui: bool, preferences_transaction: bool,
+) -> bool {
+    experimental && native && desktop &&
+        menu_seen && legacy_ui && preferences_transaction
+}
+
 fn active_video_page() -> bool {
     let cfg = crate::cfg();
-    cfg.experimental_windowed_adapter
-        && cfg.native_3d_widescreen
-        && cfg.desktop_resolution
-        && crate::menu_scene::main_menu_was_seen()
-        && crate::menu_video_probe::legacy_ui_active()
-        && crate::menu_gos_event::preferences_transaction_active()
-        && crate::menu_gos_event::video_preferences_open()
+    // v0.1.87 owner log: the original GOS 0x845 label is regenerated
+    // after a transient MainMenu Campaign-art frame clears the separate
+    // branding visibility hint. That flag must NOT gate the text-only
+    // formatter: it cannot change a mode, widget selection or surface.
+    // Retain the verified GOS transaction, 4:3 UI and native-mode gates.
+    label_transaction_context(
+        cfg.experimental_windowed_adapter,
+        cfg.native_3d_widescreen,
+        cfg.desktop_resolution,
+        crate::menu_scene::main_menu_was_seen(),
+        crate::menu_video_probe::legacy_ui_active(),
+        crate::menu_gos_event::preferences_transaction_active(),
+    )
 }
 
 unsafe extern "C" fn format_resolution(
@@ -191,6 +207,25 @@ mod tests {
     fn exact_original_cdecl_call() {
         assert_eq!(rel_call(FORMAT_CALL_SITE, ORIGINAL_FORMATTER), ORIGINAL_CALL);
         assert_eq!(FORMAT_ARGUMENTS.len(), FORMAT_CALL_SITE - FORMAT_ARGUMENTS_SITE);
+    }
+    #[test]
+    fn menu_artwork_hint_does_not_control_resolution_formatter() {
+        // The original text-only GOS 0x845 handler can run after
+        // Campaign-art detection clears the *branding* visibility hint.
+        // A confirmed Preferences data transaction is the correct gate.
+        assert!(label_transaction_context(true,true,true,true,true,true));
+        for flags in [
+            (false,true,true,true,true,true),
+            (true,false,true,true,true,true),
+            (true,true,false,true,true,true),
+            (true,true,true,false,true,true),
+            (true,true,true,true,false,true),
+            (true,true,true,true,true,false),
+        ] {
+            assert!(!label_transaction_context(
+                flags.0,flags.1,flags.2,flags.3,flags.4,flags.5
+            ));
+        }
     }
     #[test]
     fn native_dimensions_only_when_video_page_and_resource_match() {
