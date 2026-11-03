@@ -7,6 +7,30 @@ not modify the original game executable.
 
 
 
+## Next milestone — identify actual GOS Video widgets (investigation)
+
+After the owner validated v0.1.88 under Wine, direct disassembly of
+the authenticated original EXE confirmed that the game loads an
+external `Assets/Scripts/Preferences.script` via its original
+`0x00406D30` GOS loader. `uiData(0x844)` and `uiData(0x845)`
+supply the two Graphics/Resolution lists, **not** the rendered widget
+objects or their enabled state.
+
+A new Python 3 read-only scanner `tools/inspect_gos_scripts.py`
+can inventory the original game folder without changing script assets:
+
+```sh
+python3 tools/inspect_gos_scripts.py "/path/to/Crimson Skies" --output gos-scripts-report.json
+```
+
+Prefer inspecting the actual `Assets/Scripts/Preferences.script`
+file, optionally alongside `MainMenu.script`. A source asset or the
+scanner report is needed to identify a safe widget-specific disable
+mechanism. `gosColorDisabled` is a script color variable, **not**
+evidence of an input-disable command. Do not fake GOS list counts,
+change the original mode indices, or overlay synthetic mouse hitboxes.
+This step changes no runtime DLL behaviour. The PR remains a draft.
+
 ## v0.1.88 — keep native Resolution label across GOS page refreshes
 
 The owner's v0.1.87 log confirms the 1920x1080 Resolution label and
