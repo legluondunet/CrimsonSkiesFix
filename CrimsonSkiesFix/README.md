@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.86 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.87 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -6,6 +6,26 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+
+## v0.1.87 — read-only Graphics list identification (not a UI fix)
+
+Further disassembly of the one SHA-256-verified EXE identifies two
+additional GOS list handlers: `uiData(0x843)` traverses the original
+360-byte device-record table and takes its count from `0x0064AB3C`;
+`uiData(0x844)` reads an additional list count from `0x00648374`.
+Neither handler is **proven** to be the visible Graphics selector.
+
+In debug-log mode only, the existing exact-script callback now observes
+the original count sentinel, returned list count and label-request index
+for these two operations. It verifies exact handler instruction bytes
+before reading only the known DWORD counts. It never changes any text,
+list entry, selected index, video setting, input handler or renderer.
+This investigation is intentionally separate from the owner-validated
+Resolution label fix. The original GOS handlers always execute as before.
+
+Next: compare list counts while opening Graphics vs Resolution and other
+Video controls under Wine. Disable no widget until its identity and
+input callback have been verified. The test build must remain draft.
 
 ## v0.1.86 — experimental native-resolution text in Video Preferences
 
@@ -18,11 +38,13 @@ launch-monitor width/height while the authenticated Video Preferences
 transaction is actually open. No on-disk game EXE, mode index, mode
 list, 4:3 menu surface or native FOV/HUD path is changed.
 
-This is **not yet visually validated under Wine or Windows**. The
-Graphics/Resolution widgets can still be clicked, though the existing
-backend mode and device-commit guards remain intact. Tests verify the
-call-site bytes against the owner's exact EXE and cover the label
-selection policy; live on-screen verification is still required.
+The owner **visually validated the Resolution label under Wine/GE-Proton**
+(2026-11-03): on a 1920x1080 monitor the Video Preferences selector now
+displays 1920x1080. The new log confirms native-text substitution,
+unchanged original 640x480 mode list/index, and successful MainMenu
+signature presentation after returning from Preferences. Windows and
+multi-monitor behaviour are not yet tested. Graphics/Resolution remain
+clickable, protected by the existing backend guards.
 
 
 ## v0.1.85 — exact original GOS resolution-label builder identified
