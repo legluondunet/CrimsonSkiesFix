@@ -120,11 +120,11 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
     {
         Some(pending_video_snapshot())
     }else{None};
-    // The script's 0x845 and 0x847 list handlers read a pointer to
+    // Verified 0x843/0x844/0x845/0x847 list handlers read a pointer to
     // the requested item index. Observe it before/after the original,
     // never alter the index, count, item text or game mode table.
     let list_request=maybe.and_then(|(code,descriptor)|{
-        if matches!(code,0x845|0x847){
+        if crate::menu_ui_list_probe::handles(code){
             crate::menu_ui_list_probe::before(code,descriptor).map(|index|(code,descriptor,index))
         }else{None}
     });
