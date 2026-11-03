@@ -7,7 +7,9 @@
 //! video-settings structure, a 97-byte string array paired with the
 //! pending Graphics-device count. This ownership is established by
 //! direct original-code enumeration and the owner's 0.1.87 Wine log.
-//! The *visual control object* and its input/disable method are unknown.
+//! The visual Video objects are HVA (Graphics) and IVA (Resolution).
+//! Disabled-state semantics were verified in the owner's original GOS
+//! CTL.SCRIPT and SHAREDITEMS.SCRIPT; this module remains read-only.
 //! Observe the original counts and indices only, without editing UI.
 //! Strict preimage checks; never write to game mode indices or text.
 use std::{ptr,sync::atomic::{AtomicU32,Ordering}};
@@ -75,7 +77,7 @@ pub unsafe fn after(code:u32,descriptor:u32,index_before:u32){
         let action=if is_count_request(index_before){"count"}else{"label"};
         if original_count<=64 {
             log(&format!(
-                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} index_in={index_before} index_out={after} original_list_count={original_count} list={identity} [read-only; UI widget disable method unknown]"
+                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} index_in={index_before} index_out={after} original_list_count={original_count} list={identity} [read-only; GOS dropdown disabled state managed separately]"
             ));
         }else{
             log(&format!(
