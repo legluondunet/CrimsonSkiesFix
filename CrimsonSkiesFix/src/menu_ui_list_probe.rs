@@ -2,9 +2,13 @@
 //! 0x845 enumerates resolution modes and produces "W x H" via
 //! formatter resource 0x206. 0x847 enumerates a *different* 5-choice
 //! localized list (resource base 0x72); widget ownership unknown.
-//! 0x843 walks a 360-byte device-record table and 0x844 walks an
-//! additional game-owned list. Observe their original counts and
-//! indices only: neither opcode is confirmed to own the Graphics widget.
+//! 0x843 walks an unrelated 360-byte record table (widget unknown).
+//! 0x844 enumerates the game's Graphics-device labels from the pending
+//! video-settings structure, a 97-byte string array paired with the
+//! pending Graphics-device count. This ownership is established by
+//! direct original-code enumeration and the owner's 0.1.87 Wine log.
+//! The *visual control object* and its input/disable method are unknown.
+//! Observe the original counts and indices only, without editing UI.
 //! Strict preimage checks; never write to game mode indices or text.
 use std::{ptr,sync::atomic::{AtomicU32,Ordering}};
 use crate::log;
@@ -12,11 +16,11 @@ const MAX:u32=32;
 const COUNT:usize=0x0064_b498;
 const MODES:usize=0x0064_b49c;
 const DEVICE_RECORD_COUNT:usize=0x0064_ab3c;
-const ADDITIONAL_LIST_COUNT:usize=0x0064_8374;
+const GRAPHICS_LIST_COUNT:usize=0x0064_8374;
 static MODE_CALLS:AtomicU32=AtomicU32::new(0);
 static FIVE_CALLS:AtomicU32=AtomicU32::new(0);
 static DEVICE_CALLS:AtomicU32=AtomicU32::new(0);
-static ADDITIONAL_CALLS:AtomicU32=AtomicU32::new(0);
+static GRAPHICS_CALLS:AtomicU32=AtomicU32::new(0);
 
 pub fn handles(code:u32)->bool{matches!(code,0x843|0x844|0x845|0x847)}
 fn is_count_request(index:u32)->bool{index==u32::MAX}
@@ -55,7 +59,7 @@ pub unsafe fn before(code:u32,descriptor:u32)->Option<u32>{
 pub unsafe fn after(code:u32,descriptor:u32,index_before:u32){
     if !verified(code){return;}
     let count=match code{
-        0x843=>&DEVICE_CALLS,0x844=>&ADDITIONAL_CALLS,
+        0x843=>&DEVICE_CALLS,0x844=>&GRAPHICS_CALLS,
         0x845=>&MODE_CALLS,_=>&FIVE_CALLS
     };
     if count.fetch_add(1,Ordering::Relaxed)>=MAX{return;}
@@ -65,16 +69,17 @@ pub unsafe fn after(code:u32,descriptor:u32,index_before:u32){
         // entry index to request game-owned text. Read only the count
         // DWORD whose use was byte-verified above; NEVER dereference
         // the device/entry table or the GOS output pointers.
-        let count_site=if code==0x843{DEVICE_RECORD_COUNT}else{ADDITIONAL_LIST_COUNT};
+        let count_site=if code==0x843{DEVICE_RECORD_COUNT}else{GRAPHICS_LIST_COUNT};
+        let identity=if code==0x844{"graphics-devices"}else{"unidentified-device-records"};
         let original_count=ptr::read_volatile(count_site as *const u32);
         let action=if is_count_request(index_before){"count"}else{"label"};
         if original_count<=64 {
             log(&format!(
-                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} index_in={index_before} index_out={after} original_list_count={original_count} [candidate list; widget identity unverified; read-only]"
+                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} index_in={index_before} index_out={after} original_list_count={original_count} list={identity} [read-only; UI widget disable method unknown]"
             ));
         }else{
             log(&format!(
-                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} original_list_count=out-of-range [read-only; skipped]"
+                "MENU-GOS-UI-LIST: opcode={code:#x} action={action} original_list_count=out-of-range list={identity} [read-only; skipped]"
             ));
         }
     }else if code==0x845{
