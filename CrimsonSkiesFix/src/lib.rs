@@ -9,6 +9,7 @@ mod menu_mode_event;
 mod menu_gos_event;
 mod menu_ui_trace;
 mod menu_ui_list_probe;
+mod menu_resolution_label;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
@@ -1381,6 +1382,15 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
             let active=unsafe{menu_gos_event::install()};
             log(&format!("MENU-GOS-EVENT: hook_available={active}"));
+        }
+    });
+    // Override ONLY the original GOS 0x845 resolution-text formatter.
+    // This is independent of debug logging and never mutates the mode table.
+    static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
+    GOS_RESOLUTION_LABEL_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            let installed=unsafe{menu_resolution_label::install()};
+            log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
         }
     });
     // Passive GOS UI tracing is off with Log=0; unlike the verified
