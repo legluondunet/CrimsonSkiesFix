@@ -474,3 +474,75 @@ native `1920x1080`. The actual on-screen presentation must still
 be confirmed by the owner. If the transaction has legitimately
 ended, original text can be generated into non-visible scripts
 without overwriting any visible native label.
+
+
+## Investigating the actual GOS visual widgets (3 November 2026)
+
+Owner-confirmed 0.1.88: the native Resolution text remains correct
+across Preferences re-entry. The backend mode/device guards and original
+MainMenu watermark remain validated. The **Graphics and Resolution
+GOS selectors are still visually enabled**; do not conflate the data
+list handlers with the rendered button instances.
+
+### Static EXE discoveries
+
+These observations were checked directly against the one accepted
+2,580,480-byte unwrapped 1.02 executable, SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`:
+
+- The menu scene dispatcher at `0x0040286E` pushes the literal
+  `Preferences` (`0x0061EB20`) and invokes the game script loader
+  at `0x00406D30` via `0x00402954`.
+- The MainMenu path at `0x00402948` similarly loads `MainMenu`
+  (`0x0061EB98`). The shared setup at `0x004027D4` loads
+  `ScriptLoader`.
+- `0x00406D30` constructs `assets\scripts\<name>.script` from the
+  literal prefix at `0x0061F050` and extension at `0x0061F060`,
+  then delegates to the original GameOS script runtime. Thus the
+  executable names **external GOS script assets**, not an embedded
+  Preferences layout that we can simply edit inside the DLL.
+- The GameOS registration block at `0x0040230E–0x004023D5`
+  contains `gosButtonType`, `gosChecked`, `gosColor`, and
+  `gosColorDisabled`. **The presence of `gosColorDisabled` identifies
+  a color variable, not proof of an enable/disable API.**
+  No supported widget-specific disable call has been established.
+
+The already identified `uiData(0x844)` and `uiData(0x845)` functions
+return *data for* the Graphics and Resolution dropdowns, not GOS
+object handles. Spoofing a list count or selection index at this
+layer risks invalid state; it is intentionally **not** implemented.
+
+### New read-only asset inventory
+
+`tools/inspect_gos_scripts.py` is a standalone Python 3 helper with
+no third-party dependencies. It searches for `.script` assets
+case-insensitively, prioritizes `Preferences.script`,
+`MainMenu.script` and `ScriptLoader.script`, and reports bounded
+metadata (relative filename, length, SHA-256, initial bytes, and
+keyword-bearing printable ASCII/UTF-16LE string examples). It does
+**not** alter .script files, write to the game folder or claim to
+decode an unverified bytecode format. It also has a synthetic-data
+self-test:
+
+`python3 tools/inspect_gos_scripts.py --self-test`
+
+To inspect an installed game directory on Linux/Wine:
+
+`python3 tools/inspect_gos_scripts.py "/path/to/Crimson Skies" --output gos-scripts-report.json`
+
+On Windows:
+
+`python tools/inspect_gos_scripts.py "C:\Games\Crimson Skies" --output gos-scripts-report.json`
+
+The output filename must be new and end in `.json`. For faster
+review, **the single original `Assets/Scripts/Preferences.script`
+file** (or its read-only report) is the most useful next evidence.
+If that asset is itself compiled/packed, readable strings may be
+absent; the report does not prove nonexistence of a button.
+
+**Next engineering gate:** identify the two concrete GOS
+Preferences widget IDs and actual input/disabled-state
+mechanism from script assets or safe runtime tracing. Only then
+add a guarded UI-only change, retaining the exact executable hash
+gate and existing mode safety checks. No UI-disabled claim and
+no merge until owner runtime verification.
