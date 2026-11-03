@@ -36,6 +36,11 @@ static PREFERENCES_DATA_SESSION:AtomicBool=AtomicBool::new(false);
 pub(crate) fn preferences_transaction_active()->bool{
     PREFERENCES_DATA_SESSION.load(Ordering::Acquire)
 }
+/// Stronger visibility hint than the transaction alone: cleared on
+/// original Apply/Cancel or verified MainMenu artwork reappearance.
+pub(crate) fn video_preferences_open()->bool{
+    VIDEO_PREFERENCES_OPEN.load(Ordering::Acquire)
+}
 
 
 /// The game's MainMenu script remains loaded while its Video dialog is
