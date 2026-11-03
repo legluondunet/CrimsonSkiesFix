@@ -656,3 +656,78 @@ Merely identifying the script widget IDs is not proof of a safe
 disable API. Do not patch GOS code or spoof original mode table
 counts on an assumption; no change to the validated 0.1.88
 runtime is committed yet.
+
+
+## Owner's actual ROF extracts identify two Video dropdown script objects (3 Nov 2026)
+
+The owner successfully ran the safe ROF extraction on the authentic
+`GOSDATA/ASSETS/crimson.rof` and provided `gos-ui-review.zip`.
+
+Original archive metadata:
+- `crimson.rof`, 60,236,221 bytes,
+  SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`
+- `VIDEO.SCRIPT`, 4,337 bytes, SHA-256
+  `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`
+- `LAYOUT.CSV`, 56,148 bytes, SHA-256
+  `b50ea48bbe97ea098d76575115629bfbe6d0f55165fa364c939f9fb089892583`
+
+The ORIGINAL game script (not a guessed UI mapping) contains the
+following two precise dropdown objects in its `gui_create` block:
+
+| Control | Script object | Type | YC widget key | TJ list data callback | Current selection |
+|---|---|---|---|---|---|
+| Graphics | `HVA` | `@ctl@PM` | `vp_d_device` | `2116 = 0x844` | `HVA.QG = DUA` |
+| Resolution | `IVA` | `@ctl@PM` | `vp_d_display` | `2117 = 0x845` | `IVA.QG = DK` |
+
+The original GOS `LAYOUT.CSV` `[@Video@]` section confirms:
+- `VP_D_Device` is a `D` dropdown at `x=105, y=270`,
+  `z=100, width=200, items_displayed=4`;
+- `VP_D_Display` is a `D` dropdown at `x=156, y=306`,
+  `z=95, width=150, items_displayed=8`;
+- The other five dropdowns have separately authored objects and
+  lower Z order and must remain responsive.
+
+At original script lines 145-152, the game initializes HVA and IVA
+individually, surrounded by a temporary `NUA` flag on the Graphics
+one. While `NUA` is set, an incoming message `10025` writes
+`sender.BN.SM = 500`; avoid treating either field as an arbitrary
+disable flag.
+
+The `gui_mailbox` handler at lines 207-239:
+- on `10015` sent by HVA, updates `DUA` and invokes
+  `callback($$A$$, 15, DUA)` to rebuild the Resolution mode list;
+- on `10015` sent by IVA, updates `DK = sender.QG`;
+- dispatches other dropdowns separately (WQ/JVA/KVA/LVA/MVA);
+- the ordinary Apply/Cancel events remain at `10003`.
+
+**Unproven disable semantics.** In the original Video script,
+after the lighting-quality dropdown LVA is reinitialized,
+the game sends `mail(10000,LVA)` or `mail(10018,LVA)`
+depending on `$$IOA$$`. Both apply to a dropdown of the
+same `@ctl@PM` class, but the meanings of those messages
+are unknown from VIDEO.SCRIPT alone: guessing the incorrect
+message could change appearance/focus or break other settings.
+This is not yet proof that either command disables a dropdown.
+
+The original `ScriptLoader.script` explicitly loads
+`assets\\scripts\\ctl.script`,
+`assets\\scripts\\shareditems.script` and
+`assets\\scripts\\globals.script`. These resource files
+contain the GOS control-class definitions and initialization
+helpers needed to interpret the two mail messages safely.
+
+The standalone read-only `tools/inspect_gos_rof.py` now
+selectively exports those class scripts and three comparator
+screens (`CAMPAIGN`, `GAMEOPTIONS`, `AUDIO`), in
+addition to the verified Video and layout originals.
+It neither edits the retail archive nor stores copyrighted
+game script content in the repository.
+
+**Next evidence gate:** inspect those class definitions, map
+the original disabled-state transition, and only then design
+a guarded, testable visual control disable for HVA/IVA.
+The existing 0.1.88 native screen dimensions, GOS mode
+guards, and version signature are untouched. PR #9 is
+still draft/unmerged.
+
+legluondunet assisted by ChatGPT (OpenAI)
