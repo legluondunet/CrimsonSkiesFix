@@ -21,6 +21,8 @@ jobs:
         working-directory: CrimsonSkiesFix
     steps:
       - uses: actions/checkout@v4
+      - name: Read-only GOS script inspector self-test
+        run: python tools/inspect_gos_scripts.py --self-test
       - name: Install Rust i686 MSVC target
         run: rustup target add i686-pc-windows-msvc
       - name: Unit tests in 32-bit mode
