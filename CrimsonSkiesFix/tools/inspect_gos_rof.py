@@ -5,8 +5,9 @@ Independently implemented from publicly documented ROF format:
 https://github.com/Laeresh/CSVM/blob/main/docs/formats/rof.md
 
 Reads GOSDATA/ASSETS/crimson.rof in place and optionally produces one
-new zip containing ONLY original Preferences/MainMenu UI scripts, the
-original layout CSV and a small JSON inventory. Does not modify any
+new zip containing ONLY original GOS Video/menu UI scripts, the
+dropdown class definitions (CTL and SHAREDITEMS), selected comparator
+scripts, layout CSV and a small JSON inventory. Does not modify any
 installed game resources, original EXE, archive or DLL.
 """
 from __future__ import annotations
@@ -35,6 +36,12 @@ TARGETS = {
     "ASSETS/LAYOUT.CSV": "LAYOUT.CSV",
     "ASSETS/SCRIPTS/MAINMENU.SCRIPT": "MainMenu.script",
     "ASSETS/SCRIPTS/SCRIPTLOADER.SCRIPT": "ScriptLoader.script",
+    "ASSETS/SCRIPTS/CTL.SCRIPT": "Ctl.script",
+    "ASSETS/SCRIPTS/SHAREDITEMS.SCRIPT": "SharedItems.script",
+    "ASSETS/SCRIPTS/GLOBALS.SCRIPT": "Globals.script",
+    "ASSETS/SCRIPTS/CAMPAIGN.SCRIPT": "Campaign.script",
+    "ASSETS/SCRIPTS/GAMEOPTIONS.SCRIPT": "GameOptions.script",
+    "ASSETS/SCRIPTS/AUDIO.SCRIPT": "Audio.script",
 }
 
 
@@ -240,6 +247,8 @@ def make_fixture() -> bytes:
                 "PREFERENCES.SCRIPT": b"gui_create prefs;",
                 "VIDEO.SCRIPT": b"gui_create video;",
                 "MAINMENU.SCRIPT": b"main",
+                "CTL.SCRIPT": b"control PM mail 10000 10018;",
+                "SHAREDITEMS.SCRIPT": b"shared items;",
             },
             "LAYOUT.CSV": b"[@Preferences@]\r\nPF_D_GRAPHICS=D,...\r\n",
         }
@@ -250,7 +259,7 @@ def make_fixture() -> bytes:
 def self_test() -> None:
     binary = make_fixture()
     arc = RofArchive(binary)
-    assert len(arc.members) == 4
+    assert len(arc.members) == 6
     assert arc.read("ASSETS/SCRIPTS/PREFERENCES.SCRIPT") == b"gui_create prefs;"
     assert arc.read("assets/layout.csv").startswith(b"[@Preferences@]")
     assert arc.read("missing") is None
@@ -260,10 +269,12 @@ def self_test() -> None:
         (root / "GOSDATA" / "ASSETS" / "CRIMSON.ROF").write_bytes(binary)
         out = root / "review.zip"
         result = bundle(root, out)
-        assert result["member_count"] == 4
+        assert result["member_count"] == 6
         with zipfile.ZipFile(out) as z:
             assert z.read("Preferences.script") == b"gui_create prefs;"
             assert z.read("Video.script") == b"gui_create video;"
+            assert z.read("Ctl.script") == b"control PM mail 10000 10018;"
+            assert z.read("SharedItems.script") == b"shared items;"
             assert z.read("LAYOUT.CSV").startswith(b"[@Preferences@]")
             assert "gos-rof-report.json" in z.namelist()
         try:
