@@ -1,9 +1,28 @@
-# CrimsonSkiesFix 0.1.85 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.86 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
 speed and borderless still require live validation. This PR does
 not modify the original game executable.
+
+
+
+## v0.1.86 — experimental native-resolution text in Video Preferences
+
+The exact 1.02 EXE's GOS `uiData(0x845)` handler formats its one
+original mode-list entry (e.g. `640x480`) through resource `0x206`
+and a CDECL call at `0x0040CF31` to `0x004054B0`. A byte-exact,
+in-memory call-site hook now forwards the same output pointer and format
+resource to the **original formatter**, substituting only the frozen
+launch-monitor width/height while the authenticated Video Preferences
+transaction is actually open. No on-disk game EXE, mode index, mode
+list, 4:3 menu surface or native FOV/HUD path is changed.
+
+This is **not yet visually validated under Wine or Windows**. The
+Graphics/Resolution widgets can still be clicked, though the existing
+backend mode and device-commit guards remain intact. Tests verify the
+call-site bytes against the owner's exact EXE and cover the label
+selection policy; live on-screen verification is still required.
 
 
 ## v0.1.85 — exact original GOS resolution-label builder identified
