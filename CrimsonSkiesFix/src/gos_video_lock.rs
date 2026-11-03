@@ -106,9 +106,12 @@ fn walk(data: &[u8], node: usize, prefix: &str, depth: usize,
             }
             let name = std::str::from_utf8(&raw[..len - 1])
                 .map_err(|_| "non-UTF8 ROF name")?;
-            if !name.bytes().all(|c| c.is_ascii_alphanumeric() ||
-                    matches!(c, b'_' | b'-' | b'.' | b'$')) ||
-                name == "." || name == ".." {
+            // Retail UI art filenames can contain spaces or punctuation.
+            // Accept printable ASCII without path separators; never extract
+            // these paths to disk (the reader uses names only as ROF keys).
+            if name == "." || name == ".." ||
+               !name.bytes().all(|c| (0x20..=0x7e).contains(&c) &&
+                               !matches!(c, b'/' | b'\\' | b':')) {
                 return Err("unsafe ROF member name".into());
             }
             let full = format!("{prefix}{name}").to_ascii_uppercase();
@@ -274,7 +277,7 @@ fn write_overlay(airframe: &Payload, video: &[u8]) -> Result<Vec<u8>, String> {
     if scanned.len() != 2 ||
         inflate(&out, named(&scanned, VIDEO_PATH).ok_or("new VIDEO missing")?)? != video ||
         named(&scanned, AIRFRAME_PATH).is_none_or(|a|
-            out[a.offset..a.offset + a.compressed] != airframe.compressed_bytes) {
+            &out[a.offset..a.offset + a.compressed] != airframe.compressed_bytes.as_slice()) {
         return Err("ROF generated overlay roundtrip failed".into());
     }
     Ok(out)
