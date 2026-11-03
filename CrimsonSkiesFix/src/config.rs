@@ -18,6 +18,8 @@ pub const DEFAULT_INI: &str = concat!(
     "LegacyOffscreenRGB565=0\n",
     "; Experimental native widescreen/FOV for the exact unmodified unsafedisk 1.02 EXE only.\n",
     "Native3DWidescreen=0\n",
+    "; Experimental: native GOS Video selector lock (off | on | restore); off by default.\n",
+    "GosVideoLock=off\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -42,6 +44,7 @@ pub struct Config {
     pub window_erase_guard: bool,
     pub legacy_offscreen_rgb565: bool,
     pub native_3d_widescreen: bool,
+    pub gos_video_lock: crate::gos_video_lock::Mode,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -51,7 +54,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, native_3d_widescreen: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, native_3d_widescreen: false, gos_video_lock: crate::gos_video_lock::Mode::Off, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -87,6 +90,13 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.experimental_windowed_adapter = v; },
             ("graphics", "native3dwidescreen") =>
                 if let Some(v) = enabled(value) { settings.native_3d_widescreen = v; },
+            ("graphics", "gosvideolock") =>
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "1" | "true" => settings.gos_video_lock = crate::gos_video_lock::Mode::On,
+                    "off" | "0" | "false" => settings.gos_video_lock = crate::gos_video_lock::Mode::Off,
+                    "restore" => settings.gos_video_lock = crate::gos_video_lock::Mode::Restore,
+                    _ => {},
+                },
             ("graphics", "legacyoffscreenrgb565") =>
                 if let Some(v) = enabled(value) { settings.legacy_offscreen_rgb565 = v; },
             ("graphics", "windoweraseguard") =>
@@ -124,7 +134,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, native_3d_widescreen:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, native_3d_widescreen:false, gos_video_lock: crate::gos_video_lock::Mode::Off, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
@@ -219,4 +229,16 @@ mod tests {
         assert_eq!(c.fps_limit,59);
         assert!(c.log_enabled);
     }
+    #[test]
+    fn native_gos_video_lock_is_explicit_and_graphics_scoped(){
+        use crate::gos_video_lock::Mode;
+        assert_eq!(parse("").gos_video_lock,Mode::Off);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=on").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=1").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=restore").gos_video_lock,Mode::Restore);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=OFF").gos_video_lock,Mode::Off);
+        assert_eq!(parse("[Debug]\nGosVideoLock=on").gos_video_lock,Mode::Off);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=maybe").gos_video_lock,Mode::Off);
+    }
+
 }
