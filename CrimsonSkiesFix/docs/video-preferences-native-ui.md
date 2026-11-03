@@ -352,3 +352,29 @@ The original Graphics/Resolution controls are **not visually disabled**;
 the backend guards are intentionally retained pending a separate,
 widget-specific solution. PR #9 remains a draft; do not merge before
 owner runtime acceptance.
+
+
+## v0.1.87 — Graphics selector investigation (read-only)
+
+Independent verification against the **same exact clean 1.02 PE**
+(2,580,480 bytes, SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
+shows that GOS uiData:
+
+- `0x843` dispatches to `0x0040CE17`. On an index sentinel
+  `0xFFFFFFFF`, it reports the original count at `0x0064AB3C`.
+  For list entries, it obtains the table from `0x0064AB2C`,
+  indexes 360-byte records and formats entry metadata into GOS output.
+  Candidate for a video device list; *not yet identified as Graphics*.
+- `0x844` dispatches to `0x0040CF58`. The sentinel returns the
+  original count at `0x00648374`, and entry labels are constructed
+  from a separate `0x0064839C`-based table with resource `0x209`.
+  Widget identity also unverified.
+- `0x845` remains the separately confirmed Resolution list and its
+  text override has now been visually validated by the owner at 1920x1080.
+
+New 0.1.87 debug-only traces record only item index and reported count
+for `0x843`/`0x844`, bounded and gated by the original x86 instruction
+preimages. No table entries, new pointers, or game widgets are modified.
+No claim of disabled Graphics/Resolution controls. Do not merge until
+list/widget correlation and UI input semantics are known.
