@@ -312,3 +312,43 @@ the original x86 handler preimages, forwards all calls
 unaltered, and does not read arbitrary game object pointers.
 Await Wine runtime correlation before editing an actual widget.
 
+
+
+## v0.1.86 — precise GOS label interception (3 November 2026)
+
+The owner-supplied `CrimsonSkiesFix(20261103-174341).log` records
+`uiData(0x845)` returning one label, `640x480`, while the launch
+monitor is `1920x1080`. GOS mode indices remain zero; no evidence
+suggests the user's real monitor is 640x480.
+
+With the authenticated 2,580,480-byte EXE (SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`),
+independent static PE disassembly verified this exact formatter path:
+
+- `0x0040CF20`: push packed mode-table entry's height; width is
+  masked to 16 bits and pushed next
+- `0x0040CF2B`: push resource ID `0x206` and stack text buffer
+- `0x0040CF31`: original `CALL rel32` bytes `E8 7A 85 FF FF`,
+  targeting `0x004054B0` (CDECL original formatter)
+- `0x0040CF36`: continues using original GOS text buffer to call
+  `0x00403350` and assign the already-formatted label
+
+`src/menu_resolution_label.rs` hooks **only that call site**, first
+validating the exact original bytes of the formatting instructions,
+original formatter entry and following code. The wrapper preserves the
+original CDECL return value, output pointer, resource ID and caller stack
+cleanup, and substitutes monitor dimensions only under the verified
+Video Preferences transaction/visibility guards. Otherwise it forwards
+all parameters unchanged. It never modifies a GOS setting, selector
+index, list count, original mode table, renderer, native FOV/HUD, or
+executable file. Failed installation must not leave a partial call
+patch; the original call is restored where possible.
+
+**Pending live validation:** open Video Preferences, confirm the
+Resolution text shows `1920x1080` and remains consistent after returning
+to MainMenu and reopening. Verify the stable MainMenu signature, 4:3
+videos, 3D native resolution/FOV/HUD and unaffected other Video settings.
+The original Graphics/Resolution controls are **not visually disabled**;
+the backend guards are intentionally retained pending a separate,
+widget-specific solution. PR #9 remains a draft; do not merge before
+owner runtime acceptance.
