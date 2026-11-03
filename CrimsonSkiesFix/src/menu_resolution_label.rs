@@ -86,7 +86,8 @@ unsafe extern "C" fn format_resolution(
     let original: FormatFn = std::mem::transmute(ORIGINAL_FORMATTER);
     // Monitor is frozen before the first exclusive mode switch; querying
     // current DirectDraw modes here would merely return 800x600.
-    let monitor = if active_video_page() {
+    let page_active = active_video_page();
+    let monitor = if page_active {
         crate::win32::capture_launch_monitor()
             .and_then(|rect| rect.dimensions())
             .or_else(crate::win32::sole_primary_monitor_dimensions)
@@ -94,7 +95,7 @@ unsafe extern "C" fn format_resolution(
         None
     };
     let override_size = replacement(
-        active_video_page(),
+        page_active,
         format_id,
         (original_width, original_height),
         monitor,
