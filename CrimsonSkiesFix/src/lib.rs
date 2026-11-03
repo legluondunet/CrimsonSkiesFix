@@ -4,6 +4,7 @@
 mod config;
 mod build_info;
 mod menu_scene;
+mod gos_video_lock; // experimental, backed-up native GOS Video .rof overlay
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
@@ -286,6 +287,19 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    // No work from DllMain: authenticated game and INI are ready here.
+    // The native GOS resource override is explicitly opt-in; a successful
+    // ROF patch must be available BEFORE the original GOS scripts load.
+    // Read-only mode does no ROF I/O. Restore is allowed independently.
+    static GOS_LOCK_ONCE:Once=Once::new();
+    GOS_LOCK_ONCE.call_once(|| {
+        gos_video_lock::apply(
+            config.gos_video_lock,
+            config.experimental_windowed_adapter &&
+            config.native_3d_widescreen &&
+            config.desktop_resolution
+        );
+    });
     // Freeze the screen under the cursor at the first game DirectDraw call.
     // It represents the launch screen, not the cursor's later location.
     // The actual game HWND is validated separately before it can be moved.
