@@ -7,6 +7,29 @@ not modify the original game executable.
 
 
 
+## After owner v1 script scan returned zero files — inspect game layout
+
+The owner-supplied `gos-scripts-report.json` reports `script_count=0`
+and zero candidates. This only proves **no loose `.script` files
+were found at the scanned path**. Version 1 had no root-directory or
+archive inventory. Crimson Skies also uses `.zbd` asset archives,
+but no evidence presently links the requested GOS UI script to one
+specific archive.
+
+The improved `tools/inspect_gos_scripts.py` **v2** records a bounded,
+read-only directory/extension summary and candidate archive names and
+sizes. It does not open/extract those archives or modify game data.
+Re-run it **against the game installation root** with a *new* output
+filename (existing reports are deliberately never overwritten):
+
+```sh
+python3 tools/inspect_gos_scripts.py "/path/to/Crimson Skies" --output gos-scripts-layout-v2.json
+```
+
+Once we know the actual layout, we can locate the relevant resources
+or shift to bounded runtime tracing. This tool-only change does not
+alter the already owner-validated v0.1.88 DLL.
+
 ## Next milestone — identify actual GOS Video widgets (investigation)
 
 After the owner validated v0.1.88 under Wine, direct disassembly of
