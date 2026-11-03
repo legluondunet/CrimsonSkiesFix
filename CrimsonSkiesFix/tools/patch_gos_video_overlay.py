@@ -23,13 +23,22 @@ import tempfile
 import zlib
 from pathlib import Path
 
-from inspect_gos_rof import RofArchive, RofError, find_archive
+try:
+    from inspect_gos_rof import RofArchive, RofError, find_archive
+except ModuleNotFoundError as missing:
+    if missing.name != "inspect_gos_rof":
+        raise
+    # Earlier standalone owner download used the explicit _controls suffix.
+    from inspect_gos_rof_controls import RofArchive, RofError, find_archive
 
 BASE_ARCHIVE_SHA256 = (
     "acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174"
 )
 VIDEO_ORIGINAL_SHA256 = (
     "f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9"
+)
+VIDEO_PATCHED_SHA256 = (
+    "a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d"
 )
 ALLOWED_EXE_SHA256 = (
     "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75"
@@ -95,6 +104,8 @@ def insert_disabled_messages(source: bytes) -> bytes:
         result = result.replace(old, new)
     if result.count(b"mail (10000, HVA)") != 1 or result.count(b"mail (10000, IVA)") != 3:
         raise RofError("post-edit GOS message count mismatch")
+    if sha256(result) != VIDEO_PATCHED_SHA256:
+        raise RofError("post-edit VIDEO.SCRIPT hash mismatch")
     return result
 
 
@@ -217,15 +228,22 @@ def restore(original: Path):
     backup = original.with_name(original.name + BACKUP_SUFFIX)
     if not backup.is_file() or backup.is_symlink():
         raise RofError(f"original overlay backup missing: {backup}")
-    patch = RofArchive(original.read_bytes())
+    current_bytes = original.read_bytes()
+    backed_bytes = backup.read_bytes()
+    old = RofArchive(backed_bytes)
+    if set(old.members) != {PATCH_AIRFRAME}:
+        raise RofError("backup is not the original one-member overlay")
+    if current_bytes == backed_bytes:
+        # Backup was created but the patch was never swapped in.
+        backup.unlink()
+        print("Original patch overlay was already intact; stale backup cleaned up")
+        return
+    patch = RofArchive(current_bytes)
     if set(patch.members) != {PATCH_AIRFRAME, BASE_VIDEO}:
         raise RofError("current overlay is not the expected two-member experiment")
     current_video = patch.read(BASE_VIDEO)
-    if not current_video or b"mail (10000, HVA)" not in current_video:
-        raise RofError("current overlay is not the expected disabled-widget experiment")
-    old = RofArchive(backup.read_bytes())
-    if set(old.members) != {PATCH_AIRFRAME}:
-        raise RofError("backup is not the original one-member overlay")
+    if current_video is None or sha256(current_video) != VIDEO_PATCHED_SHA256:
+        raise RofError("current VIDEO.SCRIPT is not this exact experiment; refusing restore")
     if old.read(PATCH_AIRFRAME) != patch.read(PATCH_AIRFRAME):
         raise RofError("AIRFRAME content changed; refusing unsafe restoration")
     os.replace(backup, original)
@@ -257,6 +275,12 @@ def self_test():
         overlay = root / "crimptch.rof"
         overlay.write_bytes(write_rof({PATCH_AIRFRAME: b"original-airframe"}))
         pristine = overlay.read_bytes()
+        # Test the backup-only interrupted-install recovery separately.
+        from_preview_backup = root / ("crimptch.rof" + BACKUP_SUFFIX)
+        atomic_write_new(from_preview_backup, pristine)
+        restore(overlay)
+        assert overlay.read_bytes() == pristine
+        assert not from_preview_backup.exists()
         installed = write_rof({
             PATCH_AIRFRAME: b"original-airframe",
             BASE_VIDEO: b"mail (10000, HVA)",
@@ -264,9 +288,16 @@ def self_test():
         install(overlay, installed)
         assert overlay.read_bytes() == installed
         assert (root / ("crimptch.rof" + BACKUP_SUFFIX)).read_bytes() == pristine
-        restore(overlay)
+        try:
+            restore(overlay)
+        except RofError:
+            pass
+        else:
+            raise AssertionError("restore must reject a synthetic non-owner script")
+        assert overlay.read_bytes() == installed
+        # Only the self-test returns its synthetic preview to pristine bytes.
+        os.replace(root / ("crimptch.rof" + BACKUP_SUFFIX), overlay)
         assert overlay.read_bytes() == pristine
-        assert not (root / ("crimptch.rof" + BACKUP_SUFFIX)).exists()
     print("GOS Video patch overlay synthetic self-test passed")
 
 
