@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only inventory of Crimson Skies external GameOS .script files.
+r"""Read-only inventory of Crimson Skies external GameOS .script files.
 
 The exact v1.02 executable constructs assets\scripts\<name>.script,
 including Preferences and MainMenu. These bytecode assets are NOT
