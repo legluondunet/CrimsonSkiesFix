@@ -134,7 +134,8 @@ def write_rof(members: dict[str, bytes]) -> bytes:
                 kind = 1
             else:
                 offset = len(output)
-                encoded = zlib.compress(value, level=6)
+                # Original ROF payloads typically use zlib's fast 0x78 0x01 stream.
+                encoded = zlib.compress(value, level=1)
                 decoded, stored = len(value), len(encoded)
                 kind = 2
                 output.extend(encoded)
