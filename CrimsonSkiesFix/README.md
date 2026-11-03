@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.87 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.88 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -6,6 +6,24 @@ speed and borderless still require live validation. This PR does
 not modify the original game executable.
 
 
+
+## v0.1.88 — keep native Resolution label across GOS page refreshes
+
+The owner's v0.1.87 log confirms the 1920x1080 Resolution label and
+the intact MainMenu watermark. It also exposes an edge case: after a
+Campaign-art frame reappears, the original game may request the
+`uiData(0x845)` Resolution string again while the Preferences data
+transaction remains active. The separate branding visibility hint was
+already cleared, causing the string formatter to fall back silently
+to the original `640x480`.
+
+The exact in-memory `0x0040CF31` Resolution-only formatter is now gated
+by the verified GOS Preferences **data transaction**, native-mode
+configuration and 4:3 legacy UI, without requiring the transient
+Campaign-art visibility hint. No original GOS list count, selection
+index, widget, executable, DirectDraw setting or framebuffer changes.
+Tests cover all remaining guard requirements. **This 0.1.88 refresh
+behaviour still requires a new owner Wine/Windows on-screen test.**
 
 ## v0.1.87 — confirmed Graphics list ownership (not a UI disable fix)
 
