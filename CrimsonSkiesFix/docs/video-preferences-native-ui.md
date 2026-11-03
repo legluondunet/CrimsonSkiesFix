@@ -620,7 +620,11 @@ explicitly supersedes the earlier inference that we needed loose
 Publicly documented installed archive:
 - `crimson.rof`: 846 resource files in 21 directories (about 57 MiB);
   61 original `.SCRIPT` resources
-- `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`: GOS behavior of Preferences
+- `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`: GOS Preferences landing page
+- `ASSETS/SCRIPTS/VIDEO.SCRIPT`: **actual** Video Preferences controls;
+  original dropdown keys `VP_D_Device` (Graphics) and
+  `VP_D_Display` (Resolution), as documented in CSVM's
+  menu inventory (https://github.com/Laeresh/CSVM/blob/main/docs/org/menu-inventory.md)
 - `ASSETS/LAYOUT.CSV`: original widget layout, including the type
   `D` dropdown, bounds, order and artwork
 - `ASSETS/SCRIPTS/MAINMENU.SCRIPT` and `SCRIPTLOADER.SCRIPT`:
