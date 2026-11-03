@@ -25,6 +25,8 @@ jobs:
         run: python tools/inspect_gos_scripts.py --self-test
       - name: Read-only ROF UI archive inspector self-test
         run: python tools/inspect_gos_rof.py --self-test
+      - name: Reversible native GOS disabled-widget overlay self-test
+        run: python tools/patch_gos_video_overlay.py --self-test
       - name: Install Rust i686 MSVC target
         run: rustup target add i686-pc-windows-msvc
       - name: Unit tests in 32-bit mode
