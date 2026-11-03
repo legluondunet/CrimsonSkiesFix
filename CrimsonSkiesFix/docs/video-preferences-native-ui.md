@@ -731,3 +731,89 @@ guards, and version signature are untouched. PR #9 is
 still draft/unmerged.
 
 legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Original @ctl@PM disabled state proven; optional reversible ROF trial (Nov 3, 2026)
+
+The owner has supplied `gos-ui-controls.zip` extracted from the same
+authenticated `crimson.rof`. The GOS originals allow unambiguous
+interpretation of the previously unknown message codes:
+
+- `CTL.SCRIPT` SHA-256
+  `8ca5a9439a2c22cb63fca166f6f6403e08b62dc30626bd32096c772d546ecb95`:
+  original `PM` class lines 1571-1581 implement `10000` by
+  zeroing the dropdown's `region` and forwarding `10000` to
+  both arrow buttons (`ZM`/`AN`) and its displayed-value
+  object (`YM`). The reverse `10018` restores its region and
+  forwards the enable message to those children.
+- `SHAREDITEMS.SCRIPT` SHA-256
+  `2a2f728ea68cf64edf45424d953fdbd3cfa456b663193c507b4fa1c72f2595d5`:
+  original `XTA` class, which `VIDEO.SCRIPT` selects as the
+  displayed-value child via `HVA.WM`/`IVA.WM`, sets
+  `KF` and `HD` to 0xff808080 on `10000`. This is the
+  native grey text/outline without hiding the selected value.
+- `VIDEO.SCRIPT` binds `HVA` to `vp_d_device` and `IVA` to
+  `vp_d_display`; five other sibling dropdowns remain
+  independent, as does Apply/Cancel. Native 10000 is therefore
+  the correct visual+input state, **not** a fake count or
+  mouse-hitbox overlay.
+
+### Experimental implementation
+
+`tools/patch_gos_video_overlay.py` is a standalone opt-in
+**resource-override experiment**, not a DLL runtime change.
+It requires the sibling read-only `inspect_gos_rof.py`.
+
+The game uses the small `GOSDATA/ASSETS/crimptch.rof` as an
+overlay atop `crimson.rof`. We rebuild a new two-member
+patch overlay in memory containing:
+
+1. The original patch's `AIRFRAME.SCRIPT` (decompressed
+   bytes preserved exactly).
+2. The owner's original `VIDEO.SCRIPT` with four added
+   `mail (10000, ...)` commands immediately after:
+   one `initialize(HVA)` and all three occurrences of
+   `initialize(IVA)`. This reapplies disabled state even if
+   the engine regenerates the Resolution dropdown.
+
+Only those two controls are mailed; no other Video controls
+or mode tables are touched. A test against the owner-supplied
+original script bytes confirmed an input length of 4,337,
+patched output 4,413 bytes, and SHA-256
+`a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d`.
+
+Safety checks:
+- exact allowed unwrapped executable SHA-256 and size;
+- exact owner-confirmed original `crimson.rof` SHA-256;
+- exact 4,337-byte `VIDEO.SCRIPT` SHA-256;
+- original patch archive must contain **only**
+  `ASSETS/SCRIPTS/AIRFRAME.SCRIPT`;
+- archive reader enforces names, offsets, node cycles,
+  decompression limits; the writer round-trips every member;
+- `--preview` creates a new .rof file OUTSIDE the installed
+  patch (no game changes), refusing overwrites;
+- `--install` requires explicit opt-in, preserves an
+  exclusive backup with suffix
+  `.CrimsonSkiesFix.original.bak`, then atomically swaps
+  the small overlay only;
+- `--restore` recognizes the two-member experiment and
+  restores the untouched original overlay from backup;
+- no original proprietary script is stored in the repo,
+  only a transformation procedure for user-owned assets.
+
+Example (from the repository root):
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --preview video-disabled-preview.rof`
+
+Optional owner runtime test after reviewing preview:
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --install`
+
+Rollback:
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --restore`
+
+**Important limitations:** this is a separate opt-in on-disk
+resource overlay prototype, NOT yet integrated into ddraw.dll.
+No runtime test proves the game applies the expanded overlay,
+nor that the two selectors stay grey after all menu
+transitions. Keep PR #9 draft; do not merge without tests.
+
+legluondunet assisted by ChatGPT (OpenAI)
