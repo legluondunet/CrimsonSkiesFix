@@ -378,3 +378,65 @@ for `0x843`/`0x844`, bounded and gated by the original x86 instruction
 preimages. No table entries, new pointers, or game widgets are modified.
 No claim of disabled Graphics/Resolution controls. Do not merge until
 list/widget correlation and UI input semantics are known.
+
+
+## v0.1.87 owner log — Graphics list resolved (3 November 2026)
+
+The owner-supplied `CrimsonSkiesFix(20261103-180305).log`
+confirms GOS Preferences > Video activity with:
+
+- `uiData(0x844)`: count request `0xFFFFFFFF` returns **2**,
+  followed by label indices **0 and 1**.
+- `uiData(0x845)`: count request returns **1**, label index 0
+  originally formats **640x480**, and the narrow formatter hook
+  substitutes **1920x1080** for the visible text.
+- `uiData(0x843)`: **not observed** in the Video Preferences
+  transaction.
+- Original GOS command **15** is invoked with arguments 0 and 1;
+  both were blocked by the existing native-mode backend guard,
+  leaving the saved mode index at 0.
+- The original MainMenu watermark was recomposited and presented
+  after the Preferences navigation, with `reentry=1` and `reentry=2`.
+
+### Exact supported EXE establishes 0x844 is the Graphics *list*
+
+Original EXE SHA-256:
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
+
+The genuine device enumeration routine at `0x00418D30` initializes
+the **active** device count `[0x0064B494]` to zero
+(`0x00418E03`) and increments it while enumerating the display
+device names (`0x00418E28`, `0x00418E56`). These names begin at
+`0x0064B4BC`, with **97-byte records**. On command 13 the game's
+own `REP MOVSD` at `0x004077B6–0x004077C5` copies 0x81 DWORDs
+from active settings at `0x0064B450` to pending settings at
+`0x00648330`. Hence:
+
+| Property | Active address | Pending address | Offset |
+|---|---|---|---|
+| Selected Graphics device | `0x64B490` | `0x648370` | `+0x40` |
+| **Graphics list count** | `0x64B494` | `0x648374` | `+0x44` |
+| **Graphics text table** | `0x64B4BC` | `0x64839C` | `+0x6C` |
+| Selected Resolution index | `0x64B48C` | `0x64836C` | `+0x3C` |
+
+The `uiData(0x844)` handler at `0x0040CF58` reads the
+**pending Graphics count** from `0x648374` on the `-1` sentinel
+and formats a string from
+`0x64839C + index*97` with original resource `0x209`.
+This is direct, independent proof that **0x844 owns the underlying
+Graphics-device list**; 0x845 remains the Resolution list. The
+`gosCallback` command-15 call at `0x00407811` invokes `0x419420`,
+which invokes `0x418FB0` to regenerate the original resolution
+mode table for a supplied Graphics-device argument.
+
+**Crucial distinction:** identifying the Graphics list **does not
+locate the custom GOS UI widget object or its enable/disable
+attribute**. Thus 0x844 and 0x845 must not be replaced with
+fake counts or edited indices merely to disable dropdowns.
+The existing 0.1.87 fixes remain functional. The next research
+target is the actual GOS widget instance, not a synthetic Win32
+ComboBox, since no native ComboBoxes are created.
+
+Updated read-only diagnostics now identify 0x844 as
+`list=graphics-devices`; the Graphics/Resolution selectors are
+still visually clickable. No new user-facing behaviour is claimed.
