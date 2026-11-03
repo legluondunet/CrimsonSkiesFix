@@ -7,6 +7,37 @@ not modify the original game executable.
 
 
 
+## Video dropdowns confirmed from owner's original script — next control-class test
+
+The owner extracted the original `Video.script` and `LAYOUT.CSV`
+from `GOSDATA/ASSETS/crimson.rof`. The mapping is now independently
+confirmed at both script and layout level:
+
+| Menu setting | GOS object | Widget key | List handler |
+|---|---|---|---|
+| Graphics | `HVA` (`@ctl@PM`) | `vp_d_device` | `2116` / `0x844` |
+| Resolution | `IVA` (`@ctl@PM`) | `vp_d_display` | `2117` / `0x845` |
+
+The original `Video.script` also sends `10000` or `10018`
+to the Lighting dropdown `LVA`. These are clues, **not proven
+disable commands**; sending an unverified event to HVA/IVA could
+break focus or other options.
+
+To decode original `@ctl@PM` message semantics, the same
+read-only `tools/inspect_gos_rof.py` now includes its original
+`CTL.SCRIPT`, `SHAREDITEMS.SCRIPT`, `GLOBALS.SCRIPT` dependencies
+and comparison scripts. Use a **new** output filename so the
+previous review remains intact:
+
+```sh
+python3 inspect_gos_rof.py "/path/to/Crimson Skies" --bundle gos-ui-controls.zip
+```
+
+Send the resulting small `gos-ui-controls.zip` for the
+next analysis step. There is no game archive edit or new
+runtime behavior in this preparatory change. The release
+baseline remains the owner-validated 0.1.88 DLL.
+
 ## GOS menu resources located: crimson.rof (owner v2 inventory)
 
 **Resolved:** the owner's v2 scan proved the game installation is present
