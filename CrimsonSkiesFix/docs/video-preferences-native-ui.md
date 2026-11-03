@@ -595,3 +595,60 @@ disable the visual selectors until reliable evidence links them
 to the exact two GOS object instances.
 
 The validated v0.1.88 DLL code and installed game EXE are unchanged.
+
+
+## Definitive UI archive discovery — ROF, not ZBD (3 November 2026)
+
+The owner's `gos-scripts-layout-v2.json` scanned the true game
+directory (`game_root_executable_detected=true`), with 259 files,
+73 directories, 184 ZBD archives and **two .rof archives**, but no
+loose .script files. This was not a missing installation or an
+erroneous working directory.
+
+An independently developed Crimson Skies engine reconstruction
+documents and parses the retail GameOS resource archive:
+https://github.com/Laeresh/CSVM/blob/main/docs/formats/rof.md
+https://github.com/Laeresh/CSVM/blob/main/docs/formats/menu-layout.md
+
+**Corrected conclusion:** the UI files are indeed present, but
+packaged inside **GOSDATA/ASSETS/crimson.rof**. The script-loader's
+`assets\scripts\Preferences.script` path is a logical resource path,
+not evidence that such a physical loose file must exist. This
+explicitly supersedes the earlier inference that we needed loose
+`Assets/Scripts/*.script` files or should search all the ZBD files.
+
+Publicly documented installed archive:
+- `crimson.rof`: 846 resource files in 21 directories (about 57 MiB);
+  61 original `.SCRIPT` resources
+- `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`: GOS behavior of Preferences
+- `ASSETS/LAYOUT.CSV`: original widget layout, including the type
+  `D` dropdown, bounds, order and artwork
+- `ASSETS/SCRIPTS/MAINMENU.SCRIPT` and `SCRIPTLOADER.SCRIPT`:
+  useful adjacent GOS UI behavior for navigation
+- `crimptch.rof`: one `AIRFRAME.SCRIPT` override, not relevant
+  to the Graphics and Resolution selectors in Preferences
+
+A new standalone, original Python 3 helper,
+`tools/inspect_gos_rof.py`, reads the ROF directory structure
+only, validates node names, offsets, file sizes, depth and cycles;
+it decompresses **only the selected UI files** using bounded zlib
+and writes one new (never-overwritten) ZIP. It does not overwrite
+the ROF, executable, DLL or game configuration.
+
+From a checkout of CrimsonSkiesFix:
+
+`python3 CrimsonSkiesFix/tools/inspect_gos_rof.py "/path/to/Crimson Skies" --bundle gos-ui-review.zip`
+
+The ZIP is expected to hold `Preferences.script`, `LAYOUT.CSV`,
+`gos-rof-report.json` and, if present, `MainMenu.script` and
+`ScriptLoader.script`. The script offers `--self-test` against
+synthetic data; Windows x86 CI runs that test.
+
+**Next step:** inspect the actual extracted `Preferences.script`
+and the `[@Preferences@]` section of `LAYOUT.CSV` to identify the
+specific native `@ctl@PM` dropdown objects for Graphics and
+Resolution, then determine their real enable/disable behavior.
+Merely identifying the script widget IDs is not proof of a safe
+disable API. Do not patch GOS code or spoof original mode table
+counts on an assumption; no change to the validated 0.1.88
+runtime is committed yet.
