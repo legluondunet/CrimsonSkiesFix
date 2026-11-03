@@ -440,3 +440,37 @@ ComboBox, since no native ComboBoxes are created.
 Updated read-only diagnostics now identify 0x844 as
 `list=graphics-devices`; the Graphics/Resolution selectors are
 still visually clickable. No new user-facing behaviour is claimed.
+
+
+## v0.1.88 — close observed label-refresh gap (unverified runtime)
+
+In the owner's 0.1.87 log, the GOS Resolution formatter initially
+emits `native label=1920x1080`, but an additional native 0x845
+label request is made **after**
+`MENU-BRANDING: Campaign artwork verified; stale GOS Preferences
+visibility hint cleared`. At that point the label formatter does
+not emit its native replacement; the UI-list diagnostic still
+reports the unchanged original `640x480`. This is evidence of a
+**potential** visible fallback on a nested page refresh, not proof
+that 640x480 was actually visible on screen.
+
+The 0.1.88 fix removes the Campaign-art *branding visibility hint*
+from the exact **text-only** formatter's eligibility, while retaining
+every other gate: authenticated executable, native adapter and
+desktop-resolution configuration, MainMenu seen, 4:3 legacy UI,
+and original GOS Preferences data transaction active.
+
+Command 13 owns the data-transaction flag; unlike the transient
+artwork hint, it is not cleared by `on_main_menu_art_verified`.
+Only the original `uiData(0x845)` formatting CALL at 0x0040CF31
+is affected; the original mode table, mode and device index,
+script object state, output buffer ownership, and branding renderer
+remain unchanged.
+
+Regression test expectation: after opening Video Preferences,
+switching/toggling the Graphics and Resolution lists and navigating
+out/back, every in-transaction 0x845 label request should log
+native `1920x1080`. The actual on-screen presentation must still
+be confirmed by the owner. If the transaction has legitimately
+ended, original text can be generated into non-visible scripts
+without overwriting any visible native label.
