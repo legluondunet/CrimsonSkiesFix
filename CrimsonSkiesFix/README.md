@@ -7,7 +7,58 @@ not modify the original game executable.
 
 
 
-## Experimental native GOS dropdown lock (owner opt-in, not part of DLL)
+## CrimsonSkiesFix 0.1.89 — native GOS Video selector integration (experimental)
+
+The owner confirmed that GameOS's **native disabled state** works under
+Wine/GE-Proton: `mail(10000, HVA)` on Graphics and `mail(10000, IVA)`
+on Resolution greys both original dropdowns and prevents interaction.
+
+The 0.1.89 DLL now includes a native Rust implementation that
+**automatically constructs this GOS overlay from the user's own
+original game assets**, avoiding Python or a separate patching utility.
+It does not bundle original game scripts or touch the EXE or main
+`crimson.rof` archive. The early-DirectDraw initialization timing has
+**not yet been tested with an unpatched owner install**, so the
+integration is experimental and opt-in.
+
+In the existing `CrimsonSkiesFix/CrimsonSkiesFix.ini`:
+
+```ini
+[Graphics]
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+DesktopResolution=1
+GosVideoLock=on
+```
+
+- `off` (default): no resource changes, no restore; a previously
+  applied overlay remains in place
+- `on`: strict validation of the exact EXE, original 60,236,221-byte
+  `crimson.rof`, original `VIDEO.SCRIPT` and current patch overlay.
+  Only `GOSDATA/ASSETS/crimptch.rof` is updated, with exclusive backup
+  `crimptch.rof.CrimsonSkiesFix.original.bak`
+- `restore`: restores the exact original backed-up overlay on the
+  next launch, if the installed patch is recognized. **After this
+  launch**, change the option back to `off` or `on`
+
+The known-good manually patched overlay is detected and left untouched
+by `on`; the original backup is never overwritten. An unknown
+overlay, missing backup, SHA-256 mismatch or filesystem error fails
+closed and is reported in `CrimsonSkiesFix.log` when `Log=1`.
+No installation operations run from `DllMain`. When the setting
+is `off`, there is no ROF file I/O.
+
+**Important:** removing the DLL or setting `off` does *not*
+automatically undo the installed ROF patch. Use `restore` before
+uninstalling or to return to the original game's video selectors.
+No restoration is attempted on normal exit or a crash.
+
+The first-launch path still needs the owner's runtime test; CI cannot
+prove whether the archive loads before the first DirectDraw export.
+Keep the PR **draft** until this runtime test is completed.
+
+
+## Experimental native GOS dropdown lock (historical Python prototype)
 
 Analysis of the owner-supplied \`CTL.SCRIPT\` and
 \`SHAREDITEMS.SCRIPT\` proves the original dropdown \`@ctl@PM\`
@@ -43,7 +94,7 @@ python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
 \`\`\`
 
 This experiment tests the original engine's native disabled state.
-It is **not yet implemented as an automatic in-memory DLL change**,
+This **historical Python prototype** is separate from the native 0.1.89 DLL integration above,
 and has not yet been tested in the owner's running game. Therefore
 keep PR #9 in draft and don't merge before owner validation. The
 v0.1.88 DLL baseline remains unchanged.
