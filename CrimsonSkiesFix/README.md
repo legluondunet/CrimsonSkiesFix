@@ -7,13 +7,21 @@ not modify the original game executable.
 
 
 
-## v0.1.87 — read-only Graphics list identification (not a UI fix)
+## v0.1.87 — confirmed Graphics list ownership (not a UI disable fix)
 
-Further disassembly of the one SHA-256-verified EXE identifies two
-additional GOS list handlers: `uiData(0x843)` traverses the original
-360-byte device-record table and takes its count from `0x0064AB3C`;
-`uiData(0x844)` reads an additional list count from `0x00648374`.
-Neither handler is **proven** to be the visible Graphics selector.
+The owner's 2026-11-03 Wine log shows the GOS `0x844` list
+returning **2 Graphics entries** (indices 0 and 1), whereas the
+`0x845` Resolution list returns 1 entry. Comparison with the original
+exact SHA-256-verified 1.02 executable establishes that 0x844
+returns the actual **Graphics-device list**: the enumeration routine
+initializes and increments active device count `0x64B494`, copies
+a 97-byte-per-item display-name array starting at `0x64B4BC`, and
+GOS command 13 copies active video settings to pending. The
+`0x844` handler reads their matching pending addresses
+`0x648374` and `0x64839C + index*97` (resource `0x209`).
+`uiData(0x843)` is a separate 360-byte device-record list not
+observed on this page. The identity of the *specific custom UI widget
+instance* and the API to disable it visually remain unverified.
 
 In debug-log mode only, the existing exact-script callback now observes
 the original count sentinel, returned list count and label-request index
