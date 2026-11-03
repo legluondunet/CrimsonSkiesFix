@@ -48,10 +48,13 @@ pub(crate) fn guard_enabled()->bool{
 /// ECX even though the gosCallback dispatcher sets a game-object value.
 unsafe extern "system" fn observe_mode_request(value:u32){
     let before=ptr::read_volatile(SELECTED_MODE as *const u32);
-    // Command 15 originates from the game's resolution selector.
-    // Returning without calling the handler keeps the original mode index
-    // and the caller's subsequent mode-table copy internally consistent.
-    // This does not yet grey out the custom UI list itself.
+    // Command 15 invokes the game's 0x419420 routine. It passes the
+    // chosen graphics-device argument to 0x418FB0, which rebuilds the
+    // original resolution-mode list and selected mode index. The
+    // owner-tested 0x844 Graphics list contains two choices.
+    // Returning without calling this handler preserves the original
+    // resolution index and the subsequent mode-table copy, but does
+    // NOT grey out the GOS Graphics/Resolution widgets.
     let blocked=guard_enabled();
     if !blocked {
         let original:unsafe extern "system" fn(u32)=std::mem::transmute(ORIGINAL_TARGET);
