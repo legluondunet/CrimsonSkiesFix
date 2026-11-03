@@ -4,6 +4,13 @@
 [Graphics]
 Borderless=1
 DesktopResolution=1
+; Native GOS Video dropdown lock, requires ExperimentalWindowedAdapter=1,
+; Native3DWidescreen=1 and DesktopResolution=1.
+; off = no file changes; on = verify and automatically patch only
+; GOSDATA/ASSETS/crimptch.rof, saving an original .bak.
+; restore = restore backed-up original archive at next game launch.
+; Experimental until first-launch timing is owner-verified under Wine/Windows.
+GosVideoLock=off
 FPSLimit=60
 ; Experimental: throttle only primary modern Flip; not Blt or Unlock.
 ; Leave at 0 until a diagnostic log confirms the desired rendering path.
