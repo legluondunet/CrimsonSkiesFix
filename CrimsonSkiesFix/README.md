@@ -7,6 +7,31 @@ not modify the original game executable.
 
 
 
+## GOS menu resources located: crimson.rof (owner v2 inventory)
+
+**Resolved:** the owner's v2 scan proved the game installation is present
+(259 files, 73 directories, 184 ZBD, 2 ROF) but contains no *loose*
+scripts. The UI resources are inside `GOSDATA/ASSETS/crimson.rof`,
+as independently documented by the
+[CSVM ROF study](https://github.com/Laeresh/CSVM/blob/main/docs/formats/rof.md).
+It contains the original `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`
+and `ASSETS/LAYOUT.CSV`, where the actual Graphics and
+Resolution dropdown object keys and bounds are authored.
+
+The new dependency-free `tools/inspect_gos_rof.py` reads the ROF
+directory and safely decompresses **only** the UI source files into
+one new ZIP (it never modifies archives, the game or the validated DLL):
+
+```bash
+python3 CrimsonSkiesFix/tools/inspect_gos_rof.py "/path/to/Crimson Skies" --bundle gos-ui-review.zip
+```
+
+Run the command from the repository root, or adjust the script's path.
+Send the resulting `gos-ui-review.zip` for targeted original-GOS
+widget research. The earlier `inspect_gos_scripts.py` v2 remains
+available for loose-file/layout diagnostics but is no longer needed
+for this investigation. No UI selector is visually disabled yet.
+
 ## After owner v1 script scan returned zero files — inspect game layout
 
 The owner-supplied `gos-scripts-report.json` reports `script_count=0`
