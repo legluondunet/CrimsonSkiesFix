@@ -14,7 +14,8 @@ not modify the original game executable.
 scripts. The UI resources are inside `GOSDATA/ASSETS/crimson.rof`,
 as independently documented by the
 [CSVM ROF study](https://github.com/Laeresh/CSVM/blob/main/docs/formats/rof.md).
-It contains the original `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`
+It contains the original `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`,
+`ASSETS/SCRIPTS/VIDEO.SCRIPT` (the actual Video panel),
 and `ASSETS/LAYOUT.CSV`, where the actual Graphics and
 Resolution dropdown object keys and bounds are authored.
 
