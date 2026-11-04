@@ -1,19 +1,18 @@
 //! Experimental game-owned DirectDraw4 windowed resource adapter.
-//! Exact path: opt-in IDirectDraw4 cooperative -> mode -> virtual Surface4 chain.
+//! Exact path: verified IDirectDraw4 cooperative -> mode -> virtual Surface4 chain.
 //! All native objects are created on the GAME's own DD4, not a probe DD4.
 //! Never pretend a native HAL device was created: D3D3 receives native Surface4.
 //!
 //! This is intentionally an early in-game integration build. The game may use
-//! unsupported COM methods, QI versions or window transitions. Opt-in only.
+//! unsupported COM methods, QI versions or window transitions. Default-on for the accepted EXE.
 use std::{ffi::c_void,ptr,sync::Mutex};
 use crate::{
     Hr,Guid,Hwnd,log,win32,
     borderless_contract::{AdapterContract,BackendEvidence,RenderTarget,SurfaceRole},
-    presentation::{self,Mode,Chain},
-    borderless_flip::{self,WindowedBlt},
+    presentation::{Mode,Chain},
+    borderless_flip,
     borderless_native_blt::NativeWindowedBlt,
     com_surface4_forward,
-    com_surface4_abi::{Surface4VTable,SurfaceThis},
 };
 
 const E_FAIL:Hr=0x8000_4005u32 as i32;
