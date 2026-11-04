@@ -15,6 +15,7 @@ mod menu_ui_pages;
 mod menu_brand;
 mod win32;
 mod com_vtable;
+mod com_labels;
 mod frame_pacing;
 mod render_sampling;
 mod window_exposure;
@@ -39,6 +40,7 @@ mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
 use com_vtable::{method,orig,replace_method};
+use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
 use frame_pacing::pace_frame;
 use render_sampling::sample_render_calls;
 fn color_probe_enabled()->bool{
@@ -89,14 +91,6 @@ type D3D3GetRenderTargetFn=unsafe extern "system" fn(*mut c_void,*mut *mut c_voi
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct Guid {d1:u32,d2:u16,d3:u16,d4:[u8;8]}
-fn guid_label(iid:*const Guid)->String {
-    if iid.is_null(){return "NULL".to_string();}
-    let g=unsafe{&*iid};
-    format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        g.d1,g.d2,g.d3,g.d4[0],g.d4[1],g.d4[2],g.d4[3],
-        g.d4[4],g.d4[5],g.d4[6],g.d4[7])
-}
-
 const S_OK:Hr=0;
 const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
 const DDSCL_NORMAL:u32=0x0000_0008;
@@ -358,28 +352,6 @@ unsafe fn modern_surface_primary(this:*mut c_void)->Option<bool> {
     modern_surface_caps(this).map(|caps|caps&DDSCAPS_PRIMARYSURFACE!=0)
 }
 
-// IID matching is deliberately exhaustive rather than assuming a vtable
-// layout from the major GUID prefix. Definitions come from Wine's ddraw.h.
-fn ddraw_iface(iid:*const Guid)->Option<&'static str> {
-    let name=guid_label(iid);
-    match name.as_str() {
-        "b3a6f3e0-2b43-11cf-a2de-00aa00b93356"=>Some("IDirectDraw2"),
-        "9c59509a-39bd-11d1-8c4a-00c04fd930c5"=>Some("IDirectDraw4"),
-        "15e65ec0-3b9c-11d2-b92f-00609797ea5b"=>Some("IDirectDraw7"),
-        _=>None,
-    }
-}
-fn surface_iface(iid:*const Guid)->Option<&'static str> {
-    let name=guid_label(iid);
-    match name.as_str() {
-        "57805885-6eec-11cf-9441-a82303c10e27"=>Some("IDirectDrawSurface2"),
-        "da044e00-69b2-11d0-a1d5-00aa00b8dfbb"=>Some("IDirectDrawSurface3"),
-        "0b2b8630-ad35-11d0-8ea6-00609797ea5b"=>Some("IDirectDrawSurface4"),
-        "06675a80-3b9b-11d2-b92f-00609797ea5b"=>Some("IDirectDrawSurface7"),
-        _=>None,
-    }
-}
-
 unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
@@ -526,36 +498,6 @@ unsafe fn probe_modern_surface_layout(surface:*mut c_void,reason:&str) {
 
 // Named status based entirely on the public DirectDraw DDSCAPS flags.
 // We deliberately do not log raw COM pointer addresses or identifiers.
-fn surface_roles(caps:u32)->String {
-    let mut roles=Vec::new();
-    if caps&DDSCAPS_PRIMARYSURFACE!=0{roles.push("primary");}
-    if caps&DDSCAPS_BACKBUFFER!=0{roles.push("backbuffer");}
-    if caps&DDSCAPS_FLIP!=0{roles.push("flip-chain");}
-    if caps&DDSCAPS_COMPLEX!=0{roles.push("complex");}
-    if caps&presentation::ZBUFFER!=0{roles.push("z-buffer");}
-    if caps&presentation::TEXTURE!=0{roles.push("texture");}
-    if caps&presentation::MIPMAP!=0{roles.push("mipmap");}
-    if roles.is_empty(){"other".into()}else{roles.join("+")}
-}
-
-fn describe_surface_layout(desc:*const c_void)->String{
-    if desc.is_null(){return "NULL descriptor".into();}
-    unsafe{
-        // The first 16 bytes are common to DDSURFACEDESC and DDSURFACEDESC2:
-        // dwSize, dwFlags, dwHeight and dwWidth. No pixels are inspected.
-        let words=desc as *const u32;
-        let size=*words;
-        if size!=108 && size!=124{return format!("unsupported_descriptor_size={size}");}
-        let flags=*words.add(1);
-        let h=*words.add(2);
-        let w=*words.add(3);
-        let dims=if flags&0x6==0x6{
-            format!("{w}x{h}")
-        }else{"unspecified".into()};
-        format!("desc_size={size} flags={flags:#x} dimensions={dims}")
-    }
-}
-
 // Final preflight only: this never changes the DirectDraw cooperative
 // mode, surfaces, HWND or desktop. Until an actual adapter implements
 // virtualized front/back/Z surfaces, log the safe 4:3 viewport as a plan.
@@ -1026,10 +968,6 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
 
 // Crimson Skies' IDirectDraw4::QueryInterface successfully requests
 // IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
-fn is_d3d3_iid(iid:*const Guid)->bool {
-    guid_label(iid)=="bb223240-e72b-11d0-a9b4-00aa00c0993e"
-}
-
 // The attached device's legacy Direct3D3 interface is traced only after
 // the original CreateDevice succeeds. The genuine device and surfaces
 // are still owned by the game: no replacement objects or AddRef/Release.
