@@ -1595,12 +1595,10 @@ mod tests{
             let worker=thread::spawn(move ||{
                 let p=primary_addr as SurfaceThis;
                 let b=back_addr as SurfaceThis;
-                unsafe {
-                    let v=&**p.cast::<*const Surface4VTable>();
-                    let hr=(v.flip)(p,b,0);
-                    let remaining=(v.release)(p);
-                    (hr,remaining)
-                }
+                let v=&**p.cast::<*const Surface4VTable>();
+                let hr=(v.flip)(p,b,0);
+                let remaining=(v.release)(p);
+                (hr,remaining)
             });
             let deadline=Instant::now()+Duration::from_secs(5);
             while phys[0].blts.load(Ordering::SeqCst)==0 &&
