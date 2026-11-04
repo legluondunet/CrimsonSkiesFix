@@ -35,6 +35,14 @@ LegacyOffscreenRGB565=1
 ; Wine/GE-Proton owner tests passed; Windows gameplay test deferred.
 GosVideoLock=on
 
+[Compatibility]
+; Enabled by default under Wine only, for the exact verified ROFFILE.DLL SHA-256.
+; Pads native INI text allocations with two NUL bytes to avoid a crash at
+; roffile+0x22e0. Changes memory only, never the DLL on disk.
+; Requires ROFFILE to be loaded before the next DirectDraw render hook.
+; Set to 0 to opt out; never installed on native Windows.
+RoffileTerminatorFix=1
+
 [Debug]
 ; Ordinary logging disabled by default; EXE admission failures still logged.
 ; Some experimental adapter diagnostics may also be logged automatically.

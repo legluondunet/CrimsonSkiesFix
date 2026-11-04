@@ -21,6 +21,10 @@ pub const DEFAULT_INI: &str = concat!(
     "; Native GOS Graphics/Resolution control lock (on | off | restore). On by default: writes backed-up small crimptch.rof.\n",
     "GosVideoLock=on\n",
     "\n",
+    "[Compatibility]\n",
+    "; Wine-only ROFFILE.DLL INI parser EOF guard. Enabled by default on supported DLLs.\n",
+    "RoffileTerminatorFix=1\n",
+    "\n",
     "[Debug]\n",
     "Log=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
@@ -45,6 +49,7 @@ pub struct Config {
     pub legacy_offscreen_rgb565: bool,
     pub native_3d_widescreen: bool,
     pub gos_video_lock: crate::gos_video_lock::Mode,
+    pub roffile_terminator_fix: bool,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -54,7 +59,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -77,6 +82,8 @@ pub fn parse(content: &str) -> Config {
                 "graphics"
             } else if text[1..text.len() - 1].eq_ignore_ascii_case("Debug") {
                 "debug"
+            } else if text[1..text.len() - 1].eq_ignore_ascii_case("Compatibility") {
+                "compatibility"
             } else { "" };
             continue;
         }
@@ -107,6 +114,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
+            ("compatibility", "roffileterminatorfix") =>
+                if let Some(v) = enabled(value) { settings.roffile_terminator_fix = v; },
             ("debug", "colorcapture") =>
                 if let Some(v) = enabled(value) { settings.color_capture = v; },
             ("debug", "colorprobe") =>
@@ -127,6 +136,15 @@ pub fn parse(content: &str) -> Config {
 mod tests {
     use super::*;
     #[test]
+    fn roffile_terminator_fix_is_default_on_and_compatibility_scoped() {
+        assert!(Config::default().roffile_terminator_fix);
+        assert!(parse("[Graphics]\nRoffileTerminatorFix=0").roffile_terminator_fix);
+        assert!(parse("[Debug]\nRoffileTerminatorFix=0").roffile_terminator_fix);
+        assert!(parse("[Compatibility]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+        assert!(!parse("[Compatibility]\nRoffileTerminatorFix=0").roffile_terminator_fix);
+        assert!(!parse("[Compatibility]\nRoffileTerminatorFix=1\nRoffileTerminatorFix=0").roffile_terminator_fix);
+    }
+    #[test]
     fn defaults_disable_logs() {
         assert_eq!(parse(""), Config::default());
         assert!(!parse("[Graphics]\nBorderless=1").log_enabled);
@@ -134,7 +152,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
@@ -240,6 +258,7 @@ mod tests {
         let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
         assert_eq!(parse(shipped), parse(DEFAULT_INI));
         assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(parse(shipped).roffile_terminator_fix);
         assert!(parse(shipped).experimental_windowed_adapter);
         assert!(parse(shipped).native_3d_widescreen);
         assert!(parse(shipped).legacy_offscreen_rgb565);
@@ -257,6 +276,7 @@ mod tests {
         assert!(initial.focus_repaint);
         assert!(initial.window_erase_guard);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(initial.roffile_terminator_fix);
         assert!(!initial.log_enabled);
         assert!(!initial.modern_fps_pacing);
 

@@ -46,7 +46,9 @@ Crimson Skies/
     └── README.md
 ```
 
-**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, and activates focus repaint plus the background-erase guard. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
+the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
+(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
@@ -111,6 +113,75 @@ After restoring, change the setting back to `off` (or `on` to install it again).
 
 The native install, repeat-launch idempotence and native restore have been **confirmed by the owner under Wine/GE-Proton** on 4 November 2026, with installation and restoration success messages captured in logs. This is **not** a claim of runtime validation under Windows 11.
 
+## Wine ROFFILE.DLL INI parser guard (enabled by default)
+
+A separate original-game issue can trigger an unhandled access violation at
+`roffile.dll + 0x22E0` when the native GameOS INI-text parser reads beyond
+the end of an exact-sized file allocation. This is tracked in
+[issue #10](https://github.com/legluondunet/CrimsonSkiesFix/issues/10);
+the original 32-bit ROFFILE.DLL was reverse-engineered, but the triggering
+file's exact contents have **not** yet been confirmed.
+
+The fix is **enabled by default for supported ROFFILE.DLL builds under Wine /
+GE-Proton** and is always disabled at runtime on native Windows. It was
+validated under Wine 11.0 / GE-Proton11-12 by the owner (two successful runs,
+including four real padded allocations with zero allocation failures and
+several menu/mission transitions). The precise mechanism of the historical
+Windows/Wine difference is not established.
+
+To disable the fix explicitly, change the persistent file
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`:
+
+```ini
+[Compatibility]
+RoffileTerminatorFix=0
+```
+
+Setting `RoffileTerminatorFix=0` in an **existing** INI remains respected
+after an upgrade; existing user settings are never overwritten. To enable
+diagnostic messages temporarily, set `[Debug] Log=1`.
+
+Once the game has loaded ROFFILE.DLL and reaches a hooked DirectDraw
+render call, the proxy checks that the **on-disk DLL** exactly matches the
+supported SHA-256
+`1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a`
+(135,168 bytes) and that the original code signatures are unchanged.
+Only then does it replace an **in-memory** allocation call in
+`InitIniFile`, using ROFFILE.DLL's **own allocator** for `file_size+2`
+bytes and initializing both extra bytes to NUL. Original read, parse and
+free functions remain unchanged. No game assets are modified on disk.
+
+**Limits and fail-safe behavior:** unsupported binaries and failed
+verifications are refused and logged as `ROFFILE-FIX: NOT installed`.
+Installation of a supported binary is logged as `ROFFILE-FIX: installed`.
+The diagnostic also tracks completed calls to the patched allocator using
+lock-free counters. On the **next rendering callback after actual use** it logs,
+for example:
+
+```text
+ROFFILE-FIX: allocation calls=1 padded_success=1 failures=0 last_input_size=1024; counted in cdecl hook, reported outside hook
+```
+
+`allocation calls` proves the game actually entered the patched allocation
+path, unlike the installation marker alone. `padded_success` counts completed
+`n+2` allocations, while `failures` counts unsuccessful/overflow requests.
+The reported byte count is an example, not an expected file size. The logger
+never runs from the native allocation hook, and reports are throttled.
+If no allocation count appears after installation, then use of the hook has
+**not been demonstrated** in that test. It does not mean the patch failed.
+
+A DLL loaded and parsed entirely before the next graphics callback could
+escape this opportunistic hook; an absent installation log means the fix
+was never confirmed active. The hook remains restricted to the exact supported
+ROFFILE.DLL SHA-256 and known instruction signatures. Unrecognized editions
+are not modified. Tests under native Windows and additional long Wine sessions
+remain desirable; no assumption of identical behavior on every computer
+is made.
+
+To turn the fix off on the next launch, set
+`RoffileTerminatorFix=0`. This does not require restoring any original
+game file because the patch never writes to disk.
+
 ## Logging and diagnostics
 
 Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
@@ -136,7 +207,7 @@ For original GameOS Video UI research and owner test evidence, see [Video Prefer
 
 ## Known limitations
 
-This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass, first-image RGB565 color fix, `FocusRepaint` and `WindowEraseGuard` are now **enabled by default**, but the combined fresh-install 0.1.90 defaults have not yet been runtime-validated as a whole. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
+This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass, first-image RGB565 color fix, `FocusRepaint` and `WindowEraseGuard` are now **enabled by default**, but the combined fresh-install 0.1.90 defaults have not yet been runtime-validated as a whole. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. The Wine-only ROFFILE.DLL guard is default-on only for an exact supported binary; it has been tested by the owner under GE-Proton but not under native Windows. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
 
 ## License and contribution policy
 
