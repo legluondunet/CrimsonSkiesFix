@@ -54,11 +54,47 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows x86 DLL load/export smoke failed' }
       - name: Prepare clean game directory layout
         shell: pwsh
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           New-Item -ItemType Directory -Force 'dist/CrimsonSkiesFix' | Out-Null
           Copy-Item 'target/i686-pc-windows-msvc/release/ddraw.dll' 'dist/ddraw.dll'
           Copy-Item 'CrimsonSkiesFix/CrimsonSkiesFix.ini.example' 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example'
           Copy-Item 'README.md' 'dist/CrimsonSkiesFix/README.md'
+          Copy-Item '../LICENSE' 'dist/CrimsonSkiesFix/LICENSE'
+
+          # Bundle source provenance and exact DLL digest to disambiguate
+          # identically named PR artifacts (this is not code signing).
+          $commit = $env:CRIMSONSKIESFIX_COMMIT
+          if ($commit -notmatch '^[0-9a-fA-F]{40}$') { throw 'Missing source SHA' }
+          $commit = $commit.ToLowerInvariant()
+          $versionMatch = Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
+          if ($null -eq $versionMatch) { throw 'Missing crate version' }
+          $version = $versionMatch.Matches[0].Groups[1].Value
+          $sha256 = (Get-FileHash -Path 'dist/ddraw.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item 'dist/ddraw.dll').Length
+          $identity = "CrimsonSkiesFix $version-$($commit.Substring(0,8)) x86"
+          $manifestPath = 'dist/CrimsonSkiesFix/build-info.txt'
+          @(
+            'Project=CrimsonSkiesFix'
+            "Version=$version"
+            "Commit=$commit"
+            "LogIdentity=$identity"
+            'Architecture=Windows-x86'
+            "DllSha256=$sha256"
+            "DllSizeBytes=$size"
+            "Source=https://github.com/legluondunet/CrimsonSkiesFix/tree/$commit"
+          ) | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          $actualManifest = Get-Content -LiteralPath $manifestPath
+          if (-not ($actualManifest -ccontains "Commit=$commit") -or
+              -not ($actualManifest -ccontains "LogIdentity=$identity") -or
+              -not ($actualManifest -ccontains "DllSha256=$sha256") -or
+              -not ($actualManifest -ccontains "DllSizeBytes=$size")) {
+            throw 'Build provenance manifest is inconsistent'
+          }
+          $repoLicense = (Get-FileHash -Path '../LICENSE' -Algorithm SHA256).Hash
+          $distLicense = (Get-FileHash -Path 'dist/CrimsonSkiesFix/LICENSE' -Algorithm SHA256).Hash
+          if ($repoLicense -ne $distLicense) { throw 'Packaged license differs from repository' }
           $files = @(Get-ChildItem -LiteralPath dist -File)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'ddraw.dll') {
             throw 'Invalid game-root layout: exactly one ddraw.dll permitted'
@@ -99,7 +135,7 @@ jobs:
           $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
             ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
             Sort-Object)
-          $expectedFiles = @('CrimsonSkiesFix/CrimsonSkiesFix.ini.example', 'CrimsonSkiesFix/README.md', 'ddraw.dll') |
+          $expectedFiles = @('CrimsonSkiesFix/CrimsonSkiesFix.ini.example', 'CrimsonSkiesFix/README.md', 'CrimsonSkiesFix/LICENSE', 'CrimsonSkiesFix/build-info.txt', 'ddraw.dll') |
             Sort-Object
           if (Compare-Object $actualFiles $expectedFiles) {
             throw 'Unexpected files in the game update archive'

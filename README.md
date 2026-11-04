@@ -1,64 +1,65 @@
 # CrimsonSkiesFix
 
-Experimental **32-bit Windows DirectDraw compatibility proxy** for *Crimson Skies (2000)* on Windows and Wine/Proton. This repository contains the DirectDraw `ddraw.dll` project only.
+**Windows x86 DirectDraw compatibility proxy** for *Crimson Skies (2000)* on Windows and Wine/Proton.
 
-## Status
+The active project builds a 32-bit Rust `ddraw.dll` for one exact, verified Crimson Skies v1.02 SafeDisc-free executable. It does **not** modify the executable on disk.
 
-- Windows x86 DirectDraw proxy with opt-in diagnostics and experimental primary-`Flip` pacing
-- Direct3D3 scene/Flip instrumentation to study the game's rendering behavior
-- **Experimental borderless and native 3D widescreen/FOV adaptation**; full gameplay stability, transitions, HUD and Windows/Wine parity still require validation
+**Status: experimental / release candidate under evaluation.** Native 1920×1080 rendering, FOV/HUD, 4:3 menu/video handling, startup driver dialog bypass, the GOS Video preferences lock, first-image RGB565 correction, menu signature, focus recovery and the Wine-only ROFFILE guard have been tested in gameplay under Wine/GE-Proton. The Windows x86 continuous-integration job also loads and unloads the built DLL on Windows and checks its DirectDraw exports. **Actual gameplay on Windows 11 has not yet been validated**; neither successful CI nor a Windows DLL loading smoke test proves it.
 
-## Supported game executable
+## Supported executable
 
-Only the exact verified, unmodified Crimson Skies **v1.02** executable is accepted.
-The DirectDraw proxy checks the on-disk SHA-256 **before installing graphics hooks**.
-Third-party widescreen-patched executables, protected EXEs and other game
-versions are refused with an error dialog showing both hashes. Clicking OK
-closes the game process without a subsequent DirectX error. The detected SHA-256 is recorded in
-`CrimsonSkiesFix.log` even when normal logging is disabled (if writable).
+Only the validated, unmodified, unwrapped **Crimson Skies 1.0.2.0** executable is accepted:
 
-- **EXE size:** 2,580,480 bytes
-- **Required SHA-256:** `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
+| Property | Required value |
+|---|---|
+| Size | `2,580,480` bytes |
+| SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
 
-The DLL applies resolution, FOV and HUD adjustments **in memory**;
-it does not alter the original executable on disk. These graphics
-adjustments are still experimental and require game testing.
+Other executables (including protected launchers and third-party patched versions) are rejected. The actual unsupported hash is logged when a file can be read and the log path is writable.
 
-For installations older than v1.02, the
-[official v1.02 updater (archived)](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102)
-may be required, depending on the game's language/edition. That updater
-does **not** remove SafeDisc.
-
-## Build
-
-```sh
-cd CrimsonSkiesFix
-rustup target add i686-pc-windows-msvc
-cargo test --target i686-pc-windows-msvc
-cargo build --release --target i686-pc-windows-msvc
-```
-
-The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the DLL, runs tests, verifies its 32-bit PE format and packages the game-ready layout.
+If the installation is older than 1.02, the [official 1.02 updater](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102) may be required. It does **not** remove SafeDisc.
 
 ## Install
 
-Test with the exact verified, unmodified SafeDisc-free Crimson Skies v1.02 executable (other EXE hashes are rejected):
+Use the `CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL` artifact from a successful [Windows x86 GitHub Actions run](https://github.com/legluondunet/CrimsonSkiesFix/actions). Back up an older `ddraw.dll` before placing the proxy next to the accepted executable.
 
 ```text
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonSkiesFix.log                  # diagnostics or rejected game EXE
   CrimsonSkiesFix/
-    CrimsonSkiesFix.ini.example        # shipped template
-    CrimsonSkiesFix.ini                # persistent user settings (not shipped)
+    CrimsonSkiesFix.ini.example
     README.md
+    LICENSE
+    build-info.txt
+    CrimsonSkiesFix.ini   # created on first launch, never shipped
 ```
 
-The log is written beside the loaded DLL, **not** inside the configuration folder. The active INI is created only once and preserved across updates. Older configuration files are imported on first run when appropriate, without overwriting or deleting originals. Logging and modern frame pacing are disabled by default.
+The archive does **not** include the original game, game assets, or an active user INI. On first launch, the default-on `GosVideoLock=on` feature may modify the game's small `GOSDATA/ASSETS/crimptch.rof` overlay **after verifying its content and making a backup**. This is persistent; disable the feature *before first launch* or use `GosVideoLock=restore` to restore the backed-up file before uninstalling.
 
-See [DLL installation, settings, diagnostics and limitations](CrimsonSkiesFix/README.md).
+For options, Win32/Wine requirements, GOS restoration, troubleshooting and known limitations, read the [detailed installation guide](CrimsonSkiesFix/README.md).
 
-## License
+## Identify a build
 
-GPL-3.0-or-later — see [LICENSE](LICENSE). Provenance notices for the diagnostics code remain in the source documentation.
+`CrimsonSkiesFix/build-info.txt` in each newly packaged CI artifact records the full source commit, the expected eight-character build label, and the SHA-256 of the exact `ddraw.dll`. Compare `LogIdentity` with the first line of `CrimsonSkiesFix.log` while testing and compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
+
+The original game's and ROFFILE.DLL's expected hashes are separate from the **proxy DLL** hash in this manifest.
+
+## Build and quality gates
+
+```powershell
+cd CrimsonSkiesFix
+rustup target add i686-pc-windows-msvc
+cargo test --locked --target i686-pc-windows-msvc
+cargo build --locked --release --target i686-pc-windows-msvc
+```
+
+The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the PE32 DLL, runs Rust and Python regression checks, validates the clean distribution layout, and performs a native `LoadLibraryW` / `GetProcAddress` / `FreeLibrary` smoke test. The standalone `windowed_ddraw_probe.exe` is diagnostic and is **not** required to run the game.
+
+Release status and remaining checks are tracked in [release readiness audit](CrimsonSkiesFix/docs/release-readiness-2026-11-04.md). Native Windows 11 gameplay remains a distinct, manual acceptance criterion.
+
+## License and contribution policy
+
+This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). Experimental archives include an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; merging and publication of a stable release require explicit owner approval.
+
+legluondunet assisted by ChatGPT (OpenAI)

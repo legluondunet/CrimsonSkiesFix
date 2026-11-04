@@ -4,7 +4,7 @@
 
 CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes default-enabled, reversible GameOS (GOS) Video menu resource integration.
 
-**Status:** experimental. Native 1920×1080 output, camera FOV/HUD adaptation, MainMenu signature, GameOS Resolution label, and the automatic disable/restore of the Video **Graphics** and **Resolution** dropdowns have been validated on Manjaro / Wine 11.0 / GE-Proton11-12. The Windows x86 DLL compiles and passes unit tests in GitHub Actions, but **real Windows runtime testing is postponed** until a Windows computer is available.
+**Status:** experimental. Native 1920×1080 output, camera FOV/HUD adaptation, MainMenu signature, GameOS Resolution label, and the automatic disable/restore of the Video **Graphics** and **Resolution** dropdowns have been validated on Manjaro / Wine 11.0 / GE-Proton11-12. The Windows x86 DLL compiles, passes automated tests and loads/unloads successfully in a Windows GitHub Actions runner (including DirectDraw export checks). **Real Windows 11 gameplay testing is still postponed** until a suitable Windows computer is available.
 
 ## What it does
 
@@ -43,7 +43,9 @@ Crimson Skies/
 └── CrimsonSkiesFix/
     ├── CrimsonSkiesFix.ini.example # shipped with the build
     ├── CrimsonSkiesFix.ini         # generated once; never shipped
-    └── README.md
+    ├── README.md
+    ├── LICENSE                     # GPL-3.0 full license text
+    └── build-info.txt              # source SHA and DLL SHA-256
 ```
 
 **Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
@@ -53,6 +55,28 @@ the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
 Wine users may need `WINEDLLOVERRIDES="ddraw=n,b"` to force the native proxy. The same Windows x86 DLL is used under Wine/Proton; it is **not** a Linux shared object.
+
+## Verify the downloaded DLL
+
+New CI artifacts include `CrimsonSkiesFix/build-info.txt` with the exact
+Git source commit, the expected version/short-SHA text logged at startup,
+and the SHA-256 and size of the corresponding `ddraw.dll`. This prevents
+confusing an older DLL with a newer PR build that has the same download name.
+It is **not** a cryptographic signature by the project author.
+
+Under PowerShell, check the SHA-256 of the installed proxy:
+
+```powershell
+(Get-FileHash .\ddraw.dll -Algorithm SHA256).Hash
+Get-Content .\CrimsonSkiesFix\build-info.txt
+```
+
+Compare the computed hash with `DllSha256` and check that the first line
+of `CrimsonSkiesFix.log` begins with the `LogIdentity` value, followed
+by ` - init`. The `Commit` and `Source` fields identify the exact
+repository state. The distributed `LICENSE` is copied verbatim from
+the repository and should be preserved when sharing the proxy DLL.
+Older experimental archives may not contain these two files.
 
 ## Settings
 
@@ -201,7 +225,7 @@ cargo build --locked --release --target i686-pc-windows-msvc
 
 The repository commits `Cargo.lock` to pin the tested `flate2` dependency tree.
 
-The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, and packages the user installation layout. `windowed_ddraw_probe.exe` is a **separate experimental diagnostic tool**, not required in the game directory.
+The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is a **separate experimental diagnostic tool**, not required in the game directory.
 
 For original GameOS Video UI research and owner test evidence, see [Video Preferences native UI](docs/video-preferences-native-ui.md) and [GOS archive inspector](tools/inspect_gos_rof.py). Earlier experiments and detailed changelogs remain available in the repository's Git history.
 
