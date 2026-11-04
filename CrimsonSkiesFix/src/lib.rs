@@ -2,6 +2,17 @@
 //! Place this built DLL under the name ddraw.dll beside CRIMSON.EXE.
 #![cfg(windows)]
 mod config;
+mod build_info;
+mod menu_scene;
+mod gos_video_lock; // experimental, backed-up native GOS Video .rof overlay
+mod menu_video_probe;
+mod menu_mode_event;
+mod menu_gos_event;
+mod menu_ui_trace;
+mod menu_ui_list_probe;
+mod menu_resolution_label;
+mod menu_ui_pages;
+mod menu_brand;
 mod win32;
 mod window_exposure;
 mod window_erase_guard;
@@ -21,7 +32,8 @@ mod color_capture; // default-off native RGB32->RGB565 source/destination compar
 mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
-mod native_widescreen; // opt-in, strictly fingerprinted owner-provided widescreen EXE
+mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
+mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
@@ -235,7 +247,7 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("{PROJECT_NAME} {} x86 - init; configuration={parsed:?}; DirectDraw proxy",env!("CARGO_PKG_VERSION")));
+                log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
@@ -271,7 +283,63 @@ fn real_module()->Option<*mut c_void> {
 }
 
 unsafe fn symbol(name:&[u8])->*const c_void {
-    let _=cfg();
+    // Reject unknown game executables before loading system DirectDraw or
+    // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
+    if !exe_gate::verify_once(){return ptr::null();}
+    let config=cfg();
+    // No work from DllMain: authenticated game and INI are ready here.
+    // The native GOS resource override is default-enabled for the exact
+    // authenticated EXE, but can be switched off or restored in the INI.
+    // A successful ROF patch must precede original GOS script loading.
+    // Explicit off mode does no ROF I/O. Restore is allowed independently.
+    static GOS_LOCK_ONCE:Once=Once::new();
+    GOS_LOCK_ONCE.call_once(|| {
+        gos_video_lock::apply(
+            config.gos_video_lock,
+            config.experimental_windowed_adapter &&
+            config.native_3d_widescreen &&
+            config.desktop_resolution
+        );
+    });
+    // Freeze the screen under the cursor at the first game DirectDraw call.
+    // It represents the launch screen, not the cursor's later location.
+    // The actual game HWND is validated separately before it can be moved.
+    if config.experimental_windowed_adapter {
+        static SCREEN_ONCE:Once=Once::new();
+        SCREEN_ONCE.call_once(||{
+            if let Some(rect)=win32::capture_launch_monitor(){
+                if let Some((w,h))=rect.dimensions(){
+                    log(&format!("WINDOWED-GAME: launch monitor origin={},{} size={}x{}",
+                        rect.left,rect.top,w,h));
+                }
+            }else{
+                log("WINDOWED-GAME: launch monitor unknown; game HWND monitor will be used");
+            }
+        });
+    }
+    // Apply the FOV/HUD delta at the earliest DirectDraw export with the
+    // same monitor geometry later used by the actual game's window.
+    static EARLY_NATIVE_ONCE:Once=Once::new();
+    if config.experimental_windowed_adapter && config.native_3d_widescreen {
+        EARLY_NATIVE_ONCE.call_once(||{
+            let size=win32::capture_launch_monitor().and_then(|r|r.dimensions())
+                .or_else(win32::sole_primary_monitor_dimensions);
+            if let Some((w,h))=size {
+                unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
+            }else{
+                log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
+            }
+        });
+    }
+    // Observe the exact in-game MainMenu/Preferences script transitions
+    // only after strict game executable authentication.
+    if config.experimental_windowed_adapter {
+        static MENU_SCENE_ONCE:Once=Once::new();
+        MENU_SCENE_ONCE.call_once(||{
+            let installed=unsafe{menu_scene::install()};
+            log(&format!("MENU-SCENE: hook_available={installed}"));
+        });
+    }
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
     win32::system_export(real,name)
 }
@@ -410,7 +478,7 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
     if !hwnd.is_null() && cfg().log_enabled && PRE_EXCLUSIVE_DESKTOP.get().is_none(){
         // Critical: capture monitor dimensions BEFORE exclusive DirectDraw
         // SetDisplayMode shrinks the Wine mode and game HWND to 640/800.
-        if let Some(area)=win32::monitor_for_game_window(hwnd){
+        if let Some(area)=win32::launch_monitor_or_game_window(hwnd){
             let w=area.right.saturating_sub(area.left) as u32;
             let h=area.bottom.saturating_sub(area.top) as u32;
             if w>0 && h>0 {
@@ -1317,6 +1385,66 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
 
 #[no_mangle]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    // Must run before the default-enabled startup selector's in-memory patch.
+    if !exe_gate::verify_once(){
+        if !out.is_null(){*out=ptr::null_mut();}
+        return DDERR_GENERIC;
+    }
+    // Install the verified GOS callback even if Log=0: the command-14
+    // Graphics guard and menu-visibility state must not depend on logging.
+    static GOS_MENU_EVENT_ONCE:Once=Once::new();
+    GOS_MENU_EVENT_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            let active=unsafe{menu_gos_event::install()};
+            log(&format!("MENU-GOS-EVENT: hook_available={active}"));
+        }
+    });
+    // Override ONLY the original GOS 0x845 resolution-text formatter.
+    // This is independent of debug logging and never mutates the mode table.
+    static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
+    GOS_RESOLUTION_LABEL_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            let installed=unsafe{menu_resolution_label::install()};
+            log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
+        }
+    });
+    // Passive GOS UI tracing is off with Log=0; unlike the verified
+    // backend guards, it never changes native GUI behavior.
+    static GOS_UI_TRACE_ONCE:Once=Once::new();
+    GOS_UI_TRACE_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            let (data,control)=unsafe{menu_ui_trace::install()};
+            log(&format!("MENU-GOS-UI: data_registered={data} control_registered={control}"));
+        }
+    });
+    // Separate exact GOS page/localization hooks: diagnostic only.
+    // Capture which original script resources are requested while
+    // Video Preferences is active; no strings or UI state modified.
+    static GOS_UI_PAGES_ONCE:Once=Once::new();
+    GOS_UI_PAGES_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            let (pages,localize)=unsafe{menu_ui_pages::install()};
+            log(&format!("MENU-GOS-PAGE: page_registered={pages} localize_registered={localize}"));
+        }
+    });
+    // The command-15 mode guard is separately constrained to the
+    // 4:3 menu and the three native-widescreen option flags.
+    static VIDEO_EVENT_ONCE:Once=Once::new();
+    VIDEO_EVENT_ONCE.call_once(||{
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            let installed=unsafe{menu_mode_event::install()};
+            log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
+        }
+    });
+    // Install before DirectDraw enumeration: the game can show the
+    // AskForVDev device chooser before a game HWND or DD4 exists.
+    static VIDEO_SELECTOR_ONCE:Once=Once::new();
+    VIDEO_SELECTOR_ONCE.call_once(||{
+        if cfg().native_3d_widescreen {
+            let applied=unsafe{native_widescreen::suppress_video_selector()};
+            log(&format!("STARTUP-VIDEO: AskForVDev bypass={} (HAL selection unchanged)",applied));
+        }
+    });
     let function=symbol(b"DirectDrawCreate\0");
     if function.is_null(){return DDERR_GENERIC;}
     let real:CreateFn=std::mem::transmute(function);

@@ -1,18 +1,45 @@
-; CrimsonSkiesFix configuration TEMPLATE (not auto-loaded; copy only if desired).
-; The DLL creates CrimsonSkiesFix.ini on first launch if it does not exist.
-; This template remains .example so extracting future updates never replaces your settings.
+; CrimsonSkiesFix user-settings TEMPLATE (not loaded automatically).
+; The DLL creates CrimsonSkiesFix/CrimsonSkiesFix.ini on first launch.
+; Updates ship only this .example so existing user settings remain unchanged.
 [Graphics]
 Borderless=1
 DesktopResolution=1
 FPSLimit=60
-; Experimental: throttle only primary modern Flip; not Blt or Unlock.
-; Leave at 0 until a diagnostic log confirms the desired rendering path.
+; Original experimental DirectDraw4 pacing; disabled by default.
 ModernFPSPacing=0
-; FPSLimit is clamped to 1..60.
+; Enabled by default: validated native 3D adapter, widescreen FOV/HUD
+; and suppression of the obsolete startup resolution/driver dialog.
+; Disable Native3DWidescreen to disable the prompt bypass.
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+; First-run focus recovery and white-background prevention enabled.
+; FocusRepaint performs one-shot full repaint after focus/paint changes.
+; WindowEraseGuard suppresses WM_ERASEBKGND on the verified game window.
+; Set either to 0 to disable that mechanism independently.
+FocusRepaint=1
+WindowEraseGuard=1
+; First-image/legacy artwork RGB565 color correction is enabled by default.
+; Only exact-matching 800x600 16bpp legacy offscreen creation is affected.
+; Set to 0 to opt out.
+LegacyOffscreenRGB565=1
+; Enabled by default: GameOS native Graphics and Resolution dropdown
+; disable (greyed out and unselectable), including the mode-change guards.
+; On first launch this modifies ONLY GOSDATA/ASSETS/crimptch.rof;
+; its original contents are saved to an exclusive *.original.bak file.
+; on = install or recognize the verified, backed-up GOS override.
+; off = never modify GOS archives; does NOT undo an installed patch.
+; restore = restore the original from its backup on next game launch;
+;           then change this option to off (or on to re-enable).
+; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1 and
+; DesktopResolution=1. Unknown original assets fail closed.
+; Wine/GE-Proton owner tests passed; Windows gameplay test deferred.
+GosVideoLock=on
 
 [Debug]
-; 0 = no CrimsonSkiesFix.log is created beside ddraw.dll.
-; 1 = write CrimsonSkiesFix.log beside ddraw.dll.
+; Ordinary logging disabled by default; EXE admission failures still logged.
+; Some experimental adapter diagnostics may also be logged automatically.
 Log=0
-; Optional: passive surface-method audit, requires Log=1. No graphic changes.
 SurfaceUsageTrace=0
+CrashBltTrace=0
+ColorProbe=0
+ColorCapture=0

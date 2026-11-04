@@ -8,16 +8,18 @@ pub const DEFAULT_INI: &str = concat!(
     "FPSLimit=60\n",
     "; Experimental: pace only primary-surface modern Flip (off by default).\n",
     "ModernFPSPacing=0\n",
-    "; Experimental, incomplete DirectDraw4 3D windowed adapter (off by default).\n",
-    "ExperimentalWindowedAdapter=0\n",
-    "; Optional recovery on game foreground return; experiment only.\n",
-    "FocusRepaint=0\n",
-    "; Experimental: suppress only WM_ERASEBKGND on the game HWND.\n",
-    "WindowEraseGuard=0\n",
-    "; Experimental: force RGB565 on exact game-sized legacy system-memory image surface.\n",
-    "LegacyOffscreenRGB565=0\n",
-    "; Experimental widescreen only with fingerprinted owner-provided patched 1.0.2.0 EXE.\n",
-    "Native3DWidescreen=0\n",
+    "; Verified Wine/Proton native DirectDraw4 3D adapter (on by default).\n",
+    "ExperimentalWindowedAdapter=1\n",
+    "; One-shot repaint after focus or exposed-window return; enabled by default.\n",
+    "FocusRepaint=1\n",
+    "; Prevent white background erase over native DirectDraw pixels; enabled by default.\n",
+    "WindowEraseGuard=1\n",
+    "; Legacy first-image color fix: force RGB565 on verified game-sized offscreen source (on by default).\n",
+    "LegacyOffscreenRGB565=1\n",
+    "; Native FOV/HUD and startup driver/resolution prompt bypass for verified 1.02 EXE (on by default).\n",
+    "Native3DWidescreen=1\n",
+    "; Native GOS Graphics/Resolution control lock (on | off | restore). On by default: writes backed-up small crimptch.rof.\n",
+    "GosVideoLock=on\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -42,6 +44,7 @@ pub struct Config {
     pub window_erase_guard: bool,
     pub legacy_offscreen_rgb565: bool,
     pub native_3d_widescreen: bool,
+    pub gos_video_lock: crate::gos_video_lock::Mode,
     pub log_enabled: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
@@ -51,7 +54,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: false, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, native_3d_widescreen: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -87,6 +90,13 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.experimental_windowed_adapter = v; },
             ("graphics", "native3dwidescreen") =>
                 if let Some(v) = enabled(value) { settings.native_3d_widescreen = v; },
+            ("graphics", "gosvideolock") =>
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "1" | "true" => settings.gos_video_lock = crate::gos_video_lock::Mode::On,
+                    "off" | "0" | "false" => settings.gos_video_lock = crate::gos_video_lock::Mode::Off,
+                    "restore" => settings.gos_video_lock = crate::gos_video_lock::Mode::Restore,
+                    _ => {},
+                },
             ("graphics", "legacyoffscreenrgb565") =>
                 if let Some(v) = enabled(value) { settings.legacy_offscreen_rgb565 = v; },
             ("graphics", "windoweraseguard") =>
@@ -124,41 +134,45 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:false, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, native_3d_widescreen:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
-    fn experimental_adapter_is_opt_in_and_strictly_graphics_scoped(){
-        assert!(!Config::default().experimental_windowed_adapter);
-        assert!(!parse("[Debug]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
+    fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
+        assert!(Config::default().experimental_windowed_adapter);
+        assert!(parse("[Debug]\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
         assert!(parse("[Graphics]\nExperimentalWindowedAdapter=1").experimental_windowed_adapter);
-        assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=1\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
+        assert!(!parse("[Graphics]\nExperimentalWindowedAdapter=0").experimental_windowed_adapter);
     }
     #[test]
-    fn native_widescreen_is_opt_in_graphics_setting(){
-        assert!(!Config::default().native_3d_widescreen);
-        assert!(!parse("[Debug]\nNative3DWidescreen=1").native_3d_widescreen);
+    fn native_widescreen_and_startup_dialog_bypass_default_on(){
+        // The in-memory AskForVDev bypass is gated by Native3DWidescreen.
+        assert!(Config::default().native_3d_widescreen);
+        assert!(parse("[Debug]\nNative3DWidescreen=0").native_3d_widescreen);
         assert!(parse("[Graphics]\nNative3DWidescreen=1").native_3d_widescreen);
-        assert!(!parse("[Graphics]\nNative3DWidescreen=1\nNative3DWidescreen=0").native_3d_widescreen);
+        assert!(!parse("[Graphics]\nNative3DWidescreen=0").native_3d_widescreen);
     }
     #[test]
-    fn legacy_offscreen_rgb565_is_opt_in_and_graphics_only(){
-        assert!(!Config::default().legacy_offscreen_rgb565);
-        assert!(!parse("[Debug]\nLegacyOffscreenRGB565=1").legacy_offscreen_rgb565);
+    fn legacy_offscreen_rgb565_is_default_on_and_graphics_only(){
+        assert!(Config::default().legacy_offscreen_rgb565);
+        assert!(parse("[Debug]\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
         assert!(parse("[Graphics]\nLegacyOffscreenRGB565=1").legacy_offscreen_rgb565);
+        assert!(!parse("[Graphics]\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
         assert!(!parse("[Graphics]\nLegacyOffscreenRGB565=1\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
     }
     #[test]
-    fn window_erase_guard_is_opt_in_and_graphics_scoped(){
-        assert!(!Config::default().window_erase_guard);
-        assert!(!parse("[Debug]\nWindowEraseGuard=1").window_erase_guard);
+    fn window_erase_guard_is_on_by_default_and_graphics_scoped(){
+        assert!(Config::default().window_erase_guard);
+        assert!(parse("[Debug]\nWindowEraseGuard=0").window_erase_guard);
         assert!(parse("[Graphics]\nWindowEraseGuard=1").window_erase_guard);
+        assert!(!parse("[Graphics]\nWindowEraseGuard=0").window_erase_guard);
         assert!(!parse("[Graphics]\nWindowEraseGuard=1\nWindowEraseGuard=0").window_erase_guard);
     }
     #[test]
-    fn focus_repaint_is_experimental_graphics_only_and_default_off(){
-        assert!(!Config::default().focus_repaint);
-        assert!(!parse("[Debug]\nFocusRepaint=1").focus_repaint);
+    fn focus_repaint_is_on_by_default_and_graphics_scoped(){
+        assert!(Config::default().focus_repaint);
+        assert!(parse("[Debug]\nFocusRepaint=0").focus_repaint);
         assert!(parse("[Graphics]\nFocusRepaint=1").focus_repaint);
+        assert!(!parse("[Graphics]\nFocusRepaint=0").focus_repaint);
         assert!(!parse("[Graphics]\nFocusRepaint=1\nFocusRepaint=0").focus_repaint);
     }
     #[test]
@@ -219,4 +233,51 @@ mod tests {
         assert_eq!(c.fps_limit,59);
         assert!(c.log_enabled);
     }
+    #[test]
+    fn shipped_ini_template_matches_actual_generated_config_defaults() {
+        // The shipped template and generated first-run defaults must match
+        // the explicitly selected project policy, including enabled recovery.
+        let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
+        assert_eq!(parse(shipped), parse(DEFAULT_INI));
+        assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(parse(shipped).experimental_windowed_adapter);
+        assert!(parse(shipped).native_3d_widescreen);
+        assert!(parse(shipped).legacy_offscreen_rgb565);
+        assert!(parse(shipped).focus_repaint);
+        assert!(parse(shipped).window_erase_guard);
+        assert!(parse(shipped).desktop_resolution);
+    }
+    #[test]
+    fn first_run_enables_native_video_lock_and_startup_bypass_dependencies() {
+        let initial = parse(DEFAULT_INI);
+        assert!(initial.desktop_resolution);
+        assert!(initial.experimental_windowed_adapter);
+        assert!(initial.native_3d_widescreen);
+        assert!(initial.legacy_offscreen_rgb565);
+        assert!(initial.focus_repaint);
+        assert!(initial.window_erase_guard);
+        assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(!initial.log_enabled);
+        assert!(!initial.modern_fps_pacing);
+
+        // Owner can opt out of persistent GOS override independently.
+        let opt_out = parse("[Graphics]\nGosVideoLock=off\nNative3DWidescreen=0");
+        assert_eq!(opt_out.gos_video_lock, crate::gos_video_lock::Mode::Off);
+        assert!(!opt_out.native_3d_widescreen);
+        // Explicit rollback is independent of native-wide prerequisites.
+        let rollback = parse("[Graphics]\nNative3DWidescreen=0\nGosVideoLock=restore");
+        assert_eq!(rollback.gos_video_lock, crate::gos_video_lock::Mode::Restore);
+    }
+    #[test]
+    fn native_gos_video_lock_is_explicit_and_graphics_scoped(){
+        use crate::gos_video_lock::Mode;
+        assert_eq!(parse("").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=on").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=1").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=restore").gos_video_lock,Mode::Restore);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=OFF").gos_video_lock,Mode::Off);
+        assert_eq!(parse("[Debug]\nGosVideoLock=off").gos_video_lock,Mode::On);
+        assert_eq!(parse("[Graphics]\nGosVideoLock=maybe").gos_video_lock,Mode::On);
+    }
+
 }

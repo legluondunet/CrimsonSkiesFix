@@ -42,8 +42,13 @@ pub trait WindowedBlt {
 /// Pure geometry gate shared by game-side contract and standalone probe.
 fn geometry_valid(mode:Mode,desktop:(u32,u32),viewport:Viewport)->bool{
     mode.bpp==16 &&
-    matches!((mode.width,mode.height),(640,480)|(800,600)) &&
-    fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport)
+    (
+        (matches!((mode.width,mode.height),(640,480)|(800,600)) &&
+         fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport))
+        ||
+        ((mode.width,mode.height)==desktop &&
+         viewport==Viewport{x:0,y:0,width:desktop.0,height:desktop.1})
+    )
 }
 
 /// Perform the two windowed Blts on the supplied *real* backend.
@@ -56,8 +61,16 @@ pub fn execute_windowed_blt_pair<B:WindowedBlt>(
     if !geometry_valid(mode,desktop,viewport){
         return Err(FlipBridgeError::InvalidViewport);
     }
-    backend.clear_full_window_black(desktop.0,desktop.1)
-        .map_err(FlipBridgeError::ClearBlackFailed)?;
+    // Native 1:1 is not a letterboxed presentation. Clearing the entire
+    // destination before its first Flip (or a focus repaint) can expose a
+    // spurious black frame and must never fabricate pillarbox bars.
+    // Preserve the legacy 4:3 black clear unchanged.
+    let native_full=mode.width==desktop.0 && mode.height==desktop.1 &&
+        viewport==Viewport{x:0,y:0,width:desktop.0,height:desktop.1};
+    if !native_full {
+        backend.clear_full_window_black(desktop.0,desktop.1)
+            .map_err(FlipBridgeError::ClearBlackFailed)?;
+    }
     backend.stretch_rgb565_into_viewport(mode,viewport)
         .map_err(FlipBridgeError::StretchFailed)?;
     Ok(())
@@ -303,6 +316,23 @@ mod tests {
         assert_eq!(backend.events[2],Event::Stretch(m,bridge.viewport()));
         assert_eq!(bridge.present(81,m,&mut backend),Err(FlipBridgeError::AlreadyFaulted));
         assert_eq!(backend.events.len(),3);
+    }
+    #[test]
+    fn native_fullscreen_presentation_never_inserts_black_bars(){
+        let m=Mode{width:1920,height:1080,bpp:16};
+        let full=Viewport{x:0,y:0,width:1920,height:1080};
+        let mut backend=FakeBlt::default();
+        assert_eq!(execute_windowed_blt_pair(&mut backend,m,(1920,1080),full),Ok(()));
+        assert_eq!(backend.events,vec![Event::Stretch(m,full)]);
+    }
+    #[test]
+    fn exact_native_mode_is_valid_but_scaled_mismatch_is_not(){
+        let native=Mode{width:1920,height:1080,bpp:16};
+        let full=Viewport{x:0,y:0,width:1920,height:1080};
+        assert!(geometry_valid(native,(1920,1080),full));
+        assert!(!geometry_valid(native,(2560,1440),full));
+        assert!(!geometry_valid(native,(1920,1080),Viewport{
+            x:240,y:0,width:1440,height:1080}));
     }
     #[test]
     fn eight_hundred_by_six_hundred_remains_fully_pillarboxed(){

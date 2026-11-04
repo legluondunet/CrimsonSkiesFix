@@ -6,7 +6,28 @@ Experimental **32-bit Windows DirectDraw compatibility proxy** for *Crimson Skie
 
 - Windows x86 DirectDraw proxy with opt-in diagnostics and experimental primary-`Flip` pacing
 - Direct3D3 scene/Flip instrumentation to study the game's rendering behavior
-- **Not yet a working borderless / native-widescreen solution**; 3D rendering, game simulation speed, and focus behavior need gameplay validation
+- **Experimental borderless and native 3D widescreen/FOV adaptation**; full gameplay stability, transitions, HUD and Windows/Wine parity still require validation
+
+## Supported game executable
+
+Only the exact verified, unmodified Crimson Skies **v1.02** executable is accepted.
+The DirectDraw proxy checks the on-disk SHA-256 **before installing graphics hooks**.
+Third-party widescreen-patched executables, protected EXEs and other game
+versions are refused with an error dialog showing both hashes. Clicking OK
+closes the game process without a subsequent DirectX error. The detected SHA-256 is recorded in
+`CrimsonSkiesFix.log` even when normal logging is disabled (if writable).
+
+- **EXE size:** 2,580,480 bytes
+- **Required SHA-256:** `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
+
+The DLL applies resolution, FOV and HUD adjustments **in memory**;
+it does not alter the original executable on disk. These graphics
+adjustments are still experimental and require game testing.
+
+For installations older than v1.02, the
+[official v1.02 updater (archived)](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102)
+may be required, depending on the game's language/edition. That updater
+does **not** remove SafeDisc.
 
 ## Build
 
@@ -21,13 +42,13 @@ The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles t
 
 ## Install
 
-Test with a separate copy of the unwrapped game executable:
+Test with the exact verified, unmodified SafeDisc-free Crimson Skies v1.02 executable (other EXE hashes are rejected):
 
 ```text
 Crimson Skies/
   CRIMSON.EXE
   ddraw.dll
-  CrimsonSkiesFix.log                  # created only with [Debug] Log=1
+  CrimsonSkiesFix.log                  # diagnostics or rejected game EXE
   CrimsonSkiesFix/
     CrimsonSkiesFix.ini.example        # shipped template
     CrimsonSkiesFix.ini                # persistent user settings (not shipped)

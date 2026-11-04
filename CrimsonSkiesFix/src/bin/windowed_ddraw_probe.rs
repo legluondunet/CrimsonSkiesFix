@@ -95,6 +95,22 @@ fn probe_line(line:&str){
 fn log(message:&str){
     probe_line(message);
 }
+// The standalone probe has no game process or MainMenu state. The
+// shared virtual Surface4 module's optional menu drawing hook is inert.
+mod menu_video_probe{
+    pub fn observe_ui_flip(_width:u32,_height:u32){} // standalone probe has no game executable
+}
+mod menu_brand {
+    use std::ffi::c_void;
+    // Standalone DD4 surface probe has no Crimson Skies script or
+    // game-owned MainMenu artwork. All branding is deliberately inert.
+    pub fn should_probe_menu_frame(_width:u32,_height:u32)->bool{false}
+    pub fn mark_not_drawn(){}
+    pub fn note_branded_presented(){}
+    pub fn report_copy_failure(_hr:i32){}
+    pub fn draw_main_menu(_surface:*mut c_void,_viewport:super::borderless_native_blt::Rect)->bool{false}
+}
+
 // The standalone surface probe never locks RGB32 movie surfaces.
 fn color_probe_enabled()->bool{false}
 fn color_capture_enabled()->bool{false}
@@ -1129,7 +1145,7 @@ fn run(mode:ProbeMode)->Result<(),String>{
         let generation=1042u64 + epoch_index as u64;
         unsafe{
             com_surface4_forward::arm_graph_primary_flip(
-                gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h),None,0,false
+                gp.0,&contract,generation,(origin.x,origin.y),(client_w,client_h),None,0,false,std::ptr::null_mut()
             ).map_err(|hr|format!("COM-VFLIP: arm failed {:#010x}",hr as u32))?;
         }
         if unsafe{com_surface4_forward::graph_primary_completed_flips(gp.0)}!=Some(0){

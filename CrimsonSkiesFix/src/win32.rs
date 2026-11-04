@@ -1,5 +1,6 @@
 use std::{ffi::{c_char, c_void, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use crate::config::DEFAULT_INI;
+use std::sync::OnceLock;
 
 pub type Hwnd = *mut c_void;
 pub const PAGE_READWRITE: u32 = 0x04;
@@ -10,6 +11,28 @@ pub const GWL_STYLE: i32 = -16;
 pub const WS_POPUP: u32 = 0x8000_0000;
 pub const WS_VISIBLE: u32 = 0x1000_0000;
 
+#[link(name="user32")]
+extern "system" {
+    fn GetSystemMetrics(index:i32)->i32;
+}
+
+// No HWND exists when the game first calls DirectDraw. A one-monitor
+// installation has a deterministic primary monitor; on multi-monitor
+// systems do NOT guess based on the mouse, and defer to the game HWND.
+fn sole_monitor_metrics(count:i32,width:i32,height:i32)->Option<(u32,u32)> {
+    if count!=1 || width<=0 || height<=0{return None;}
+    Some((u32::try_from(width).ok()?,u32::try_from(height).ok()?))
+}
+pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
+    unsafe {
+        sole_monitor_metrics(
+            GetSystemMetrics(80), // SM_CMONITORS
+            GetSystemMetrics(0),  // SM_CXSCREEN
+            GetSystemMetrics(1),  // SM_CYSCREEN
+        )
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Point { pub x:i32, pub y:i32 }
@@ -19,6 +42,37 @@ pub struct Rect { pub left:i32, pub top:i32, pub right:i32, pub bottom:i32 }
 #[repr(C)]
 #[derive(Default)]
 pub struct MonitorInfo { pub size:u32, pub monitor:Rect, pub work:Rect, pub flags:u32 }
+
+impl Rect{
+    pub fn dimensions(&self)->Option<(u32,u32)>{
+        let w=self.right.checked_sub(self.left)?;
+        let h=self.bottom.checked_sub(self.top)?;
+        if w<=0||h<=0{return None;}
+        Some((u32::try_from(w).ok()?,u32::try_from(h).ok()?))
+    }
+    pub fn client_geometry(&self)->Option<(i32,i32,u32,u32)>{
+        let (w,h)=self.dimensions()?;
+        Some((self.left,self.top,w,h))
+    }
+}
+
+// Frozen at the first DirectDraw export, before the game creates or
+// repositions its fullscreen HWND. Cursor monitor is the best available
+// indication of where the game was launched; never follow later movements.
+static LAUNCH_MONITOR:OnceLock<Rect>=OnceLock::new();
+pub fn capture_launch_monitor()->Option<Rect>{
+    if let Some(rect)=LAUNCH_MONITOR.get(){return Some(*rect);}
+    let area=monitor_from_cursor_or_window(std::ptr::null_mut())?;
+    area.dimensions()?;
+    let _=LAUNCH_MONITOR.set(area);
+    LAUNCH_MONITOR.get().copied()
+}
+pub fn launch_monitor_or_game_window(hwnd:Hwnd)->Option<Rect>{
+    // Never accept a foreign or destroyed HWND solely because the launch
+    // monitor was captured previously.
+    let hwnd_monitor=monitor_for_game_window(hwnd)?;
+    Some(LAUNCH_MONITOR.get().copied().unwrap_or(hwnd_monitor))
+}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -340,6 +394,33 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
     let mut discarded=0;
     VirtualProtect(slot.cast(),std::mem::size_of::<usize>(),previous,&mut discarded);
     true
+}
+
+#[cfg(test)]
+mod monitor_geometry_tests {
+    use super::*;
+    #[test]
+    fn resolutions_are_dimensions_not_absolute_right_bottom(){
+        assert_eq!(Rect{left:1920,top:0,right:4480,bottom:1440}.dimensions(),Some((2560,1440)));
+        assert_eq!(Rect{left:-2560,top:-200,right:0,bottom:1240}.dimensions(),Some((2560,1440)));
+        assert_eq!(Rect{left:-2560,top:-200,right:0,bottom:1240}.client_geometry(),
+                   Some((-2560,-200,2560,1440)));
+        assert_eq!(Rect{left:0,top:0,right:1920,bottom:1080}.dimensions(),Some((1920,1080)));
+        assert_eq!(Rect{left:400,top:300,right:100,bottom:200}.dimensions(),None);
+    }
+}
+#[cfg(test)]
+mod early_monitor_tests{
+    use super::*;
+    #[test]
+    fn early_monitor_only_when_unambiguous(){
+        assert_eq!(sole_monitor_metrics(1,1920,1080),Some((1920,1080)));
+        assert_eq!(sole_monitor_metrics(1,3440,1440),Some((3440,1440)));
+        for (n,w,h) in [(0,1920,1080),(2,1920,1080),
+                         (1,0,1080),(1,1920,0),(1,-1,1080)] {
+            assert_eq!(sole_monitor_metrics(n,w,h),None);
+        }
+    }
 }
 
 #[cfg(test)]
