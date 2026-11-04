@@ -138,10 +138,10 @@ mod tests {
     #[test]
     fn roffile_terminator_fix_is_opt_in_and_scoped() {
         assert!(!Config::default().roffile_terminator_fix);
-        assert!(!parse("[Graphics]\\nRoffileTerminatorFix=1").roffile_terminator_fix);
-        assert!(!parse("[Debug]\\nRoffileTerminatorFix=1").roffile_terminator_fix);
-        assert!(parse("[Compatibility]\\nRoffileTerminatorFix=1").roffile_terminator_fix);
-        assert!(!parse("[Compatibility]\\nRoffileTerminatorFix=1\\nRoffileTerminatorFix=0").roffile_terminator_fix);
+        assert!(!parse("[Graphics]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+        assert!(!parse("[Debug]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+        assert!(parse("[Compatibility]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+        assert!(!parse("[Compatibility]\nRoffileTerminatorFix=1\nRoffileTerminatorFix=0").roffile_terminator_fix);
     }
     #[test]
     fn defaults_disable_logs() {
