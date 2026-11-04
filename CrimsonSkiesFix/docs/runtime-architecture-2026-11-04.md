@@ -3,7 +3,7 @@
 ## Scope and purpose
 
 This document describes the **Win32 x86 DirectDraw `ddraw.dll` proxy**
-after the first structure-only refactor (#14). It does not claim a new
+after the first two structure-only refactors (#14 and #15). It does not claim a new
 compatibility fix, FPS improvement, cross-process safety proof, or Windows
 runtime validation. The effective behavior on the owner's Wine / GE-Proton
 environment is established by separate gameplay logs.
@@ -12,7 +12,9 @@ environment is established by separate gameplay logs.
 
 | Module | Responsibility | Important constraints |
 | --- | --- | --- |
-| `src/lib.rs` | DirectDraw exported entrypoints, game-specific method interception, COM method dispatch, configuration/log initialization, and the remaining native DirectDraw/D3D3 hook glue | Win32 x86 ABI, installer paths, interface-slot numbers, hook timing and correct COM ownership must not change during pure refactoring |
+| `src/lib.rs` | Exported DirectDraw DLL entrypoints, modern DD2/4/7 and Surface2/3/4/7 hook dispatch, shared configuration/logging and Win32 window tracing | Preserve exported names, Win32 x86 ABI, slot numbers, hook timing, and COM ownership |
+| `src/d3d3_hooks.rs` | Native IDirect3D3 CreateDevice and IDirect3DDevice3 BeginScene/EndScene/SetRenderTarget/GetRenderTarget wrappers and vtable installation | Preserve ROFFILE sampling on BeginScene, virtual/native render-target identity and exact AddRef/Release order |
+| `src/legacy_ddraw_hooks.rs` | IDirectDraw v1 QueryInterface/CreateSurface/SetCooperativeLevel/SetDisplayMode and Surface legacy Flip/Blt/Unlock/BltFast wrappers | Preserve original delegate call, 60-FPS pacing boundary and logging; hook only legitimate COM surfaces |
 | `src/com_vtable.rs` | Global original-method registry keyed by **(vtable address, method slot)**, read-only vtable slot discovery, installation and rollback | Publish original address before vtable write; share the same map across all COM interfaces; do not run this in `DllMain` |
 | `src/frame_pacing.rs` | Original opt-in QueryPerformanceCounter pacing | Preserve mutex state, Sleep/spin behavior, the selected FPS limit and caller-controlled gating |
 | `src/render_sampling.rs` | Bounded API call-rate diagnostic logs for Blt, Flip, Unlock and D3D3 scenes | Log messages report **COM call counts**, not verified displayed FPS; no extra per-frame output |
@@ -36,14 +38,14 @@ environment is established by separate gameplay logs.
 
 ## Build and runtime proof
 
-CI: `.github/workflows/crimsonskiesfix-x86.yml` must pass x86 Rust library tests, standalone probe tests, release compilation, PE32 machine verification and packaging. Module-specific tests cover null COM objects, absent vtables, pointer/slot identity, zero vtable entries, self-hook refusal, known GUIDs, capability roles and descriptor labels.
+CI: `.github/workflows/crimsonskiesfix-x86.yml` must pass x86 Rust library tests, standalone probe tests, release compilation, PE32 machine verification and packaging. Module-specific tests cover null COM objects, absent vtables, pointer/slot identity, zero vtable entries, self-hook refusal, known GUIDs, capability roles, descriptor labels, exact x86 callback signatures and fail-closed null-object DirectDraw/Direct3D3 callbacks.
 
 Green Windows x86 compilation proves binary consistency but **not** a native Windows gameplay test. Since no functional behavior is intentionally changed, require an owner Wine/Proton smoke test with at least the MainMenu, Video Preferences round-trip, native 3D gameplay, one mode transition and ROFFILE log counters before merging.
 
 ## Next extraction candidates (not changed by this PR)
 
-- Split original DirectDraw v1 hooks from DirectDraw4/7 hooks, but only after all callbacks and method indices have dedicated ABI tests.
-- Split native Direct3D3 CreateDevice/BeginScene/EndScene and render-target forwarding into a separate module, preserving the virtual/native Surface4 bridge semantics.
+- Legacy DirectDraw v1 and D3D3 hooks are now isolated, with compile-time callback-signature regression tests; preserve them as reference implementations.
+- Split modern DirectDraw4/7 and Surface4/7 callbacks from `lib.rs` in separate, narrowly scoped PRs, avoiding simultaneous changes to the virtual/native Surface4 bridge.
 - Isolate initial configuration and log initialization only after testing exact INI precedence, no filesystem work during `DllMain`, and cross-module log ordering.
 - Inspect the lifetime of the global original-vtable registry and the lock/patch publication boundary under concurrent COM calls, preferably with targeted thread tests and dedicated Wine repros. This is a separate behavioral safety investigation, not a mechanical cleanup.
 

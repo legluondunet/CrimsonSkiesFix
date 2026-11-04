@@ -15,6 +15,8 @@ mod menu_ui_pages;
 mod menu_brand;
 mod win32;
 mod com_vtable;
+mod d3d3_hooks;
+mod legacy_ddraw_hooks;
 mod com_labels;
 mod frame_pacing;
 mod render_sampling;
@@ -41,6 +43,8 @@ mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
 use com_vtable::{method,orig,replace_method};
+use d3d3_hooks::observe_d3d3;
+use legacy_ddraw_hooks::{ddraw_query_interface,surface_query_interface,set_cooperative,set_display_mode,create_surface};
 use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
 use frame_pacing::pace_frame;
 use render_sampling::sample_render_calls;
@@ -946,270 +950,11 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     }
 }
 
-// Crimson Skies' IDirectDraw4::QueryInterface successfully requests
-// IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
-// The attached device's legacy Direct3D3 interface is traced only after
-// the original CreateDevice succeeds. The genuine device and surfaces
-// are still owned by the game: no replacement objects or AddRef/Release.
-unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
-    roffile_terminator_fix::probe();
-    let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
-    let original:D3D3SceneFn=std::mem::transmute(addr);
-    let hr=original(this);
-    if cfg().log_enabled && hr>=0 {
-        FIRST_D3D3_SCENE.call_once(||log(
-            "D3D3-DEVICE: first successful BeginScene; game 3D rendering active"));
-        sample_render_calls("D3D3.BeginScene",&D3D3_BEGIN_EVENTS,&D3D3_BEGIN_START,&D3D3_BEGIN_WINDOW);
-    }
-    hr
-}
-
-unsafe extern "system" fn d3d3_device_end_scene(this:*mut c_void)->Hr {
-    let Some(addr)=orig(this,D3D3_DEVICE_END_SCENE) else{return DDERR_GENERIC};
-    let original:D3D3SceneFn=std::mem::transmute(addr);
-    let hr=original(this);
-    if cfg().log_enabled && hr>=0 {
-        sample_render_calls("D3D3.EndScene",&D3D3_END_EVENTS,&D3D3_END_START,&D3D3_END_WINDOW);
-    }
-    hr
-}
-
-unsafe extern "system" fn d3d3_device_set_render_target(
-    this:*mut c_void,target:*mut c_void,flags:u32
-)->Hr {
-    let Some(addr)=orig(this,D3D3_DEVICE_SET_RENDER_TARGET) else{return DDERR_GENERIC};
-    let original:D3D3SetRenderTargetFn=std::mem::transmute(addr);
-    let native=if cfg().experimental_windowed_adapter {
-        in_game_adapter::unwrap_target(target).unwrap_or(target)
-    }else{target};
-    let hr=original(this,native,flags);
-    if cfg().log_enabled && D3D3_RENDER_TARGET_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16{
-        let caps=if hr>=0 {modern_surface_caps(target)} else {None};
-        log(&format!(
-            "D3D3-DEVICE: SetRenderTarget flags={flags:#x} result={hr:#x} target_caps={} role={} (unchanged)",
-            caps.map(|x|format!("{x:#010x}")).unwrap_or_else(||"Unavailable".into()),
-            caps.map(surface_roles).unwrap_or_else(||"unknown".into())));
-    }
-    hr
-}
-
-unsafe extern "system" fn d3d3_device_get_render_target(
-    this:*mut c_void,out:*mut *mut c_void
-)->Hr {
-    let Some(addr)=orig(this,D3D3_DEVICE_GET_RENDER_TARGET) else{return DDERR_GENERIC};
-    let original:D3D3GetRenderTargetFn=std::mem::transmute(addr);
-    let hr=original(this,out);
-    if hr>=0 && cfg().experimental_windowed_adapter && !out.is_null() && !(*out).is_null(){
-        if let Some(virtual_target)=in_game_adapter::remap_render_target(*out){
-            let original_ref=*out;
-            let release:unsafe extern "system" fn(*mut c_void)->u32=
-                std::mem::transmute(method(original_ref,2));
-            let _=release(original_ref);
-            *out=virtual_target;
-            if cfg().log_enabled {log("WINDOWED-GAME: D3D3 GetRenderTarget mapped native RGB565 backbuffer back to game-facing Surface4 identity");}
-        }
-    }
-    hr
-}
-unsafe fn observe_d3d3_device(device:*mut c_void){
-    if device.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
-    let begin=replace_method(device,D3D3_DEVICE_BEGIN_SCENE,d3d3_device_begin_scene as *const () as usize);
-    let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as *const () as usize);
-    let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as *const () as usize);
-    let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as *const () as usize);
-    if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
-        log(&format!(
-            "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
-    }
-}
-
-// In Wine d3d.h, IDirect3D3 vtable slot 8 is
-// CreateDevice(REFCLSID, IDirectDrawSurface4*, IDirect3DDevice3**, IUnknown*).
-// This exact Win32 x86 ABI is observed *without* changing the device.
-unsafe extern "system" fn d3d3_create_device(
-    this:*mut c_void,device_clsid:*const Guid,target:*mut c_void,
-    out:*mut *mut c_void,outer:*mut c_void
-)->Hr {
-    let Some(addr)=orig(this,D3D3_CREATE_DEVICE) else{return DDERR_GENERIC};
-    let call:D3D3CreateDeviceFn=std::mem::transmute(addr);
-    let native_target=if cfg().experimental_windowed_adapter {
-        in_game_adapter::unwrap_target(target).unwrap_or(target)
-    }else{target};
-    let hr=call(this,device_clsid,native_target,out,outer);
-    if (cfg().log_enabled || cfg().experimental_windowed_adapter) && hr>=0 && !out.is_null() && !(*out).is_null() {
-        observe_d3d3_device(*out);
-    }
-    if cfg().log_enabled && D3D3_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
-        // If CreateDevice rejects a surface, the supplied target may not be
-        // valid for post-call probing. Only inspect after success.
-        let caps=if hr>=0 {modern_surface_caps(target)} else {None};
-        log(&format!(
-            "D3D3-TRACE: CreateDevice clsid={} render_target_caps={} role={} hr={hr:#x} object_returned={} (unchanged)",
-            guid_label(device_clsid),
-            caps.map(|c|format!("{c:#010x}")).unwrap_or_else(||"Unavailable".into()),
-            caps.map(surface_roles).unwrap_or_else(||"unknown".into()),
-            hr>=0 && !out.is_null() && !(*out).is_null()));
-        // Never lock the render target or modify its 3D state.
-        if hr>=0 { probe_modern_surface_layout(target,"D3D3::CreateDevice target"); }
-    }
-    hr
-}
-
-unsafe fn observe_d3d3(object:*mut c_void) {
-    if object.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
-    let hooked=replace_method(object,D3D3_CREATE_DEVICE,d3d3_create_device as *const () as usize);
-    if D3D3_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
-        log(&format!("D3D3-TRACE: IDirect3D3 CreateDevice hook_installed={hooked} (passive)"));
-    }
-}
-
-// Read-only interface discovery: the original COM QueryInterface is called
-// without changing IID, return value or output. This identifies whether the
-// 3D renderer uses other DirectDraw/Direct3D interfaces beyond the v1 hooks.
-unsafe extern "system" fn ddraw_query_interface(this:*mut c_void,iid:*const Guid,out:*mut *mut c_void)->Hr {
-    let Some(addr)=orig(this,COM_QUERY_INTERFACE) else{return DDERR_GENERIC};
-    let call:QueryInterfaceFn=std::mem::transmute(addr);
-    let hr=call(this,iid,out);
-    if DDRAW_QI_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
-        log(&format!("COM-TRACE: IDirectDraw::QueryInterface iid={} result={hr:#x} object_returned={}",
-            guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
-    }
-    if hr>=0 && !out.is_null() && !(*out).is_null() {
-        if let Some(version)=ddraw_iface(iid){observe_modern_ddraw(*out,version);}
-        if is_d3d3_iid(iid){observe_d3d3(*out);}
-    }
-    hr
-}
-
-unsafe extern "system" fn surface_query_interface(this:*mut c_void,iid:*const Guid,out:*mut *mut c_void)->Hr {
-    let Some(addr)=orig(this,COM_QUERY_INTERFACE) else{return DDERR_GENERIC};
-    let call:QueryInterfaceFn=std::mem::transmute(addr);
-    let hr=call(this,iid,out);
-    if SURFACE_QI_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
-        log(&format!("COM-TRACE: IDirectDrawSurface::QueryInterface iid={} result={hr:#x} object_returned={}",
-            guid_label(iid),hr>=0 && !out.is_null() && !(*out).is_null()));
-    }
-    if hr>=0 && !out.is_null() && !(*out).is_null(){
-        if let Some(version)=surface_iface(iid){observe_modern_surface(*out,version);}
-    }
-    hr
-}
-
-// Trace only. Neither method is paced yet because a CPU lock/unlock
-// or offscreen BltFast is not necessarily a displayed video frame.
-unsafe extern "system" fn surface_blt_fast(this:*mut c_void,x:u32,y:u32,source:*mut c_void,src_rect:*const c_void,flags:u32)->Hr {
-    let Some(addr)=orig(this,SURFACE_BLT_FAST) else{return DDERR_GENERIC};
-    FIRST_BLT_FAST.call_once(||log("RENDER-TRACE: first IDirectDrawSurface::BltFast call (no FPS pacing on this path)"));
-    let call:BltFastFn=std::mem::transmute(addr);
-    call(this,x,y,source,src_rect,flags)
-}
-
-unsafe extern "system" fn surface_unlock(this:*mut c_void,rect_or_ptr:*const c_void)->Hr {
-    let Some(addr)=orig(this,SURFACE_UNLOCK) else{return DDERR_GENERIC};
-    FIRST_UNLOCK.call_once(||log("RENDER-TRACE: first IDirectDrawSurface::Unlock call (no FPS pacing on this path)"));
-    let call:UnlockFn=std::mem::transmute(addr);
-    call(this,rect_or_ptr)
-}
-
 fn trace_game_windows(stage:&str) {
     if CONFIG.get().is_some_and(|cfg|cfg.log_enabled) &&
        WINDOW_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<6 {
         log(&format!("WIN-TRACE: at {stage}: {}",win32::game_windows_snapshot()));
     }
-}
-
-unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
-    let Some(addr)=orig(this,DD_SET_COOPERATIVE) else {return DDERR_GENERIC};
-    let call:CooperativeFn=std::mem::transmute(addr);
-    let settings=cfg();
-    let trace=COOPERATIVE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12;
-    if trace {
-        log(&format!("DirectDraw SetCooperativeLevel requested_flags={flags:#x} hwnd={} borderless={}",
-            if hwnd.is_null(){"NULL"}else{"provided"},settings.borderless));
-    }
-    if settings.borderless {
-        // Experimental: DDSCL_NORMAL avoids switching into an exclusive
-        // hardware mode, but legacy flip chains may need further shims.
-        let hr=call(this,hwnd,DDSCL_NORMAL);
-        if trace {log(&format!("DirectDraw SetCooperativeLevel DDSCL_NORMAL result={hr:#x}"));}
-        if hr>=0 {
-            if hwnd.is_null() {
-                if trace {log("Borderless deferred: game passed a NULL HWND; waiting for a valid HWND");}
-                if trace {trace_game_windows("SetCooperativeLevel NULL HWND");}
-            } else if let Some(monitor)=win32::monitor_from_cursor_or_window(hwnd) {
-                match win32::borderless_window(hwnd,monitor) {
-                    Ok(())=>log(&format!("Borderless applied: monitor [{},{},{},{}]",
-                        monitor.left,monitor.top,monitor.right,monitor.bottom)),
-                    Err(reason)=>if trace {log(&format!("Borderless not applied: {reason}"));},
-                }
-            } else if trace {log("Borderless deferred: could not resolve a monitor");}
-            return hr;
-        }
-        if trace {log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back")); }
-    }
-    call(this,hwnd,flags)
-}
-
-unsafe extern "system" fn set_display_mode(this:*mut c_void,w:u32,h:u32,bpp:u32)->Hr {
-    let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else {return DDERR_GENERIC};
-    let call:DisplayModeFn=std::mem::transmute(addr);
-    let settings=cfg();
-    if settings.borderless && settings.desktop_resolution {
-        // In windowed mode, avoid an exclusive monitor mode switch.
-        // Does not fix internal game viewport and surface sizes yet.
-        log(&format!("Keeping desktop mode; game SetDisplayMode({w},{h},{bpp}) suppressed"));
-        return S_OK;
-    }
-    call(this,w,h,bpp)
-}
-
-unsafe extern "system" fn surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
-    let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
-    FIRST_FLIP.call_once(||log("PRESENT: first IDirectDrawSurface::Flip call received; FPS limiter active on this path"));
-    pace_frame();
-    let call:FlipFn=std::mem::transmute(addr);
-    call(this,target,flags)
-}
-
-unsafe extern "system" fn surface_blt(this:*mut c_void,dst:*const c_void,source:*mut c_void,src:*const c_void,flags:u32,fx:*mut c_void)->Hr {
-    let Some(addr)=orig(this,SURFACE_BLT) else{return DDERR_GENERIC};
-    FIRST_BLT.call_once(||log("PRESENT: first primary IDirectDrawSurface::Blt call received; FPS limiter active on this path"));
-    pace_frame();
-    let call:BltFn=std::mem::transmute(addr);
-    call(this,dst,source,src,flags,fx)
-}
-
-unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
-    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {return DDERR_GENERIC};
-    let call:SurfaceFn=std::mem::transmute(addr);
-    let hr=call(this,desc,out,outer);
-    if hr>=0 && !out.is_null() && !(*out).is_null() {
-        let surface=*out;
-        if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize) {
-            log("COM-TRACE: IDirectDrawSurface::QueryInterface tracing installed");
-        }
-        if replace_method(surface,SURFACE_UNLOCK,surface_unlock as *const () as usize) {
-            log("RENDER-TRACE: IDirectDrawSurface::Unlock tracing installed");
-        }
-        trace_game_windows("CreateSurface");
-        if replace_method(surface,SURFACE_FLIP,surface_flip as *const () as usize) {
-            log("IDirectDrawSurface::Flip paced (1..60 FPS)");
-        }
-        let getcaps_addr=method(surface,SURFACE_GET_CAPS);
-        if getcaps_addr!=0 {
-            let getcaps:GetCapsFn=std::mem::transmute(getcaps_addr);
-            let mut caps=[0u32;4]; // accommodates DDSCAPS and DDSCAPS2
-            if getcaps(surface,caps.as_mut_ptr())>=0 && caps[0]&DDSCAPS_PRIMARYSURFACE!=0 {
-                if replace_method(surface,SURFACE_BLT,surface_blt as *const () as usize) {
-                    log("Primary IDirectDrawSurface::Blt paced (1..60 FPS)");
-                }
-                if replace_method(surface,SURFACE_BLT_FAST,surface_blt_fast as *const () as usize) {
-                    log("RENDER-TRACE: primary IDirectDrawSurface::BltFast tracing installed");
-                }
-            }
-        }
-    }
-    hr
 }
 
 #[no_mangle]
