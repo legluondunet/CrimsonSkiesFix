@@ -230,6 +230,16 @@ mod tests {
         assert!(c.log_enabled);
     }
     #[test]
+    fn shipped_ini_template_matches_actual_generated_config_defaults() {
+        // A future example-template update must not silently enable the
+        // persistent GOS archive patch or any experimental render paths.
+        let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
+        assert_eq!(parse(shipped), parse(DEFAULT_INI));
+        assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::Off);
+        assert!(!parse(shipped).experimental_windowed_adapter);
+        assert!(!parse(shipped).native_3d_widescreen);
+    }
+    #[test]
     fn native_gos_video_lock_is_explicit_and_graphics_scoped(){
         use crate::gos_video_lock::Mode;
         assert_eq!(parse("").gos_video_lock,Mode::Off);
