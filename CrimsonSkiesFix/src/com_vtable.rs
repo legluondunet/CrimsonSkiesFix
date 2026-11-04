@@ -118,22 +118,20 @@ mod tests {
         let mut slots=[0x2222usize,0x3333usize];
         let mut table=slots.as_mut_ptr();
         let object=(&mut table as *mut *mut usize).cast::<c_void>();
-        let second_object={
-            let mut alias=table;
-            // Record a second interface pointer sharing this same vtable.
-            // The object below is created after the first registry insert.
-            let _=&mut alias;
-            alias
-        };
+        // A separate COM object can share the same static native vtable.
+        let mut other_table=table;
+        let other_object=(&mut other_table as *mut *mut usize).cast::<c_void>();
         let key=(slots.as_ptr() as usize,0usize);
         assert!(originals().lock().unwrap().insert(key,0x1111).is_none());
         unsafe {
             assert!(replace_method(object,0,0x2222));
+            assert!(replace_method(other_object,0,0x2222));
             assert_eq!(orig(object,0),Some(0x1111));
+            assert_eq!(orig(other_object,0),Some(0x1111));
             assert!(!replace_method(object,0,0x4444));
         }
         assert_eq!(slots,[0x2222,0x3333]);
-        assert_eq!(second_object,table);
+        assert_eq!(other_table,table);
         assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
     }
 
