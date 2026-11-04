@@ -118,9 +118,11 @@ Useful GOS log markers: `GOS-VIDEO-LOCK:`, `MENU-RESOLUTION-LABEL:`, `WINDOWED-W
 ```powershell
 rustup target add i686-pc-windows-msvc
 cd CrimsonSkiesFix
-cargo test --target i686-pc-windows-msvc
-cargo build --release --target i686-pc-windows-msvc
+cargo test --locked --target i686-pc-windows-msvc
+cargo build --locked --release --target i686-pc-windows-msvc
 ```
+
+The repository commits `Cargo.lock` to pin the tested `flate2` dependency tree.
 
 The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, and packages the user installation layout. `windowed_ddraw_probe.exe` is a **separate experimental diagnostic tool**, not required in the game directory.
 
