@@ -1457,6 +1457,9 @@ mod tests{
             assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_INVALIDARG);
             fx[0]=100;
+            // The invalid rectangle, not the earlier zero-valued effects length,
+            // must be what causes the following E_INVALIDARG result.
+            assert_eq!(fx[0],100);
             let mut bad=Rect{left:0,top:0,right:641,bottom:480};
             assert_eq!((bv.blt)(b,&mut bad,ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_INVALIDARG);
