@@ -175,7 +175,7 @@ fn inflate(data: &[u8], entry: &Entry) -> Result<Vec<u8>, String> {
     let payload = data.get(entry.offset..entry.offset + entry.compressed)
         .ok_or("ROF member out of range")?;
     if entry.kind == 0 { return Ok(payload.to_vec()); }
-    let mut decoder = ZlibDecoder::new(payload);
+    let decoder = ZlibDecoder::new(payload);
     let mut result = Vec::new();
     decoder.take(entry.expanded as u64 + 1).read_to_end(&mut result)
         .map_err(|e| format!("ROF script zlib error: {e}"))?;

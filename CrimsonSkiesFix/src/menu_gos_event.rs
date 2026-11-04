@@ -206,7 +206,7 @@ pub unsafe fn install()->bool{
         return false;
     }
     // PUSH imm32 has the same 5-byte length; no instruction boundaries move.
-    let replacement=(observe_callback as usize as u32).to_le_bytes();
+    let replacement=(observe_callback as *const () as usize as u32).to_le_bytes();
     ptr::copy_nonoverlapping(replacement.as_ptr(),
         (REGISTRATION_PUSH+1) as *mut u8,4);
     let flush=FlushInstructionCache(GetCurrentProcess(),

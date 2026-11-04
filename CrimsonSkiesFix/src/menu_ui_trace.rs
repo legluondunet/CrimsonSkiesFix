@@ -99,7 +99,7 @@ fn should_emit(code:u32,arg:u32,previous:&AtomicU32,total:&AtomicU32,max:u32)->b
     let low=short_arg(arg).unwrap_or(0x7ff);
     let signature=(code<<12)|low;
     if previous.swap(signature,Ordering::Relaxed)==signature{return false;}
-    total.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|x|{
+    total.try_update(Ordering::Relaxed,Ordering::Relaxed,|x|{
         if x<max{Some(x+1)}else{None}
     }).is_ok()
 }
@@ -142,7 +142,7 @@ unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32
         // unchanged. Otherwise edits to other Video options are invisible.
         let setter_sample=arg!=0 && VIDEO_SET_CALLS.fetch_add(1,Ordering::Relaxed)<24;
         if (state_changed || any_change || setter_sample) &&
-            VIDEO_STATE_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+            VIDEO_STATE_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
                 |n|if n<MAX_VIDEO_STATES{Some(n+1)}else{None}).is_ok()
         {
             let operation=if arg==0{"get"}else{"set"};
@@ -221,8 +221,8 @@ pub unsafe fn install()->(bool,bool){
         return (false,false);
     }
     if !crate::cfg().log_enabled {return (false,false);}
-    let data=patch_registration(UI_DATA_SITE,UI_DATA_BYTES,ui_data_passthrough as usize);
-    let control=patch_registration(UI_CONTROL_SITE,UI_CONTROL_BYTES,ui_control_passthrough as usize);
+    let data=patch_registration(UI_DATA_SITE,UI_DATA_BYTES,ui_data_passthrough as *const () as usize);
+    let control=patch_registration(UI_CONTROL_SITE,UI_CONTROL_BYTES,ui_control_passthrough as *const () as usize);
     log(&format!("MENU-GOS-UI: uiData_hook={data} uiControl_hook={control}; strict 3-argument pass-through, only during GOS Preferences transaction"));
     (data,control)
 }

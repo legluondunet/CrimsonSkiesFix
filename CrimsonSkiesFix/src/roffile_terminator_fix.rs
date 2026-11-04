@@ -12,7 +12,7 @@
 //! intervening graphics call will not be patched. This limitation is logged.
 //! Nothing is attempted from DllMain or Windows' loader lock.
 use std::{
-    ffi::{c_void, OsString},
+    ffi::{c_char, c_void, OsString},
     fs, os::windows::ffi::OsStringExt, path::PathBuf, ptr,
     sync::{atomic::{AtomicUsize, Ordering}, Mutex},
 };
@@ -46,9 +46,9 @@ static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn GetModuleHandleA(name: *const u8) -> *mut c_void;
+    fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
     fn GetModuleFileNameW(module: *mut c_void, path: *mut u16, capacity: u32) -> u32;
-    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *const c_void;
     fn VirtualProtect(address: *mut c_void, len: usize, new: u32, old: *mut u32) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, len: usize) -> i32;
@@ -206,7 +206,7 @@ unsafe fn install(module: usize) -> Result<(), String> {
         return Err("ROFFILE.DLL in-memory PE header or exact instruction bytes differ".into());
     }
     let site_addr = module + CALL_RVA;
-    let target = allocate_padded as usize;
+    let target = allocate_padded as *const () as usize;
     let Some(displacement) = rel32(site_addr, target) else {
         return Err("ROFFILE.DLL patch target is outside x86 relative CALL range".into());
     };

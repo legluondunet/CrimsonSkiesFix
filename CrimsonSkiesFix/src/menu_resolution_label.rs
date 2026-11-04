@@ -168,7 +168,7 @@ pub unsafe fn install() -> bool {
         log("MENU-RESOLUTION-LABEL: memory protection denied; hook disabled");
         return false;
     }
-    let new_call = rel_call(FORMAT_CALL_SITE, format_resolution as usize);
+    let new_call = rel_call(FORMAT_CALL_SITE, format_resolution as *const () as usize);
     ptr::copy_nonoverlapping(new_call.as_ptr(), FORMAT_CALL_SITE as *mut u8, new_call.len());
     let flushed = FlushInstructionCache(
         GetCurrentProcess(), FORMAT_CALL_SITE as *const c_void, new_call.len()

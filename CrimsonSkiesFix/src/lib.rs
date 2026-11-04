@@ -51,8 +51,10 @@ use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{W
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
-// All user-facing diagnostic messages use the canonical project name.
-// Historical INI names are recognized only by the import logic.
+// Historical INI names are recognized only by the import logic;
+// all user-facing diagnostic text uses the canonical project name.
+// Kept only for the identity regression assertion, not for production.
+#[cfg(test)]
 const PROJECT_NAME:&str="CrimsonSkiesFix";
 const SYSTEM_DDRAW_RECURSION_ERROR:&str="ERROR: loading the system DirectDraw resolved back to CrimsonSkiesFix proxy; aborting to avoid recursion";
 
@@ -586,7 +588,7 @@ unsafe fn probe_modern_surface_layout(surface:*mut c_void,reason:&str) {
     // hook. A method already patched on this vtable has an original mapping.
     let address=orig(surface,SURFACE_GET_DESC).or_else(||{
         let addr=method(surface,SURFACE_GET_DESC);
-        (addr!=0 && addr!=modern_get_surface_desc as usize).then_some(addr)
+        (addr!=0 && addr!=modern_get_surface_desc as *const () as usize).then_some(addr)
     });
     let Some(address)=address else{return;};
     let call:GetSurfaceDescFn=std::mem::transmute(address);
@@ -1067,24 +1069,24 @@ unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     if cfg().experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
         return;
     }
-    let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize);
-    let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as usize);
-    let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as usize);
-    let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as usize);
-    let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as usize);
-    let attached=replace_method(surface,SURFACE_GET_ATTACHED,modern_get_attached_surface as usize);
-    let desc=replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as usize);
+    let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize);
+    let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as *const () as usize);
+    let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as *const () as usize);
+    let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as *const () as usize);
+    let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as *const () as usize);
+    let attached=replace_method(surface,SURFACE_GET_ATTACHED,modern_get_attached_surface as *const () as usize);
+    let desc=replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as *const () as usize);
     if surface_usage_enabled(){
         let installed=[
-            replace_method(surface,SURFACE_USAGE_ADD_ATTACHED_SURFACE,audit_surface_add_attached_surface as usize),
-            replace_method(surface,SURFACE_USAGE_DELETE_ATTACHED_SURFACE,audit_surface_delete_attached_surface as usize),
-            replace_method(surface,SURFACE_USAGE_GET_DC,audit_surface_get_dc as usize),
-            replace_method(surface,SURFACE_USAGE_IS_LOST,audit_surface_is_lost as usize),
-            replace_method(surface,SURFACE_USAGE_LOCK,audit_surface_lock as usize),
-            replace_method(surface,SURFACE_USAGE_RELEASE_DC,audit_surface_release_dc as usize),
-            replace_method(surface,SURFACE_USAGE_RESTORE,audit_surface_restore as usize),
-            replace_method(surface,SURFACE_USAGE_SET_CLIPPER,audit_surface_set_clipper as usize),
-            replace_method(surface,SURFACE_USAGE_GET_DDINTERFACE,audit_surface_get_ddinterface as usize),
+            replace_method(surface,SURFACE_USAGE_ADD_ATTACHED_SURFACE,audit_surface_add_attached_surface as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_DELETE_ATTACHED_SURFACE,audit_surface_delete_attached_surface as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_GET_DC,audit_surface_get_dc as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_IS_LOST,audit_surface_is_lost as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_LOCK,audit_surface_lock as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_RELEASE_DC,audit_surface_release_dc as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_RESTORE,audit_surface_restore as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_SET_CLIPPER,audit_surface_set_clipper as *const () as usize),
+            replace_method(surface,SURFACE_USAGE_GET_DDINTERFACE,audit_surface_get_ddinterface as *const () as usize),
         ];
         if MODERN_SURFACE_HOOK_TRACE_COUNT.load(Ordering::Relaxed)<24 {
             log(&format!("SURFACE-USAGE-HOOKS: installed={}/{} methods (opt-in; passive)",
@@ -1100,12 +1102,12 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     if name=="IDirectDraw4" {
         GAME_DD4_VTABLE.store(*(object.cast::<usize>()),Ordering::Release);
     }
-    let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
-    let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as usize);
-    let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as usize);
-    let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as usize);
+    let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
+    let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as *const () as usize);
+    let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as *const () as usize);
+    let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as *const () as usize);
     if name=="IDirectDraw4" && cfg().experimental_windowed_adapter {
-        let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as usize);
+        let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as *const () as usize);
         if cfg().log_enabled {log(&format!("WINDOWED-GAME: DD4 GetDisplayMode hook_installed={get_mode}"));}
     }
     if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
@@ -1184,10 +1186,10 @@ unsafe extern "system" fn d3d3_device_get_render_target(
 }
 unsafe fn observe_d3d3_device(device:*mut c_void){
     if device.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
-    let begin=replace_method(device,D3D3_DEVICE_BEGIN_SCENE,d3d3_device_begin_scene as usize);
-    let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as usize);
-    let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as usize);
-    let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as usize);
+    let begin=replace_method(device,D3D3_DEVICE_BEGIN_SCENE,d3d3_device_begin_scene as *const () as usize);
+    let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as *const () as usize);
+    let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as *const () as usize);
+    let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as *const () as usize);
     if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!(
             "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
@@ -1228,7 +1230,7 @@ unsafe extern "system" fn d3d3_create_device(
 
 unsafe fn observe_d3d3(object:*mut c_void) {
     if object.is_null() || !(cfg().log_enabled || cfg().experimental_windowed_adapter){return;}
-    let hooked=replace_method(object,D3D3_CREATE_DEVICE,d3d3_create_device as usize);
+    let hooked=replace_method(object,D3D3_CREATE_DEVICE,d3d3_create_device as *const () as usize);
     if D3D3_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!("D3D3-TRACE: IDirect3D3 CreateDevice hook_installed={hooked} (passive)"));
     }
@@ -1356,14 +1358,14 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
     let hr=call(this,desc,out,outer);
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let surface=*out;
-        if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as usize) {
+        if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize) {
             log("COM-TRACE: IDirectDrawSurface::QueryInterface tracing installed");
         }
-        if replace_method(surface,SURFACE_UNLOCK,surface_unlock as usize) {
+        if replace_method(surface,SURFACE_UNLOCK,surface_unlock as *const () as usize) {
             log("RENDER-TRACE: IDirectDrawSurface::Unlock tracing installed");
         }
         trace_game_windows("CreateSurface");
-        if replace_method(surface,SURFACE_FLIP,surface_flip as usize) {
+        if replace_method(surface,SURFACE_FLIP,surface_flip as *const () as usize) {
             log("IDirectDrawSurface::Flip paced (1..60 FPS)");
         }
         let getcaps_addr=method(surface,SURFACE_GET_CAPS);
@@ -1371,10 +1373,10 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
             let getcaps:GetCapsFn=std::mem::transmute(getcaps_addr);
             let mut caps=[0u32;4]; // accommodates DDSCAPS and DDSCAPS2
             if getcaps(surface,caps.as_mut_ptr())>=0 && caps[0]&DDSCAPS_PRIMARYSURFACE!=0 {
-                if replace_method(surface,SURFACE_BLT,surface_blt as usize) {
+                if replace_method(surface,SURFACE_BLT,surface_blt as *const () as usize) {
                     log("Primary IDirectDrawSurface::Blt paced (1..60 FPS)");
                 }
-                if replace_method(surface,SURFACE_BLT_FAST,surface_blt_fast as usize) {
+                if replace_method(surface,SURFACE_BLT_FAST,surface_blt_fast as *const () as usize) {
                     log("RENDER-TRACE: primary IDirectDrawSurface::BltFast tracing installed");
                 }
             }
@@ -1451,10 +1453,10 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     let hr=real(guid,out,outer);
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let dd=*out;
-        let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as usize);
-        let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as usize);
-        let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as usize);
-        let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as usize);
+        let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
+        let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as *const () as usize);
+        let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as *const () as usize);
+        let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as *const () as usize);
         log(&format!("DirectDrawCreate interception: query_interface={qi}, cooperative={a}, mode={b}, surface={c}"));
     }
     hr

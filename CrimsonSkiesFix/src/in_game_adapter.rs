@@ -17,7 +17,6 @@ use crate::{
 
 const E_FAIL:Hr=0x8000_4005u32 as i32;
 const E_NOTIMPL:Hr=0x8000_4001u32 as i32;
-const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
 const DD_CAPS_PRIMARY:u32=0x0000_0200;
 const DD_CAPS_OFFSCREEN:u32=0x0000_0040;
 const DD_CAPS_3D:u32=0x0000_2000;
@@ -339,7 +338,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
     }
-    if let Some(mut old)=runtime.epoch.take(){
+    if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
             log(&format!("WINDOWED-GAME: retiring old primary failed {:#010x}",hr as u32));
             runtime.epoch=Some(old);

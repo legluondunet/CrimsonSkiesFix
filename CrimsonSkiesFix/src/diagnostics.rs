@@ -11,10 +11,6 @@ use std::{
 use crate::diagnostics_graphics;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct Guid { data1:u32, data2:u16, data3:u16, data4:[u8;8] }
-
-#[repr(C)]
 struct OsVersion {
     size:u32, major:u32, minor:u32, build:u32, platform:u32, service_pack:[u16;128],
 }
