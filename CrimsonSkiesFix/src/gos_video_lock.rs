@@ -394,20 +394,22 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn enable(base: &Path, overlay: &Path) -> Result<&'static str, String> {
     let original = checked_patch(overlay)?;
     let backup = overlay.with_file_name(format!("crimptch.rof{BACKUP_SUFFIX}"));
-    if let Some(_) = overlay_video_matches(&original)? {
-        if backup.exists() {
-            let preserved = checked_patch(&backup)?;
-            let original_air = original_airframe(&preserved)?;
-            let current = parse(&original)?;
-            let current_air = named(&current, AIRFRAME_PATH).ok_or("patched AIRFRAME missing")?;
-            let patched_air = inflate(&original, current_air)?;
-            let saved_air = {
-                let saved = parse(&preserved)?;
-                inflate(&preserved, &saved[0])?
-            };
-            if patched_air != saved_air || original_air.expanded != saved_air.len() {
-                return Err("patched AIRFRAME differs from backup; aborting".into());
-            }
+    if overlay_video_matches(&original)?.is_some() {
+        // Existing user patches must never be rewritten. Do not claim
+        // successful managed installation if there is no valid rollback.
+        // A missing backup leaves the user-patched overlay untouched.
+        if !regular_file(&backup) {
+            return Err("already-disabled GOS overlay has no regular original backup; no write; restore unavailable".into());
+        }
+        let preserved = checked_patch(&backup)?;
+        let original_air = original_airframe(&preserved)?;
+        let current = parse(&original)?;
+        let current_air = named(&current, AIRFRAME_PATH).ok_or("patched AIRFRAME missing")?;
+        let saved = parse(&preserved)?;
+        let saved_air = inflate(&preserved, &saved[0])?;
+        if inflate(&original, current_air)? != saved_air ||
+           original_air.expanded != saved_air.len() {
+            return Err("patched AIRFRAME differs from backup; aborting".into());
         }
         return Ok("already-disabled (original GOS override; no write)");
     }
@@ -437,8 +439,10 @@ fn enable(base: &Path, overlay: &Path) -> Result<&'static str, String> {
     let committed = replace_file(&temporary, overlay);
     if committed.is_err() {let _ = fs::remove_file(&temporary);}
     committed?;
-    if overlay_video_matches(&checked_patch(overlay)?)?.is_none() {
-        return Err("installed overlay postflight verification failed (backup preserved)".into());
+    // Verify the complete installed archive, not just its script hash.
+    // The exact original AIRFRAME compressed bytes must survive unchanged.
+    if checked_patch(overlay)? != output {
+        return Err("installed overlay byte-for-byte postflight failed (backup preserved)".into());
     }
     Ok("installed native-disabled GOS Video controls (original archived in .bak)")
 }
@@ -458,15 +462,17 @@ fn restore(overlay: &Path) -> Result<&'static str, String> {
     }
     let entries = parse(&present)?;
     let existing = named(&entries, AIRFRAME_PATH).ok_or("current AIRFRAME missing")?;
-    if inflate(&present, existing)?.len() != airframe.expanded {
-        return Err("AIRFRAME size mismatch; refusing restore".into());
-    }
-    // Check original bytes, not only length, to protect any owner changes.
+    // Verify original expanded AIRFRAME bytes, not just a matching size.
     let original_entry = parse(&original)?;
-    if inflate(&present, existing)? != inflate(&original, &original_entry[0])? {
+    let current_air = inflate(&present, existing)?;
+    if current_air.len() != airframe.expanded ||
+       current_air != inflate(&original, &original_entry[0])? {
         return Err("AIRFRAME member changed; refusing restore".into());
     }
     replace_file(&backup, overlay)?;
+    if checked_patch(overlay)? != original {
+        return Err("restored archive differs from exact original backup after rename".into());
+    }
     Ok("restored original GOS patch overlay; backup consumed")
 }
 
