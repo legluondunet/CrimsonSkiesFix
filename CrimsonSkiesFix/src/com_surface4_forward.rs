@@ -1629,7 +1629,7 @@ mod tests{
             let retired_primary=primary as usize;
             let retiring=thread::spawn(move ||{
                 started.store(true,Ordering::SeqCst);
-                let result=unsafe{retire_graph_primary_flip(retired_primary as SurfaceThis)};
+                let result=retire_graph_primary_flip(retired_primary as SurfaceThis);
                 finished.store(true,Ordering::SeqCst);
                 result
             });
