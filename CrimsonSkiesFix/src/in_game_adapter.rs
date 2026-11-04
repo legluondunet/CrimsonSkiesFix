@@ -339,7 +339,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
     }
-    if let Some(mut old)=runtime.epoch.take(){
+    if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
             log(&format!("WINDOWED-GAME: retiring old primary failed {:#010x}",hr as u32));
             runtime.epoch=Some(old);
