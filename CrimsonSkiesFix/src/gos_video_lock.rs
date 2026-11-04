@@ -1,9 +1,10 @@
-//! Opt-in, bounded native GOS dropdown lock without Python.
+//! Default-enabled, bounded native GOS dropdown lock without Python.
 //!
 //! The original GOS Video.script is **never bundled**. On the first
 //! DirectDraw export (after the exact EXE SHA-256 gate, never DllMain),
-//! optionally verify the original ROF archive and derive a 2-member
-//! resource overlay from the user's installed originals. The original
+//! verify the original ROF archive and derive a 2-member resource
+//! overlay from the user's installed originals, unless explicitly disabled.
+//! The original
 //! AIRFRAME patch remains byte-for-byte intact in its compressed form.
 //!
 //! Unlike a UI object/mouse hook, this uses GameOS's own mail(10000, ...)
@@ -14,8 +15,10 @@
 //!
 //! The early-loading path, idempotent repeat and explicit restore have
 //! been owner-validated under Wine/GE-Proton. Windows runtime testing
-//! remains deferred. This remains OFF by default because it writes to
-//! the user's game resource archive persistently until explicit restore.
+//! remains deferred. As requested by the owner, starting with v0.1.90
+//! the feature is ON by default, with a verified, exclusive original
+//! backup and explicit restore/opt-out controls. The patch persists
+//! across DLL removal until restore is selected.
 
 use std::{
     collections::HashSet,
