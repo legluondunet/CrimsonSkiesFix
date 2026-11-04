@@ -87,7 +87,7 @@ pub unsafe fn install()->bool{
         log("MENU-VIDEO-EVENT: executable page not writable; observer disabled");
         return false;
     }
-    let new_bytes=rel_call(CALL_SITE,observe_mode_request as usize);
+    let new_bytes=rel_call(CALL_SITE,observe_mode_request as *const () as usize);
     ptr::copy_nonoverlapping(new_bytes.as_ptr(),CALL_SITE as *mut u8,5);
     let flushed=FlushInstructionCache(GetCurrentProcess(),CALL_SITE as *const c_void,5);
     let mut unused=0;
