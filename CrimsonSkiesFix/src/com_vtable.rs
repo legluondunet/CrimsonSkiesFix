@@ -31,7 +31,17 @@ pub(crate) unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->
     if table.is_null(){return false;}
     let slot=table.add(index);
     let Ok(mut map)=originals().lock() else {return false};
-    if map.contains_key(&(table as usize,index)){return true;}
+    if let Some(&registered_original)=map.get(&(table as usize,index)){
+        // A registered key alone is not proof that OUR callback is still
+        // installed. Another component may have overwritten the slot, or
+        // native COM memory might have reused an old vtable address.
+        //
+        // Never silently claim success or repatch in those cases: the
+        // original address belongs to the previous registration. Restoring
+        // or chaining a foreign hook here could recurse into stale memory.
+        return registered_original!=0 &&
+            registered_original!=hook && *slot==hook;
+    }
     let original=*slot;
     if original==0 || original==hook{return false;}
     // Publish the original before changing the pointer to avoid a hook
@@ -99,6 +109,53 @@ mod tests {
         unsafe { assert!(!replace_method(object,0,0x1234)); }
         assert_eq!(slots,[0x1234]);
         assert_eq!(unsafe { orig(object,0) },None);
+    }
+
+    #[test]
+    fn repeated_install_succeeds_only_when_same_hook_is_still_present() {
+        // Seed the bookkeeping without calling VirtualProtect: all slots
+        // point to test-owned memory, never a real Windows COM object.
+        let mut slots=[0x2222usize,0x3333usize];
+        let mut table=slots.as_mut_ptr();
+        let object=(&mut table as *mut *mut usize).cast::<c_void>();
+        let second_object={
+            let mut alias=table;
+            // Record a second interface pointer sharing this same vtable.
+            // The object below is created after the first registry insert.
+            let _=&mut alias;
+            alias
+        };
+        let key=(slots.as_ptr() as usize,0usize);
+        assert!(originals().lock().unwrap().insert(key,0x1111).is_none());
+        unsafe {
+            assert!(replace_method(object,0,0x2222));
+            assert_eq!(orig(object,0),Some(0x1111));
+            assert!(!replace_method(object,0,0x4444));
+        }
+        assert_eq!(slots,[0x2222,0x3333]);
+        assert_eq!(second_object,table);
+        assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
+    }
+
+    #[test]
+    fn displaced_or_recycled_vtable_slot_is_not_reported_hooked() {
+        let mut slots=[0x3333usize];
+        let mut table=slots.as_mut_ptr();
+        let object=(&mut table as *mut *mut usize).cast::<c_void>();
+        let key=(slots.as_ptr() as usize,0usize);
+        assert!(originals().lock().unwrap().insert(key,0x1111).is_none());
+        unsafe {
+            // Simulate foreign patch or a different native COM vtable
+            // occupying the very same address after object destruction.
+            assert!(!replace_method(object,0,0x2222));
+            assert_eq!(orig(object,0),Some(0x1111));
+        }
+        // Even if the old original is restored at the slot, a registry
+        // entry alone must not mask the missing hook.
+        slots[0]=0x1111;
+        unsafe {assert!(!replace_method(object,0,0x2222));}
+        assert_eq!(slots,[0x1111]);
+        assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
     }
 
     #[test]
