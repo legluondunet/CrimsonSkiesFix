@@ -10,10 +10,10 @@ pub const DEFAULT_INI: &str = concat!(
     "ModernFPSPacing=0\n",
     "; Verified Wine/Proton native DirectDraw4 3D adapter (on by default).\n",
     "ExperimentalWindowedAdapter=1\n",
-    "; Optional recovery on game foreground return; experiment only.\n",
-    "FocusRepaint=0\n",
-    "; Experimental: suppress only WM_ERASEBKGND on the game HWND.\n",
-    "WindowEraseGuard=0\n",
+    "; One-shot repaint after focus or exposed-window return; enabled by default.\n",
+    "FocusRepaint=1\n",
+    "; Prevent white background erase over native DirectDraw pixels; enabled by default.\n",
+    "WindowEraseGuard=1\n",
     "; Legacy first-image color fix: force RGB565 on verified game-sized offscreen source (on by default).\n",
     "LegacyOffscreenRGB565=1\n",
     "; Native FOV/HUD and startup driver/resolution prompt bypass for verified 1.02 EXE (on by default).\n",
@@ -54,7 +54,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
@@ -160,17 +160,19 @@ mod tests {
         assert!(!parse("[Graphics]\nLegacyOffscreenRGB565=1\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
     }
     #[test]
-    fn window_erase_guard_is_opt_in_and_graphics_scoped(){
-        assert!(!Config::default().window_erase_guard);
-        assert!(!parse("[Debug]\nWindowEraseGuard=1").window_erase_guard);
+    fn window_erase_guard_is_on_by_default_and_graphics_scoped(){
+        assert!(Config::default().window_erase_guard);
+        assert!(parse("[Debug]\nWindowEraseGuard=0").window_erase_guard);
         assert!(parse("[Graphics]\nWindowEraseGuard=1").window_erase_guard);
+        assert!(!parse("[Graphics]\nWindowEraseGuard=0").window_erase_guard);
         assert!(!parse("[Graphics]\nWindowEraseGuard=1\nWindowEraseGuard=0").window_erase_guard);
     }
     #[test]
-    fn focus_repaint_is_experimental_graphics_only_and_default_off(){
-        assert!(!Config::default().focus_repaint);
-        assert!(!parse("[Debug]\nFocusRepaint=1").focus_repaint);
+    fn focus_repaint_is_on_by_default_and_graphics_scoped(){
+        assert!(Config::default().focus_repaint);
+        assert!(parse("[Debug]\nFocusRepaint=0").focus_repaint);
         assert!(parse("[Graphics]\nFocusRepaint=1").focus_repaint);
+        assert!(!parse("[Graphics]\nFocusRepaint=0").focus_repaint);
         assert!(!parse("[Graphics]\nFocusRepaint=1\nFocusRepaint=0").focus_repaint);
     }
     #[test]
@@ -233,14 +235,16 @@ mod tests {
     }
     #[test]
     fn shipped_ini_template_matches_actual_generated_config_defaults() {
-        // A future example-template update must not silently enable the
-        // persistent GOS archive patch or any experimental render paths.
+        // The shipped template and generated first-run defaults must match
+        // the explicitly selected project policy, including enabled recovery.
         let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
         assert_eq!(parse(shipped), parse(DEFAULT_INI));
         assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(parse(shipped).experimental_windowed_adapter);
         assert!(parse(shipped).native_3d_widescreen);
         assert!(parse(shipped).legacy_offscreen_rgb565);
+        assert!(parse(shipped).focus_repaint);
+        assert!(parse(shipped).window_erase_guard);
         assert!(parse(shipped).desktop_resolution);
     }
     #[test]
@@ -250,6 +254,8 @@ mod tests {
         assert!(initial.experimental_windowed_adapter);
         assert!(initial.native_3d_widescreen);
         assert!(initial.legacy_offscreen_rgb565);
+        assert!(initial.focus_repaint);
+        assert!(initial.window_erase_guard);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(!initial.log_enabled);
         assert!(!initial.modern_fps_pacing);
