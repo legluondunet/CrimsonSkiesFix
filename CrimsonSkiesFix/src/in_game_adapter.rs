@@ -739,3 +739,64 @@ mod tests{
         assert_eq!((b[2],b[3],b[21],b[22],b[23],b[24]),(600,800,16,0xf800,0x07e0,0x001f));
     }
 }
+#[cfg(test)]
+mod native_com_ownership_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32,Ordering};
+
+    #[repr(C)]
+    struct NativeMock {
+        vtable:*const usize,
+        refs:AtomicU32,
+        add_refs:AtomicU32,
+        releases:AtomicU32,
+    }
+    unsafe extern "system" fn add_ref(this:*mut c_void)->u32 {
+        let object=&*this.cast::<NativeMock>();
+        object.add_refs.fetch_add(1,Ordering::SeqCst);
+        object.refs.fetch_add(1,Ordering::SeqCst)+1
+    }
+    unsafe extern "system" fn release(this:*mut c_void)->u32 {
+        let object=&*this.cast::<NativeMock>();
+        object.releases.fetch_add(1,Ordering::SeqCst);
+        object.refs.fetch_sub(1,Ordering::SeqCst)-1
+    }
+
+    #[test]
+    fn native_com_owner_releases_exactly_one_borrowed_output_ref() {
+        let slots=[0usize,add_ref as *const () as usize,release as *const () as usize];
+        let mut obj=NativeMock{
+            vtable:slots.as_ptr(),refs:AtomicU32::new(1),
+            add_refs:AtomicU32::new(0),releases:AtomicU32::new(0),
+        };
+        {
+            let owner=unsafe {Com::from_out((&mut obj as *mut NativeMock).cast()).unwrap()};
+            assert_eq!(owner.ptr(),(&mut obj as *mut NativeMock).cast());
+            assert_eq!(obj.refs.load(Ordering::SeqCst),1);
+        }
+        assert_eq!(obj.refs.load(Ordering::SeqCst),0);
+        assert_eq!(obj.add_refs.load(Ordering::SeqCst),0);
+        assert_eq!(obj.releases.load(Ordering::SeqCst),1);
+        assert!(unsafe {Com::from_out(ptr::null_mut())}.is_err());
+    }
+
+    #[test]
+    fn game_facing_addref_outlives_adapters_own_strong_reference() {
+        let slots=[0usize,add_ref as *const () as usize,release as *const () as usize];
+        let mut obj=NativeMock{
+            vtable:slots.as_ptr(),refs:AtomicU32::new(1),
+            add_refs:AtomicU32::new(0),releases:AtomicU32::new(0),
+        };
+        let raw=(&mut obj as *mut NativeMock).cast();
+        let owner=unsafe{Com::from_out(raw).unwrap()};
+        unsafe{owner.add_ref().unwrap();}
+        assert_eq!(obj.refs.load(Ordering::SeqCst),2);
+        drop(owner);
+        assert_eq!(obj.refs.load(Ordering::SeqCst),1);
+        assert_eq!(obj.releases.load(Ordering::SeqCst),1);
+        assert_eq!(unsafe{release(raw)},0);
+        assert_eq!(obj.refs.load(Ordering::SeqCst),0);
+        assert_eq!(obj.add_refs.load(Ordering::SeqCst),1);
+        assert_eq!(obj.releases.load(Ordering::SeqCst),2);
+    }
+}
