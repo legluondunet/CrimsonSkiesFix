@@ -2,9 +2,11 @@
 //! Never calls any DirectDrawCreate hook, game patch, window or real D3D device.
 //! A successful result tests PE loading / DllMain under a real Windows loader,
 //! NOT native Windows 11 gameplay compatibility.
-#![cfg(windows)]
+// Generic Windows-specific diagnostics must not break non-Windows Cargo builds.
+#[cfg(windows)]
 use std::{ffi::{c_char,c_void,OsStr},os::windows::ffi::OsStrExt,path::PathBuf};
 
+#[cfg(windows)]
 #[link(name="kernel32")]
 extern "system" {
     fn LoadLibraryW(filename:*const u16)->*mut c_void;
@@ -12,6 +14,7 @@ extern "system" {
     fn FreeLibrary(module:*mut c_void)->i32;
 }
 
+#[cfg(windows)]
 fn run()->Result<(),String>{
     let argument=std::env::args_os().nth(1)
         .ok_or("usage: ddraw_loader_smoke.exe <absolute-or-relative-ddraw.dll>")?;
@@ -45,10 +48,17 @@ fn run()->Result<(),String>{
     result
 }
 
+#[cfg(windows)]
 fn main(){
     if let Err(e)=run(){
         eprintln!("DDRAW-LOAD-SMOKE: ERROR: {e}");
         std::process::exit(1);
     }
     println!("DDRAW-LOAD-SMOKE: PASS; 32-bit proxy loaded and released; 3 DirectDraw exports found (game not launched)");
+}
+
+#[cfg(not(windows))]
+fn main(){
+    eprintln!("DDRAW-LOAD-SMOKE: this native loader test is Windows-only");
+    std::process::exit(2);
 }
