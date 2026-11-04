@@ -14,6 +14,11 @@ mod menu_resolution_label;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
+mod com_vtable;
+mod com_labels;
+mod frame_pacing;
+mod render_sampling;
+mod blt_crash_trace;
 mod window_exposure;
 mod window_erase_guard;
 mod diagnostics;
@@ -35,6 +40,13 @@ mod surface_usage; // opt-in passive COM surface audit for borderless prerequisi
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
+use com_vtable::{method,orig,replace_method};
+use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
+use frame_pacing::pace_frame;
+use render_sampling::sample_render_calls;
+use blt_crash_trace::{CRASH_BLT_LOG,NATIVE_BLT_CRASH_TRACE_ID,crash_blt_line};
+#[cfg(test)]
+use blt_crash_trace::{CRASH_BLT_ROTATE_CALLS,crash_blt_rotation_needed};
 fn color_probe_enabled()->bool{
     // The virtual game graph can only be created AFTER cfg() initializes.
     // Never initialize configuration/filesystem while a COM Blt is in
@@ -47,7 +59,7 @@ fn color_capture_enabled()->bool{
 fn color_capture_path(label:&str)->Option<std::path::PathBuf>{
     win32::color_capture_path(label)
 }
-use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
+use std::{ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
@@ -83,14 +95,6 @@ type D3D3GetRenderTargetFn=unsafe extern "system" fn(*mut c_void,*mut *mut c_voi
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct Guid {d1:u32,d2:u16,d3:u16,d4:[u8;8]}
-fn guid_label(iid:*const Guid)->String {
-    if iid.is_null(){return "NULL".to_string();}
-    let g=unsafe{&*iid};
-    format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        g.d1,g.d2,g.d3,g.d4[0],g.d4[1],g.d4[2],g.d4[3],
-        g.d4[4],g.d4[5],g.d4[6],g.d4[7])
-}
-
 const S_OK:Hr=0;
 const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
 const DDSCL_NORMAL:u32=0x0000_0008;
@@ -134,12 +138,7 @@ static CONFIG:OnceLock<Config>=OnceLock::new();
 static LOG:OnceLock<Mutex<File>>=OnceLock::new();
 // Only enabled for a controlled crash reproduction. The detailed source and
 // destination pointers are in a separate, bounded rotating file.
-static CRASH_BLT_LOG:OnceLock<Mutex<File>>=OnceLock::new();
-const CRASH_BLT_ROTATE_CALLS:usize=2048;
 static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
-static ORIGINALS:OnceLock<Mutex<HashMap<(usize,usize),usize>>>=OnceLock::new();
-static LAST_FRAME:Mutex<i64>=Mutex::new(0);
-static FREQUENCY:OnceLock<i64>=OnceLock::new();
 static FIRST_FLIP:Once=Once::new();
 static FIRST_BLT:Once=Once::new();
 static COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -163,7 +162,6 @@ static FIRST_MODERN_PACED_FLIP:Once=Once::new();
 static FIRST_MODERN_NONPRIMARY_FLIP:Once=Once::new();
 static MODERN_FLIP_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLT_EVENTS:AtomicUsize=AtomicUsize::new(0);
-static NATIVE_BLT_CRASH_TRACE_ID:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_BLT_SOURCE_UNWRAP_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_UNLOCK_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLTFAST_EVENTS:AtomicUsize=AtomicUsize::new(0);
@@ -204,27 +202,6 @@ static SURFACE_USAGE_AUDIT:Mutex<surface_usage::Audit>=Mutex::new(surface_usage:
 static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
-
-fn crash_blt_rotation_needed(id:usize)->bool {
-    id>1 && (id-1)%CRASH_BLT_ROTATE_CALLS==0
-}
-
-// All crash tracing uses a separate game-local file so the normal project
-// log stays small. Rewind once per 2048 completed/attempted native calls;
-// the most recent ENTER is retained even if Wine terminates inside Blt.
-// The lock is never held while entering Wine's original COM implementation.
-fn crash_blt_line(id:usize,is_enter:bool,line:&str){
-    let Some(lock)=CRASH_BLT_LOG.get() else{return;};
-    let Ok(mut file)=lock.lock() else{return;};
-    if is_enter && crash_blt_rotation_needed(id){
-        if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err(){
-            // A failed rewind is not allowed to change game graphics behavior.
-            return;
-        }
-        let _=writeln!(file,"CRASH-BLT: ROLLING SEGMENT starts_at_id={id} span={CRASH_BLT_ROTATE_CALLS}");
-    }
-    let _=writeln!(file,"{line}");
-}
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
@@ -343,100 +320,6 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     win32::system_export(real,name)
 }
 
-fn originals()->&'static Mutex<HashMap<(usize,usize),usize>> {
-    ORIGINALS.get_or_init(||Mutex::new(HashMap::new()))
-}
-
-unsafe fn method(object:*mut c_void,index:usize)->usize {
-    if object.is_null(){return 0;}
-    let table=*(object as *const *const usize);
-    if table.is_null(){return 0;}
-    *table.add(index)
-}
-
-unsafe fn orig(object:*mut c_void,index:usize)->Option<usize> {
-    if object.is_null(){return None;}
-    let table=*(object as *const *const usize);
-    if table.is_null(){return None;}
-    originals().lock().ok()?.get(&(table as usize,index)).copied()
-}
-
-unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->bool {
-    if object.is_null(){return false;}
-    let table=*(object as *const *mut usize);
-    if table.is_null(){return false;}
-    let slot=table.add(index);
-    let Ok(mut map)=originals().lock() else {return false};
-    if map.contains_key(&(table as usize,index)){return true;}
-    let original=*slot;
-    if original==0 || original==hook{return false;}
-    // Publish the original before changing the pointer to avoid a hook
-    // seeing an uninitialized trampoline on another thread.
-    map.insert((table as usize,index),original);
-    if !win32::patch_vtable_slot(slot,hook) {
-        map.remove(&(table as usize,index));
-        return false;
-    }
-    true
-}
-
-fn pace_frame() {
-    let fps=cfg().fps_limit;
-    let frequency=*FREQUENCY.get_or_init(|| unsafe {
-        let mut value=0;
-        if win32::QueryPerformanceFrequency(&mut value)==0 || value<=0 {0}else{value}
-    });
-    if frequency<=0 {return;}
-    let Ok(mut previous)=LAST_FRAME.lock() else {return};
-    let mut now=0;
-    if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{return;}
-    let interval=(frequency/fps as i64).max(1);
-    if *previous>0 && now<*previous+interval {
-        let deadline=*previous+interval;
-        while now<deadline {
-            let ticks=deadline-now;
-            let millis=ticks.saturating_mul(1000)/frequency;
-            if millis>2 {unsafe {win32::Sleep((millis-1).min(50) as u32)};}
-            else {std::hint::spin_loop();}
-            if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{break;}
-        }
-    }
-    *previous=now;
-}
-
-// These cumulative rates are COM call rates, not proven on-screen FPS.
-// A scene can issue several Blt/Unlock calls per one displayed frame.
-// At most four samples per API, bounded without background threads.
-fn sample_render_calls(path:&str,count:&AtomicUsize,start:&OnceLock<Instant>,
-    window:&OnceLock<Mutex<(usize,Instant)>>) {
-    if !cfg().log_enabled{return;}
-    let n=count.fetch_add(1,Ordering::Relaxed)+1;
-    let first=start.get_or_init(Instant::now);
-    if [10,60,300,1200].contains(&n) {
-        let elapsed=first.elapsed().as_millis();
-        if elapsed>0 {
-            let rate=(n.saturating_sub(1) as u128 * 1000) / elapsed;
-            log(&format!("RENDER-SAMPLE: method={path} calls={n} elapsed_ms={elapsed} average_calls_per_s={rate} (NOT measured display FPS)"));
-        }
-    }
-    // Also sample short intervals: full-run averages in the early Wine
-    // log hid substantial differences between menus and actual gameplay.
-    // Bounded to ten per API, not one log line per video frame.
-    if n % 120==0 && n<=1200 {
-        let guard=window.get_or_init(||Mutex::new((0,*first)));
-        if let Ok(mut previous)=guard.lock() {
-            let now=Instant::now();
-            let ms=now.duration_since(previous.1).as_millis();
-            let interval=n-previous.0;
-            if ms>0 {
-                let rate=interval as u128*1000/ms;
-                log(&format!("RENDER-WINDOW: method={path} calls={interval} elapsed_ms={ms} calls_per_s={rate} (API rate, NOT verified display FPS)"));
-            }
-            *previous=(n,now);
-        }
-    }
-}
-
 unsafe fn modern_surface_caps(this:*mut c_void)->Option<u32> {
     // The first DWORD is identical in DDSCAPS and DDSCAPS2.
     let method=method(this,SURFACE_GET_CAPS);
@@ -447,28 +330,6 @@ unsafe fn modern_surface_caps(this:*mut c_void)->Option<u32> {
 }
 unsafe fn modern_surface_primary(this:*mut c_void)->Option<bool> {
     modern_surface_caps(this).map(|caps|caps&DDSCAPS_PRIMARYSURFACE!=0)
-}
-
-// IID matching is deliberately exhaustive rather than assuming a vtable
-// layout from the major GUID prefix. Definitions come from Wine's ddraw.h.
-fn ddraw_iface(iid:*const Guid)->Option<&'static str> {
-    let name=guid_label(iid);
-    match name.as_str() {
-        "b3a6f3e0-2b43-11cf-a2de-00aa00b93356"=>Some("IDirectDraw2"),
-        "9c59509a-39bd-11d1-8c4a-00c04fd930c5"=>Some("IDirectDraw4"),
-        "15e65ec0-3b9c-11d2-b92f-00609797ea5b"=>Some("IDirectDraw7"),
-        _=>None,
-    }
-}
-fn surface_iface(iid:*const Guid)->Option<&'static str> {
-    let name=guid_label(iid);
-    match name.as_str() {
-        "57805885-6eec-11cf-9441-a82303c10e27"=>Some("IDirectDrawSurface2"),
-        "da044e00-69b2-11d0-a1d5-00aa00b8dfbb"=>Some("IDirectDrawSurface3"),
-        "0b2b8630-ad35-11d0-8ea6-00609797ea5b"=>Some("IDirectDrawSurface4"),
-        "06675a80-3b9b-11d2-b92f-00609797ea5b"=>Some("IDirectDrawSurface7"),
-        _=>None,
-    }
 }
 
 unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
@@ -617,36 +478,6 @@ unsafe fn probe_modern_surface_layout(surface:*mut c_void,reason:&str) {
 
 // Named status based entirely on the public DirectDraw DDSCAPS flags.
 // We deliberately do not log raw COM pointer addresses or identifiers.
-fn surface_roles(caps:u32)->String {
-    let mut roles=Vec::new();
-    if caps&DDSCAPS_PRIMARYSURFACE!=0{roles.push("primary");}
-    if caps&DDSCAPS_BACKBUFFER!=0{roles.push("backbuffer");}
-    if caps&DDSCAPS_FLIP!=0{roles.push("flip-chain");}
-    if caps&DDSCAPS_COMPLEX!=0{roles.push("complex");}
-    if caps&presentation::ZBUFFER!=0{roles.push("z-buffer");}
-    if caps&presentation::TEXTURE!=0{roles.push("texture");}
-    if caps&presentation::MIPMAP!=0{roles.push("mipmap");}
-    if roles.is_empty(){"other".into()}else{roles.join("+")}
-}
-
-fn describe_surface_layout(desc:*const c_void)->String{
-    if desc.is_null(){return "NULL descriptor".into();}
-    unsafe{
-        // The first 16 bytes are common to DDSURFACEDESC and DDSURFACEDESC2:
-        // dwSize, dwFlags, dwHeight and dwWidth. No pixels are inspected.
-        let words=desc as *const u32;
-        let size=*words;
-        if size!=108 && size!=124{return format!("unsupported_descriptor_size={size}");}
-        let flags=*words.add(1);
-        let h=*words.add(2);
-        let w=*words.add(3);
-        let dims=if flags&0x6==0x6{
-            format!("{w}x{h}")
-        }else{"unspecified".into()};
-        format!("desc_size={size} flags={flags:#x} dimensions={dims}")
-    }
-}
-
 // Final preflight only: this never changes the DirectDraw cooperative
 // mode, surfaces, HWND or desktop. Until an actual adapter implements
 // virtualized front/back/Z surfaces, log the safe 4:3 viewport as a plan.
@@ -1117,10 +948,6 @@ unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
 
 // Crimson Skies' IDirectDraw4::QueryInterface successfully requests
 // IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
-fn is_d3d3_iid(iid:*const Guid)->bool {
-    guid_label(iid)=="bb223240-e72b-11d0-a9b4-00aa00c0993e"
-}
-
 // The attached device's legacy Direct3D3 interface is traced only after
 // the original CreateDevice succeeds. The genuine device and surfaces
 // are still owned by the game: no replacement objects or AddRef/Release.
