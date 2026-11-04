@@ -96,7 +96,7 @@ pub unsafe fn install()->bool {
         log("MENU-SCENE: page protection denied");return false;
     }
     for &(rva,_) in &SITES {
-        let instruction=rel_call(BASE+rva,observe_script as usize);
+        let instruction=rel_call(BASE+rva,observe_script as *const () as usize);
         ptr::copy_nonoverlapping(instruction.as_ptr(),(BASE+rva) as *mut u8,5);
     }
     let flush=FlushInstructionCache(GetCurrentProcess(),page as *const c_void,0x1000);
