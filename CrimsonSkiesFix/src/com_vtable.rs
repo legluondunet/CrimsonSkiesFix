@@ -77,6 +77,31 @@ mod tests {
     }
 
     #[test]
+    fn lookup_is_keyed_by_shared_vtable_address_and_slot() {
+        let slots=[0x1234usize,0x5678usize];
+        let mut table=slots.as_ptr();
+        let object=(&mut table as *mut *const usize).cast::<c_void>();
+        let key=(slots.as_ptr() as usize,1usize);
+        // Registration is synthetic here: do not call VirtualProtect in tests.
+        assert!(originals().lock().unwrap().insert(key,0xabcd).is_none());
+        assert_eq!(unsafe { orig(object,1) },Some(0xabcd));
+        assert_eq!(unsafe { orig(object,0) },None);
+        assert_eq!(originals().lock().unwrap().remove(&key),Some(0xabcd));
+        assert_eq!(unsafe { orig(object,1) },None);
+        assert_eq!(slots,[0x1234,0x5678]);
+    }
+
+    #[test]
+    fn self_hook_fails_closed_without_patching_native_memory() {
+        let slots=[0x1234usize];
+        let mut table=slots.as_ptr();
+        let object=(&mut table as *mut *const usize).cast::<c_void>();
+        unsafe { assert!(!replace_method(object,0,0x1234)); }
+        assert_eq!(slots,[0x1234]);
+        assert_eq!(unsafe { orig(object,0) },None);
+    }
+
+    #[test]
     fn zero_slot_fails_closed_without_touching_registry() {
         let slots=[0usize;2];
         let mut table=slots.as_ptr();
