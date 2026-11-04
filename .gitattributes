@@ -1,0 +1,4 @@
+# Keep the repository GPL-3 license identical in Windows and Linux artifacts.
+# Otherwise Windows checkout may silently convert LF to CRLF and pass a
+# Windows-only SHA comparison while the downloaded archive differs from Git.
+LICENSE text eol=lf
