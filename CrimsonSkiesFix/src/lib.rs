@@ -18,6 +18,7 @@ mod com_vtable;
 mod com_labels;
 mod frame_pacing;
 mod render_sampling;
+mod blt_crash_trace;
 mod window_exposure;
 mod window_erase_guard;
 mod diagnostics;
@@ -43,6 +44,7 @@ use com_vtable::{method,orig,replace_method};
 use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
 use frame_pacing::pace_frame;
 use render_sampling::sample_render_calls;
+use blt_crash_trace::{CRASH_BLT_LOG,CRASH_BLT_ROTATE_CALLS,NATIVE_BLT_CRASH_TRACE_ID,crash_blt_rotation_needed,crash_blt_line};
 fn color_probe_enabled()->bool{
     // The virtual game graph can only be created AFTER cfg() initializes.
     // Never initialize configuration/filesystem while a COM Blt is in
@@ -55,7 +57,7 @@ fn color_capture_enabled()->bool{
 fn color_capture_path(label:&str)->Option<std::path::PathBuf>{
     win32::color_capture_path(label)
 }
-use std::{ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
+use std::{ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
@@ -134,8 +136,6 @@ static CONFIG:OnceLock<Config>=OnceLock::new();
 static LOG:OnceLock<Mutex<File>>=OnceLock::new();
 // Only enabled for a controlled crash reproduction. The detailed source and
 // destination pointers are in a separate, bounded rotating file.
-static CRASH_BLT_LOG:OnceLock<Mutex<File>>=OnceLock::new();
-const CRASH_BLT_ROTATE_CALLS:usize=2048;
 static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
 static FIRST_FLIP:Once=Once::new();
 static FIRST_BLT:Once=Once::new();
@@ -160,7 +160,6 @@ static FIRST_MODERN_PACED_FLIP:Once=Once::new();
 static FIRST_MODERN_NONPRIMARY_FLIP:Once=Once::new();
 static MODERN_FLIP_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLT_EVENTS:AtomicUsize=AtomicUsize::new(0);
-static NATIVE_BLT_CRASH_TRACE_ID:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_BLT_SOURCE_UNWRAP_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MODERN_UNLOCK_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MODERN_BLTFAST_EVENTS:AtomicUsize=AtomicUsize::new(0);
@@ -201,27 +200,6 @@ static SURFACE_USAGE_AUDIT:Mutex<surface_usage::Audit>=Mutex::new(surface_usage:
 static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
-
-fn crash_blt_rotation_needed(id:usize)->bool {
-    id>1 && (id-1)%CRASH_BLT_ROTATE_CALLS==0
-}
-
-// All crash tracing uses a separate game-local file so the normal project
-// log stays small. Rewind once per 2048 completed/attempted native calls;
-// the most recent ENTER is retained even if Wine terminates inside Blt.
-// The lock is never held while entering Wine's original COM implementation.
-fn crash_blt_line(id:usize,is_enter:bool,line:&str){
-    let Some(lock)=CRASH_BLT_LOG.get() else{return;};
-    let Ok(mut file)=lock.lock() else{return;};
-    if is_enter && crash_blt_rotation_needed(id){
-        if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err(){
-            // A failed rewind is not allowed to change game graphics behavior.
-            return;
-        }
-        let _=writeln!(file,"CRASH-BLT: ROLLING SEGMENT starts_at_id={id} span={CRASH_BLT_ROTATE_CALLS}");
-    }
-    let _=writeln!(file,"{line}");
-}
 
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
