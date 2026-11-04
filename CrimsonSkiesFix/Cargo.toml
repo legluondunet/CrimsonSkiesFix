@@ -1,0 +1,18 @@
+[package]
+name = "crimson-skies-fix"
+version = "0.1.90"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Experimental 32-bit DirectDraw proxy for Crimson Skies"
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[lib]
+name = "ddraw"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

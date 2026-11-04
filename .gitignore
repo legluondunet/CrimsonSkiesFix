@@ -1,12 +1,11 @@
-/target/
-*.exe
+# Rust and packaged build output
+**/target/
+**/dist/
+
+# Generated DLL, executables, logs and local backups
 *.dll
+*.exe
+*.log
 *.bak
 *.bak2
-*.rof
-*.iso
-*.bin
-*.cue
-*.crimson-original.bak
-*.before-nul-guard
 *.tmp

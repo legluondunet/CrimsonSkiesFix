@@ -1,0 +1,119 @@
+name: CrimsonSkiesFix DirectDraw DLL x86
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/**'
+      - '.github/workflows/crimsonskiesfix-x86.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/**'
+      - '.github/workflows/crimsonskiesfix-x86.yml'
+  workflow_dispatch:
+
+jobs:
+  windows-x86:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only GOS script inspector self-test
+        run: python tools/inspect_gos_scripts.py --self-test
+      - name: Read-only ROF UI archive inspector self-test
+        run: python tools/inspect_gos_rof.py --self-test
+      - name: Reversible native GOS disabled-widget overlay self-test
+        run: python tools/patch_gos_video_overlay.py --self-test
+      - name: Install Rust i686 MSVC target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Unit tests in 32-bit mode
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: cargo test --locked --target i686-pc-windows-msvc
+      - name: Compile release DirectDraw proxy
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: cargo build --locked --release --target i686-pc-windows-msvc
+      - name: Verify PE machine is Intel x86
+        shell: pwsh
+        run: |
+          $dll = 'target/i686-pc-windows-msvc/release/ddraw.dll'
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x014C) { throw "Not an i686 DLL: 0x$($machine.ToString('X'))" }
+          Write-Host "Verified PE machine: IMAGE_FILE_MACHINE_I386 (0x014C)"
+      - name: Prepare clean game directory layout
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'dist/CrimsonSkiesFix' | Out-Null
+          Copy-Item 'target/i686-pc-windows-msvc/release/ddraw.dll' 'dist/ddraw.dll'
+          Copy-Item 'CrimsonSkiesFix/CrimsonSkiesFix.ini.example' 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example'
+          Copy-Item 'README.md' 'dist/CrimsonSkiesFix/README.md'
+          $files = @(Get-ChildItem -LiteralPath dist -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'ddraw.dll') {
+            throw 'Invalid game-root layout: exactly one ddraw.dll permitted'
+          }
+          if (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini') {
+            throw 'Release archive must never ship an active user INI'
+          }
+          if (-not (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')) {
+            throw 'Missing non-overwriting INI template'
+          }
+          $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
+          $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
+          if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
+          # Explicit project policy: native Video Graphics/Resolution
+          # lock and AskForVDev dialog bypass are enabled on first run.
+          $gosOn = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=on' })
+          $adapterOn = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=1' })
+          $wideOn = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=1' })
+          $desktopOn = @($template | Where-Object { $_.Trim() -eq 'DesktopResolution=1' })
+          $imageFixOn = @($template | Where-Object { $_.Trim() -eq 'LegacyOffscreenRGB565=1' })
+          $focusOn = @($template | Where-Object { $_.Trim() -eq 'FocusRepaint=1' })
+          $eraseOn = @($template | Where-Object { $_.Trim() -eq 'WindowEraseGuard=1' })
+          if ($gosOn.Count -ne 1 -or $adapterOn.Count -ne 1 -or
+              $wideOn.Count -ne 1 -or $desktopOn.Count -ne 1 -or
+              $imageFixOn.Count -ne 1 -or $focusOn.Count -ne 1 -or $eraseOn.Count -ne 1) {
+            throw 'Default native graphics / first-image fix / focus recovery / erase guard are incomplete'
+          }
+          foreach ($invalid in @('GosVideoLock=off','ExperimentalWindowedAdapter=0','Native3DWidescreen=0','LegacyOffscreenRGB565=0','FocusRepaint=0','WindowEraseGuard=0')) {
+            if (@($template | Where-Object { $_.Trim() -eq $invalid }).Count -gt 0) {
+              throw "Conflicting disabled first-run option: $invalid"
+            }
+          }
+          $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
+            ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
+            Sort-Object)
+          $expectedFiles = @('CrimsonSkiesFix/CrimsonSkiesFix.ini.example', 'CrimsonSkiesFix/README.md', 'ddraw.dll') |
+            Sort-Object
+          if (Compare-Object $actualFiles $expectedFiles) {
+            throw 'Unexpected files in the game update archive'
+          }
+          if (Test-Path 'dist/CrimsonSkiesFix.log') { throw 'Log must not be bundled' }
+          if (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.log') { throw 'Old log path must not be bundled' }
+      - name: Publish experimental x86 proxy and clean game layout
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
+          path: CrimsonSkiesFix/dist/
+          if-no-files-found: error
+      - name: Verify standalone windowed probe PE machine is Intel x86
+        shell: pwsh
+        run: |
+          $exe = 'target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe'
+          if (-not (Test-Path $exe)) { throw 'Standalone windowed DirectDraw probe EXE is missing' }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x014C) { throw "Windowed probe is not i686: 0x$($machine.ToString('X'))" }
+          Write-Host 'Standalone windowed probe verified x86'
+      - name: Publish standalone windowed DirectDraw resource probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL
+          path: CrimsonSkiesFix/target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe
+          if-no-files-found: error

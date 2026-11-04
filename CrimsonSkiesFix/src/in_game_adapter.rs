@@ -1,0 +1,743 @@
+//! Experimental game-owned DirectDraw4 windowed resource adapter.
+//! Exact path: opt-in IDirectDraw4 cooperative -> mode -> virtual Surface4 chain.
+//! All native objects are created on the GAME's own DD4, not a probe DD4.
+//! Never pretend a native HAL device was created: D3D3 receives native Surface4.
+//!
+//! This is intentionally an early in-game integration build. The game may use
+//! unsupported COM methods, QI versions or window transitions. Opt-in only.
+use std::{ffi::c_void,ptr,sync::Mutex};
+use crate::{
+    Hr,Guid,Hwnd,log,win32,
+    borderless_contract::{AdapterContract,BackendEvidence,RenderTarget,SurfaceRole},
+    presentation::{self,Mode,Chain},
+    borderless_flip::{self,WindowedBlt},
+    borderless_native_blt::NativeWindowedBlt,
+    com_surface4_forward,
+    com_surface4_abi::{Surface4VTable,SurfaceThis},
+};
+
+const E_FAIL:Hr=0x8000_4005u32 as i32;
+const E_NOTIMPL:Hr=0x8000_4001u32 as i32;
+const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
+const DD_CAPS_PRIMARY:u32=0x0000_0200;
+const DD_CAPS_OFFSCREEN:u32=0x0000_0040;
+const DD_CAPS_3D:u32=0x0000_2000;
+const DD_CAPS_VIDEOMEM:u32=0x0000_4000;
+const DD_CAPS_SYSTEMMEM:u32=0x0000_0800;
+const DD_CAPS_Z:u32=0x0002_0000;
+const DDSD_BACKBUFFERCOUNT:u32=0x20;
+const DDSD_HEIGHT:u32=0x2;
+const DDSD_WIDTH:u32=0x4;
+const DDSD_PIXELFORMAT:u32=0x1000;
+const DDSCL_NORMAL:u32=8;
+const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
+const DDBLT_COLORFILL:u32=0x400;
+const DDBLT_DEPTHFILL:u32=0x0200_0000;
+const DDBLT_WAIT:u32=0x0100_0000;
+const HAL:Guid=Guid{d1:0x84e63de0,d2:0x46aa,d3:0x11cf,d4:[0x81,0x6f,0,0,0xc0,0x20,0x15,0x6e]};
+const IID_D3D3:Guid=Guid{d1:0xbb223240,d2:0xe72b,d3:0x11d0,d4:[0xa9,0xb4,0,0xaa,0,0xc0,0x99,0x3e]};
+
+// All stored COM references are owned and released. Store pointer addresses
+// as usize so the mutex remains Send; COM methods execute in game process.
+struct Com(usize);
+impl Com {
+    fn ptr(&self)->*mut c_void{self.0 as *mut c_void}
+    unsafe fn from_out(p:*mut c_void)->Result<Self,String>{
+        if p.is_null(){Err("NULL native COM result".into())}else{Ok(Self(p as usize))}
+    }
+    unsafe fn add_ref(&self)->Result<(),String>{
+        let f:unsafe extern "system" fn(*mut c_void)->u32=std::mem::transmute(slot(self.ptr(),1));
+        if f(self.ptr())==0{Err("native AddRef failed".into())}else{Ok(())}
+    }
+}
+impl Drop for Com {
+    fn drop(&mut self){
+        unsafe {
+            let p=self.ptr();
+            if !p.is_null(){
+                let f:unsafe extern "system" fn(*mut c_void)->u32=std::mem::transmute(slot(p,2));
+                let _=f(p);
+            }
+        }
+    }
+}
+unsafe fn slot(object:*mut c_void,index:usize)->usize{
+    *(*object.cast::<*const usize>()).add(index)
+}
+unsafe fn alloc(dd4:*mut c_void,mut desc:[u32;31])->Result<Com,String>{
+    type Fn=unsafe extern "system" fn(*mut c_void,*mut u32,*mut *mut c_void,*mut c_void)->Hr;
+    // Directly call the original DD4 method rather than recursing into our
+    // CreateSurface hook when constructing the physical presentation pair.
+    let Some(addr)=crate::orig(dd4,6) else{return Err("DD4 original CreateSurface missing".into());};
+    let create:Fn=std::mem::transmute(addr);
+    let mut p=ptr::null_mut();
+    let hr=create(dd4,desc.as_mut_ptr(),&mut p,ptr::null_mut());
+    if hr<0{return Err(format!("native CreateSurface HRESULT={:#010x}",hr as u32));}
+    Com::from_out(p)
+}
+fn desc(caps:u32,w:u32,h:u32,bits:Option<u32>)->[u32;31]{
+    let mut d=[0u32;31];d[0]=124;d[1]=1;d[26]=caps;
+    if w!=0&&h!=0{d[1]|=2|4;d[2]=h;d[3]=w;}
+    if let Some(b)=bits{
+        d[1]|=DDSD_PIXELFORMAT;d[18]=32;d[19]=if caps&DD_CAPS_Z!=0{0x400}else{0x40};
+        d[21]=b;
+        if caps&DD_CAPS_Z!=0{d[23]=0x00ff_ffff;}
+        else {d[22]=0xf800;d[23]=0x07e0;d[24]=0x001f;}
+    }
+    d
+}
+fn require(hr:Hr,stage:&str)->Result<(),String>{
+    if hr<0{Err(format!("{stage}: HRESULT={:#010x}",hr as u32))}else{Ok(())}
+}
+unsafe fn new_clipper(dd4:*mut c_void,hwnd:Hwnd,primary:&Com)->Result<Com,String>{
+    type Create=unsafe extern "system" fn(*mut c_void,u32,*mut *mut c_void,*mut c_void)->Hr;
+    let create:Create=std::mem::transmute(slot(dd4,4));
+    let mut out=ptr::null_mut();
+    require(create(dd4,0,&mut out,ptr::null_mut()),"CreateClipper")?;
+    let clip=Com::from_out(out)?;
+    type SetHwnd=unsafe extern "system" fn(*mut c_void,u32,Hwnd)->Hr;
+    type SetClip=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
+    let set_hwnd:SetHwnd=std::mem::transmute(slot(clip.ptr(),8));
+    require(set_hwnd(clip.ptr(),0,hwnd),"clipper.SetHWnd")?;
+    let set_clip:SetClip=std::mem::transmute(slot(primary.ptr(),28));
+    require(set_clip(primary.ptr(),clip.ptr()),"primary.SetClipper")?;
+    Ok(clip)
+}
+unsafe fn attach_depth(back:&Com,depth:&Com)->Result<(),String>{
+    type Attach=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
+    let f:Attach=std::mem::transmute(slot(back.ptr(),3));
+    require(f(back.ptr(),depth.ptr()),"RGB565.AddAttachedSurface(Z32)")
+}
+unsafe fn native_fill(target:&Com,depth:bool)->Result<(),String>{
+    type Blt=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut u32)->Hr;
+    let f:Blt=std::mem::transmute(slot(target.ptr(),5));
+    let mut fx=[0u32;25];fx[0]=100;fx[20]=if depth{0xffff_ffff}else{0};
+    require(f(target.ptr(),ptr::null(),ptr::null_mut(),ptr::null(),
+        if depth{DDBLT_DEPTHFILL}else{DDBLT_COLORFILL|DDBLT_WAIT},fx.as_mut_ptr()),
+        if depth{"Z32.DepthFill"}else{"RGB565.ColorFill"})
+}
+unsafe fn prove_hal(dd4:*mut c_void,back:&Com)->Result<(),String>{
+    type Query=unsafe extern "system" fn(*mut c_void,*const Guid,*mut *mut c_void)->Hr;
+    let qi:Query=std::mem::transmute(slot(dd4,0));
+    let mut result=ptr::null_mut();
+    require(qi(dd4,&IID_D3D3,&mut result),"IDirect3D3 QueryInterface")?;
+    let d3d=Com::from_out(result)?;
+    type Create=unsafe extern "system" fn(*mut c_void,*const Guid,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
+    // The game-facing D3D3 vtable may already be diagnostic-hooked.
+    // A synchronous preflight while RUNTIME is locked must call the
+    // ORIGINAL CreateDevice directly, never reenter the game's hooks.
+    let create:Create=std::mem::transmute(
+        crate::orig(d3d.ptr(),8).unwrap_or_else(||slot(d3d.ptr(),8)));
+    let mut device=ptr::null_mut();
+    require(create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut()),"D3D3 HAL CreateDevice")?;
+    let _device=Com::from_out(device)?;
+    Ok(())
+}
+unsafe fn native_desc(surface:&Com)->Result<[u32;31],String>{
+    type Get=unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
+    let get:Get=std::mem::transmute(slot(surface.ptr(),22));
+    let mut d=[0u32;31];d[0]=124;
+    require(get(surface.ptr(),d.as_mut_ptr()),"native GetSurfaceDesc")?;
+    Ok(d)
+}
+fn check_native_rgb_depth(back:&Com,depth:&Com,mode:Mode)->Result<(),String>{
+    unsafe{
+        let b=native_desc(back)?;let z=native_desc(depth)?;
+        if (b[3],b[2],b[21],b[22],b[23],b[24])!=(mode.width,mode.height,16,0xf800,0x07e0,0x001f) {
+            return Err(format!("native RGB565 mismatch: {}x{} bpp={}",b[3],b[2],b[21]));
+        }
+        if (z[3],z[2],z[21])!=(mode.width,mode.height,32) ||
+            z[19]&0x400==0 || z[23]==0 {
+            return Err(format!("native Z32 mismatch: {}x{} bpp={}",z[3],z[2],z[21]));
+        }
+    }
+    Ok(())
+}
+// We cannot use a 1920x1080 native desktop primary for Crimson Skies'
+// initial 640x480 CPU Lock. Verify a dedicated 16-bit RGB565 native staging
+// surface, including an actual CPU Lock+Unlock, before offering its pointer
+// through a virtual IDirectDrawSurface4 primary.
+unsafe fn verify_primary_lock_staging(staging:&Com,mode:Mode)->Result<(),String>{
+    let desc=native_desc(staging)?;
+    if (desc[3],desc[2],desc[21],desc[22],desc[23],desc[24])!=
+        (mode.width,mode.height,16,0xf800,0x07e0,0x001f) ||
+        desc[26]&DD_CAPS_OFFSCREEN==0 || desc[26]&DD_CAPS_SYSTEMMEM==0{
+        return Err(format!("primary lock staging RGB565 mismatch caps={:#010x} {}x{} bpp={}",
+            desc[26],desc[3],desc[2],desc[21]));
+    }
+    type Lock=unsafe extern "system" fn(*mut c_void,*const c_void,*mut u32,u32,*mut c_void)->Hr;
+    type Unlock=unsafe extern "system" fn(*mut c_void,*const c_void)->Hr;
+    let lock:Lock=std::mem::transmute(slot(staging.ptr(),25));
+    let unlock:Unlock=std::mem::transmute(slot(staging.ptr(),32));
+    let mut info=[0u32;31];info[0]=124;
+    require(lock(staging.ptr(),ptr::null(),info.as_mut_ptr(),0,ptr::null_mut()),
+        "RGB565 primary staging Lock")?;
+    // Always unlock a successful native Lock before checking the returned
+    // DDSURFACEDESC2. Never strand the staging surface in locked state.
+    let unlock_hr=unlock(staging.ptr(),ptr::null());
+    require(unlock_hr,"RGB565 primary staging Unlock")?;
+    if (info[0],info[3],info[2],info[21])!=(124,mode.width,mode.height,16) ||
+       info[9]==0 || info[4]==0 {
+        return Err(format!("primary staging Lock incompatible: {}x{} bpp={} pitch={} pixels={}",
+            info[3],info[2],info[21],info[4],if info[9]==0{"NULL"}else{"provided"}));
+    }
+    Ok(())
+}
+
+struct Epoch {
+    mode:Mode,
+    primary:Com,
+    back:Com,
+    depth:Com,
+    // These three physical resources and clipper outlive their virtual COM
+    // counterpart; every wrapper owns an additional native AddRef itself.
+    physical_primary:Com,
+    physical_lock_primary:Com, // independent logical RGB565 primary staging
+    physical_back:Com, // native D3D3 RGB565 backbuffer; retained for identity checks
+    physical_depth:Com,
+    // Dedicated offscreen menu image, never exposed to the game. The
+    // strong COM reference outlives the borrowed pointer in the Flip graph.
+    menu_scratch:Option<Com>,
+    clipper:Com,
+}
+struct Runtime {
+    dd4:usize,
+    dd4_owner:Com, // strong COM parent ref for the entire experiment
+    hwnd:usize,
+    monitor:win32::Rect,
+    generation:u64,
+    exposed:bool,
+    native_widescreen_ready:bool,
+    epoch:Option<Epoch>,
+}
+static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
+
+// The game can repeat its *same* DDSCL_EXCLUSIVE|DDSCL_FULLSCREEN
+// request after our windowed graph has already been exposed. That is an
+// idempotent request from the game's perspective; do NOT forward it to
+// native DirectDraw, which must remain in DDSCL_NORMAL. Any changed HWND,
+// DD4 identity or flags must still fail closed.
+fn identical_game_cooperative_request(
+    runtime_dd4:usize,runtime_hwnd:usize,exposed:bool,has_epoch:bool,
+    dd4:usize,hwnd:usize,flags:u32
+)->bool{
+    exposed && has_epoch && runtime_dd4==dd4 && runtime_hwnd==hwnd &&
+        hwnd!=0 && flags==DDSCL_EXCLUSIVE_FULLSCREEN
+}
+
+/// Called from the real game's IDirectDraw4::SetCooperativeLevel hook.
+/// The original game's normal/exclusive path is left alone if opt-in is 0.
+/// Only accept a valid process-owned HWND and standard exclusive request.
+pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
+    original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
+    // A second identical game-exclusive request is expected during video
+    // startup, after the virtual PRIMARY and HAL device have been created.
+    // Keep the native DD4 in NORMAL, and preserve the live virtual COM graph.
+    // A different mode, HWND or interface is NOT silently acknowledged.
+    {
+        let Ok(guard)=RUNTIME.lock() else{return Some(E_FAIL)};
+        if let Some(runtime)=guard.as_ref(){
+            if runtime.exposed {
+                let same=identical_game_cooperative_request(
+                    runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
+                    dd4 as usize,hwnd as usize,flags);
+                let Some(expected)=runtime.monitor.client_geometry() else{return Some(E_FAIL)};
+                if same && win32::game_client_geometry(hwnd)==Some(expected){
+                    log("WINDOWED-GAME: repeated identical game DD4 exclusive cooperative request acknowledged; native DDSCL_NORMAL and virtual graph preserved");
+                    return Some(0);
+                }
+                log(&format!("WINDOWED-GAME: changed/invalid cooperative request after graph exposure rejected (same_request={same}, flags={flags:#x}, geometry_ok={})",
+                    same && win32::game_client_geometry(hwnd)==Some(expected)));
+                return Some(E_FAIL);
+            }
+        }
+    }
+    if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
+        // Do not allow an old active graph to silently revert to native
+        // DDSCL_EXCLUSIVE or DDSCL_NORMAL through another cooperative call.
+        if RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false){
+            log("WINDOWED-GAME: unexpected cooperative reconfiguration while virtual graph exposed: rejected");
+            return Some(E_NOTIMPL);
+        }
+        return None;
+    }
+    let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
+        log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
+        return None;
+    };
+    let Some((monitor_w,monitor_h))=monitor.dimensions() else{
+        log("WINDOWED-GAME: invalid launch monitor dimensions; original path retained");
+        return None;
+    };
+    log(&format!("WINDOWED-GAME: target monitor origin={},{} size={}x{}",
+        monitor.left,monitor.top,monitor_w,monitor_h));
+    let Ok(mut guard)=RUNTIME.lock() else{return None;};
+    if guard.as_ref().is_some_and(|state|state.exposed){
+        log("WINDOWED-GAME: repeated cooperative call while graph exposed: fail closed");
+        return Some(E_FAIL);
+    }
+    // Prepare the actual DD4 cooperative level, but do not modify window
+    // styles, suppress SetDisplayMode or expose any game surfaces yet.
+    let hr=original(dd4,hwnd,DDSCL_NORMAL);
+    if hr<0{
+        log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}), original exclusive path retained",hr as u32));
+        return None;
+    }
+    // The game can Release its own DD4 interface while virtual surfaces
+    // remain referenced. Hold one distinct strong DD4 COM reference.
+    type AddRef=unsafe extern "system" fn(*mut c_void)->u32;
+    let add_ref:AddRef=std::mem::transmute(slot(dd4,1));
+    if add_ref(dd4)==0{
+        log("WINDOWED-GAME: DD4 AddRef failed after DDSCL_NORMAL; cannot expose");
+        return Some(E_FAIL);
+    }
+    // Set the patched EXE's two canonical 3D dimensions before its
+    // first display-mode negotiation. These exact two fields also feed
+    // the patch's x87 horizontal-FOV calculation. The game original
+    // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
+    // Fail closed for unrecognized EXEs; never patch an arbitrary image.
+    // Geometry was checked above, including monitors with negative origins.
+    let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
+        // Only the original unwrapped EXE, authenticated by exe_gate,
+        // can reach this path. No support for third-party widescreen EXEs.
+        let result=crate::native_widescreen::apply_or_reuse_early_patch(monitor_w,monitor_h);
+        log(&format!(
+            "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
+            monitor_w,monitor_h));
+        matches!(result,
+            crate::native_widescreen::PatchResult::Patched |
+            crate::native_widescreen::PatchResult::AlreadyNative)
+    }else{false};
+    *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
+        monitor,generation:0,exposed:false,native_widescreen_ready,epoch:None});
+    log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
+    Some(hr)
+}
+/// Handle a real game SetDisplayMode. The callback is the original native
+/// 5-argument DD4 function, so pre-exposure failures can still recover the
+/// original exclusive path. No fallback is attempted after graph exposure.
+pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
+    refresh:u32,flags:u32,
+    original:unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u32)->Hr)
+    ->Option<Hr>{
+    let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
+    let Some(runtime)=state.as_mut() else{return None};
+    if runtime.dd4!=dd4 as usize{return None;}
+    let mode=Mode{width:w,height:h,bpp};
+    let (mon_w,mon_h)=(
+        (runtime.monitor.right-runtime.monitor.left) as u32,
+        (runtime.monitor.bottom-runtime.monitor.top) as u32);
+    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
+        w==mon_w && h==mon_h && w>=960 && h>=600;
+    if !matches!((w,h,bpp),(640,480,16)|(800,600,16)) && !native_3d{
+        log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
+        if runtime.exposed{return Some(E_FAIL);}
+        // Recovery is permitted only while no virtual COM interface exists.
+        let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
+            match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
+        let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
+        *state=None;
+        if hr<0{return Some(hr);}
+        return Some(original(dd4,w,h,bpp,refresh,flags));
+    }
+    if let Some(mut old)=runtime.epoch.take(){
+        if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
+            log(&format!("WINDOWED-GAME: retiring old primary failed {:#010x}",hr as u32));
+            runtime.epoch=Some(old);
+            return Some(E_FAIL);
+        }
+        log("WINDOWED-GAME: old virtual chain retired; stale Flip/Blt disarmed");
+    }
+    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,
+        mode,runtime.generation+1,native_3d);
+    match result {
+        Ok(next)=>{
+            runtime.generation+=1;
+            runtime.epoch=Some(next);
+            let area=runtime.monitor;
+            // Apply HWND style only after physical HAL and real Flip->Blt
+            // preflight; the game now has a complete windowed COM graph.
+            if let Err(err)=win32::borderless_window(runtime.hwnd as Hwnd,area){
+                log(&format!("WINDOWED-GAME: borderless HWND style failed: {err}"));
+                if runtime.exposed{return Some(E_FAIL);}
+                let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
+                    match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
+                let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
+                *state=None;
+                if hr<0{return Some(hr);}
+                return Some(original(dd4,w,h,bpp,refresh,flags));
+            }
+            // The host compositor may refuse/alter requested client bounds.
+            // Do not start presenting to an assumed desktop-sized rectangle.
+            let Some(expected)=area.client_geometry() else{return Some(E_FAIL)};
+            if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
+                log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
+                return Some(E_FAIL);
+            }
+            if crate::cfg().window_erase_guard {
+                // This experiment is only installed AFTER validating the
+                // exact process-owned game window and normal DD4 graph.
+                // A failure is logged, never hidden, but the game continues
+                // with the previously validated v0.1.55 display behavior.
+                match crate::window_erase_guard::install(runtime.hwnd){
+                    Ok(())=>log("WINDOWED-GAME: WindowEraseGuard installed on verified game HWND (WM_ERASEBKGND only)"),
+                    Err(err)=>log(&format!("WINDOWED-GAME: WindowEraseGuard unavailable: {err}")),
+                }
+            }
+            log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
+                w,h,bpp,runtime.generation));
+            Some(0)
+        }
+        Err(err)=>{
+            log(&format!("WINDOWED-GAME: native preflight failed before exposure: {err}"));
+            if runtime.exposed{
+                // Strictly no mid-frame switch back to exclusive.
+                return Some(E_FAIL);
+            }
+            let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
+                match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
+            let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
+            *state=None;
+            if hr<0{return Some(hr);}
+            log("WINDOWED-GAME: original exclusive DD4 path restored (no virtual surface exposed)");
+            Some(original(dd4,w,h,bpp,refresh,flags))
+        }
+    }
+}
+unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
+    mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
+    let client=monitor.dimensions().ok_or("invalid target monitor geometry")?;
+    let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
+    let clipper=new_clipper(dd4,hwnd,&real_primary)?;
+    let real_back=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,
+        mode.width,mode.height,Some(16)))?;
+    // The real owner Wine HAL advertises pure 32-bit depth with 24 bits
+    // of active Z (0x00ffffff); a native failure is never masked.
+    let real_depth=alloc(dd4,desc(DD_CAPS_Z|DD_CAPS_VIDEOMEM,
+        mode.width,mode.height,Some(32)))
+        .or_else(|_|alloc(dd4,desc(DD_CAPS_Z,mode.width,mode.height,Some(32))))?;
+    check_native_rgb_depth(&real_back,&real_depth,mode)?;
+    attach_depth(&real_back,&real_depth)?;
+    native_fill(&real_depth,true)?;
+    native_fill(&real_back,false)?;
+    prove_hal(dd4,&real_back)?;
+    let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+        mode.width,mode.height,Some(16)))?;
+    // Menu logo is composited on a PRIVATE RGB565 surface and then copied
+    // to the physical primary in the same frame. The game's D3D backbuffer
+    // remains untouched, even during a playing animated menu background.
+    // If unavailable, graphics/gameplay continue without the version label.
+    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)){
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+            mode.width,mode.height,Some(16))) {
+            Ok(surface)=>Some(surface),
+            Err(error)=>{
+                log(&format!("MENU-BRANDING: offscreen scratch unavailable: {error}"));
+                None
+            }
+        }
+    }else{None};
+    verify_primary_lock_staging(&primary_lock,mode)?;
+    log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
+        mode.width,mode.height));
+    let primary=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_primary.ptr(),SurfaceRole::Primary,mode,native_3d)
+        .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
+    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d)
+        .map_err(|hr|format!("virtual backbuffer: {:#010x}",hr as u32))?)?;
+    let depth=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_depth.ptr(),SurfaceRole::Depth,mode,native_3d)
+        .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
+    com_surface4_forward::arm_graph_primary_lock_surface(primary.ptr(),primary_lock.ptr())
+        .map_err(|hr|format!("arm primary Lock staging: {:#010x}",hr as u32))?;
+    com_surface4_forward::attach_graph_surface4(primary.ptr(),back.ptr())
+        .map_err(|hr|format!("attach virtual BB {:#010x}",hr as u32))?;
+    com_surface4_forward::attach_graph_surface4(back.ptr(),depth.ptr())
+        .map_err(|hr|format!("attach virtual Z32 {:#010x}",hr as u32))?;
+
+    let chain=Chain{front_to_back:true,back_to_depth:true,mipmaps:false};
+    let mut contract=if native_3d{
+        AdapterContract::prepare_native_3d(mode,client,chain)
+    }else{
+        AdapterContract::prepare(mode,client,chain)
+    }.map_err(|e|format!("preflight: {e:?}"))?;
+    if native_3d {
+        log(&format!(
+            "WINDOWED-WIDE: real D3D3 RGB565 color and Z32 surfaces allocated at native monitor {}x{}, viewport full, no 4:3 stretch",mode.width,mode.height));
+    }
+    // Before exposure, the same physical backend from the standalone
+    // probe must perform the actual black-clear + 4:3 stretch pair.
+    let mut backend=NativeWindowedBlt::from_borrowed_com(
+        real_primary.ptr(),real_back.ptr(),(0,0),client,mode
+    ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
+    let plan=contract.plan.viewport;
+    borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
+        .map_err(|e|format!("native two-Blt preflight: {e:?}"))?;
+    contract.expose(BackendEvidence{
+        process_owned_window:true,normal_directdraw:true,
+        render_target:RenderTarget::RealDirectDrawSurface4,
+        render_target_caps:DD_CAPS_3D,render_target_is_rgb565:true,
+        real_zbuffer_32:true,primary_with_clipper:true,
+        working_blt:true,complete_surface_com:true
+    }).map_err(|e|format!("graph evidence: {e:?}"))?;
+    com_surface4_forward::arm_graph_primary_flip(
+        primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit),
+        hwnd as usize,crate::cfg().focus_repaint,
+        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
+    ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
+    Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
+        physical_lock_primary:primary_lock,physical_back:real_back,
+        physical_depth:real_depth,menu_scratch,clipper})
+}
+// Give the game its *logical* DD4 mode, not the desktop's physical mode.
+// Crimson Skies requests 640x480x16 (or 800x600x16), while our real
+// fullscreen-sized HWND is windowed at the monitor's native resolution.
+// Native GetDisplayMode in DDSCL_NORMAL reports the desktop and may cause a
+// post-CreateDevice video-initialization check to reject the adapter.
+fn logical_display_desc(words:&mut [u32;31], mode:Mode)->bool{
+    if words[0]!=124 || mode.bpp!=16{return false;}
+    words[1]|=DDSD_HEIGHT|DDSD_WIDTH|DDSD_PIXELFORMAT;
+    words[2]=mode.height;
+    words[3]=mode.width;
+    words[18]=32; // DDPIXELFORMAT.dwSize
+    words[19]=0x40; // DDPF_RGB
+    words[20]=0;
+    words[21]=16;
+    words[22]=0xf800;
+    words[23]=0x07e0;
+    words[24]=0x001f;
+    words[25]=0;
+    true
+}
+/// Called only after native IDirectDraw4::GetDisplayMode succeeds.
+pub unsafe fn rewrite_display_mode(dd4:*mut c_void,d:*mut c_void)->bool {
+    if d.is_null(){return false;}
+    let Ok(guard)=RUNTIME.lock() else{return false;};
+    let Some(runtime)=guard.as_ref() else{return false;};
+    if runtime.dd4!=dd4 as usize{return false;}
+    let Some(epoch)=runtime.epoch.as_ref() else{return false;};
+    let words=&mut *(d.cast::<[u32;31]>());
+    let (native_w,native_h,native_bpp)=(words[3],words[2],words[21]);
+    if !logical_display_desc(words,epoch.mode){return false;}
+    log(&format!("WINDOWED-GAME: DD4 GetDisplayMode virtualized: physical={native_w}x{native_h}x{native_bpp} logical={}x{}x{} (desktop untouched)",
+        epoch.mode.width,epoch.mode.height,epoch.mode.bpp));
+    true
+}
+#[cfg(test)]
+mod logical_mode_tests{
+    use super::*;
+    #[test]
+    fn get_display_mode_reports_exact_game_rgb565_without_touching_other_fields(){
+        let mut native=[0u32;31];
+        native[0]=124;native[1]=0x80001;native[2]=1080;native[3]=1920;
+        native[18]=32;native[19]=0x40;native[21]=32;
+        native[26]=0x200;native[27]=0xdeadbeef;
+        assert!(logical_display_desc(&mut native,Mode{width:640,height:480,bpp:16}));
+        assert_eq!((native[2],native[3],native[21]),(480,640,16));
+        assert_eq!((native[22],native[23],native[24]),(0xf800,0x07e0,0x001f));
+        assert_eq!((native[26],native[27]),(0x200,0xdeadbeef));
+        let mut invalid=[0u32;31];invalid[0]=108;
+        assert!(!logical_display_desc(&mut invalid,Mode{width:640,height:480,bpp:16}));
+        assert_eq!(invalid[0],108);
+    }
+}
+
+// Confirmed from 2026-10-31 full-frame readback: the game generated
+// 800 pixels of 16-bit RGB565 in each scanline, yet the real unmodified
+// DDSCL_NORMAL/Wine CreateSurface with no explicit DDPIXELFORMAT built a
+// 32-bit system-memory surface. The 800px source therefore occupied
+// exactly 400 32-bit pixels, with magenta/green colors when interpreted
+// as RGB32. Decoding low 16 bits of each DWORD restores the artwork.
+//
+// Only the *observed* user-game legacy 800x600 source is eligible.
+// Offscreen video frames 320x240 (and textures, depth, render targets,
+// other caps/descriptor flags) retain their original native formats.
+// Do NOT mutate the game's original desc, and never change the physical
+// desktop display mode. This remains default-off pending live test.
+const EXACT_LEGACY_IMAGE_FLAGS:u32=0x0011_0007; // CAPS|HEIGHT|WIDTH|CKSRCBLT|TEXTURESTAGE
+const EXACT_LEGACY_IMAGE_CAPS:u32=DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM;
+
+fn legacy_rgb565_descriptor(words:&[u32;31],mode:Mode)->Option<[u32;31]>{
+    if mode.bpp!=16 || (mode.width,mode.height)!=(800,600){
+        return None;
+    }
+    if words[0]!=124 || words[1]!=EXACT_LEGACY_IMAGE_FLAGS ||
+       words[26]!=EXACT_LEGACY_IMAGE_CAPS ||
+       words[2]!=mode.height || words[3]!=mode.width{
+        return None;
+    }
+    // No game-requested pixel format is present (DDSD_PIXELFORMAT unset).
+    // Insert exact native 16-bit RGB565 masks, preserving color-key flags
+    // and all caller-requested caps and texture-stage data.
+    let mut d=*words;
+    d[1]|=DDSD_PIXELFORMAT;
+    d[18..26].fill(0);
+    d[18]=32;   // DDPIXELFORMAT.dwSize
+    d[19]=0x40; // DDPF_RGB
+    d[21]=16;
+    d[22]=0xf800;
+    d[23]=0x07e0;
+    d[24]=0x001f;
+    Some(d)
+}
+
+/// Return a modified COPY of the game descriptor for only the matching
+/// native DD4 offscreen system-memory image source. Never call Wine here:
+/// the existing original DD4 CreateSurface must create and own the object.
+pub unsafe fn legacy_offscreen_rgb565(dd4:*mut c_void,desc:*mut c_void,
+    outer:*mut c_void)->Option<[u32;31]>{
+    if dd4.is_null() || desc.is_null() || !outer.is_null(){return None;}
+    let words=desc.cast::<u32>();
+    if *words!=124{return None;}
+    let Ok(state)=RUNTIME.lock() else{return None};
+    let runtime=state.as_ref()?;
+    if runtime.dd4!=dd4 as usize || !runtime.exposed{return None;}
+    let epoch=runtime.epoch.as_ref()?;
+    let input=&*(words as *const [u32;31]);
+    legacy_rgb565_descriptor(input,epoch.mode)
+}
+
+#[cfg(test)]
+mod legacy_source_tests{
+    use super::*;
+    fn source_desc(width:u32,height:u32)->[u32;31]{
+        let mut d=[0u32;31];
+        d[0]=124;
+        d[1]=EXACT_LEGACY_IMAGE_FLAGS;
+        d[2]=height;d[3]=width;
+        d[26]=EXACT_LEGACY_IMAGE_CAPS;
+        // The game did not request explicit PF; preserve existing payload.
+        d[27]=0x12345678;
+        d
+    }
+    #[test]
+    fn exact_game_rgb565_16bit_image_source_is_only_one_selected(){
+        for (w,h) in [(800,600)]{
+            let d=source_desc(w,h);
+            let changed=legacy_rgb565_descriptor(&d,Mode{width:w,height:h,bpp:16}).unwrap();
+            assert_eq!(d[1],EXACT_LEGACY_IMAGE_FLAGS); // no mutation
+            assert_eq!(changed[1],EXACT_LEGACY_IMAGE_FLAGS|DDSD_PIXELFORMAT);
+            assert_eq!((changed[18],changed[19],changed[21]),(32,0x40,16));
+            assert_eq!((changed[22],changed[23],changed[24],changed[25]),
+                       (0xf800,0x07e0,0x001f,0));
+            assert_eq!((changed[2],changed[3],changed[26],changed[27]),
+                       (h,w,EXACT_LEGACY_IMAGE_CAPS,0x12345678));
+        }
+    }
+    #[test]
+    fn refuses_other_formats_video_and_unsupported_surface_descriptors(){
+        let mode=Mode{width:800,height:600,bpp:16};
+        assert!(legacy_rgb565_descriptor(&source_desc(320,240),mode).is_none());
+        assert!(legacy_rgb565_descriptor(&source_desc(640,480),Mode{width:640,height:480,bpp:16}).is_none());
+        assert!(legacy_rgb565_descriptor(&source_desc(800,600),
+            Mode{width:800,height:600,bpp:32}).is_none());
+        let baseline=source_desc(800,600);
+        for (slot,value) in [(0,108),(1,EXACT_LEGACY_IMAGE_FLAGS|DDSD_PIXELFORMAT),
+                             (1,EXACT_LEGACY_IMAGE_FLAGS&!0x10000),
+                             (26,DD_CAPS_OFFSCREEN|DD_CAPS_VIDEOMEM),
+                             (26,DD_CAPS_SYSTEMMEM)]{
+            let mut other=baseline;other[slot]=value;
+            assert!(legacy_rgb565_descriptor(&other,mode).is_none(),
+                    "bad descriptor unexpectedly matched slot {slot}");
+        }
+    }
+}
+
+/// Called before the native DD4 CreateSurface. Only replace the exact
+/// one-backbuffer primary (or explicit matching Z32) on the game DD4.
+pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
+    outer:*mut c_void)->Option<Hr>{
+    if d.is_null()||out.is_null()||!outer.is_null(){return None;}
+    let words=d.cast::<u32>();
+    if *words!=124{return None;}
+    let caps=*words.add(26);
+    let is_primary=caps&DD_CAPS_PRIMARY!=0;
+    let is_z=caps&DD_CAPS_Z!=0;
+    if !is_primary && !is_z{return None;}
+    let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL)};
+    let Some(runtime)=state.as_mut() else{return None};
+    if runtime.dd4!=dd4 as usize{return None;}
+    // COM output ownership is transferred only on S_OK. On any refusal,
+    // never accidentally return the caller's previous surface pointer.
+    *out=ptr::null_mut();
+    let Some(epoch)=runtime.epoch.as_ref() else{return Some(E_FAIL)};
+    let requested=if is_primary{
+        let flags=*words.add(1);
+        let count=if flags&DDSD_BACKBUFFERCOUNT!=0{*words.add(5)}else{0};
+        if count!=1 || caps&DD_CAPS_Z!=0{
+            log("WINDOWED-GAME: unexpected primary surface caps or backbuffer count, failing closed");
+            return Some(E_NOTIMPL);
+        }
+        &epoch.primary
+    }else{
+        let flags=*words.add(1);
+        // A game-issued Z creation can request a 32-bit depth attachment,
+        // but a different-sized or explicit Z16 is incompatible.
+        if flags&6==6 && (*words.add(2),*words.add(3))!=(epoch.mode.height,epoch.mode.width){
+            log("WINDOWED-GAME: unexpected Z dimensions, failing closed");
+            return Some(E_NOTIMPL);
+        }
+        if flags&DDSD_PIXELFORMAT!=0 && *words.add(21)!=32{
+            log("WINDOWED-GAME: unsupported Z pixel format; only native Z32 allowed");
+            return Some(E_NOTIMPL);
+        }
+        &epoch.depth
+    };
+    if let Err(err)=requested.add_ref(){
+        log(&format!("WINDOWED-GAME: game surface COM AddRef failed: {err}"));
+        return Some(E_FAIL);
+    }
+    *out=requested.ptr();
+    runtime.exposed=true;
+    log(if is_primary{
+        "WINDOWED-GAME: game now owns verified virtual Surface4 PRIMARY and one attached RGB565 backbuffer"
+    }else{
+        "WINDOWED-GAME: game now owns verified virtual Surface4 Z32"
+    });
+    Some(0)
+}
+/// Other DD2/DD7 SetDisplayMode and cooperative calls cannot silently switch
+/// this live graph back to exclusive after the game has seen virtual objects.
+pub fn must_block_other_mode_interface()->bool{
+    RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
+}
+/// Only valid while the game holds a live virtual backbuffer reference.
+/// The native HAL device must always receive the actual RGB565 surface.
+pub unsafe fn unwrap_target(candidate:*mut c_void)->Option<*mut c_void>{
+    com_surface4_forward::try_borrow_real_surface4(candidate)
+}
+/// Return an AddRef'd GAME-facing backbuffer when Wine returns the native
+/// backing surface for the currently owned D3DDevice3 render target.
+pub unsafe fn remap_render_target(native:*mut c_void)->Option<*mut c_void>{
+    let Ok(state)=RUNTIME.lock() else{return None};
+    let epoch=state.as_ref()?.epoch.as_ref()?;
+    if epoch.physical_back.ptr()!=native{return None;}
+    epoch.back.add_ref().ok()?;
+    Some(epoch.back.ptr())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){
+        let original_dd4=0x1234usize;
+        let hwnd=0x4321usize;
+        let accept=|dd4,window,flags,exposed,epoch|
+            identical_game_cooperative_request(original_dd4,hwnd,exposed,epoch,
+                dd4,window,flags);
+        assert!(accept(original_dd4,hwnd,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd,0x13,false,true));
+        assert!(!accept(original_dd4,hwnd,0x13,true,false));
+        assert!(!accept(original_dd4+1,hwnd,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd+1,0x13,true,true));
+        assert!(!accept(original_dd4,0,0x13,true,true));
+        assert!(!accept(original_dd4,hwnd,0x8,true,true));
+        assert!(!accept(original_dd4,hwnd,0x33,true,true));
+        assert!(!accept(original_dd4,hwnd,0,true,true));
+    }
+    #[test] fn descriptors_remain_native_124_byte_surface4(){
+        let p=desc(DD_CAPS_PRIMARY,0,0,None);
+        assert_eq!((p[0],p[1],p[26]),(124,1,0x200));
+        let z=desc(DD_CAPS_Z|DD_CAPS_VIDEOMEM,640,480,Some(32));
+        assert_eq!((z[0],z[2],z[3],z[19],z[21],z[23]),(124,480,640,0x400,32,0x00ff_ffff));
+        let b=desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,800,600,Some(16));
+        assert_eq!((b[2],b[3],b[21],b[22],b[23],b[24]),(600,800,16,0xf800,0x07e0,0x001f));
+    }
+}
