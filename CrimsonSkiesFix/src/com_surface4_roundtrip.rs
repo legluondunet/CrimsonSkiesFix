@@ -12,6 +12,8 @@
 
 #![allow(dead_code)]
 use std::ptr;
+#[cfg(test)]
+use std::ffi::c_void;
 use crate::{
     com_surface4_abi::{Surface4VTable,SurfaceThis},
     com_surface4_forward::try_borrow_real_surface4,
