@@ -111,6 +111,51 @@ After restoring, change the setting back to `off` (or `on` to install it again).
 
 The native install, repeat-launch idempotence and native restore have been **confirmed by the owner under Wine/GE-Proton** on 4 November 2026, with installation and restoration success messages captured in logs. This is **not** a claim of runtime validation under Windows 11.
 
+## Experimental Wine ROFFILE.DLL parser guard (opt-in)
+
+A separate original-game issue can trigger an unhandled access violation at
+`roffile.dll + 0x22E0` when the native GameOS INI-text parser reads beyond
+the end of an exact-sized file allocation. This is tracked in
+[issue #10](https://github.com/legluondunet/CrimsonSkiesFix/issues/10);
+the original 32-bit ROFFILE.DLL was reverse-engineered, but the triggering
+file's exact contents have **not** yet been confirmed.
+
+For a controlled Wine/GE-Proton experiment only, edit the existing
+`CrimsonSkiesFix/CrimsonSkiesFix.ini`:
+
+```ini
+[Compatibility]
+RoffileTerminatorFix=1
+
+[Debug]
+Log=1
+```
+
+The experimental option is **off by default** and not enabled on native
+Windows. Once the game has loaded ROFFILE.DLL and reaches a hooked DirectDraw
+render call, the proxy checks that the **on-disk DLL** exactly matches the
+supported SHA-256
+`1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a`
+(135,168 bytes) and that the original code signatures are unchanged.
+Only then does it replace an **in-memory** allocation call in
+`InitIniFile`, using ROFFILE.DLL's **own allocator** for `file_size+2`
+bytes and initializing both extra bytes to NUL. Original read, parse and
+free functions remain unchanged. No game assets are modified on disk.
+
+**Limits and fail-safe behavior:** unsupported binaries and failed
+verifications are refused and logged as `ROFFILE-FIX: NOT installed`.
+Installation of a supported binary is logged as `ROFFILE-FIX: installed`.
+A DLL loaded and parsed entirely before the next graphics callback could
+escape this opportunistic hook; an absent installation log means the fix
+was never confirmed active. The exact root cause still requires a Wine
+reproduction and validation on a normal Windows installation. Do not
+merge this experimental option into the default configuration until
+that validation is complete.
+
+To turn the experiment off on the next launch, set
+`RoffileTerminatorFix=0`. This does not require restoring any original
+game file because the patch never writes to disk.
+
 ## Logging and diagnostics
 
 Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
