@@ -1544,6 +1544,123 @@ mod tests{
     }
 
     #[test]
+    fn retirement_waits_for_inflight_flip_and_disarms_old_primary() {
+        // This is a synthetic native COM graph, not a real game or GPU.
+        // The first native Blt deliberately runs while retirement starts.
+        // Both paths must share the per-primary virtual_flip mutex.
+        use crate::{
+            borderless_contract::{BackendEvidence,RenderTarget},
+            presentation::Chain,
+        };
+        use std::{sync::Arc,thread,time::{Duration,Instant}};
+        // Handshake the simulated native Blt instead of trusting a sleep:
+        // retirement is explicitly attempted while this callback is blocked.
+        static BLT_ENTERED:AtomicBool=AtomicBool::new(false);
+        static BLT_CAN_RETURN:AtomicBool=AtomicBool::new(false);
+        BLT_ENTERED.store(false,Ordering::SeqCst);
+        BLT_CAN_RETURN.store(false,Ordering::SeqCst);
+        unsafe extern "system" fn blocking_native_blt(
+            this:SurfaceThis,_dst:*mut Rect,_source:SurfaceThis,_src:*mut Rect,
+            _flags:u32,_effects:*mut c_void
+        )->i32{
+            let real=&*this.cast::<RealMock>();
+            if real.blts.fetch_add(1,Ordering::SeqCst)==0{
+                BLT_ENTERED.store(true,Ordering::SeqCst);
+                let deadline=Instant::now()+Duration::from_secs(5);
+                while !BLT_CAN_RETURN.load(Ordering::SeqCst) && Instant::now()<deadline{
+                    thread::yield_now();
+                }
+                if !BLT_CAN_RETURN.load(Ordering::SeqCst){return E_FAIL;}
+            }
+            S_OK
+        }
+        let mut table=mock_table();
+        table.blt=blocking_native_blt;
+        let mut phys=[real_mock(&table),real_mock(&table),real_mock(&table)];
+        let raw=std::array::from_fn::<_,3,_>(|i|
+            (&mut phys[i] as *mut RealMock).cast::<c_void>());
+        let mode=Mode{width:640,height:480,bpp:16};
+        let mut contract=AdapterContract::prepare(
+            mode,(1920,1080),Chain{front_to_back:true,back_to_depth:true,mipmaps:false}
+        ).unwrap();
+        contract.expose(BackendEvidence{
+            process_owned_window:true,normal_directdraw:true,
+            render_target:RenderTarget::RealDirectDrawSurface4,
+            render_target_caps:0x2000,render_target_is_rgb565:true,
+            real_zbuffer_32:true,primary_with_clipper:true,
+            working_blt:true,complete_surface_com:true,
+        }).unwrap();
+        unsafe {
+            let primary=new_graph_surface4(raw[0],SurfaceRole::Primary,mode).unwrap();
+            let back=new_graph_surface4(raw[1],SurfaceRole::Backbuffer,mode).unwrap();
+            let depth=new_graph_surface4(raw[2],SurfaceRole::Depth,mode).unwrap();
+            attach_graph_surface4(primary,back).unwrap();
+            attach_graph_surface4(back,depth).unwrap();
+            arm_graph_primary_flip(primary,&contract,88,(0,0),(1920,1080),
+                None,0,false,ptr::null_mut()).unwrap();
+            let vt=&**primary.cast::<*const Surface4VTable>();
+            // Worker owns its own COM reference throughout its in-flight Flip.
+            assert_eq!((vt.add_ref)(primary),2);
+            let primary_addr=primary as usize;
+            let back_addr=back as usize;
+            let worker=thread::spawn(move ||{
+                let p=primary_addr as SurfaceThis;
+                let b=back_addr as SurfaceThis;
+                let v=&**p.cast::<*const Surface4VTable>();
+                let hr=(v.flip)(p,b,0);
+                let remaining=(v.release)(p);
+                (hr,remaining)
+            });
+            let deadline=Instant::now()+Duration::from_secs(5);
+            while !BLT_ENTERED.load(Ordering::SeqCst) &&
+                  Instant::now()<deadline {
+                thread::yield_now();
+            }
+            // Never enter the retirement lock before the first native Blt.
+            if !BLT_ENTERED.load(Ordering::SeqCst){
+                BLT_CAN_RETURN.store(true,Ordering::SeqCst);
+                let _=worker.join();
+                panic!("synthetic native Flip did not reach its first Blt");
+            }
+            let retirement_started=Arc::new(AtomicBool::new(false));
+            let retirement_finished=Arc::new(AtomicBool::new(false));
+            let started=Arc::clone(&retirement_started);
+            let finished=Arc::clone(&retirement_finished);
+            let retired_primary=primary as usize;
+            let retiring=thread::spawn(move ||{
+                started.store(true,Ordering::SeqCst);
+                let result=retire_graph_primary_flip(retired_primary as SurfaceThis);
+                finished.store(true,Ordering::SeqCst);
+                result
+            });
+            while !retirement_started.load(Ordering::SeqCst) && Instant::now()<deadline{
+                thread::yield_now();
+            }
+            // Let the retirement worker attempt the lock, while the native
+            // callback is held by our explicit gate; never strand threads
+            // even if the assertion below detects an unexpected regression.
+            thread::sleep(Duration::from_millis(25));
+            let finished_while_native_blt_blocked=retirement_finished.load(Ordering::SeqCst);
+            BLT_CAN_RETURN.store(true,Ordering::SeqCst);
+            let retired=retiring.join().unwrap();
+            let flipped=worker.join().unwrap();
+            assert!(!finished_while_native_blt_blocked,
+                "old generation retired while a native Blt remained blocked");
+            assert_eq!(retired,Ok(1));
+            assert_eq!(flipped,(S_OK,1));
+            let blts_after_retirement=phys[0].blts.load(Ordering::SeqCst);
+            assert!(blts_after_retirement>0);
+            assert_eq!((vt.flip)(primary,back,0),E_NOTIMPL);
+            assert_eq!(phys[0].blts.load(Ordering::SeqCst),blts_after_retirement);
+            assert_eq!(retire_graph_primary_flip(primary),Err(E_FAIL));
+            assert_eq!((vt.release)(primary),0);
+            assert_eq!(((&**back.cast::<*const Surface4VTable>()).release)(back),0);
+            assert_eq!(((&**depth.cast::<*const Surface4VTable>()).release)(depth),0);
+        }
+        for item in &phys {assert_eq!(item.refs.load(Ordering::SeqCst),1);}
+    }
+
+    #[test]
     fn virtual_graph_rejects_native_flip_blt_invalid_attachment_and_mutation(){
         let table=mock_table();
         let mut real=real_mock(&table);

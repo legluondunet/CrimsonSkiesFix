@@ -46,6 +46,12 @@ jobs:
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw "Not an i686 DLL: 0x$($machine.ToString('X'))" }
           Write-Host "Verified PE machine: IMAGE_FILE_MACHINE_I386 (0x014C)"
+      - name: Smoke-test actual x86 proxy loading and exports on Windows
+        shell: pwsh
+        run: |
+          cargo build --locked --release --target i686-pc-windows-msvc --bin ddraw_loader_smoke
+          & 'target/i686-pc-windows-msvc/release/ddraw_loader_smoke.exe' 'target/i686-pc-windows-msvc/release/ddraw.dll'
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows x86 DLL load/export smoke failed' }
       - name: Prepare clean game directory layout
         shell: pwsh
         run: |
