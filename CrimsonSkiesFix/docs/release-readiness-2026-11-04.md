@@ -1,6 +1,6 @@
 # CrimsonSkiesFix — release readiness audit (2026-11-04)
 
-**Target:** current experimental `0.1.90` Windows x86 proxy, after the owner-validated PR #18. This is a packaging and release-readiness review, not a declaration of a stable 1.0 release.
+**Target:** experimental `0.1.90` Windows x86 proxy, after owner-validated PR #18 and the packaging/provenance PR #19 merged into `main` (`ebed26ceaf340b6506f0c220c1998ce318b36ed4`). This remains a release-candidate preparation audit, not a declaration of a stable 1.0 release.
 
 ## Findings and dispositions
 
@@ -33,10 +33,48 @@ The active INI and the installed game's own `GOSDATA/` directory are not part of
 
 `build-info.txt` fields: `Project`, `Version`, `Commit`, `LogIdentity`, `Architecture`, `DllSha256`, `DllSizeBytes`, `Source`. The short SHA printed during initialization corresponds to the first eight hexadecimal digits of the full source commit. The DLL digest distinguishes two binaries built from different commits with the same version.
 
+
+## Independent candidate verification (after PR #19)
+
+This repository also provides `tools/verify_release_candidate.py`, a
+read-only verifier for the *unpacked, downloaded* `CrimsonSkiesFix-ddraw`
+artifact. The Windows x86 CI executes the synthetic positive/negative
+self-tests and checks the staging directory. A second **Ubuntu**
+`verify-download` job retrieves the archive from the very same workflow
+and checks the final downloaded payload independently of the PowerShell
+packaging script, using the exact PR-head (or main) source SHA.
+
+Checks include: exactly five files, no shipped user INI/game assets,
+a valid x86 PE32 DLL, complete `build-info.txt`, matching DLL SHA-256 and
+byte size, matching full Git commit and logged build label, and a byte-for-byte
+GPL license match. The verifier does not claim digital signature/authenticity
+or native Windows 11 gameplay compatibility.
+
+Run the same check locally after unpacking an artifact, from the repository
+root (replace the commit with the SHA from that GitHub Actions run):
+
+```sh
+python3 CrimsonSkiesFix/tools/verify_release_candidate.py \
+  --directory /path/to/unpacked-artifact \
+  --expected-commit THE_FULL_40_DIGIT_SOURCE_SHA \
+  --cargo-toml CrimsonSkiesFix/Cargo.toml \
+  --license LICENSE
+```
+
+The `Cargo.toml` and `LICENSE` must come from the **same commit** as the
+artifact; do not verify an earlier downloaded archive against today's
+unrelated `main`. A successful offline check is a package-integrity
+statement only.
+
+**Prepared, but not executed:** a single-session Windows 11 acceptance
+protocol in `docs/windows11-acceptance-2026-11-04.md`, and non-published
+draft notes in `docs/release-notes-draft.md`. These documents do not
+authorize a GitHub tag, release, or merge.
+
 ## Release acceptance checklist
 
-- [ ] Two successful Windows x86 CI checks at the exact PR head, with Rust DLL and diagnostic tests, PE x86 check, native DLL loader smoke and complete artifact-layout check.
-- [ ] Inspect both downloadable archives; verify `LICENSE` is byte-for-byte identical to the repository, and `build-info.txt` matches the packaged `ddraw.dll` SHA-256 and the exact source commit.
+- [ ] Windows x86 build and independent Ubuntu downloaded-artifact verification both pass on the exact **final accepted source SHA**, with Rust tests, native DLL loader smoke, PE32 checks, source manifest and complete archive layout.
+- [ ] Independently verify the exact final downloaded `ddraw.dll` archive's five files, license, binary hash, source SHA and logged identity (using the `verify-download` job and optionally the offline verifier). The standalone diagnostic/probe archive remains separate and is not installed with the game.
 - [x] Prior Wine/GE-Proton gameplay validation exists for PR #18 build `7ee1db87` (9 graphics generations, 8 retired chains, ROFFILE 4/4, signature preserved), but **this is not a test of a future DLL after a code change**.
 - [ ] Native Windows 11 gameplay session with the exact new release candidate: startup chooser bypass, first image, movies in 4:3, MainMenu, Video preferences/lock/actual resolution, gameplay and FOV/HUD at native monitor size, several 1920×1080↔800×600 transitions, Alt+Tab focus recovery, and clean exit.
 - [ ] Confirm the owner's explicit decision to designate a release stable; publish an appropriately versioned tag and release notes only after approval.
