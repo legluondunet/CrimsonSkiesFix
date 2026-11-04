@@ -44,7 +44,9 @@ use com_vtable::{method,orig,replace_method};
 use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
 use frame_pacing::pace_frame;
 use render_sampling::sample_render_calls;
-use blt_crash_trace::{CRASH_BLT_LOG,CRASH_BLT_ROTATE_CALLS,NATIVE_BLT_CRASH_TRACE_ID,crash_blt_rotation_needed,crash_blt_line};
+use blt_crash_trace::{CRASH_BLT_LOG,NATIVE_BLT_CRASH_TRACE_ID,crash_blt_line};
+#[cfg(test)]
+use blt_crash_trace::{CRASH_BLT_ROTATE_CALLS,crash_blt_rotation_needed};
 fn color_probe_enabled()->bool{
     // The virtual game graph can only be created AFTER cfg() initializes.
     // Never initialize configuration/filesystem while a COM Blt is in
