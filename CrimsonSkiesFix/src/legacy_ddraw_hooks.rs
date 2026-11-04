@@ -168,11 +168,11 @@ mod tests {
     fn null_com_callbacks_fail_closed_without_cfg_or_native_calls() {
         let null=std::ptr::null_mut();
         unsafe {
-            assert_eq!(ddraw_query_interface(null,std::ptr::null(),null),DDERR_GENERIC);
-            assert_eq!(surface_query_interface(null,std::ptr::null(),null),DDERR_GENERIC);
+            assert_eq!(ddraw_query_interface(null,std::ptr::null(),std::ptr::null_mut()),DDERR_GENERIC);
+            assert_eq!(surface_query_interface(null,std::ptr::null(),std::ptr::null_mut()),DDERR_GENERIC);
             assert_eq!(set_cooperative(null,null,0),DDERR_GENERIC);
             assert_eq!(set_display_mode(null,800,600,16),DDERR_GENERIC);
-            assert_eq!(create_surface(null,null,null,null),DDERR_GENERIC);
+            assert_eq!(create_surface(null,null,std::ptr::null_mut(),null),DDERR_GENERIC);
             assert_eq!(surface_flip(null,null,0),DDERR_GENERIC);
             assert_eq!(surface_blt(null,std::ptr::null(),null,std::ptr::null(),0,null),DDERR_GENERIC);
             assert_eq!(surface_blt_fast(null,0,0,null,std::ptr::null(),0),DDERR_GENERIC);
