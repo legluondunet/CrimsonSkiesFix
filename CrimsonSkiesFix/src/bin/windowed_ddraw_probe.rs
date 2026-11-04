@@ -31,8 +31,6 @@ mod window_erase_guard;
 mod color_capture;
 #[path="../color_probe.rs"]
 mod color_probe;
-#[path="../native_widescreen.rs"]
-mod native_widescreen;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
@@ -119,7 +117,6 @@ fn color_capture_path(_label:&str)->Option<std::path::PathBuf>{None}
 
 type Ptr=*mut c_void;
 type Hr=i32;
-const S_OK:Hr=0;
 const DDSCL_NORMAL:u32=0x0000_0008;
 const DDSD_CAPS:u32=1;
 const DDSD_HEIGHT:u32=2;
@@ -274,9 +271,6 @@ fn letterbox(src_w:u32,src_h:u32,dst_w:u32,dst_h:u32)->Option<Rect>{
 /// Owns one COM reference and releases it exactly once when leaving scope.
 /// No virtual surface is advertised and no borrowed COM pointer is retained.
 struct Com(Ptr);
-impl Com {
-    fn is_null(&self)->bool{self.0.is_null()}
-}
 impl Drop for Com {
     fn drop(&mut self){
         if !self.0.is_null(){
@@ -390,9 +384,6 @@ fn make_z32_desc_for(caps:u32,selected:Option<[u32;8]>,width:u32,height:u32)->[u
         requested[18..26].copy_from_slice(&format);
     }
     requested
-}
-fn make_z32_desc(caps:u32,selected:Option<[u32;8]>)->[u32;31]{
-    make_z32_desc_for(caps,selected,640,480)
 }
 
 /// Query the real surface's returned Z format. This is the actual
