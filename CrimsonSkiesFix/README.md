@@ -1,18 +1,18 @@
-# CrimsonSkiesFix 0.1.89
+# CrimsonSkiesFix 0.1.90
 
 **Windows x86 DirectDraw proxy and modern display compatibility patch for Crimson Skies (2000).**
 
-CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes optional, reversible GameOS (GOS) Video menu resource integration.
+CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes default-enabled, reversible GameOS (GOS) Video menu resource integration.
 
 **Status:** experimental. Native 1920×1080 output, camera FOV/HUD adaptation, MainMenu signature, GameOS Resolution label, and the automatic disable/restore of the Video **Graphics** and **Resolution** dropdowns have been validated on Manjaro / Wine 11.0 / GE-Proton11-12. The Windows x86 DLL compiles and passes unit tests in GitHub Actions, but **real Windows runtime testing is postponed** until a Windows computer is available.
 
 ## What it does
 
-- Provides a compatible 32-bit DirectDraw proxy, with a native 3D RGB565/Z32 presentation path, desktop-size rendering, adapted FOV/HUD, and 4:3 video/menu handling when the experimental adapter and widescreen options are enabled.
-- Skips the legacy graphics adapter/resolution prompt for the authenticated executable.
+- Provides a compatible 32-bit DirectDraw proxy, with a native 3D RGB565/Z32 presentation path, desktop-size rendering, adapted FOV/HUD, and 4:3 video/menu handling. The previously experimental adapter and widescreen options are now enabled by default for the exact supported game executable.
+- Suppresses the obsolete startup **driver/resolution selection dialog by default**, retaining the original HAL device selection. This verified in-memory bypass is gated by `Native3DWidescreen=1`.
 - Shows the project version and build commit **only** on the MainMenu, including after returning from Preferences or gameplay; hides it in Video and other submenus.
 - Displays the actual native display resolution in the Video Preferences **Resolution** label without changing the game's original graphics-device/mode tables.
-- Optionally uses the game's native `@ctl@PM` disable message to grey out and make **Graphics** and **Resolution** unselectable. Other Video options are not deliberately modified.
+- **By default**, uses the game's native `@ctl@PM` disable message to grey out and make **Graphics** and **Resolution** unselectable. Other Video options are not deliberately modified.
 - Preserves the player's INI file and offers optional diagnostic logging and the narrow rendering/focus recovery controls described below.
 
 ### Supported executable
@@ -45,6 +45,8 @@ Crimson Skies/
     └── README.md
 ```
 
+**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog and uses the native 3D adapter and GOS Graphics/Resolution lock. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
 Wine users may need `WINEDLLOVERRIDES="ddraw=n,b"` to force the native proxy. The same Windows x86 DLL is used under Wine/Proton; it is **not** a Linux shared object.
@@ -58,13 +60,13 @@ All settings live in `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Important graphics o
 | `Borderless` | `1` | Legacy DirectDraw window handling; by itself does not activate the modern windowed 3D adapter |
 | `DesktopResolution` | `1` | Preserve the desktop mode and use monitor geometry |
 | `FPSLimit` | `60` | Bounded frame-pacing target (1–60); API call counts are not a measured gameplay FPS |
-| `ExperimentalWindowedAdapter` | `0` | Opt-in DirectDraw4 3D adapter for modern borderless/native rendering |
-| `Native3DWidescreen` | `0` | Opt-in monitor-sized 3D resolution, FOV and HUD corrections |
+| `ExperimentalWindowedAdapter` | `1` | Native DirectDraw4 3D adapter; enabled by default to support the locked Video settings and native display handling |
+| `Native3DWidescreen` | `1` | Native monitor-sized FOV/HUD corrections **and suppression of startup driver/resolution chooser** |
 | `FocusRepaint` | `0` | Optional focus/foreground repaint |
 | `WindowEraseGuard` | `0` | Optional suppression of `WM_ERASEBKGND` for the verified game window |
 | `LegacyOffscreenRGB565` | `0` | Optional RGB565 correction for legacy menu/video images |
 | `ModernFPSPacing` | `0` | Optional modern Flip pacing experiment |
-| `GosVideoLock` | `off` | Native GOS Graphics/Resolution dropdown override: `off`, `on` or `restore` |
+| `GosVideoLock` | `on` | **Default-on** native Graphics/Resolution lock; writes a verified, backed-up GOS patch overlay |
 
 The Wine-validated native widescreen + GOS dropdown configuration is:
 
@@ -83,11 +85,11 @@ GosVideoLock=on
 Log=1
 ```
 
-This is a **tested example**, not the generated defaults. `GosVideoLock=on` requires `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `DesktopResolution=1`; the DLL skips the operation when these requirements are not satisfied.
+This is the **owner's previously validated configuration** (the extra `FocusRepaint`, `WindowEraseGuard`, `LegacyOffscreenRGB565` and `Log` options remain disabled in fresh defaults). New first-run INIs now set `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on` automatically. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
 
 ### GOS Video dropdown lock, backup and restoration
 
-With `GosVideoLock=on`, the DLL verifies the accepted executable and the original `crimson.rof` and `VIDEO.SCRIPT`, then creates a small overlay containing the unchanged original `AIRFRAME.SCRIPT` patch and an edited, owner-derived `VIDEO.SCRIPT`. It modifies **only** the installed `GOSDATA/ASSETS/crimptch.rof`, saving a byte-for-byte original as:
+On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accepted executable and the original `crimson.rof` and `VIDEO.SCRIPT`, then create a small overlay containing the unchanged original `AIRFRAME.SCRIPT` patch and an edited, owner-derived `VIDEO.SCRIPT`. It modifies **only** the installed `GOSDATA/ASSETS/crimptch.rof`, saving a byte-for-byte original as:
 
 ```text
 GOSDATA/ASSETS/crimptch.rof.CrimsonSkiesFix.original.bak
@@ -130,7 +132,7 @@ For original GameOS Video UI research and owner test evidence, see [Video Prefer
 
 ## Known limitations
 
-This is an experimental, exact-executable build. Modern DirectDraw adapter settings are opt-in and require more gameplay coverage; Wine/GE-Proton runtime results do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
+This is an experimental, exact-executable build. The native 3D adapter, menu lock and startup chooser bypass are now **enabled by default**, but changing these defaults has not yet been tested as an unmodified fresh-install 0.1.90 configuration. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
 
 ## License and contribution policy
 
