@@ -41,7 +41,7 @@ unsafe extern "system" fn page_passthrough(a:usize,b:usize,args:*const u32)->u32
         PAGE_LOGS.load(Ordering::Relaxed)<MAX_PAGES;
     let original:ScriptFn=std::mem::transmute(PAGE_ORIGINAL);
     let result=original(a,b,args);
-    if record && PAGE_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+    if record && PAGE_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
         |n|if n<MAX_PAGES{Some(n+1)}else{None}).is_ok()
     {
         log(&format!(
@@ -64,7 +64,7 @@ unsafe extern "system" fn localize_passthrough(a:usize,b:usize,args:*const u32)-
     if let Some(id)=id {
         if is_small_resource_id(id) &&
             LAST_LABEL_ID.swap(id,Ordering::Relaxed)!=id &&
-            LABEL_LOGS.fetch_update(Ordering::Relaxed,Ordering::Relaxed,
+            LABEL_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
                 |n|if n<MAX_LOCALIZE{Some(n+1)}else{None}).is_ok()
         {
             log(&format!(
@@ -109,8 +109,8 @@ pub unsafe fn install()->(bool,bool){
     if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE || !crate::cfg().log_enabled{
         return (false,false);
     }
-    let page=replace_registration(PAGE_SITE,PAGE_BYTES,page_passthrough as usize);
-    let localize=replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as usize);
+    let page=replace_registration(PAGE_SITE,PAGE_BYTES,page_passthrough as *const () as usize);
+    let localize=replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
     log(&format!(
         "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, no UI modifications"
     ));
