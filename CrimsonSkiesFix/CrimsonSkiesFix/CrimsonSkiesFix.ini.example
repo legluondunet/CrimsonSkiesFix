@@ -12,9 +12,12 @@ ModernFPSPacing=0
 ; Disable Native3DWidescreen to disable the prompt bypass.
 ExperimentalWindowedAdapter=1
 Native3DWidescreen=1
-; Optional focus and background-erase experiments remain disabled.
-FocusRepaint=0
-WindowEraseGuard=0
+; First-run focus recovery and white-background prevention enabled.
+; FocusRepaint performs one-shot full repaint after focus/paint changes.
+; WindowEraseGuard suppresses WM_ERASEBKGND on the verified game window.
+; Set either to 0 to disable that mechanism independently.
+FocusRepaint=1
+WindowEraseGuard=1
 ; First-image/legacy artwork RGB565 color correction is enabled by default.
 ; Only exact-matching 800x600 16bpp legacy offscreen creation is affected.
 ; Set to 0 to opt out.
