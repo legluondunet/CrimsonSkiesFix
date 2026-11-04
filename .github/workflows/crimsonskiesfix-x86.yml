@@ -171,12 +171,6 @@ jobs:
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw "Windowed probe is not i686: 0x$($machine.ToString('X'))" }
           Write-Host 'Standalone windowed probe verified x86'
-      - name: Publish standalone windowed DirectDraw resource probe
-        uses: actions/upload-artifact@v4
-        with:
-          name: CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL
-          path: CrimsonSkiesFix/target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe
-          if-no-files-found: error
 
   verify-downloaded-artifact:
     name: verify-download
