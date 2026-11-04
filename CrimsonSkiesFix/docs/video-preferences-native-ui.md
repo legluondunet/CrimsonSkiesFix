@@ -1006,3 +1006,38 @@ The 0.1.90 **new defaults** have separate Rust/parser and Windows x86
 CI tests, but have not yet been verified as a clean first-launch
 configuration in the owner's game. Windows 11 runtime verification
 remains explicitly deferred.
+
+
+## 0.1.90 first-image RGB565 default (2026-11-04)
+
+At the owner's request, the early splash/first-image color correction is
+now enabled on a **fresh installation by default**, alongside the already
+default-enabled native widescreen, GOS Video dropdown lock, and startup
+AskForVDev chooser suppression.
+
+```ini
+[Graphics]
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+LegacyOffscreenRGB565=1
+GosVideoLock=on
+```
+
+The preexisting `modern_create_surface` handler restricts
+`LegacyOffscreenRGB565=1` to the recognized game's native DirectDraw4
+vtable, after the usual virtual graph creation path has declined the
+operation, and only when `in_game_adapter::legacy_offscreen_rgb565()`
+recognizes the original 800x600/16bpp legacy artwork surface descriptor.
+The proxy clones the requested descriptor and asks the native backend
+for RGB565; it does not alter the game's descriptor in place or rewrite
+the source image. Unmatched surface creation passes through unchanged.
+
+The opt-out remains `[Graphics] LegacyOffscreenRGB565=0` in the
+**active** `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Existing active INIs
+are never automatically overwritten, even though new generated and
+distributed template defaults use `1`.
+
+The correction was used in the owner's previously validated Wine/Proton
+graphics configuration, but this final **combined 0.1.90 first-run
+default** still requires a fresh-install in-game smoke test.
+Windows 11 game runtime verification is postponed.
