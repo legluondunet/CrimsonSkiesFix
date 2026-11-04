@@ -34,6 +34,14 @@ type AllocFn = unsafe extern "C" fn(size: u32) -> *mut u8;
 static PATCHED_MODULE: AtomicUsize = AtomicUsize::new(0);
 static REFUSED_MODULE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_ALLOCATOR: AtomicUsize = AtomicUsize::new(0);
+// These lock-free counters are updated only inside the patched cdecl allocator.
+// No logging, formatting, I/O, mutex, or heap allocation occurs in that path.
+// Reporting happens later from the existing rendering probe.
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_PADDED: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_FAILED: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_LAST_SIZE: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_REPORTED: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[link(name = "kernel32")]
@@ -56,15 +64,47 @@ fn rel32(call_at: usize, target: usize) -> Option<[u8; 4]> {
     Some(rel.to_le_bytes())
 }
 
+// Always report the first observed call, then use sparse milestones to avoid
+// producing log output for every file/line parsed while rendering.
+fn should_report_calls(calls: usize, reported: usize) -> bool {
+    calls > reported &&
+        (reported == 0 || calls.is_power_of_two() || calls - reported >= 64)
+}
+
+fn report_allocation_stats() {
+    let calls = ALLOC_CALLS.load(Ordering::Acquire);
+    let reported = ALLOC_REPORTED.load(Ordering::Relaxed);
+    if !should_report_calls(calls, reported) {
+        return;
+    }
+    if ALLOC_REPORTED.compare_exchange(
+        reported, calls, Ordering::AcqRel, Ordering::Relaxed
+    ).is_err() {
+        return;
+    }
+    let padded = ALLOC_PADDED.load(Ordering::Relaxed);
+    let failed = ALLOC_FAILED.load(Ordering::Relaxed);
+    let last_size = ALLOC_LAST_SIZE.load(Ordering::Relaxed);
+    log(&format!(
+        "ROFFILE-FIX: allocation calls={calls} padded_success={padded} failures={failed} last_input_size={last_size}; counted in cdecl hook, reported outside hook"
+    ));
+}
+
 // Windows x86 cdecl: one 32-bit argument, caller removes it (as in the
 // original CALL at ROFFILE + 0x1172). Do not change to extern "system".
 #[inline(never)]
 unsafe extern "C" fn allocate_padded(size: u32) -> *mut u8 {
     let Some(requested) = padded_size(size) else {
+        ALLOC_LAST_SIZE.store(size as usize, Ordering::Relaxed);
+        ALLOC_FAILED.fetch_add(1, Ordering::Relaxed);
+        ALLOC_CALLS.fetch_add(1, Ordering::Release);
         return ptr::null_mut();
     };
     let original = ORIGINAL_ALLOCATOR.load(Ordering::Acquire);
     if original == 0 {
+        ALLOC_LAST_SIZE.store(size as usize, Ordering::Relaxed);
+        ALLOC_FAILED.fetch_add(1, Ordering::Relaxed);
+        ALLOC_CALLS.fetch_add(1, Ordering::Release);
         return ptr::null_mut();
     }
     let allocator: AllocFn = std::mem::transmute(original);
@@ -73,7 +113,13 @@ unsafe extern "C" fn allocate_padded(size: u32) -> *mut u8 {
         // The game reads only the original size, leaving these bytes intact.
         ptr::write(result.add(size as usize), 0);
         ptr::write(result.add(size as usize + 1), 0);
+        ALLOC_PADDED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        ALLOC_FAILED.fetch_add(1, Ordering::Relaxed);
     }
+    ALLOC_LAST_SIZE.store(size as usize, Ordering::Relaxed);
+    // Publish the completed operation only after updating its result.
+    ALLOC_CALLS.fetch_add(1, Ordering::Release);
     result
 }
 
@@ -192,9 +238,14 @@ pub fn probe() {
         return;
     }
     let module = unsafe { GetModuleHandleA(c"roffile.dll".as_ptr().cast()) } as usize;
-    if module == 0 ||
-       PATCHED_MODULE.load(Ordering::Acquire) == module ||
-       REFUSED_MODULE.load(Ordering::Acquire) == module {
+    if module == 0 {
+        return;
+    }
+    if PATCHED_MODULE.load(Ordering::Acquire) == module {
+        report_allocation_stats();
+        return;
+    }
+    if REFUSED_MODULE.load(Ordering::Acquire) == module {
         return;
     }
     let Ok(_guard) = INSTALL_LOCK.try_lock() else { return };
@@ -231,6 +282,21 @@ mod tests {
         assert_eq!(rel32(0x1000, 0x1000), Some((-5i32).to_le_bytes()));
         assert!(rel32(0x0469_1172, 0x7a4a_1000).is_some());
         assert_eq!(rel32(0x1000, 0xf000_0000), None);
+    }
+    #[test]
+    fn diagnostic_reports_first_call_and_sparse_milestones() {
+        assert!(!should_report_calls(0, 0));
+        assert!(should_report_calls(1, 0));
+        assert!(!should_report_calls(1, 1));
+        assert!(should_report_calls(2, 1));
+        assert!(!should_report_calls(3, 2));
+        assert!(should_report_calls(4, 2));
+        assert!(!should_report_calls(6, 4));
+        assert!(should_report_calls(8, 4));
+        assert!(!should_report_calls(70, 64));
+        assert!(should_report_calls(128, 64));
+        assert!(should_report_calls(129, 64));
+        assert!(!should_report_calls(129, 129));
     }
     #[test]
     fn original_call_matches_verified_allocator_rva() {
