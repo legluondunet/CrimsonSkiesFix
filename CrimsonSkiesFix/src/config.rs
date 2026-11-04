@@ -14,8 +14,8 @@ pub const DEFAULT_INI: &str = concat!(
     "FocusRepaint=0\n",
     "; Experimental: suppress only WM_ERASEBKGND on the game HWND.\n",
     "WindowEraseGuard=0\n",
-    "; Experimental: force RGB565 on exact game-sized legacy system-memory image surface.\n",
-    "LegacyOffscreenRGB565=0\n",
+    "; Legacy first-image color fix: force RGB565 on verified game-sized offscreen source (on by default).\n",
+    "LegacyOffscreenRGB565=1\n",
     "; Native FOV/HUD and startup driver/resolution prompt bypass for verified 1.02 EXE (on by default).\n",
     "Native3DWidescreen=1\n",
     "; Native GOS Graphics/Resolution control lock (on | off | restore). On by default: writes backed-up small crimptch.rof.\n",
@@ -54,7 +54,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: false, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: false, window_erase_guard: false, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:false, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:false, window_erase_guard:false, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
@@ -152,10 +152,11 @@ mod tests {
         assert!(!parse("[Graphics]\nNative3DWidescreen=0").native_3d_widescreen);
     }
     #[test]
-    fn legacy_offscreen_rgb565_is_opt_in_and_graphics_only(){
-        assert!(!Config::default().legacy_offscreen_rgb565);
-        assert!(!parse("[Debug]\nLegacyOffscreenRGB565=1").legacy_offscreen_rgb565);
+    fn legacy_offscreen_rgb565_is_default_on_and_graphics_only(){
+        assert!(Config::default().legacy_offscreen_rgb565);
+        assert!(parse("[Debug]\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
         assert!(parse("[Graphics]\nLegacyOffscreenRGB565=1").legacy_offscreen_rgb565);
+        assert!(!parse("[Graphics]\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
         assert!(!parse("[Graphics]\nLegacyOffscreenRGB565=1\nLegacyOffscreenRGB565=0").legacy_offscreen_rgb565);
     }
     #[test]
@@ -239,6 +240,7 @@ mod tests {
         assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(parse(shipped).experimental_windowed_adapter);
         assert!(parse(shipped).native_3d_widescreen);
+        assert!(parse(shipped).legacy_offscreen_rgb565);
         assert!(parse(shipped).desktop_resolution);
     }
     #[test]
@@ -247,6 +249,7 @@ mod tests {
         assert!(initial.desktop_resolution);
         assert!(initial.experimental_windowed_adapter);
         assert!(initial.native_3d_widescreen);
+        assert!(initial.legacy_offscreen_rgb565);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(!initial.log_enabled);
         assert!(!initial.modern_fps_pacing);
