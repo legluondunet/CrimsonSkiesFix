@@ -51,9 +51,8 @@ use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{W
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
-// All user-facing diagnostic messages use the canonical project name.
-// Historical INI names are recognized only by the import logic.
-const PROJECT_NAME:&str="CrimsonSkiesFix";
+// Historical INI names are recognized only by the import logic;
+// all user-facing diagnostic text uses the canonical project name.
 const SYSTEM_DDRAW_RECURSION_ERROR:&str="ERROR: loading the system DirectDraw resolved back to CrimsonSkiesFix proxy; aborting to avoid recursion";
 
 type Hr=i32;
