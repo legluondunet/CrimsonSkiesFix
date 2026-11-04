@@ -860,3 +860,62 @@ No merge has been performed. The PR remains draft pending decisions
 about production integration and further coverage.
 
 legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Owner validation of automatic native DLL integration (2026-11-04)
+
+**Validated in the owner's game:** CrimsonSkiesFix 0.1.89
+commit `7bc1caad`, Windows x86 proxy under Manjaro Linux,
+Wine 11.0 / GE-Proton11-12, Radeon RX 6600M, primary
+1920x1080 120Hz display.
+
+The owner reported explicitly that **the integration works**,
+after testing the native DLL `GosVideoLock=on` option.
+The supplied `CrimsonSkiesFix(20261104-002130).log`
+(392 lines) independently shows:
+
+- L1: the actual DLL is `0.1.89-7bc1caad` and configuration
+  has `gos_video_lock: On`, with the desktop-resolution
+  and native widescreen/adapter prerequisites enabled.
+- L33: `GOS-VIDEO-LOCK: installed native-disabled GOS Video
+  controls (original archived in .bak)`. This is **before**
+  game DirectDraw interception (first reported at L39),
+  confirming that the native patch can be installed
+  early enough for this engine/startup path.
+- L126-L131: 1920x1080 native RGB565/HAL/Z32 surface graph,
+  independent of the original 800x600 GameOS UI.
+- L340-L347: original Graphics device count 2 and
+  Resolution mode count 1 remain unchanged; original
+  640x480 internal entry is displayed through the existing
+  `1920x1080` formatter only.
+- L282-L283: main menu version label physically presented.
+- L387-L390: main menu signature physically presented
+  again after navigation back from Video Preferences,
+  with `reentry=1` and the new `0.1.89-7bc1caad` label.
+- No `GOS-VIDEO-LOCK` errors, or mode switch evidence
+  in the provided window. The owner's real-time
+  visual/input observation confirms the two controls
+  are greyed and not interactive; the log itself
+  records successful archive installation, not a native
+  GameOS widget disabled-state query.
+
+**Confirmed:** automatic generation and installation of
+the two-member `crimptch.rof` from within the DLL after
+authenticating original owner assets, without Python,
+with the original overlay preserved as a unique backup;
+the known-good widescreen UI and main menu watermark
+continue to function.
+
+**Still to verify separately:** another subsequent launch
+with `GosVideoLock=on` should be idempotent (log
+`already-disabled`); `GosVideoLock=restore` should
+restore the exact original overlay and verify regular
+Video menu interactivity again; a fresh Windows 11
+installation or another Wine configuration has not
+been tested. Do not conflate this scoped successful
+Wine validation with universal release readiness.
+
+Keep PR #9 draft/unmerged pending remaining checks and
+a decision on whether automatic enablement is desirable,
+given that the opt-in `on` mode persists a reversible
+user-game archive modification across DLL removal.
