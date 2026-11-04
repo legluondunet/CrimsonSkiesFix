@@ -288,9 +288,10 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
     // No work from DllMain: authenticated game and INI are ready here.
-    // The native GOS resource override is explicitly opt-in; a successful
-    // ROF patch must be available BEFORE the original GOS scripts load.
-    // Read-only mode does no ROF I/O. Restore is allowed independently.
+    // The native GOS resource override is default-enabled for the exact
+    // authenticated EXE, but can be switched off or restored in the INI.
+    // A successful ROF patch must precede original GOS script loading.
+    // Explicit off mode does no ROF I/O. Restore is allowed independently.
     static GOS_LOCK_ONCE:Once=Once::new();
     GOS_LOCK_ONCE.call_once(|| {
         gos_video_lock::apply(
@@ -1384,7 +1385,7 @@ unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*
 
 #[no_mangle]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
-    // Must run before the optional startup selector's in-memory patch.
+    // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
