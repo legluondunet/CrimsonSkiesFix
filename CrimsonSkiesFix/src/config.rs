@@ -22,8 +22,8 @@ pub const DEFAULT_INI: &str = concat!(
     "GosVideoLock=on\n",
     "\n",
     "[Compatibility]\n",
-    "; Experimental Wine-only ROFFILE.DLL INI parser EOF guard. Disabled by default.\n",
-    "RoffileTerminatorFix=0\n",
+    "; Wine-only ROFFILE.DLL INI parser EOF guard. Enabled by default on supported DLLs.\n",
+    "RoffileTerminatorFix=1\n",
     "\n",
     "[Debug]\n",
     "Log=0\n",
@@ -59,7 +59,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: false, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -136,11 +136,12 @@ pub fn parse(content: &str) -> Config {
 mod tests {
     use super::*;
     #[test]
-    fn roffile_terminator_fix_is_opt_in_and_scoped() {
-        assert!(!Config::default().roffile_terminator_fix);
-        assert!(!parse("[Graphics]\nRoffileTerminatorFix=1").roffile_terminator_fix);
-        assert!(!parse("[Debug]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+    fn roffile_terminator_fix_is_default_on_and_compatibility_scoped() {
+        assert!(Config::default().roffile_terminator_fix);
+        assert!(parse("[Graphics]\nRoffileTerminatorFix=0").roffile_terminator_fix);
+        assert!(parse("[Debug]\nRoffileTerminatorFix=0").roffile_terminator_fix);
         assert!(parse("[Compatibility]\nRoffileTerminatorFix=1").roffile_terminator_fix);
+        assert!(!parse("[Compatibility]\nRoffileTerminatorFix=0").roffile_terminator_fix);
         assert!(!parse("[Compatibility]\nRoffileTerminatorFix=1\nRoffileTerminatorFix=0").roffile_terminator_fix);
     }
     #[test]
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:false, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
@@ -257,6 +258,7 @@ mod tests {
         let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
         assert_eq!(parse(shipped), parse(DEFAULT_INI));
         assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(parse(shipped).roffile_terminator_fix);
         assert!(parse(shipped).experimental_windowed_adapter);
         assert!(parse(shipped).native_3d_widescreen);
         assert!(parse(shipped).legacy_offscreen_rgb565);
@@ -274,6 +276,7 @@ mod tests {
         assert!(initial.focus_repaint);
         assert!(initial.window_erase_guard);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
+        assert!(initial.roffile_terminator_fix);
         assert!(!initial.log_enabled);
         assert!(!initial.modern_fps_pacing);
 
