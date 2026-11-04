@@ -63,9 +63,16 @@ jobs:
           if (-not (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')) {
             throw 'Missing non-overwriting INI template'
           }
-          $defaults = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example' |
-            Where-Object { $_.Trim() -eq 'Log=0' })
+          $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
+          $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
           if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
+          $gosOff = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=off' })
+          if ($gosOff.Count -ne 1) { throw 'GOS resource modification must be opt-in by default' }
+          $adapterOff = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=0' })
+          $wideOff = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=0' })
+          if ($adapterOff.Count -ne 1 -or $wideOff.Count -ne 1) {
+            throw 'Experimental native 3D paths must be opt-in by default'
+          }
           $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
             ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
             Sort-Object)
