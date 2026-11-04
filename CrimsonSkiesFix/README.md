@@ -46,7 +46,7 @@ Crimson Skies/
     └── README.md
 ```
 
-**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, and enables the first-image RGB565 color correction. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, and activates focus repaint plus the background-erase guard. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
@@ -63,8 +63,8 @@ All settings live in `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Important graphics o
 | `FPSLimit` | `60` | Bounded frame-pacing target (1–60); API call counts are not a measured gameplay FPS |
 | `ExperimentalWindowedAdapter` | `1` | Native DirectDraw4 3D adapter; enabled by default to support the locked Video settings and native display handling |
 | `Native3DWidescreen` | `1` | Native monitor-sized FOV/HUD corrections **and suppression of startup driver/resolution chooser** |
-| `FocusRepaint` | `0` | Optional focus/foreground repaint |
-| `WindowEraseGuard` | `0` | Optional suppression of `WM_ERASEBKGND` for the verified game window |
+| `FocusRepaint` | `1` | One-shot full repaint after focus return or exposed-window transition; set `0` to opt out |
+| `WindowEraseGuard` | `1` | Prevent white background erasure over DirectDraw pixels on the verified game HWND; set `0` to opt out |
 | `LegacyOffscreenRGB565` | `1` | First-image and legacy artwork RGB565 color correction; exact matching offscreen surfaces only; set `0` to disable |
 | `ModernFPSPacing` | `0` | Optional modern Flip pacing experiment |
 | `GosVideoLock` | `on` | **Default-on** native Graphics/Resolution lock; writes a verified, backed-up GOS patch overlay |
@@ -86,7 +86,10 @@ GosVideoLock=on
 Log=1
 ```
 
-This is the **owner's previously validated configuration**. `LegacyOffscreenRGB565=1` is now enabled on a fresh install alongside `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on`. The extra `FocusRepaint`, `WindowEraseGuard` and `Log` options remain disabled by default. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
+This is the **owner's previously validated configuration**. `LegacyOffscreenRGB565=1` is now enabled on a fresh install alongside `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on`. `FocusRepaint=1` and `WindowEraseGuard=1` are now enabled on fresh installs; only `Log=0` remains the default for ordinary diagnostics. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
+
+
+**Window visibility fixes:** `FocusRepaint=1` requests a bounded one-shot full redraw when returning to the game or exposing a previously obscured window. `WindowEraseGuard=1` suppresses `WM_ERASEBKGND` only on the authenticated game window, preventing white background erasure of DirectDraw contents. The owner previously validated the guard's white-window improvement under Wine. Neither switch is a general crash handler or proven fix for the separately reported 0.1.90 gameplay crash.
 
 ### GOS Video dropdown lock, backup and restoration
 
@@ -133,7 +136,7 @@ For original GameOS Video UI research and owner test evidence, see [Video Prefer
 
 ## Known limitations
 
-This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass and first-image RGB565 color fix are now **enabled by default**, but changing these defaults has not yet been tested as an unmodified fresh-install 0.1.90 configuration. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
+This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass, first-image RGB565 color fix, `FocusRepaint` and `WindowEraseGuard` are now **enabled by default**, but the combined fresh-install 0.1.90 defaults have not yet been runtime-validated as a whole. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
 
 ## License and contribution policy
 
