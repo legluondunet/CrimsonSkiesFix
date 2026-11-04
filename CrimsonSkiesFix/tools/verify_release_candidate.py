@@ -152,7 +152,7 @@ def self_test() -> None:
         cargo = base / "Cargo.toml"
         cargo.write_text('[package]\nname = "crimson-skies-fix"\nversion = "0.1.90"\n\n[dependencies]\n', encoding="utf-8")
         license_path = base / "LICENSE"
-        license_path.write_text("mock GPL license for synthetic test only", encoding="utf-8")
+        license_path.write_bytes(b"Mock license for synthetic test only\nSecond line with LF\n")
         (folder / "LICENSE").write_bytes(license_path.read_bytes())
         (folder / "README.md").write_text("Installation instructions", encoding="utf-8")
         (folder / "CrimsonSkiesFix.ini.example").write_text("[Graphics]\nBorderless=1\n", encoding="utf-8")
@@ -207,6 +207,9 @@ def self_test() -> None:
         (folder / "LICENSE").write_text("tampered license", encoding="utf-8")
         reject("license mismatch")
         (folder / "LICENSE").write_bytes(license_path.read_bytes())
+        (folder / "LICENSE").write_bytes(license_path.read_bytes().replace(b"\n", b"\r\n"))
+        reject("Windows CRLF license differs from repository LF")
+        (folder / "LICENSE").write_bytes(license_path.read_bytes())
         dll.write_bytes(b"not-a-PE" + bytes(300))
         reject("invalid PE32 DLL")
         dll.write_bytes(fake_pe)
@@ -216,7 +219,7 @@ def self_test() -> None:
         fields["LogIdentity"] = "CrimsonSkiesFix 0.1.90-aaaaaaaa x86"
         write_manifest()
         verify(root, commit, cargo, license_path)
-    print("RELEASE-CANDIDATE-VERIFY: self-test PASS (valid and 7 rejected corruptions)")
+    print("RELEASE-CANDIDATE-VERIFY: self-test PASS (valid and 8 rejected corruptions)")
 
 
 def main() -> int:
