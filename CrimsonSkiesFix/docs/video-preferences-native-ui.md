@@ -923,3 +923,32 @@ Keep PR #9 draft/unmerged pending code/release review and
 the user's merge decision. Windows testing is deferred, and
 the opt-in `on` mode persists a reversible game archive
 modification across DLL removal, so the default remains `off`.
+
+
+## Owner restore-log proof — CrimsonSkiesFix 0.1.89 (2026-11-04)
+
+The owner uploaded `CrimsonSkiesFix(20261104-004642).log` as
+follow-up evidence for the `GosVideoLock=restore` test:
+
+- L1: `CrimsonSkiesFix 0.1.89-7bc1caad x86` and `gos_video_lock: Restore`.
+- L33: `GOS-VIDEO-LOCK: restored original GOS patch overlay; backup consumed`
+  — emitted before the first DirectDraw interception at L39.
+- L126–131: the 1920x1080 native render graph initializes correctly.
+- L338–346: original Graphics count 2 and original mode count 1
+  remain unchanged; menu Resolution label correctly presents
+  `1920x1080` using the text-only formatter.
+- L279–281 and L388–391: main menu watermark first renders and
+  renders again upon returning to MainMenu.
+
+This demonstrates the **native DLL's successful rollback path** in
+the owner's Wine/GE-Proton configuration, not merely a reported
+visual result. Log instrumentation proves the archive swap and backup
+consumption; owner's earlier test separately confirmed normal
+post-restore menu behavior. No claim is made about testing on
+Windows 11 (explicitly postponed).
+
+The owner's second launch with `GosVideoLock=on` was confirmed
+idempotent by firsthand observation, but its separate log has
+not been provided. PR #9 remains draft/unmerged.
+
+legluondunet assisted by ChatGPT (OpenAI)
