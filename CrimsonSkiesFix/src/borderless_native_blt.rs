@@ -165,7 +165,7 @@ mod tests{
     }
     fn mode()->Mode{Mode{width:640,height:480,bpp:16}}
     fn objects(fail_at:usize)->([usize;45],FakeSurface,FakeSurface){
-        let mut vt=[0usize;45];vt[5]=fake_blt as usize;
+        let mut vt=[0usize;45];vt[5]=fake_blt as *const () as usize;
         let p=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at};
         let s=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at:0};
         (vt,p,s)
