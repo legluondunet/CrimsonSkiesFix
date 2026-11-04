@@ -348,17 +348,17 @@ fn original_airframe(overlay: &[u8]) -> Result<Payload, String> {
     Ok(Payload {name:"AIRFRAME.SCRIPT",expanded:a.expanded,
         compressed_bytes:overlay[a.offset..a.offset+a.compressed].to_vec(),kind:a.kind})
 }
-fn overlay_video_matches(bytes: &[u8]) -> Result<Option<Vec<u8>>, String> {
+fn overlay_video_matches(bytes: &[u8]) -> Result<bool, String> {
     let all = parse(bytes)?;
-    if all.len()!=2 {return Ok(None);}
-    let Some(video) = named(&all, VIDEO_PATH) else {return Ok(None)};
-    let Some(_airframe) = named(&all, AIRFRAME_PATH) else {return Ok(None)};
+    if all.len() != 2 { return Ok(false); }
+    let Some(video) = named(&all, VIDEO_PATH) else { return Ok(false); };
+    let Some(airframe) = named(&all, AIRFRAME_PATH) else { return Ok(false); };
     let script = inflate(bytes, video)?;
     if script.len() != VIDEO_MODIFIED_SIZE ||
-       exe_gate::sha256(&script) != MODIFIED_VIDEO_HASH {return Ok(None);}
-    let a = named(&all, AIRFRAME_PATH).unwrap();
-    inflate(bytes, a)?; // verify both entries are readable
-    Ok(Some(script))
+       exe_gate::sha256(&script) != MODIFIED_VIDEO_HASH { return Ok(false); }
+    // Validate AIRFRAME as well before ever claiming an existing patch.
+    inflate(bytes, airframe)?;
+    Ok(true)
 }
 
 fn wide(path: &OsStr) -> Vec<u16> {
@@ -394,7 +394,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn enable(base: &Path, overlay: &Path) -> Result<&'static str, String> {
     let original = checked_patch(overlay)?;
     let backup = overlay.with_file_name(format!("crimptch.rof{BACKUP_SUFFIX}"));
-    if overlay_video_matches(&original)?.is_some() {
+    if overlay_video_matches(&original)? {
         // Existing user patches must never be rewritten. Do not claim
         // successful managed installation if there is no valid rollback.
         // A missing backup leaves the user-patched overlay untouched.
@@ -457,7 +457,7 @@ fn restore(overlay: &Path) -> Result<&'static str, String> {
         fs::remove_file(&backup).map_err(|e| e.to_string())?;
         return Ok("original patch already intact (stale backup removed)");
     }
-    if overlay_video_matches(&present)?.is_none() {
+    if !overlay_video_matches(&present)? {
         return Err("current patch is not the recognized GOS override; refusing restore".into());
     }
     let entries = parse(&present)?;
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(items.len(),2);
         assert_eq!(inflate(&new,named(&items,AIRFRAME_PATH).unwrap()).unwrap(),old);
         assert_eq!(inflate(&new,named(&items,VIDEO_PATH).unwrap()).unwrap(),video);
-        assert!(overlay_video_matches(&new).unwrap().is_none());
+        assert!(!overlay_video_matches(&new).unwrap());
         let mut corrupt = new.clone();
         corrupt[8..12].copy_from_slice(&0u32.to_le_bytes());
         assert!(parse(&corrupt).is_err());
