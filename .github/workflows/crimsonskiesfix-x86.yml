@@ -33,6 +33,12 @@ jobs:
         env:
           CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: cargo test --target i686-pc-windows-msvc
+      - name: Audit generated Cargo.lock (temporary CI inventory)
+        shell: pwsh
+        run: |
+          Write-Host 'AUDIT_CARGO_LOCK_BEGIN'
+          Get-Content -LiteralPath Cargo.lock
+          Write-Host 'AUDIT_CARGO_LOCK_END'
       - name: Compile release DirectDraw proxy
         env:
           CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
