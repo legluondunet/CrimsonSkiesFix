@@ -471,6 +471,35 @@ mod tests {
     }
 
     #[test]
+    fn passive_surface_audit_callbacks_keep_exact_com_abi() {
+        let _:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=audit_surface_add_attached_surface;
+        let _:unsafe extern "system" fn(*mut c_void,u32,*mut c_void)->Hr=audit_surface_delete_attached_surface;
+        let _:unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr=audit_surface_get_dc;
+        let _:unsafe extern "system" fn(*mut c_void)->Hr=audit_surface_is_lost;
+        let _:unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,u32,*mut c_void)->Hr=audit_surface_lock;
+        let _:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=audit_surface_release_dc;
+        let _:unsafe extern "system" fn(*mut c_void)->Hr=audit_surface_restore;
+        let _:unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr=audit_surface_set_clipper;
+        let _:unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr=audit_surface_get_ddinterface;
+    }
+
+    #[test]
+    fn passive_audit_callbacks_reject_null_com_without_dispatch() {
+        let p=std::ptr::null_mut();
+        unsafe {
+            assert_eq!(audit_surface_add_attached_surface(p,p),DDERR_GENERIC);
+            assert_eq!(audit_surface_delete_attached_surface(p,0,p),DDERR_GENERIC);
+            assert_eq!(audit_surface_get_dc(p,std::ptr::null_mut()),DDERR_GENERIC);
+            assert_eq!(audit_surface_is_lost(p),DDERR_GENERIC);
+            assert_eq!(audit_surface_lock(p,std::ptr::null(),p,0,p),DDERR_GENERIC);
+            assert_eq!(audit_surface_release_dc(p,p),DDERR_GENERIC);
+            assert_eq!(audit_surface_restore(p),DDERR_GENERIC);
+            assert_eq!(audit_surface_set_clipper(p,p),DDERR_GENERIC);
+            assert_eq!(audit_surface_get_ddinterface(p,std::ptr::null_mut()),DDERR_GENERIC);
+        }
+    }
+
+    #[test]
     fn modern_surface_hooks_preserve_dx6_slots(){
         assert_eq!(SURFACE_BLT,5);
         assert_eq!(SURFACE_BLT_FAST,7);
