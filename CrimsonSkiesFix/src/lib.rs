@@ -33,6 +33,7 @@ mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e),
 mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
 mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
+mod roffile_terminator_fix; // experimental Wine-only ROFFILE INI EOF guard
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
@@ -809,6 +810,7 @@ unsafe extern "system" fn modern_create_surface(
 // specific method ABIs (and vtable indices) are stable, per ddraw.h.
 // Unlike legacy v1 pacing, this instrumentation NEVER sleeps or edits frames.
 unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
+    roffile_terminator_fix::probe();
     let Some(addr)=orig(this,SURFACE_FLIP) else{return DDERR_GENERIC};
     FIRST_MODERN_FLIP.call_once(||{
         log("RENDER-MODERN: first newer-surface Flip (real modern rendering path)");
@@ -891,6 +893,7 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
 }
 unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
     src:*mut c_void,src_rect:*const c_void,flags:u32,fx:*mut c_void)->Hr {
+    roffile_terminator_fix::probe();
     let Some(addr)=orig(this,SURFACE_BLT) else{return DDERR_GENERIC};
     FIRST_MODERN_BLT.call_once(||{
         log("RENDER-MODERN: first newer-surface Blt (observed; NOT FPS-paced)");
@@ -1124,6 +1127,7 @@ fn is_d3d3_iid(iid:*const Guid)->bool {
 // the original CreateDevice succeeds. The genuine device and surfaces
 // are still owned by the game: no replacement objects or AddRef/Release.
 unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
+    roffile_terminator_fix::probe();
     let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
     let hr=original(this);
