@@ -1,0 +1,1043 @@
+# Crimson Skies 1.02 — Video Preferences native UI ownership
+
+## Evidence: user test of v0.1.80
+
+The owner-provided `CrimsonSkiesFix(5).log` (2 Nov 2026, Wine 11 /
+GE-Proton11-11) reports an authenticated 1920x1080 native D3D3 launch,
+800x600 virtual menu and correct offscreen MainMenu watermark.
+
+The experimental `SendMessageA` IAT replacement was **installed**,
+but did **not** control the Graphics or Resolution dropdowns:
+
+| Exact diagnostic | Observed |
+|---|---:|
+| `MENU-NATIVE-COMBO: hook_available` | true |
+| `iat_calls` after entering Video Preferences | 1 |
+| `iat_addstring` | 0 |
+| Win32 native `ComboBox` child windows in each scan | 0 |
+| Win32 Graphics or Resolution controls found | 0 |
+
+Eight consecutive process-owned window/child enumerations returned
+`windows=8 native_combos=0 recognized_graphics=0
+recognized_resolution=0`. Even *after* `gosCallback` command 13
+reported opening Preferences, the scan yielded no controls.
+
+**Conclusion:** Neither the Win32 `ComboBox` class-enumeration route
+nor the original EXE's `SendMessageA` import identifies the **visible
+in-game Video Preferences** selectors. The game does have code using
+`SendMessageA` with `CB_ADDSTRING`, but it is likely for the
+**separate startup video-device dialog** (now bypassed), not the
+DirectDraw-rendered in-game Preferences screen. The latter is a
+logical 800x600 frame, not ordinary child Win32 controls. We cannot
+prove all possible Win32 APIs are unused from this trace alone, but
+the attempted hook demonstrably had no effect.
+
+That disproved code was fully **removed**:
+- `src/menu_native_combo.rs` deleted, including experimental window
+  enumeration and IAT mutation.
+- Removed its initialization in `src/lib.rs`.
+- Removed its periodic 4:3 primary Flip scans from
+  `src/com_surface4_forward.rs`.
+- Removed the inert standalone probe stub.
+- No replacement fake mouse-coordinate hit zones or edit of the
+  game's resource files.
+
+## Verified direct original-code path
+
+The exact supported executable is
+`CRIMSON-UNWRAPPED.EXE`, 2,580,480 bytes,
+SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
+Preferred image base `0x00400000`.
+
+### In-game GOS interpreter
+
+The original game registers `gosCallback` at `0x00407670`
+through the `0x004075D6` registration instruction. Its event
+dispatcher at `0x00407670` indexes a jump table at `0x00408368`.
+In the owner's Wine logs:
+
+| GOS command | Original action | Test evidence |
+|---|---|---|
+| 13 | Prepare Preferences: `0x004077AC` calls `0x00418D30`, then copies `0x81` DWORDs from active to pending (`0x004077B6–0x004077C5`) | Observed when entering menu |
+| 14 | Apply: `0x004077D9` copies the same `0x81` DWORDs pending to active, then calls `0x00419160` | Confirmed in earlier Wine trace |
+| 15 | Mode request: branch at `0x00407806` calls `0x00419420` at exact `0x00407811`, then copies mode table and index | Verified guard blocks requests `0`, `1` |
+| 16 | Additional menu event; **not proven** to exclusively mean cancel | Observed during opening/transitions |
+
+The active video settings structure starts at `0x0064B450`:
+- Active device: `0x0064B490`
+- Active mode index: `0x0064B48C`
+
+The menu's pending copy starts at `0x00648330`:
+- Pending device: `0x00648370`
+- Pending mode index: `0x0064836C`
+
+The interpreter branch at `0x0040CCE1` reads both pending fields
+to external value pointers; the `0x0040CD62` branch writes them
+back (`0x0040CD64`: device; `0x0040CD6E`: mode). These **are
+backend script property transfers**, not yet the widget object IDs
+nor the displayed text renderer. Writing `1920` to a mode index
+would corrupt mode-table indexing.
+
+### Separate startup Win32 dialog
+
+The exact x86 function at `0x00444900` reads imported
+`SendMessageA` from `0x00A20488` at `0x004449AE`, then sends
+`CB_ADDSTRING` and `CB_SETCURSEL`. Its helper `0x00444A50`
+populates modes. **This is not proof that the in-game GOS Video
+Preferences widgets use that window**, and the repeated failed tests
+of v0.1.79/0.1.80 disprove its usefulness as an in-game hook.
+
+## Next safe engineering step (not implemented)
+
+Identify the *actual DirectDraw/GOS menu widget instances*, their
+item selection callback and their displayed-text owner. Only after
+verifying those bindings should we:
+1. Disable the actual `Graphics` and `Resolution` widgets,
+   preserving all other Video options.
+2. Show the current launch monitor width/height as **UI text** while
+   preserving internal 800x600 4:3 menu surfaces and original
+   mode-table index.
+3. Validate on Wine and Windows with Menu → Video → MainMenu, a second
+   monitor and in-game native FOV/HUD/3D.
+
+Already validated and intentionally preserved:
+- Backend resolution mode-request guard (v0.1.73).
+- Backend graphics-device commit guard (introduced v0.1.76), though
+  a different pending Graphics selection has **not** yet been tested.
+- Offscreen MainMenu signature and native scene-art gating (v0.1.78).
+- Native 3D resolution/FOV/HUD and 4:3 menu/video presentation.
+
+This document records read-only inspection and the rollback of the
+failed Win32 approach; it does not claim the two menus are disabled.
+PR #9 remains draft and unmerged.
+
+legluondunet assisted by ChatGPT (OpenAI)
+
+## New verified GOS UI entry points (2 November 2026, v0.1.81 review)
+
+The uploaded v0.1.81 `CrimsonSkiesFix(6).log` confirms the removed
+Win32 interception is no longer installed. It also establishes native
+1920×1080 DirectDraw/D3D3 with 800×600 virtual RGB565 menu, successful
+MainMenu offscreen branding, suppression in Video Preferences and later
+recognition of MainMenu artwork. The active and pending video fields
+stay `device=1 / mode_index=0` in this session; it does **not**
+exercise a changed graphics selection or visibly fix the lists.
+
+**Further direct analysis of the owner's original clean 1.02 EXE**
+(SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
+revealed that the game registers multiple **native GOS script functions**
+right beside `gosCallback`:
+
+| Original registration instruction | GOS symbol (string VA) | Original handler VA | Opcode bytes at registration |
+|---|---|---|---|
+| `0x004075D6` | `gosCallback` (`0x0061F150`) | `0x00407670` | `68 70 76 40 00` |
+| `0x004075F4` | `uiData` (`0x0061F15C`) | `0x004093A0` | `68 A0 93 40 00` |
+| `0x00407612` | `uiControl` (`0x0061F164`) | `0x00404960` | `68 60 49 40 00` |
+| `0x00407630` | `gosPageInit` (`0x0061F170`) | `0x00403680` | `68 80 36 40 00` |
+| `0x0040764E` | `gosLocalize` (`0x0061F17C`) | `0x00404630` | `68 30 46 40 00` |
+
+The registration code at `0x004075E0`, `0x004075FE`,
+`0x0040761C`, `0x0040763A`, and `0x00407658` calls the
+same script function registration helper `0x00406FF0`, then
+registers the returned descriptor through `0x005D3AD0`.
+The function names, addresses, original registration bytes and
+dispatch into handlers were verified from the exact EXE's binary,
+not inferred from screenshots or a search result.
+
+Disassembly of `uiControl` at `0x00404960` shows it reads the first
+DWORD of its third argument as a script operation code and dispatches
+on values including `6`, `0x85D`, `0x85E`, `0x868`, `0x9C6`;
+it uses a jump table at `0x00404EA0` for `0x85D` subcommands.
+Likewise, `uiData` at `0x004093A0` dispatches a family of script
+opcodes beginning at `0x7D0` through a table at `0x0040F518`.
+These functions end in `ret 0xC` and use the three-argument GOS
+callback convention, making a **pass-through, read-only registration
+observer** a feasible next diagnostic experiment.
+
+**Interpretation boundary:** Identifying these GOS script API handlers
+does not yet identify the two specific Video dropdown instances or
+their display-string owner. A future trace should narrowly and
+separately associate `uiControl` and `uiData` opcodes with entering
+the Video tab, opening each dropdown and opening an unrelated option,
+without guessing pointer types or swallowing any call. Only then
+should a widget-specific disabling or label-setting implementation be
+attempted. The verified `gosLocalize` script entry point is another
+possible text ownership route, but no causal link to the Resolution
+field is established yet.
+
+No user-facing DLL behavior was changed based on this finding.
+The present v0.1.81 release remains the validated cleanup baseline.
+
+
+## v0.1.82 diagnostic implementation — script opcode boundaries
+
+Byte-for-byte disassembly of the owner-supplied clean 1.02 EXE
+established the following exact dispatch ranges; these are
+**native GOS interpreter opcodes**, not widget IDs:
+
+- `uiControl` at `0x00404960` reads its script operation at
+  `[arg3+0]`, then uses the jump table `0x00404EA0` for
+  `0x85D` subcommands 0–8 at `[arg3+4]`; other direct operations
+  include `0x85E`, `0x860`, `0x868`, `0x899`,
+  `0x96E`, `0x9C5..0x9C8` and `0xC1C..0xC24`.
+- `uiData` at `0x004093A0` first reads its operation and
+  next parameter from `[arg3+0]` and `[arg3+4]`.
+  The 39-entry direct table at `0x0040F518` covers
+  `0x7D0..0x7F6`; `0x833` has an additional direct
+  branch. A **second dispatch stage** (previously overlooked)
+  covers `0x834..0x96D` using an indexed byte table at
+  `0x0040F788` followed by a common target table at
+  `0x0040F5B4`. That compressed stage maps 314 possible
+  opcodes onto 117 distinct handlers; many code values map to
+  the common default `0x0040F507`. The higher `0x9C9`
+  has a distinct special case.
+- Both handlers return with `RET 0xC`, so a strict
+  three-argument stdcall pass-through wrapper preserves the original
+  calling convention. The new observer also retains the original
+  function arguments and return value, logging only numeric opcode,
+  small/scalar second-parameter category and return *class*.
+
+The new `CrimsonSkiesFix/src/menu_ui_trace.rs` registers these
+read-only observers at the original `PUSH imm32` sites after
+successful executable SHA-256 verification, when `[Debug] Log=1`.
+The log gate additionally requires a 640×480/800×600 virtual frame
+and an existing GOS Preferences transaction (command 13). Entries
+are capped to 96 `uiData` and 72 `uiControl` changed signatures.
+Unknown pointer values are **not** logged as addresses. The
+observer is disabled completely when logging is off.
+
+**Experiment status:** Static instruction-byte checks and Windows
+x86 compilation tests do not prove the relevant callbacks are
+invoked by the Video tab. Owner Wine runtime traces are required
+to associate a particular command with opening Graphics, opening
+Resolution and using Viewing Range. No input blocking or text
+overrides are implemented by this observer; preserving existing
+backend guards is intentional.
+
+
+### Exact Video script transfer IDs recovered from `uiData`
+
+The compressed `uiData` dispatcher (tables `0x0040F788` and
+`0x0040F5B4`) can be inverted against the original executable:
+
+| `uiData` opcode | Handler VA | Confirmed action |
+|---|---|---|
+| `0x83E` | `0x0040CDE2` | Copies `0x81` DWORDs from active `0x0064B450` to pending `0x00648330` video settings |
+| `0x855` | `0x0040CCE1` | Reads or writes **nine** pending video settings, including Graphics `0x00648370` and Resolution mode index `0x0064836C` |
+| `0x850` | `0x0040CC71` | Reads or writes three additional settings at `0x00648528..0x00648530`; not proven to be Graphics/Resolution |
+| `0x83F` | `0x0040D018` | Another script operation; widget ownership not yet established |
+
+In the `0x855` handler, a zero second descriptor DWORD goes to
+`0x0040CCE8`, where pending values are read into output
+parameters. A nonzero second DWORD branches to `0x0040CD62`,
+where the values supplied by the script are assigned to the
+pending structure; individual assignments occur at
+`0x0040CD64` (device) and `0x0040CD6E` (mode index),
+alongside seven other video option fields. This is the **first
+exact, independently decoded GOS opcode-level link** to the
+Video Preferences data structure.
+
+The v0.1.82 trace now reports a separate bounded event
+`MENU-GOS-UI-VIDEO: uiData opcode=0x855 operation=get|set
+pending_device=A->B pending_mode=C->D` when these values first
+appear or change. It calls the genuine original handler with
+the untouched three arguments. No script pointers are printed,
+no selection is blocked, and no UI text is replaced.
+
+This does **not** identify the original widget's input or
+text render component: one `uiData 0x855` call transports
+**nine settings together**, so refusing that entire opcode
+would also break Viewing Range, Effects Level, Lighting, etc.
+The final fix must target the actual two GUI selections/labels,
+not blindly suppress opcode `0x855`.
+
+
+## v0.1.84 Wine log → exact GOS Video list handlers (2 Nov 2026)
+
+Owner's `CrimsonSkiesFix(9).log` (413 lines, 0.1.84-a8915707,
+Wine 11.0 / GE-Proton11-11) confirms 1920x1080 desktop and real HAL,
+800x600 virtual menu, intact watermark, and native GOS callbacks:
+`gosPageInit` and `gosLocalize` emit page transitions and
+resource IDs 1078..1082, 1099..1117 and 4001.
+`uiData(0x855)` is observed with **operation=get**,
+pending graphics/mode 1/0 unchanged, other video field mask=0.
+Mode requests 0 and 1 are both blocked by the existing guard;
+command 14 applies with unchanged pending graphics/mode.
+No log proves the visual selectors are disabled or the native
+dimensions shown. The set operation of `uiData(0x855)`
+was not observed in this session.
+
+### Confirmed resolution text owner: `uiData(0x845)`
+
+Disassembly of the *one exact accepted* SHA-verified 1.02 EXE:
+
+| Address | Original instruction | Interpretation |
+|---|---|---|
+| `0x0040CEF7` | `mov eax,[ebx]; cmp eax,edx` | Reads supplied index; `edx=-1` is count sentinel |
+| `0x0040CEFD` | `mov ecx,[0x64B498]` | Returns mode count on sentinel |
+| `0x0040CF14` | `mov eax,[eax*4+0x64B49C]` | Loads mode packed `(height<<16) | width` |
+| `0x0040CF1D` | `shr edx,16` | Derives height |
+| `0x0040CF21` | `and eax,0xffff` | Derives width |
+| `0x0040CF2B` | `push 0x206` | Format-string resource ID |
+| `0x0040CF31` | `call 0x4054B0` | Formats the dimensions into temporary text |
+| `0x0040CF41` | `call 0x403350` | Assigns formatted text into GOS script output |
+
+This is fundamentally different from `0x00444ADE`, which belongs
+to a separate Win32 startup video chooser and is not what
+Preferences displays. A future UI string override should target
+the *output of the 0x845 formatter* after verifying the original
+GOS list ownership, while leaving the original mode table,
+selected index, 4:3 internal geometry, and all other settings
+unchanged. Never replace `0x64836C` with pixel width.
+
+### Five-choice list: `uiData(0x847)`
+
+Opcode `0x847` dispatches to `0x0040CFE4`, returns fixed
+item count 5, and in its label branch looks up localized
+resource `index + 0x72` via `0x4050C0`. **This is a
+five-choice menu but not yet conclusively the Graphics device
+list** (which showed two options in the owner's screenshots).
+Do not label it as Graphics or disable it on that assumption.
+
+The diagnostic data-session flag now tracks command 13 through
+command 14/16 independently of the Campaign-art visibility flag;
+the latter can clear on transient menu artwork and previously
+suppressed callbacks. This change is **read-only** and does not
+affect the validated MainMenu watermark.
+
+New `src/menu_ui_list_probe.rs` logs bounded exact 0x845/0x847
+list requests, with original incoming index, returned count,
+original packed width/height, and item resource. It verifies
+the original x86 handler preimages, forwards all calls
+unaltered, and does not read arbitrary game object pointers.
+Await Wine runtime correlation before editing an actual widget.
+
+
+
+## v0.1.86 — precise GOS label interception (3 November 2026)
+
+The owner-supplied `CrimsonSkiesFix(20261103-174341).log` records
+`uiData(0x845)` returning one label, `640x480`, while the launch
+monitor is `1920x1080`. GOS mode indices remain zero; no evidence
+suggests the user's real monitor is 640x480.
+
+With the authenticated 2,580,480-byte EXE (SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`),
+independent static PE disassembly verified this exact formatter path:
+
+- `0x0040CF20`: push packed mode-table entry's height; width is
+  masked to 16 bits and pushed next
+- `0x0040CF2B`: push resource ID `0x206` and stack text buffer
+- `0x0040CF31`: original `CALL rel32` bytes `E8 7A 85 FF FF`,
+  targeting `0x004054B0` (CDECL original formatter)
+- `0x0040CF36`: continues using original GOS text buffer to call
+  `0x00403350` and assign the already-formatted label
+
+`src/menu_resolution_label.rs` hooks **only that call site**, first
+validating the exact original bytes of the formatting instructions,
+original formatter entry and following code. The wrapper preserves the
+original CDECL return value, output pointer, resource ID and caller stack
+cleanup, and substitutes monitor dimensions only under the verified
+Video Preferences transaction/visibility guards. Otherwise it forwards
+all parameters unchanged. It never modifies a GOS setting, selector
+index, list count, original mode table, renderer, native FOV/HUD, or
+executable file. Failed installation must not leave a partial call
+patch; the original call is restored where possible.
+
+**Pending live validation:** open Video Preferences, confirm the
+Resolution text shows `1920x1080` and remains consistent after returning
+to MainMenu and reopening. Verify the stable MainMenu signature, 4:3
+videos, 3D native resolution/FOV/HUD and unaffected other Video settings.
+The original Graphics/Resolution controls are **not visually disabled**;
+the backend guards are intentionally retained pending a separate,
+widget-specific solution. PR #9 remains a draft; do not merge before
+owner runtime acceptance.
+
+
+## v0.1.87 — Graphics selector investigation (read-only)
+
+Independent verification against the **same exact clean 1.02 PE**
+(2,580,480 bytes, SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
+shows that GOS uiData:
+
+- `0x843` dispatches to `0x0040CE17`. On an index sentinel
+  `0xFFFFFFFF`, it reports the original count at `0x0064AB3C`.
+  For list entries, it obtains the table from `0x0064AB2C`,
+  indexes 360-byte records and formats entry metadata into GOS output.
+  Candidate for a video device list; *not yet identified as Graphics*.
+- `0x844` dispatches to `0x0040CF58`. The sentinel returns the
+  original count at `0x00648374`, and entry labels are constructed
+  from a separate `0x0064839C`-based table with resource `0x209`.
+  Widget identity also unverified.
+- `0x845` remains the separately confirmed Resolution list and its
+  text override has now been visually validated by the owner at 1920x1080.
+
+New 0.1.87 debug-only traces record only item index and reported count
+for `0x843`/`0x844`, bounded and gated by the original x86 instruction
+preimages. No table entries, new pointers, or game widgets are modified.
+No claim of disabled Graphics/Resolution controls. Do not merge until
+list/widget correlation and UI input semantics are known.
+
+
+## v0.1.87 owner log — Graphics list resolved (3 November 2026)
+
+The owner-supplied `CrimsonSkiesFix(20261103-180305).log`
+confirms GOS Preferences > Video activity with:
+
+- `uiData(0x844)`: count request `0xFFFFFFFF` returns **2**,
+  followed by label indices **0 and 1**.
+- `uiData(0x845)`: count request returns **1**, label index 0
+  originally formats **640x480**, and the narrow formatter hook
+  substitutes **1920x1080** for the visible text.
+- `uiData(0x843)`: **not observed** in the Video Preferences
+  transaction.
+- Original GOS command **15** is invoked with arguments 0 and 1;
+  both were blocked by the existing native-mode backend guard,
+  leaving the saved mode index at 0.
+- The original MainMenu watermark was recomposited and presented
+  after the Preferences navigation, with `reentry=1` and `reentry=2`.
+
+### Exact supported EXE establishes 0x844 is the Graphics *list*
+
+Original EXE SHA-256:
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
+
+The genuine device enumeration routine at `0x00418D30` initializes
+the **active** device count `[0x0064B494]` to zero
+(`0x00418E03`) and increments it while enumerating the display
+device names (`0x00418E28`, `0x00418E56`). These names begin at
+`0x0064B4BC`, with **97-byte records**. On command 13 the game's
+own `REP MOVSD` at `0x004077B6–0x004077C5` copies 0x81 DWORDs
+from active settings at `0x0064B450` to pending settings at
+`0x00648330`. Hence:
+
+| Property | Active address | Pending address | Offset |
+|---|---|---|---|
+| Selected Graphics device | `0x64B490` | `0x648370` | `+0x40` |
+| **Graphics list count** | `0x64B494` | `0x648374` | `+0x44` |
+| **Graphics text table** | `0x64B4BC` | `0x64839C` | `+0x6C` |
+| Selected Resolution index | `0x64B48C` | `0x64836C` | `+0x3C` |
+
+The `uiData(0x844)` handler at `0x0040CF58` reads the
+**pending Graphics count** from `0x648374` on the `-1` sentinel
+and formats a string from
+`0x64839C + index*97` with original resource `0x209`.
+This is direct, independent proof that **0x844 owns the underlying
+Graphics-device list**; 0x845 remains the Resolution list. The
+`gosCallback` command-15 call at `0x00407811` invokes `0x419420`,
+which invokes `0x418FB0` to regenerate the original resolution
+mode table for a supplied Graphics-device argument.
+
+**Crucial distinction:** identifying the Graphics list **does not
+locate the custom GOS UI widget object or its enable/disable
+attribute**. Thus 0x844 and 0x845 must not be replaced with
+fake counts or edited indices merely to disable dropdowns.
+The existing 0.1.87 fixes remain functional. The next research
+target is the actual GOS widget instance, not a synthetic Win32
+ComboBox, since no native ComboBoxes are created.
+
+Updated read-only diagnostics now identify 0x844 as
+`list=graphics-devices`; the Graphics/Resolution selectors are
+still visually clickable. No new user-facing behaviour is claimed.
+
+
+## v0.1.88 — close observed label-refresh gap (unverified runtime)
+
+In the owner's 0.1.87 log, the GOS Resolution formatter initially
+emits `native label=1920x1080`, but an additional native 0x845
+label request is made **after**
+`MENU-BRANDING: Campaign artwork verified; stale GOS Preferences
+visibility hint cleared`. At that point the label formatter does
+not emit its native replacement; the UI-list diagnostic still
+reports the unchanged original `640x480`. This is evidence of a
+**potential** visible fallback on a nested page refresh, not proof
+that 640x480 was actually visible on screen.
+
+The 0.1.88 fix removes the Campaign-art *branding visibility hint*
+from the exact **text-only** formatter's eligibility, while retaining
+every other gate: authenticated executable, native adapter and
+desktop-resolution configuration, MainMenu seen, 4:3 legacy UI,
+and original GOS Preferences data transaction active.
+
+Command 13 owns the data-transaction flag; unlike the transient
+artwork hint, it is not cleared by `on_main_menu_art_verified`.
+Only the original `uiData(0x845)` formatting CALL at 0x0040CF31
+is affected; the original mode table, mode and device index,
+script object state, output buffer ownership, and branding renderer
+remain unchanged.
+
+Regression test expectation: after opening Video Preferences,
+switching/toggling the Graphics and Resolution lists and navigating
+out/back, every in-transaction 0x845 label request should log
+native `1920x1080`. The actual on-screen presentation must still
+be confirmed by the owner. If the transaction has legitimately
+ended, original text can be generated into non-visible scripts
+without overwriting any visible native label.
+
+
+## Investigating the actual GOS visual widgets (3 November 2026)
+
+Owner-confirmed 0.1.88: the native Resolution text remains correct
+across Preferences re-entry. The backend mode/device guards and original
+MainMenu watermark remain validated. The **Graphics and Resolution
+GOS selectors are still visually enabled**; do not conflate the data
+list handlers with the rendered button instances.
+
+### Static EXE discoveries
+
+These observations were checked directly against the one accepted
+2,580,480-byte unwrapped 1.02 executable, SHA-256
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`:
+
+- The menu scene dispatcher at `0x0040286E` pushes the literal
+  `Preferences` (`0x0061EB20`) and invokes the game script loader
+  at `0x00406D30` via `0x00402954`.
+- The MainMenu path at `0x00402948` similarly loads `MainMenu`
+  (`0x0061EB98`). The shared setup at `0x004027D4` loads
+  `ScriptLoader`.
+- `0x00406D30` constructs `assets\scripts\<name>.script` from the
+  literal prefix at `0x0061F050` and extension at `0x0061F060`,
+  then delegates to the original GameOS script runtime. Thus the
+  executable names **external GOS script assets**, not an embedded
+  Preferences layout that we can simply edit inside the DLL.
+- The GameOS registration block at `0x0040230E–0x004023D5`
+  contains `gosButtonType`, `gosChecked`, `gosColor`, and
+  `gosColorDisabled`. **The presence of `gosColorDisabled` identifies
+  a color variable, not proof of an enable/disable API.**
+  No supported widget-specific disable call has been established.
+
+The already identified `uiData(0x844)` and `uiData(0x845)` functions
+return *data for* the Graphics and Resolution dropdowns, not GOS
+object handles. Spoofing a list count or selection index at this
+layer risks invalid state; it is intentionally **not** implemented.
+
+### New read-only asset inventory
+
+`tools/inspect_gos_scripts.py` is a standalone Python 3 helper with
+no third-party dependencies. It searches for `.script` assets
+case-insensitively, prioritizes `Preferences.script`,
+`MainMenu.script` and `ScriptLoader.script`, and reports bounded
+metadata (relative filename, length, SHA-256, initial bytes, and
+keyword-bearing printable ASCII/UTF-16LE string examples). It does
+**not** alter .script files, write to the game folder or claim to
+decode an unverified bytecode format. It also has a synthetic-data
+self-test:
+
+`python3 tools/inspect_gos_scripts.py --self-test`
+
+To inspect an installed game directory on Linux/Wine:
+
+`python3 tools/inspect_gos_scripts.py "/path/to/Crimson Skies" --output gos-scripts-report.json`
+
+On Windows:
+
+`python tools/inspect_gos_scripts.py "C:\Games\Crimson Skies" --output gos-scripts-report.json`
+
+The output filename must be new and end in `.json`. For faster
+review, **the single original `Assets/Scripts/Preferences.script`
+file** (or its read-only report) is the most useful next evidence.
+If that asset is itself compiled/packed, readable strings may be
+absent; the report does not prove nonexistence of a button.
+
+**Next engineering gate:** identify the two concrete GOS
+Preferences widget IDs and actual input/disabled-state
+mechanism from script assets or safe runtime tracing. Only then
+add a guarded UI-only change, retaining the exact executable hash
+gate and existing mode safety checks. No UI-disabled claim and
+no merge until owner runtime verification.
+
+
+## Owner report has no loose .script files — follow-up (3 Nov 2026)
+
+The owner ran the initial read-only inspector and uploaded
+`gos-scripts-report.json` with:
+
+`script_count: 0`
+`candidate_count: 0`
+`candidates: []`
+
+This is a valid **negative result for loose script files within the
+scanned directory**, not evidence that Crimson Skies lacks a
+Preferences page or that the GOS script is embedded in the EXE.
+The v1 report did not record the scan root, top-level files,
+or archive filenames, so it is not possible to determine whether
+the correct game root was scanned.
+
+External game-format research independently confirms that the
+original PC game uses `*.zbd` data archives (see
+https://github.com/TerranMechworks/mech3ax).
+**It does not demonstrate that `Preferences.script` is in a
+particular ZBD archive**. No archive parsing/extraction has
+been implemented or tested here.
+
+The read-only inspector was extended to **v2**, preserving the
+existing loose-script checks while also including a
+`layout` object with:
+- name and kind of at most 60 immediate game-root entries;
+- count of scanned files and directories, depth limit of 8;
+- a bounded file-extension histogram;
+- count, relative path and size of up to 80 potential archive
+  containers, prioritizing `.zbd`, without opening them;
+- a boolean for a recognized game executable at the scanned
+  directory root; does not hash or open that executable.
+
+The helper still does not modify any game files or decode unknown
+archive/script formats. The next useful artefact is an output
+generated by rerunning this **v2** helper against the actual game
+installation root. Use a new JSON filename:
+
+`python3 tools/inspect_gos_scripts.py "/path/to/Crimson Skies" --output gos-scripts-layout-v2.json`
+
+If the v2 report identifies ZBD files, choose the next read-only
+format inspection accordingly. Do not claim the GOS widget IDs or
+disable the visual selectors until reliable evidence links them
+to the exact two GOS object instances.
+
+The validated v0.1.88 DLL code and installed game EXE are unchanged.
+
+
+## Definitive UI archive discovery — ROF, not ZBD (3 November 2026)
+
+The owner's `gos-scripts-layout-v2.json` scanned the true game
+directory (`game_root_executable_detected=true`), with 259 files,
+73 directories, 184 ZBD archives and **two .rof archives**, but no
+loose .script files. This was not a missing installation or an
+erroneous working directory.
+
+An independently developed Crimson Skies engine reconstruction
+documents and parses the retail GameOS resource archive:
+https://github.com/Laeresh/CSVM/blob/main/docs/formats/rof.md
+https://github.com/Laeresh/CSVM/blob/main/docs/formats/menu-layout.md
+
+**Corrected conclusion:** the UI files are indeed present, but
+packaged inside **GOSDATA/ASSETS/crimson.rof**. The script-loader's
+`assets\scripts\Preferences.script` path is a logical resource path,
+not evidence that such a physical loose file must exist. This
+explicitly supersedes the earlier inference that we needed loose
+`Assets/Scripts/*.script` files or should search all the ZBD files.
+
+Publicly documented installed archive:
+- `crimson.rof`: 846 resource files in 21 directories (about 57 MiB);
+  61 original `.SCRIPT` resources
+- `ASSETS/SCRIPTS/PREFERENCES.SCRIPT`: GOS Preferences landing page
+- `ASSETS/SCRIPTS/VIDEO.SCRIPT`: **actual** Video Preferences controls;
+  original dropdown keys `VP_D_Device` (Graphics) and
+  `VP_D_Display` (Resolution), as documented in CSVM's
+  menu inventory (https://github.com/Laeresh/CSVM/blob/main/docs/org/menu-inventory.md)
+- `ASSETS/LAYOUT.CSV`: original widget layout, including the type
+  `D` dropdown, bounds, order and artwork
+- `ASSETS/SCRIPTS/MAINMENU.SCRIPT` and `SCRIPTLOADER.SCRIPT`:
+  useful adjacent GOS UI behavior for navigation
+- `crimptch.rof`: one `AIRFRAME.SCRIPT` override, not relevant
+  to the Graphics and Resolution selectors in Preferences
+
+A new standalone, original Python 3 helper,
+`tools/inspect_gos_rof.py`, reads the ROF directory structure
+only, validates node names, offsets, file sizes, depth and cycles;
+it decompresses **only the selected UI files** using bounded zlib
+and writes one new (never-overwritten) ZIP. It does not overwrite
+the ROF, executable, DLL or game configuration.
+
+From a checkout of CrimsonSkiesFix:
+
+`python3 CrimsonSkiesFix/tools/inspect_gos_rof.py "/path/to/Crimson Skies" --bundle gos-ui-review.zip`
+
+The ZIP is expected to hold `Preferences.script`, `LAYOUT.CSV`,
+`gos-rof-report.json` and, if present, `MainMenu.script` and
+`ScriptLoader.script`. The script offers `--self-test` against
+synthetic data; Windows x86 CI runs that test.
+
+**Next step:** inspect the actual extracted `Preferences.script`
+and the `[@Preferences@]` section of `LAYOUT.CSV` to identify the
+specific native `@ctl@PM` dropdown objects for Graphics and
+Resolution, then determine their real enable/disable behavior.
+Merely identifying the script widget IDs is not proof of a safe
+disable API. Do not patch GOS code or spoof original mode table
+counts on an assumption; no change to the validated 0.1.88
+runtime is committed yet.
+
+
+## Owner's actual ROF extracts identify two Video dropdown script objects (3 Nov 2026)
+
+The owner successfully ran the safe ROF extraction on the authentic
+`GOSDATA/ASSETS/crimson.rof` and provided `gos-ui-review.zip`.
+
+Original archive metadata:
+- `crimson.rof`, 60,236,221 bytes,
+  SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`
+- `VIDEO.SCRIPT`, 4,337 bytes, SHA-256
+  `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`
+- `LAYOUT.CSV`, 56,148 bytes, SHA-256
+  `b50ea48bbe97ea098d76575115629bfbe6d0f55165fa364c939f9fb089892583`
+
+The ORIGINAL game script (not a guessed UI mapping) contains the
+following two precise dropdown objects in its `gui_create` block:
+
+| Control | Script object | Type | YC widget key | TJ list data callback | Current selection |
+|---|---|---|---|---|---|
+| Graphics | `HVA` | `@ctl@PM` | `vp_d_device` | `2116 = 0x844` | `HVA.QG = DUA` |
+| Resolution | `IVA` | `@ctl@PM` | `vp_d_display` | `2117 = 0x845` | `IVA.QG = DK` |
+
+The original GOS `LAYOUT.CSV` `[@Video@]` section confirms:
+- `VP_D_Device` is a `D` dropdown at `x=105, y=270`,
+  `z=100, width=200, items_displayed=4`;
+- `VP_D_Display` is a `D` dropdown at `x=156, y=306`,
+  `z=95, width=150, items_displayed=8`;
+- The other five dropdowns have separately authored objects and
+  lower Z order and must remain responsive.
+
+At original script lines 145-152, the game initializes HVA and IVA
+individually, surrounded by a temporary `NUA` flag on the Graphics
+one. While `NUA` is set, an incoming message `10025` writes
+`sender.BN.SM = 500`; avoid treating either field as an arbitrary
+disable flag.
+
+The `gui_mailbox` handler at lines 207-239:
+- on `10015` sent by HVA, updates `DUA` and invokes
+  `callback($$A$$, 15, DUA)` to rebuild the Resolution mode list;
+- on `10015` sent by IVA, updates `DK = sender.QG`;
+- dispatches other dropdowns separately (WQ/JVA/KVA/LVA/MVA);
+- the ordinary Apply/Cancel events remain at `10003`.
+
+**Unproven disable semantics.** In the original Video script,
+after the lighting-quality dropdown LVA is reinitialized,
+the game sends `mail(10000,LVA)` or `mail(10018,LVA)`
+depending on `$$IOA$$`. Both apply to a dropdown of the
+same `@ctl@PM` class, but the meanings of those messages
+are unknown from VIDEO.SCRIPT alone: guessing the incorrect
+message could change appearance/focus or break other settings.
+This is not yet proof that either command disables a dropdown.
+
+The original `ScriptLoader.script` explicitly loads
+`assets\\scripts\\ctl.script`,
+`assets\\scripts\\shareditems.script` and
+`assets\\scripts\\globals.script`. These resource files
+contain the GOS control-class definitions and initialization
+helpers needed to interpret the two mail messages safely.
+
+The standalone read-only `tools/inspect_gos_rof.py` now
+selectively exports those class scripts and three comparator
+screens (`CAMPAIGN`, `GAMEOPTIONS`, `AUDIO`), in
+addition to the verified Video and layout originals.
+It neither edits the retail archive nor stores copyrighted
+game script content in the repository.
+
+**Next evidence gate:** inspect those class definitions, map
+the original disabled-state transition, and only then design
+a guarded, testable visual control disable for HVA/IVA.
+The existing 0.1.88 native screen dimensions, GOS mode
+guards, and version signature are untouched. PR #9 is
+still draft/unmerged.
+
+legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Original @ctl@PM disabled state proven; optional reversible ROF trial (Nov 3, 2026)
+
+The owner has supplied `gos-ui-controls.zip` extracted from the same
+authenticated `crimson.rof`. The GOS originals allow unambiguous
+interpretation of the previously unknown message codes:
+
+- `CTL.SCRIPT` SHA-256
+  `8ca5a9439a2c22cb63fca166f6f6403e08b62dc30626bd32096c772d546ecb95`:
+  original `PM` class lines 1571-1581 implement `10000` by
+  zeroing the dropdown's `region` and forwarding `10000` to
+  both arrow buttons (`ZM`/`AN`) and its displayed-value
+  object (`YM`). The reverse `10018` restores its region and
+  forwards the enable message to those children.
+- `SHAREDITEMS.SCRIPT` SHA-256
+  `2a2f728ea68cf64edf45424d953fdbd3cfa456b663193c507b4fa1c72f2595d5`:
+  original `XTA` class, which `VIDEO.SCRIPT` selects as the
+  displayed-value child via `HVA.WM`/`IVA.WM`, sets
+  `KF` and `HD` to 0xff808080 on `10000`. This is the
+  native grey text/outline without hiding the selected value.
+- `VIDEO.SCRIPT` binds `HVA` to `vp_d_device` and `IVA` to
+  `vp_d_display`; five other sibling dropdowns remain
+  independent, as does Apply/Cancel. Native 10000 is therefore
+  the correct visual+input state, **not** a fake count or
+  mouse-hitbox overlay.
+
+### Experimental implementation
+
+`tools/patch_gos_video_overlay.py` is a standalone opt-in
+**resource-override experiment**, not a DLL runtime change.
+It requires the sibling read-only `inspect_gos_rof.py`.
+
+The game uses the small `GOSDATA/ASSETS/crimptch.rof` as an
+overlay atop `crimson.rof`. We rebuild a new two-member
+patch overlay in memory containing:
+
+1. The original patch's `AIRFRAME.SCRIPT` (decompressed
+   bytes preserved exactly).
+2. The owner's original `VIDEO.SCRIPT` with four added
+   `mail (10000, ...)` commands immediately after:
+   one `initialize(HVA)` and all three occurrences of
+   `initialize(IVA)`. This reapplies disabled state even if
+   the engine regenerates the Resolution dropdown.
+
+Only those two controls are mailed; no other Video controls
+or mode tables are touched. A test against the owner-supplied
+original script bytes confirmed an input length of 4,337,
+patched output 4,413 bytes, and SHA-256
+`a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d`.
+
+Safety checks:
+- exact allowed unwrapped executable SHA-256 and size;
+- exact owner-confirmed original `crimson.rof` SHA-256;
+- exact 4,337-byte `VIDEO.SCRIPT` SHA-256;
+- original patch archive must contain **only**
+  `ASSETS/SCRIPTS/AIRFRAME.SCRIPT`;
+- archive reader enforces names, offsets, node cycles,
+  decompression limits; the writer round-trips every member;
+- `--preview` creates a new .rof file OUTSIDE the installed
+  patch (no game changes), refusing overwrites;
+- `--install` requires explicit opt-in, preserves an
+  exclusive backup with suffix
+  `.CrimsonSkiesFix.original.bak`, then atomically swaps
+  the small overlay only;
+- `--restore` recognizes the two-member experiment and
+  restores the untouched original overlay from backup;
+- no original proprietary script is stored in the repo,
+  only a transformation procedure for user-owned assets.
+
+Example (from the repository root):
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --preview video-disabled-preview.rof`
+
+Optional owner runtime test after reviewing preview:
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --install`
+
+Rollback:
+`python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py "/game/root" --restore`
+
+**Important limitations:** this is a separate opt-in on-disk
+resource overlay prototype, NOT yet integrated into ddraw.dll.
+No runtime test proves the game applies the expanded overlay,
+nor that the two selectors stay grey after all menu
+transitions. Keep PR #9 draft; do not merge without tests.
+
+legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Owner runtime validation — native GOS selector disable via ROF overlay (2026-11-03)
+
+**Status: confirmed working by the owner** (“ça marche!!!”), after
+installing the reversible GOS override made by
+`tools/patch_gos_video_overlay.py` into the original
+`GOSDATA/ASSETS/crimptch.rof`. The GameOS native
+`mail(10000, HVA)` and `mail(10000, IVA)` state produces the
+desired disabled Graphics / Resolution controls under the owner's
+Manjaro Linux / Wine 11.0 / GE-Proton 11-12 setup.
+
+The owner attached `CrimsonSkiesFix(20261103-195640).log`.
+This independently reports:
+- validated v0.1.88 DLL baseline (`0.1.88-5b39d344`),
+  1920x1080 / 120 Hz Radeon RX 6600M;
+- native 1920x1080 D3D3 HAL geometry and Z surfaces at startup
+  (log lines 105-152), with original internal 800x600 GOS UI
+  subsequently created (lines 186-228);
+- GOS graphics dropdown `uiData(0x844)` still enumerates two
+  devices (lines 345-348);
+- GOS resolution `uiData(0x845)` still enumerates one original
+  640x480 table entry, while the text-only formatter correctly
+  reports `native label=1920x1080` (lines 349-352);
+- verified MainMenu version label displayed before the preferences
+  transition (lines 280-283), and redrawn after returning to
+  MainMenu with `reentry=1` (lines 403-407);
+- no observed GOS mode-switch command 15 or backend index change
+  during the captured interactions. This is consistent with native
+  widget disablement, but the log has **no explicit telemetry**
+  describing the GOS disabled property: visual/interaction success
+  comes from the owner's firsthand confirmation.
+
+**What is validated:** the opt-in ROF overlay works with the existing
+v0.1.88 DLL under this Wine/GE-Proton installation. **What is not
+yet validated:** integration into the `ddraw.dll` runtime,
+other Windows/Wine configurations, repeated screen transitions,
+or that every other video option was changed and applied in this test.
+The owner can use `--restore` to revert the overlay independently.
+No merge has been performed. The PR remains draft pending decisions
+about production integration and further coverage.
+
+legluondunet assisted by ChatGPT (OpenAI)
+
+
+## Owner validation of automatic native DLL integration (2026-11-04)
+
+**Validated in the owner's game:** CrimsonSkiesFix 0.1.89
+commit `7bc1caad`, Windows x86 proxy under Manjaro Linux,
+Wine 11.0 / GE-Proton11-12, Radeon RX 6600M, primary
+1920x1080 120Hz display.
+
+The owner reported explicitly that **the integration works**,
+after testing the native DLL `GosVideoLock=on` option.
+The supplied `CrimsonSkiesFix(20261104-002130).log`
+(392 lines) independently shows:
+
+- L1: the actual DLL is `0.1.89-7bc1caad` and configuration
+  has `gos_video_lock: On`, with the desktop-resolution
+  and native widescreen/adapter prerequisites enabled.
+- L33: `GOS-VIDEO-LOCK: installed native-disabled GOS Video
+  controls (original archived in .bak)`. This is **before**
+  game DirectDraw interception (first reported at L39),
+  confirming that the native patch can be installed
+  early enough for this engine/startup path.
+- L126-L131: 1920x1080 native RGB565/HAL/Z32 surface graph,
+  independent of the original 800x600 GameOS UI.
+- L340-L347: original Graphics device count 2 and
+  Resolution mode count 1 remain unchanged; original
+  640x480 internal entry is displayed through the existing
+  `1920x1080` formatter only.
+- L282-L283: main menu version label physically presented.
+- L387-L390: main menu signature physically presented
+  again after navigation back from Video Preferences,
+  with `reentry=1` and the new `0.1.89-7bc1caad` label.
+- No `GOS-VIDEO-LOCK` errors, or mode switch evidence
+  in the provided window. The owner's real-time
+  visual/input observation confirms the two controls
+  are greyed and not interactive; the log itself
+  records successful archive installation, not a native
+  GameOS widget disabled-state query.
+
+**Confirmed:** automatic generation and installation of
+the two-member `crimptch.rof` from within the DLL after
+authenticating original owner assets, without Python,
+with the original overlay preserved as a unique backup;
+the known-good widescreen UI and main menu watermark
+continue to function.
+
+**Additional owner confirmation (4 November 2026):**
+(1) a repeat launch with `GosVideoLock=on` was successful
+and did not reapply the existing patch; (2) `GosVideoLock=restore`
+worked, returning the game to its original resource overlay.
+These two observations were reported by the owner directly;
+no second-launch or restoration log was attached here.
+
+**Windows validation deferred by the owner:** no Windows 11
+cross-test until a Windows-equipped computer is available.
+This is an explicitly untested platform, not an observed failure.
+Do not conflate the successful Wine/Proton validation with
+universal release compatibility.
+
+Keep PR #9 draft/unmerged pending code/release review and
+the user's merge decision. Windows testing is deferred, and
+the opt-in `on` mode persists a reversible game archive
+modification across DLL removal, so the default remains `off`.
+
+
+## Owner restore-log proof — CrimsonSkiesFix 0.1.89 (2026-11-04)
+
+The owner uploaded `CrimsonSkiesFix(20261104-004642).log` as
+follow-up evidence for the `GosVideoLock=restore` test:
+
+- L1: `CrimsonSkiesFix 0.1.89-7bc1caad x86` and `gos_video_lock: Restore`.
+- L33: `GOS-VIDEO-LOCK: restored original GOS patch overlay; backup consumed`
+  — emitted before the first DirectDraw interception at L39.
+- L126–131: the 1920x1080 native render graph initializes correctly.
+- L338–346: original Graphics count 2 and original mode count 1
+  remain unchanged; menu Resolution label correctly presents
+  `1920x1080` using the text-only formatter.
+- L279–281 and L388–391: main menu watermark first renders and
+  renders again upon returning to MainMenu.
+
+This demonstrates the **native DLL's successful rollback path** in
+the owner's Wine/GE-Proton configuration, not merely a reported
+visual result. Log instrumentation proves the archive swap and backup
+consumption; owner's earlier test separately confirmed normal
+post-restore menu behavior. No claim is made about testing on
+Windows 11 (explicitly postponed).
+
+The owner's second launch with `GosVideoLock=on` was confirmed
+idempotent by firsthand observation, but its separate log has
+not been provided. PR #9 remains draft/unmerged.
+
+legluondunet assisted by ChatGPT (OpenAI)
+
+
+## 0.1.90 — default-enabled GOS Video locks and startup AskForVDev suppression (2026-11-04)
+
+**Owner-requested default policy change:** both GOS native Video dropdown locks
+(Graphics and Resolution) and suppression of the obsolete startup
+driver/resolution chooser must work from the first run, without
+additional user configuration.
+
+In both Rust `Config::default()` and the generated `DEFAULT_INI`, as
+well as the distributed `CrimsonSkiesFix.ini.example`, the defaults are:
+
+```ini
+[Graphics]
+Borderless=1
+DesktopResolution=1
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+GosVideoLock=on
+```
+
+- `GosVideoLock=on`: automatically install the authenticated native GOS
+  `HVA`/`IVA` control disablement with the original
+  `crimptch.rof.CrimsonSkiesFix.original.bak` backup. Once installed,
+  repeat launches must not rewrite it.
+- `Native3DWidescreen=1`: enables the existing, fingerprint-guarded
+  `startup_selector::apply()` code at the `DirectDrawCreate`
+  interception, to skip `AskForVDev` (driver/resolution chooser),
+  retaining the HAL device. No new game executable patch or on-disk
+  executable modification is introduced.
+- `ExperimentalWindowedAdapter=1` and `DesktopResolution=1`
+  satisfy the existing prerequisites for the native GOS UI lock and
+  full native monitor resolution; native FOV/HUD and mode-change
+  guards also remain enabled.
+- `ModernFPSPacing=0`, `Log=0`, `FocusRepaint=0`,
+  `WindowEraseGuard=0`, `LegacyOffscreenRGB565=0`
+  are otherwise unchanged from prior defaults.
+
+**Persistence and opt-out:** an existing user
+`CrimsonSkiesFix/CrimsonSkiesFix.ini` is **never overwritten** by the
+upgraded DLL. If that INI explicitly leaves the adapter or widescreen
+setting disabled, the native lock installation still fails closed
+rather than silently forcing those options. `GosVideoLock=off`
+stops new changes but does not restore a previously patched archive.
+Use `GosVideoLock=restore` for one launch to revert the original
+user-owned overlay, then set `off`. To opt out before the first launch,
+create an active INI in the nested directory, not just an `.ini.example`.
+
+**Validation:** the features were independently validated in their
+enabled configuration on the owner's Wine/GE-Proton 0.1.89 test runs.
+The 0.1.90 **new defaults** have separate Rust/parser and Windows x86
+CI tests, but have not yet been verified as a clean first-launch
+configuration in the owner's game. Windows 11 runtime verification
+remains explicitly deferred.
+
+
+## 0.1.90 first-image RGB565 default (2026-11-04)
+
+At the owner's request, the early splash/first-image color correction is
+now enabled on a **fresh installation by default**, alongside the already
+default-enabled native widescreen, GOS Video dropdown lock, and startup
+AskForVDev chooser suppression.
+
+```ini
+[Graphics]
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+LegacyOffscreenRGB565=1
+GosVideoLock=on
+```
+
+The preexisting `modern_create_surface` handler restricts
+`LegacyOffscreenRGB565=1` to the recognized game's native DirectDraw4
+vtable, after the usual virtual graph creation path has declined the
+operation, and only when `in_game_adapter::legacy_offscreen_rgb565()`
+recognizes the original 800x600/16bpp legacy artwork surface descriptor.
+The proxy clones the requested descriptor and asks the native backend
+for RGB565; it does not alter the game's descriptor in place or rewrite
+the source image. Unmatched surface creation passes through unchanged.
+
+The opt-out remains `[Graphics] LegacyOffscreenRGB565=0` in the
+**active** `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Existing active INIs
+are never automatically overwritten, even though new generated and
+distributed template defaults use `1`.
+
+The correction was used in the owner's previously validated Wine/Proton
+graphics configuration, but this final **combined 0.1.90 first-run
+default** still requires a fresh-install in-game smoke test.
+Windows 11 game runtime verification is postponed.

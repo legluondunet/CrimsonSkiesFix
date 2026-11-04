@@ -290,7 +290,7 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
 pub unsafe fn arm_graph_primary_flip(
     primary:SurfaceThis,contract:&AdapterContract,generation:u64,
     origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>,
-    window:usize,focus_repaint:bool
+    window:usize,focus_repaint:bool,menu_scratch:*mut c_void
 )->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
@@ -316,9 +316,10 @@ pub unsafe fn arm_graph_primary_flip(
     // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
     let bridge=FlipToBltBridge::from_exposed(contract,generation)
         .map_err(|_|E_FAIL)?;
-    let backend=NativeWindowedBlt::from_borrowed_com(
+    let mut backend=NativeWindowedBlt::from_borrowed_com(
         p.real,b.real,origin,client,node.mode
     ).map_err(|_|E_INVALIDARG)?;
+    backend.set_menu_scratch(menu_scratch);
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
@@ -718,9 +719,28 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 window_exposure::sample_game_window(session.window))
         }else{false};
         pace_graph_flip(session);
+        // Passive, bounded preferences diagnostics only; the original
+        // dropdowns and video settings are not modified.
+        crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
+        // The original script dispatcher reports only four CALL sites.
+        // Returning from gameplay can restore the genuine MainMenu
+        // artwork without reissuing one of those script-loader calls.
+        // Probe only an authenticated 4:3 menu frame *after* MainMenu
+        // was observed once. The offscreen Campaign-art test decides
+        // whether text is actually drawn; all other frames stay unedited.
+        if crate::menu_brand::should_probe_menu_frame(mode.width,mode.height){
+            backend.prepare_menu_frame();
+        }else{
+            backend.clear_menu_frame();
+            crate::menu_brand::mark_not_drawn();
+        }
+        let composed=backend.menu_frame_prepared();
         return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
             Ok(frame)=>{
+                if composed{
+                    crate::menu_brand::note_branded_presented();
+                }
                 if repaint{
                     crate::log(&format!(
                         "WINDOWED-GAME: FocusRepaint one-shot full repaint succeeded epoch={epoch} frame={frame} (foreground return or new Win32 update region)"));
@@ -1443,7 +1463,7 @@ mod tests{
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].blts.load(Ordering::SeqCst),1);
             assert_eq!(phys[2].blts.load(Ordering::SeqCst),1);
-            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None,0,false).unwrap();
+            arm_graph_primary_flip(p,&contract,55,(0,0),(1920,1080),None,0,false,ptr::null_mut()).unwrap();
             assert_eq!(retire_graph_primary_flip(p),Ok(0));
             assert_eq!((bv.blt)(b,ptr::null_mut(),ptr::null_mut(),
                 ptr::null_mut(),DDBLT_COLORFILL,effects),E_NOTIMPL);
@@ -1491,9 +1511,9 @@ mod tests{
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!(graph_primary_completed_flips(p),None);
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false),Err(E_INVALIDARG));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Ok(()));
-            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false,ptr::null_mut()),Err(E_INVALIDARG));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Ok(()));
+            assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
@@ -1508,7 +1528,7 @@ mod tests{
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
             assert_eq!(retire_graph_primary_flip(p),Err(E_FAIL));
-            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None,0,false),Err(E_FAIL));
+            assert_eq!(arm_graph_primary_flip(p,&contract,18,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3); // no stale writes
             assert_eq!((vt.release)(p),0); // cascades strong child refs
             assert_eq!((vt.release)(b),0);
