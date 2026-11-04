@@ -11,7 +11,6 @@ pub unsafe fn suppress_video_selector()->bool{startup_selector::apply()}
 
 #[path="native_widescreen_full.rs"]
 mod full_patch;
-pub unsafe fn apply_unwrapped_full_patch(w:u32,h:u32)->PatchResult{full_patch::apply(w,h)}
 
 use std::sync::OnceLock;
 
@@ -52,8 +51,6 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
 
 const IMAGE_BASE:usize=0x0040_0000;
 const IMAGE_SIZE:usize=0x0065_2000;
-const WIDTH_RVA:usize=0x0020_254b;
-const HEIGHT_RVA:usize=0x0020_254f;
 const PAGE_EXECUTE_READWRITE:u32=0x40;
 
 #[link(name="kernel32")]
