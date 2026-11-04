@@ -14,6 +14,9 @@ mod menu_resolution_label;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
+mod com_vtable;
+mod frame_pacing;
+mod render_sampling;
 mod window_exposure;
 mod window_erase_guard;
 mod diagnostics;
@@ -35,6 +38,9 @@ mod surface_usage; // opt-in passive COM surface audit for borderless prerequisi
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
 
 use config::Config;
+use com_vtable::{method,orig,replace_method};
+use frame_pacing::pace_frame;
+use render_sampling::sample_render_calls;
 fn color_probe_enabled()->bool{
     // The virtual game graph can only be created AFTER cfg() initializes.
     // Never initialize configuration/filesystem while a COM Blt is in
@@ -47,7 +53,7 @@ fn color_capture_enabled()->bool{
 fn color_capture_path(label:&str)->Option<std::path::PathBuf>{
     win32::color_capture_path(label)
 }
-use std::{collections::HashMap, ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
+use std::{ffi::c_void, fs::{self,File,OpenOptions}, io::{Write,Seek,SeekFrom},
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;
 
@@ -137,9 +143,6 @@ static LOG:OnceLock<Mutex<File>>=OnceLock::new();
 static CRASH_BLT_LOG:OnceLock<Mutex<File>>=OnceLock::new();
 const CRASH_BLT_ROTATE_CALLS:usize=2048;
 static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
-static ORIGINALS:OnceLock<Mutex<HashMap<(usize,usize),usize>>>=OnceLock::new();
-static LAST_FRAME:Mutex<i64>=Mutex::new(0);
-static FREQUENCY:OnceLock<i64>=OnceLock::new();
 static FIRST_FLIP:Once=Once::new();
 static FIRST_BLT:Once=Once::new();
 static COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -341,100 +344,6 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     }
     let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
     win32::system_export(real,name)
-}
-
-fn originals()->&'static Mutex<HashMap<(usize,usize),usize>> {
-    ORIGINALS.get_or_init(||Mutex::new(HashMap::new()))
-}
-
-unsafe fn method(object:*mut c_void,index:usize)->usize {
-    if object.is_null(){return 0;}
-    let table=*(object as *const *const usize);
-    if table.is_null(){return 0;}
-    *table.add(index)
-}
-
-unsafe fn orig(object:*mut c_void,index:usize)->Option<usize> {
-    if object.is_null(){return None;}
-    let table=*(object as *const *const usize);
-    if table.is_null(){return None;}
-    originals().lock().ok()?.get(&(table as usize,index)).copied()
-}
-
-unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->bool {
-    if object.is_null(){return false;}
-    let table=*(object as *const *mut usize);
-    if table.is_null(){return false;}
-    let slot=table.add(index);
-    let Ok(mut map)=originals().lock() else {return false};
-    if map.contains_key(&(table as usize,index)){return true;}
-    let original=*slot;
-    if original==0 || original==hook{return false;}
-    // Publish the original before changing the pointer to avoid a hook
-    // seeing an uninitialized trampoline on another thread.
-    map.insert((table as usize,index),original);
-    if !win32::patch_vtable_slot(slot,hook) {
-        map.remove(&(table as usize,index));
-        return false;
-    }
-    true
-}
-
-fn pace_frame() {
-    let fps=cfg().fps_limit;
-    let frequency=*FREQUENCY.get_or_init(|| unsafe {
-        let mut value=0;
-        if win32::QueryPerformanceFrequency(&mut value)==0 || value<=0 {0}else{value}
-    });
-    if frequency<=0 {return;}
-    let Ok(mut previous)=LAST_FRAME.lock() else {return};
-    let mut now=0;
-    if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{return;}
-    let interval=(frequency/fps as i64).max(1);
-    if *previous>0 && now<*previous+interval {
-        let deadline=*previous+interval;
-        while now<deadline {
-            let ticks=deadline-now;
-            let millis=ticks.saturating_mul(1000)/frequency;
-            if millis>2 {unsafe {win32::Sleep((millis-1).min(50) as u32)};}
-            else {std::hint::spin_loop();}
-            if unsafe {win32::QueryPerformanceCounter(&mut now)}==0{break;}
-        }
-    }
-    *previous=now;
-}
-
-// These cumulative rates are COM call rates, not proven on-screen FPS.
-// A scene can issue several Blt/Unlock calls per one displayed frame.
-// At most four samples per API, bounded without background threads.
-fn sample_render_calls(path:&str,count:&AtomicUsize,start:&OnceLock<Instant>,
-    window:&OnceLock<Mutex<(usize,Instant)>>) {
-    if !cfg().log_enabled{return;}
-    let n=count.fetch_add(1,Ordering::Relaxed)+1;
-    let first=start.get_or_init(Instant::now);
-    if [10,60,300,1200].contains(&n) {
-        let elapsed=first.elapsed().as_millis();
-        if elapsed>0 {
-            let rate=(n.saturating_sub(1) as u128 * 1000) / elapsed;
-            log(&format!("RENDER-SAMPLE: method={path} calls={n} elapsed_ms={elapsed} average_calls_per_s={rate} (NOT measured display FPS)"));
-        }
-    }
-    // Also sample short intervals: full-run averages in the early Wine
-    // log hid substantial differences between menus and actual gameplay.
-    // Bounded to ten per API, not one log line per video frame.
-    if n % 120==0 && n<=1200 {
-        let guard=window.get_or_init(||Mutex::new((0,*first)));
-        if let Ok(mut previous)=guard.lock() {
-            let now=Instant::now();
-            let ms=now.duration_since(previous.1).as_millis();
-            let interval=n-previous.0;
-            if ms>0 {
-                let rate=interval as u128*1000/ms;
-                log(&format!("RENDER-WINDOW: method={path} calls={interval} elapsed_ms={ms} calls_per_s={rate} (API rate, NOT verified display FPS)"));
-            }
-            *previous=(n,now);
-        }
-    }
 }
 
 unsafe fn modern_surface_caps(this:*mut c_void)->Option<u32> {
