@@ -32,17 +32,11 @@ jobs:
       - name: Unit tests in 32-bit mode
         env:
           CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: cargo test --target i686-pc-windows-msvc
-      - name: Audit generated Cargo.lock (temporary CI inventory)
-        shell: pwsh
-        run: |
-          Write-Host 'AUDIT_CARGO_LOCK_BEGIN'
-          Get-Content -LiteralPath Cargo.lock
-          Write-Host 'AUDIT_CARGO_LOCK_END'
+        run: cargo test --locked --target i686-pc-windows-msvc
       - name: Compile release DirectDraw proxy
         env:
           CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: cargo build --release --target i686-pc-windows-msvc
+        run: cargo build --locked --release --target i686-pc-windows-msvc
       - name: Verify PE machine is Intel x86
         shell: pwsh
         run: |
