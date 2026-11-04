@@ -66,6 +66,11 @@ jobs:
           $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
           $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
           if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
+          $roffileOff = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=0' })
+          $roffileOn = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=1' })
+          if ($roffileOff.Count -ne 1 -or $roffileOn.Count -ne 0) {
+            throw 'Experimental ROFFILE parser patch must be opt-in, not enabled on first run'
+          }
           # Explicit project policy: native Video Graphics/Resolution
           # lock and AskForVDev dialog bypass are enabled on first run.
           $gosOn = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=on' })
