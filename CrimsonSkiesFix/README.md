@@ -22,8 +22,10 @@ on 4 November 2026 under Manjaro / Wine 11.0 / GE-Proton11-12,
 using the 0.1.89-7bc1caad x86 DLL. The startup log explicitly
 records `GOS-VIDEO-LOCK: installed native-disabled GOS Video controls
 (original archived in .bak)` before the game graphics initialization.
-The feature remains opt-in pending further compatibility and
-rollback testing.
+The owner also confirmed repeat-launch idempotence and successful
+`GosVideoLock=restore` on 4 November 2026. Windows testing is
+**deferred** until a Windows machine is available; the feature
+remains opt-in for compatibility and user-consent reasons.
 
 In the existing `CrimsonSkiesFix/CrimsonSkiesFix.ini`:
 
@@ -62,10 +64,11 @@ native patch was installed successfully at DLL startup, the Video
 Preferences resolution label remained `1920x1080`, the original GOS
 mode tables remained unchanged, and the MainMenu version signature
 reappeared after returning from Preferences. The owner confirms the
-actual disabled/grey interaction state. This validates the automatic
-installation path on their configuration, **not** every Windows or
-Wine configuration or automatic rollback. Keep the PR **draft**
-pending compatibility and cleanup review.
+actual disabled/grey interaction state. This validates the automatic installation path on their configuration;
+the owner subsequently confirmed an unchanged second `on` launch and
+successful `restore`. **Windows 11 remains untested by design** until
+the owner has a Windows PC. Keep the PR **draft** pending code/release
+cleanup and the owner's merge decision.
 
 
 ## Experimental native GOS dropdown lock (historical Python prototype)
