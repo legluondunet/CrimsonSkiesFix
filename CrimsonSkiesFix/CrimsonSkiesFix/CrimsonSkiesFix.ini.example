@@ -12,10 +12,13 @@ ModernFPSPacing=0
 ; Disable Native3DWidescreen to disable the prompt bypass.
 ExperimentalWindowedAdapter=1
 Native3DWidescreen=1
-; Optional focus/window erase/menu color corrections; disabled by default.
+; Optional focus and background-erase experiments remain disabled.
 FocusRepaint=0
 WindowEraseGuard=0
-LegacyOffscreenRGB565=0
+; First-image/legacy artwork RGB565 color correction is enabled by default.
+; Only exact-matching 800x600 16bpp legacy offscreen creation is affected.
+; Set to 0 to opt out.
+LegacyOffscreenRGB565=1
 ; Enabled by default: GameOS native Graphics and Resolution dropdown
 ; disable (greyed out and unselectable), including the mode-change guards.
 ; On first launch this modifies ONLY GOSDATA/ASSETS/crimptch.rof;
