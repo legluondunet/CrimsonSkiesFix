@@ -1,5 +1,14 @@
 # Crimson Skies: borderless DirectDraw presentation design
 
+> **Historical research archive (October 2026).** This document records the
+> development path, not the present runtime behavior. The native Surface4
+> windowed adapter is now implemented; references below to unimplemented
+> designs and experimental `com_unknown.rs`, `rgb565_present.rs`, and
+> `win32_present.rs` are historical. Those three unreferenced prototype files
+> were pruned in the November 2026 cleanup. Runtime behavior and supported
+> options are documented in `../README.md` instead.
+
+
 **Status:** research / experimental design, 2026-10-30. No borderless
 conversion is currently enabled on the renderer's DirectDraw4 path.
 

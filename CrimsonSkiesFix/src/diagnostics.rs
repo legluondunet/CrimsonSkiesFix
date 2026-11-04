@@ -4,8 +4,8 @@
 //! Never called from DllMain; only on explicit [Debug] Log=1.
 
 use std::{
-    env, ffi::{c_char, c_void, CStr, CString},
-    mem, ptr, slice, time::Instant,
+    env, ffi::{c_char, c_void, CStr},
+    mem, ptr, time::Instant,
 };
 
 use crate::diagnostics_graphics;

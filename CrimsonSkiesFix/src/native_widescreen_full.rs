@@ -2,7 +2,7 @@
 //! owner-supplied 1920x1200 FOV/HUD-fixed reference.
 //! Every changed byte is checked before any writes. No proprietary EXE included.
 //! No code generation/branch relocation: both images use IMAGE_BASE 0x400000.
-use super::{PatchResult,IMAGE_BASE,IMAGE_SIZE,WIDTH_RVA,HEIGHT_RVA,PAGE_EXECUTE_READWRITE,get32,valid_landscape_dimensions,GetModuleHandleW,VirtualProtect,GetCurrentProcess,FlushInstructionCache};
+use super::{PatchResult,IMAGE_BASE,IMAGE_SIZE,PAGE_EXECUTE_READWRITE,get32,valid_landscape_dimensions,GetModuleHandleW,VirtualProtect,GetCurrentProcess,FlushInstructionCache};
 use std::{ffi::c_void,ptr};
 const DELTA:&str=r#"2b678:d905a0406000:e95c6e1d0090
 2b67f:d9059c406000:e9846e1d0090

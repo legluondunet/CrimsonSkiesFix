@@ -19,21 +19,17 @@ mod window_erase_guard;
 mod diagnostics;
 mod diagnostics_graphics;
 mod presentation;
-mod rgb565_present;
-mod win32_present;
 mod scene_correlation;
 mod borderless_contract;
-mod borderless_flip; // inactive, fail-closed Flip-to-Blt contract
-mod borderless_native_blt; // real shared DirectDraw4 Blt backend; inactive in game
-mod com_unknown; // inactive native Win32 IUnknown ABI scaffold (Stage B3a)
+mod borderless_flip; // shared Flip-to-Blt contract, exercised by standalone probe
+mod borderless_native_blt; // shared native Blt backend and MainMenu RGB565 helper
 mod com_surface4_abi;
 mod color_probe;
-mod color_capture; // default-off native RGB32->RGB565 source/destination comparison // inactive, verified 45-slot Surface4 ABI (Stage B3b)
-mod com_surface4_forward; // ABI-complete passive forwarding facade (Stage B4e), unused in game
-mod com_surface4_roundtrip; // one-target native D3D3 identity map (Stage B4i), inactive
-mod in_game_adapter; // default-off native HAL/Surface4 windowed experiment (Stage B5)
+mod color_capture; // opt-in native XRGB/RGB565 comparison capture
+mod com_surface4_forward; // inactive wrapper prototype; native source unwrapping helper remains used
+mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adapter
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
-mod roffile_terminator_fix; // experimental Wine-only ROFFILE INI EOF guard
+mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
