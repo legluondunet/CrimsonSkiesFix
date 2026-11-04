@@ -121,3 +121,36 @@ pub(super) unsafe fn observe_d3d3(object:*mut c_void) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callbacks_keep_original_win32_x86_abi() {
+        let _:D3D3SceneFn=d3d3_device_begin_scene;
+        let _:D3D3SceneFn=d3d3_device_end_scene;
+        let _:D3D3SetRenderTargetFn=d3d3_device_set_render_target;
+        let _:D3D3GetRenderTargetFn=d3d3_device_get_render_target;
+        let _:D3D3CreateDeviceFn=d3d3_create_device;
+    }
+
+    #[test]
+    fn d3d3_slots_match_directx6_abi() {
+        assert_eq!(D3D3_CREATE_DEVICE,8);
+        assert_eq!(D3D3_DEVICE_BEGIN_SCENE,9);
+        assert_eq!(D3D3_DEVICE_END_SCENE,10);
+        assert_eq!(D3D3_DEVICE_SET_RENDER_TARGET,14);
+        assert_eq!(D3D3_DEVICE_GET_RENDER_TARGET,15);
+    }
+
+    #[test]
+    fn null_device_observation_is_fail_closed() {
+        // Important: null must return before configuration initializes
+        // or an attempt is made to read/write a COM interface.
+        unsafe {
+            observe_d3d3(std::ptr::null_mut());
+            observe_d3d3_device(std::ptr::null_mut());
+        }
+    }
+}
