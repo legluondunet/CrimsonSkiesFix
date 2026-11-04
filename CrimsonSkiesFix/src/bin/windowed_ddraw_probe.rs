@@ -385,6 +385,11 @@ fn make_z32_desc_for(caps:u32,selected:Option<[u32;8]>,width:u32,height:u32)->[u
     }
     requested
 }
+// The 640x480 convenience descriptor is used exclusively by unit tests.
+#[cfg(test)]
+fn make_z32_desc(caps:u32,selected:Option<[u32;8]>)->[u32;31]{
+    make_z32_desc_for(caps,selected,640,480)
+}
 
 /// Query the real surface's returned Z format. This is the actual
 /// DirectDraw result, not a copy of our requested descriptor.
