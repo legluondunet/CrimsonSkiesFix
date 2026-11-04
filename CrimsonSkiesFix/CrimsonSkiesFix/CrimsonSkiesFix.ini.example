@@ -7,23 +7,27 @@ DesktopResolution=1
 FPSLimit=60
 ; Original experimental DirectDraw4 pacing; disabled by default.
 ModernFPSPacing=0
-; Native 3D adapter and FOV/HUD adaptation; opt in explicitly.
-ExperimentalWindowedAdapter=0
-Native3DWidescreen=0
+; Enabled by default: validated native 3D adapter, widescreen FOV/HUD
+; and suppression of the obsolete startup resolution/driver dialog.
+; Disable Native3DWidescreen to disable the prompt bypass.
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
 ; Optional focus/window erase/menu color corrections; disabled by default.
 FocusRepaint=0
 WindowEraseGuard=0
 LegacyOffscreenRGB565=0
-; Native GOS Video Graphics/Resolution dropdown disable:
-; off = never modify GOS archives, including preexisting overrides.
-; on = install or recognize a verified, backed-up crimptch.rof override.
-; restore = restore the exact saved original archive on next game launch;
-;           then change this setting back to off or on.
-; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1
-; and DesktopResolution=1 when set to on.
-; Install, repeat launch and restoration tested on Wine/GE-Proton.
-; Native Windows gameplay testing remains deferred.
-GosVideoLock=off
+; Enabled by default: GameOS native Graphics and Resolution dropdown
+; disable (greyed out and unselectable), including the mode-change guards.
+; On first launch this modifies ONLY GOSDATA/ASSETS/crimptch.rof;
+; its original contents are saved to an exclusive *.original.bak file.
+; on = install or recognize the verified, backed-up GOS override.
+; off = never modify GOS archives; does NOT undo an installed patch.
+; restore = restore the original from its backup on next game launch;
+;           then change this option to off (or on to re-enable).
+; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1 and
+; DesktopResolution=1. Unknown original assets fail closed.
+; Wine/GE-Proton owner tests passed; Windows gameplay test deferred.
+GosVideoLock=on
 
 [Debug]
 ; Ordinary logging disabled by default; EXE admission failures still logged.
