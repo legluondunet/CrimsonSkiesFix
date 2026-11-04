@@ -56,7 +56,7 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
     if matching && msg==WM_NCDESTROY{
         // Keep the original chain in place for the final destroy callback.
         // Restore only when our hook is still the active window procedure.
-        if previous!=0 && GetWindowLongW(hwnd,GWL_WNDPROC)==guarded_proc as usize as i32{
+        if previous!=0 && GetWindowLongW(hwnd,GWL_WNDPROC)==guarded_proc as *const () as usize as i32{
             let _=SetWindowLongW(hwnd,GWL_WNDPROC,previous as i32);
         }
         HOOK_HWND.store(0,Ordering::Release);
@@ -91,7 +91,7 @@ pub fn install(hwnd:usize)->Result<(),String>{
             return Err("concurrent hook installation".into());
         }
         SetLastError(0);
-        let previous=SetWindowLongW(window,GWL_WNDPROC,guarded_proc as usize as i32);
+        let previous=SetWindowLongW(window,GWL_WNDPROC,guarded_proc as *const () as usize as i32);
         let error=GetLastError();
         if previous==0 && error!=0{
             HOOK_HWND.store(0,Ordering::Release);
