@@ -58,6 +58,13 @@ fn padded_size(size: u32) -> Option<u32> {
     size.checked_add(2)
 }
 
+// Called only after allocation of n+2 has succeeded. Retain the entire
+// original file payload at [0..n], including non-text contents.
+unsafe fn append_eof_sentinels(buffer: *mut u8, file_size: u32) {
+    ptr::write(buffer.add(file_size as usize), 0);
+    ptr::write(buffer.add(file_size as usize + 1), 0);
+}
+
 fn rel32(call_at: usize, target: usize) -> Option<[u8; 4]> {
     let rel = target as i64 - (call_at as i64 + 5);
     let rel = i32::try_from(rel).ok()?;
@@ -111,8 +118,7 @@ unsafe extern "C" fn allocate_padded(size: u32) -> *mut u8 {
     let result = allocator(requested);
     if !result.is_null() {
         // The game reads only the original size, leaving these bytes intact.
-        ptr::write(result.add(size as usize), 0);
-        ptr::write(result.add(size as usize + 1), 0);
+        append_eof_sentinels(result, size);
         ALLOC_PADDED.fetch_add(1, Ordering::Relaxed);
     } else {
         ALLOC_FAILED.fetch_add(1, Ordering::Relaxed);
@@ -275,6 +281,15 @@ mod tests {
         assert_eq!(padded_size(u32::MAX - 2), Some(u32::MAX));
         assert_eq!(padded_size(u32::MAX - 1), None);
         assert_eq!(padded_size(u32::MAX), None);
+    }
+    #[test]
+    fn sentinels_preserve_payload_and_bound_next_cursor_read() {
+        let mut buffer = [0x41u8, 0x42, 0x43, 0x44, 0xff, 0xff];
+        unsafe { append_eof_sentinels(buffer.as_mut_ptr(), 4) };
+        assert_eq!(buffer, [0x41, 0x42, 0x43, 0x44, 0, 0]);
+        let mut empty = [0xffu8, 0xff];
+        unsafe { append_eof_sentinels(empty.as_mut_ptr(), 0) };
+        assert_eq!(empty, [0, 0]);
     }
     #[test]
     fn rel32_encoding_and_out_of_range_fail_closed() {
