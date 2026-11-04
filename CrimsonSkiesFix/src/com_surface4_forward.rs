@@ -1552,14 +1552,25 @@ mod tests{
             borderless_contract::{BackendEvidence,RenderTarget},
             presentation::Chain,
         };
-        use std::{thread,time::{Duration,Instant}};
+        use std::{sync::Arc,thread,time::{Duration,Instant}};
+        // Handshake the simulated native Blt instead of trusting a sleep:
+        // retirement is explicitly attempted while this callback is blocked.
+        static BLT_ENTERED:AtomicBool=AtomicBool::new(false);
+        static BLT_CAN_RETURN:AtomicBool=AtomicBool::new(false);
+        BLT_ENTERED.store(false,Ordering::SeqCst);
+        BLT_CAN_RETURN.store(false,Ordering::SeqCst);
         unsafe extern "system" fn blocking_native_blt(
             this:SurfaceThis,_dst:*mut Rect,_source:SurfaceThis,_src:*mut Rect,
             _flags:u32,_effects:*mut c_void
         )->i32{
             let real=&*this.cast::<RealMock>();
             if real.blts.fetch_add(1,Ordering::SeqCst)==0{
-                thread::sleep(Duration::from_millis(60));
+                BLT_ENTERED.store(true,Ordering::SeqCst);
+                let deadline=Instant::now()+Duration::from_secs(5);
+                while !BLT_CAN_RETURN.load(Ordering::SeqCst) && Instant::now()<deadline{
+                    thread::yield_now();
+                }
+                if !BLT_CAN_RETURN.load(Ordering::SeqCst){return E_FAIL;}
             }
             S_OK
         }
@@ -1601,19 +1612,42 @@ mod tests{
                 (hr,remaining)
             });
             let deadline=Instant::now()+Duration::from_secs(5);
-            while phys[0].blts.load(Ordering::SeqCst)==0 &&
+            while !BLT_ENTERED.load(Ordering::SeqCst) &&
                   Instant::now()<deadline {
                 thread::yield_now();
             }
             // Never enter the retirement lock before the first native Blt.
-            if phys[0].blts.load(Ordering::SeqCst)==0{
+            if !BLT_ENTERED.load(Ordering::SeqCst){
+                BLT_CAN_RETURN.store(true,Ordering::SeqCst);
                 let _=worker.join();
                 panic!("synthetic native Flip did not reach its first Blt");
             }
-            // Retirement MUST wait for the in-flight Flip to finish; no old
-            // physical Blt is allowed after the old generation is retired.
-            assert_eq!(retire_graph_primary_flip(primary),Ok(1));
-            assert_eq!(worker.join().unwrap(),(S_OK,1));
+            let retirement_started=Arc::new(AtomicBool::new(false));
+            let retirement_finished=Arc::new(AtomicBool::new(false));
+            let started=Arc::clone(&retirement_started);
+            let finished=Arc::clone(&retirement_finished);
+            let retired_primary=primary as usize;
+            let retiring=thread::spawn(move ||{
+                started.store(true,Ordering::SeqCst);
+                let result=unsafe{retire_graph_primary_flip(retired_primary as SurfaceThis)};
+                finished.store(true,Ordering::SeqCst);
+                result
+            });
+            while !retirement_started.load(Ordering::SeqCst) && Instant::now()<deadline{
+                thread::yield_now();
+            }
+            // Let the retirement worker attempt the lock, while the native
+            // callback is held by our explicit gate; never strand threads
+            // even if the assertion below detects an unexpected regression.
+            thread::sleep(Duration::from_millis(25));
+            let finished_while_native_blt_blocked=retirement_finished.load(Ordering::SeqCst);
+            BLT_CAN_RETURN.store(true,Ordering::SeqCst);
+            let retired=retiring.join().unwrap();
+            let flipped=worker.join().unwrap();
+            assert!(!finished_while_native_blt_blocked,
+                "old generation retired while a native Blt remained blocked");
+            assert_eq!(retired,Ok(1));
+            assert_eq!(flipped,(S_OK,1));
             let blts_after_retirement=phys[0].blts.load(Ordering::SeqCst);
             assert!(blts_after_retirement>0);
             assert_eq!((vt.flip)(primary,back,0),E_NOTIMPL);
