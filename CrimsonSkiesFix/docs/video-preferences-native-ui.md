@@ -906,16 +906,20 @@ with the original overlay preserved as a unique backup;
 the known-good widescreen UI and main menu watermark
 continue to function.
 
-**Still to verify separately:** another subsequent launch
-with `GosVideoLock=on` should be idempotent (log
-`already-disabled`); `GosVideoLock=restore` should
-restore the exact original overlay and verify regular
-Video menu interactivity again; a fresh Windows 11
-installation or another Wine configuration has not
-been tested. Do not conflate this scoped successful
-Wine validation with universal release readiness.
+**Additional owner confirmation (4 November 2026):**
+(1) a repeat launch with `GosVideoLock=on` was successful
+and did not reapply the existing patch; (2) `GosVideoLock=restore`
+worked, returning the game to its original resource overlay.
+These two observations were reported by the owner directly;
+no second-launch or restoration log was attached here.
 
-Keep PR #9 draft/unmerged pending remaining checks and
-a decision on whether automatic enablement is desirable,
-given that the opt-in `on` mode persists a reversible
-user-game archive modification across DLL removal.
+**Windows validation deferred by the owner:** no Windows 11
+cross-test until a Windows-equipped computer is available.
+This is an explicitly untested platform, not an observed failure.
+Do not conflate the successful Wine/Proton validation with
+universal release compatibility.
+
+Keep PR #9 draft/unmerged pending code/release review and
+the user's merge decision. Windows testing is deferred, and
+the opt-in `on` mode persists a reversible game archive
+modification across DLL removal, so the default remains `off`.
