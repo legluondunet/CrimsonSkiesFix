@@ -12,8 +12,10 @@
 //! the identical text transformation under Wine/GE-Proton using a
 //! reversible Python prototype.
 //!
-//! This is experimental and OFF by default until new-DLL startup-order
-//! validation. "Restore" is an independent, explicit INI action.
+//! The early-loading path, idempotent repeat and explicit restore have
+//! been owner-validated under Wine/GE-Proton. Windows runtime testing
+//! remains deferred. This remains OFF by default because it writes to
+//! the user's game resource archive persistently until explicit restore.
 
 use std::{
     collections::HashSet,
@@ -38,6 +40,7 @@ const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_NODES: usize = 1500;
 const MAX_DEPTH: usize = 20;
+const MAX_TOTAL_DIRECTORIES: usize = 1500;
 const BACKUP_SUFFIX: &str = ".CrimsonSkiesFix.original.bak";
 const TEMP_SUFFIX: &str = ".CrimsonSkiesFix.pending";
 
@@ -68,13 +71,19 @@ fn put_u32(data: &mut [u8], offset: usize, value: usize) -> Result<(), String> {
 }
 
 // Walk only the well-formed ROF directory tree. Never interpret a
-// payload as a directory and never follow an ancestor node twice.
+// payload as a directory; reject cycles AND shared directory nodes.
+// Both a depth limit and a global directory budget prevent repeated
+// traversal of aliased directory tables in malformed archives.
 // The root is at offset 0, with 24-byte entry records and a local
 // NUL-terminated name pool.
 fn walk(data: &[u8], node: usize, prefix: &str, depth: usize,
-        ancestors: &mut Vec<usize>, out: &mut Vec<Entry>) -> Result<(), String> {
+        ancestors: &mut Vec<usize>, seen: &mut HashSet<usize>,
+        out: &mut Vec<Entry>) -> Result<(), String> {
     if depth > MAX_DEPTH || ancestors.contains(&node) {
         return Err("ROF cycle or excessive directory nesting".into());
+    }
+    if seen.len() >= MAX_TOTAL_DIRECTORIES || !seen.insert(node) {
+        return Err("ROF repeated directory node or directory budget exceeded".into());
     }
     ancestors.push(node);
     let result = (|| {
@@ -120,7 +129,7 @@ fn walk(data: &[u8], node: usize, prefix: &str, depth: usize,
                     if expanded != 0 || compressed != 0 {
                         return Err("ROF directory with payload".into());
                     }
-                    walk(data, offset, &(full + "/"), depth + 1, ancestors, out)?;
+                    walk(data, offset, &(full + "/"), depth + 1, ancestors, seen, out)?;
                 }
                 0 | 2 => {
                     if offset > data.len() ||
@@ -144,7 +153,7 @@ fn walk(data: &[u8], node: usize, prefix: &str, depth: usize,
 fn parse(data: &[u8]) -> Result<Vec<Entry>, String> {
     if data.len() < 8 { return Err("truncated ROF archive".into()); }
     let mut entries = Vec::new();
-    walk(data, 0, "", 0, &mut Vec::new(), &mut entries)?;
+    walk(data, 0, "", 0, &mut Vec::new(), &mut HashSet::new(), &mut entries)?;
     let mut names = HashSet::new();
     for item in &entries {
         if !names.insert(item.name.clone()) {
@@ -367,10 +376,19 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    // Exclusive create: preexisting user files are never overwritten.
+    // If a write/sync fails after creation, close and remove only THIS
+    // newly-created partial file. The original ROF is never affected.
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)
         .map_err(|e| format!("refusing overwrite of {}: {e}",path.display()))?;
-    file.write_all(bytes).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())
+    let written = file.write_all(bytes)
+        .and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = fs::remove_file(path);
+        return Err(format!("failed to write new {}: {error}",path.display()));
+    }
+    Ok(())
 }
 
 fn enable(base: &Path, overlay: &Path) -> Result<&'static str, String> {
@@ -409,7 +427,7 @@ fn enable(base: &Path, overlay: &Path) -> Result<&'static str, String> {
     // AIRFRAME script). This backup survives every update.
     write_new(&backup, &original)?;
     if let Err(error) = write_new(&temporary, &output) {
-        return Err(format!("backup preserved but temporary overlay failed: {error}"));
+        return Err(format!("backup preserved but temporary overlay failed: {error}; use GosVideoLock=restore to clear the unused backup safely"));
     }
     // Check no other installer has changed the patch in the meantime.
     if checked_patch(overlay)? != original {
@@ -517,6 +535,33 @@ mod tests {
         let mut truncated = good.clone();
         truncated.truncate(11);
         assert!(parse(&truncated).is_err());
+    }
+    #[test]
+    fn reject_repeated_directory_nodes_and_global_budget_exhaustion() {
+        let good = fixture_archive(b"airframe", b"video");
+        let mut seen = HashSet::new();
+        let mut entries = Vec::new();
+        walk(&good, 0, "", 0, &mut Vec::new(), &mut seen, &mut entries).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(walk(&good, 0, "", 0, &mut Vec::new(), &mut seen, &mut Vec::new())
+            .unwrap_err().contains("repeated directory"));
+        let mut full: HashSet<usize> = (0..MAX_TOTAL_DIRECTORIES).collect();
+        assert!(walk(&good, 0, "", 0, &mut Vec::new(), &mut full, &mut Vec::new())
+            .unwrap_err().contains("budget exceeded"));
+    }
+    #[test]
+    fn exclusively_created_files_are_not_overwritten() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let file = std::env::temp_dir().join(format!(
+            "csfix-rof-audit-{}-{unique}.tmp", std::process::id()
+        ));
+        assert!(!file.exists());
+        write_new(&file, b"owner backup").unwrap();
+        assert!(write_new(&file, b"unexpected overwrite").is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"owner backup");
+        fs::remove_file(file).unwrap();
     }
     #[test]
     fn mode_is_explicit_and_fail_closed() {
