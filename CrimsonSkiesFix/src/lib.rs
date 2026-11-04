@@ -53,6 +53,9 @@ use win32::Hwnd;
 
 // Historical INI names are recognized only by the import logic;
 // all user-facing diagnostic text uses the canonical project name.
+// Kept only for the identity regression assertion, not for production.
+#[cfg(test)]
+const PROJECT_NAME:&str="CrimsonSkiesFix";
 const SYSTEM_DDRAW_RECURSION_ERROR:&str="ERROR: loading the system DirectDraw resolved back to CrimsonSkiesFix proxy; aborting to avoid recursion";
 
 type Hr=i32;
