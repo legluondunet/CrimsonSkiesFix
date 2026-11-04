@@ -74,7 +74,7 @@ authorize a GitHub tag, release, or merge.
 ## Release acceptance checklist
 
 - [ ] Windows x86 build and independent Ubuntu downloaded-artifact verification both pass on the exact **final accepted source SHA**, with Rust tests, native DLL loader smoke, PE32 checks, source manifest and complete archive layout.
-- [ ] Independently verify the exact final downloaded `ddraw.dll` archive's five files, license, binary hash, source SHA and logged identity (using the `verify-download` job and optionally the offline verifier). The standalone diagnostic/probe archive remains separate and is not installed with the game.
+- [ ] Independently verify the exact final downloaded `ddraw.dll` archive's five files, license, binary hash, source SHA and logged identity (using the `verify-download` job and optionally the offline verifier). The standalone `windowed_ddraw_probe.exe` remains compiled, checked as PE32 and covered by its automated tests, but is no longer uploaded as a separate artifact or included in the game package.
 - [x] Prior Wine/GE-Proton gameplay validation exists for PR #18 build `7ee1db87` (9 graphics generations, 8 retired chains, ROFFILE 4/4, signature preserved), but **this is not a test of a future DLL after a code change**.
 - [ ] Native Windows 11 gameplay session with the exact new release candidate: startup chooser bypass, first image, movies in 4:3, MainMenu, Video preferences/lock/actual resolution, gameplay and FOV/HUD at native monitor size, several 1920×1080↔800×600 transitions, Alt+Tab focus recovery, and clean exit.
 - [ ] Confirm the owner's explicit decision to designate a release stable; publish an appropriately versioned tag and release notes only after approval.
