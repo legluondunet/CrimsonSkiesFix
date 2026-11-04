@@ -66,12 +66,20 @@ jobs:
           $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
           $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
           if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
-          $gosOff = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=off' })
-          if ($gosOff.Count -ne 1) { throw 'GOS resource modification must be opt-in by default' }
-          $adapterOff = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=0' })
-          $wideOff = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=0' })
-          if ($adapterOff.Count -ne 1 -or $wideOff.Count -ne 1) {
-            throw 'Experimental native 3D paths must be opt-in by default'
+          # Explicit project policy: native Video Graphics/Resolution
+          # lock and AskForVDev dialog bypass are enabled on first run.
+          $gosOn = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=on' })
+          $adapterOn = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=1' })
+          $wideOn = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=1' })
+          $desktopOn = @($template | Where-Object { $_.Trim() -eq 'DesktopResolution=1' })
+          if ($gosOn.Count -ne 1 -or $adapterOn.Count -ne 1 -or
+              $wideOn.Count -ne 1 -or $desktopOn.Count -ne 1) {
+            throw 'Default GOS Video lock / startup selector bypass prerequisites are incomplete'
+          }
+          foreach ($invalid in @('GosVideoLock=off','ExperimentalWindowedAdapter=0','Native3DWidescreen=0')) {
+            if (@($template | Where-Object { $_.Trim() -eq $invalid }).Count -gt 0) {
+              throw "Conflicting disabled first-run option: $invalid"
+            }
           }
           $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
             ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
