@@ -13,6 +13,7 @@ CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 e
 - Shows the project version and build commit **only** on the MainMenu, including after returning from Preferences or gameplay; hides it in Video and other submenus.
 - Displays the actual native display resolution in the Video Preferences **Resolution** label without changing the game's original graphics-device/mode tables.
 - **By default**, uses the game's native `@ctl@PM` disable message to grey out and make **Graphics** and **Resolution** unselectable. Other Video options are not deliberately modified.
+- **By default**, applies the bounded `LegacyOffscreenRGB565` correction for the game's first/legacy image when its exact 800×600 16-bit offscreen surface signature is recognized, avoiding the observed incorrect pink/magenta colors.
 - Preserves the player's INI file and offers optional diagnostic logging and the narrow rendering/focus recovery controls described below.
 
 ### Supported executable
@@ -45,7 +46,7 @@ Crimson Skies/
     └── README.md
 ```
 
-**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog and uses the native 3D adapter and GOS Graphics/Resolution lock. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+**Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, and enables the first-image RGB565 color correction. The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
@@ -64,7 +65,7 @@ All settings live in `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Important graphics o
 | `Native3DWidescreen` | `1` | Native monitor-sized FOV/HUD corrections **and suppression of startup driver/resolution chooser** |
 | `FocusRepaint` | `0` | Optional focus/foreground repaint |
 | `WindowEraseGuard` | `0` | Optional suppression of `WM_ERASEBKGND` for the verified game window |
-| `LegacyOffscreenRGB565` | `0` | Optional RGB565 correction for legacy menu/video images |
+| `LegacyOffscreenRGB565` | `1` | First-image and legacy artwork RGB565 color correction; exact matching offscreen surfaces only; set `0` to disable |
 | `ModernFPSPacing` | `0` | Optional modern Flip pacing experiment |
 | `GosVideoLock` | `on` | **Default-on** native Graphics/Resolution lock; writes a verified, backed-up GOS patch overlay |
 
@@ -85,7 +86,7 @@ GosVideoLock=on
 Log=1
 ```
 
-This is the **owner's previously validated configuration** (the extra `FocusRepaint`, `WindowEraseGuard`, `LegacyOffscreenRGB565` and `Log` options remain disabled in fresh defaults). New first-run INIs now set `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on` automatically. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
+This is the **owner's previously validated configuration**. `LegacyOffscreenRGB565=1` is now enabled on a fresh install alongside `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on`. The extra `FocusRepaint`, `WindowEraseGuard` and `Log` options remain disabled by default. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
 
 ### GOS Video dropdown lock, backup and restoration
 
@@ -132,7 +133,7 @@ For original GameOS Video UI research and owner test evidence, see [Video Prefer
 
 ## Known limitations
 
-This is an experimental, exact-executable build. The native 3D adapter, menu lock and startup chooser bypass are now **enabled by default**, but changing these defaults has not yet been tested as an unmodified fresh-install 0.1.90 configuration. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
+This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass and first-image RGB565 color fix are now **enabled by default**, but changing these defaults has not yet been tested as an unmodified fresh-install 0.1.90 configuration. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
 
 ## License and contribution policy
 
