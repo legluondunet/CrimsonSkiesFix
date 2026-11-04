@@ -1,25 +1,35 @@
-; CrimsonSkiesFix configuration TEMPLATE (not auto-loaded; copy only if desired).
-; The DLL creates CrimsonSkiesFix.ini on first launch if it does not exist.
-; This template remains .example so extracting future updates never replaces your settings.
+; CrimsonSkiesFix user-settings TEMPLATE (not loaded automatically).
+; The DLL creates CrimsonSkiesFix/CrimsonSkiesFix.ini on first launch.
+; Updates ship only this .example so existing user settings remain unchanged.
 [Graphics]
 Borderless=1
 DesktopResolution=1
-; Native GOS Video dropdown lock, requires ExperimentalWindowedAdapter=1,
-; Native3DWidescreen=1 and DesktopResolution=1.
-; off = no file changes; on = verify and automatically patch only
-; GOSDATA/ASSETS/crimptch.rof, saving an original .bak.
-; restore = restore backed-up original archive at next game launch.
-; Experimental until first-launch timing is owner-verified under Wine/Windows.
-GosVideoLock=off
 FPSLimit=60
-; Experimental: throttle only primary modern Flip; not Blt or Unlock.
-; Leave at 0 until a diagnostic log confirms the desired rendering path.
+; Original experimental DirectDraw4 pacing; disabled by default.
 ModernFPSPacing=0
-; FPSLimit is clamped to 1..60.
+; Native 3D adapter and FOV/HUD adaptation; opt in explicitly.
+ExperimentalWindowedAdapter=0
+Native3DWidescreen=0
+; Optional focus/window erase/menu color corrections; disabled by default.
+FocusRepaint=0
+WindowEraseGuard=0
+LegacyOffscreenRGB565=0
+; Native GOS Video Graphics/Resolution dropdown disable:
+; off = never modify GOS archives, including preexisting overrides.
+; on = install or recognize a verified, backed-up crimptch.rof override.
+; restore = restore the exact saved original archive on next game launch;
+;           then change this setting back to off or on.
+; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1
+; and DesktopResolution=1 when set to on.
+; Install, repeat launch and restoration tested on Wine/GE-Proton.
+; Native Windows gameplay testing remains deferred.
+GosVideoLock=off
 
 [Debug]
-; 0 = normal diagnostics disabled; rejected EXE hashes are ALWAYS logged.
-; 1 = write CrimsonSkiesFix.log beside ddraw.dll.
+; Ordinary logging disabled by default; EXE admission failures still logged.
+; Some experimental adapter diagnostics may also be logged automatically.
 Log=0
-; Optional: passive surface-method audit, requires Log=1. No graphic changes.
 SurfaceUsageTrace=0
+CrashBltTrace=0
+ColorProbe=0
+ColorCapture=0
