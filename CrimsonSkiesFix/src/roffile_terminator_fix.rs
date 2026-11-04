@@ -1,4 +1,4 @@
-//! Optional, strictly fingerprinted in-memory compatibility fix for the
+//! Default-enabled under Wine, strictly fingerprinted in-memory compatibility fix for the
 //! original Crimson Skies ROFFILE.DLL INI parser. Never edits game files.
 //!
 //! The original InitIniFile allocates exactly file_size bytes and passes them
@@ -7,7 +7,7 @@
 //! We redirect ONLY its allocation CALL at RVA 0x1172 to the DLL's own allocator,
 //! requesting size+2 and writing those two sentinel bytes before ReadFile.
 //!
-//! Opt-in / Wine-only. The module may be loaded dynamically, so we look for it
+//! Wine-only, with explicit user opt-out. The module may be loaded dynamically, so we look for it
 //! during active graphics calls; a load immediately followed by parsing with no
 //! intervening graphics call will not be patched. This limitation is logged.
 //! Nothing is attempted from DllMain or Windows' loader lock.
@@ -238,7 +238,7 @@ unsafe fn install(module: usize) -> Result<(), String> {
 }
 
 /// Invoked after the authorized EXE's DirectDraw hooks are running.
-/// Polling is intentionally only active with an explicit opt-in.
+/// Polling is active by default, unless disabled in the user INI.
 pub fn probe() {
     if !crate::cfg().roffile_terminator_fix {
         return;
