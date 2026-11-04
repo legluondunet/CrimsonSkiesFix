@@ -952,3 +952,57 @@ idempotent by firsthand observation, but its separate log has
 not been provided. PR #9 remains draft/unmerged.
 
 legluondunet assisted by ChatGPT (OpenAI)
+
+
+## 0.1.90 — default-enabled GOS Video locks and startup AskForVDev suppression (2026-11-04)
+
+**Owner-requested default policy change:** both GOS native Video dropdown locks
+(Graphics and Resolution) and suppression of the obsolete startup
+driver/resolution chooser must work from the first run, without
+additional user configuration.
+
+In both Rust `Config::default()` and the generated `DEFAULT_INI`, as
+well as the distributed `CrimsonSkiesFix.ini.example`, the defaults are:
+
+```ini
+[Graphics]
+Borderless=1
+DesktopResolution=1
+ExperimentalWindowedAdapter=1
+Native3DWidescreen=1
+GosVideoLock=on
+```
+
+- `GosVideoLock=on`: automatically install the authenticated native GOS
+  `HVA`/`IVA` control disablement with the original
+  `crimptch.rof.CrimsonSkiesFix.original.bak` backup. Once installed,
+  repeat launches must not rewrite it.
+- `Native3DWidescreen=1`: enables the existing, fingerprint-guarded
+  `startup_selector::apply()` code at the `DirectDrawCreate`
+  interception, to skip `AskForVDev` (driver/resolution chooser),
+  retaining the HAL device. No new game executable patch or on-disk
+  executable modification is introduced.
+- `ExperimentalWindowedAdapter=1` and `DesktopResolution=1`
+  satisfy the existing prerequisites for the native GOS UI lock and
+  full native monitor resolution; native FOV/HUD and mode-change
+  guards also remain enabled.
+- `ModernFPSPacing=0`, `Log=0`, `FocusRepaint=0`,
+  `WindowEraseGuard=0`, `LegacyOffscreenRGB565=0`
+  are otherwise unchanged from prior defaults.
+
+**Persistence and opt-out:** an existing user
+`CrimsonSkiesFix/CrimsonSkiesFix.ini` is **never overwritten** by the
+upgraded DLL. If that INI explicitly leaves the adapter or widescreen
+setting disabled, the native lock installation still fails closed
+rather than silently forcing those options. `GosVideoLock=off`
+stops new changes but does not restore a previously patched archive.
+Use `GosVideoLock=restore` for one launch to revert the original
+user-owned overlay, then set `off`. To opt out before the first launch,
+create an active INI in the nested directory, not just an `.ini.example`.
+
+**Validation:** the features were independently validated in their
+enabled configuration on the owner's Wine/GE-Proton 0.1.89 test runs.
+The 0.1.90 **new defaults** have separate Rust/parser and Windows x86
+CI tests, but have not yet been verified as a clean first-launch
+configuration in the owner's game. Windows 11 runtime verification
+remains explicitly deferred.
