@@ -11,7 +11,7 @@
 //! Physical GetRenderTarget results still require caller's own Release.
 
 #![allow(dead_code)]
-use std::{ffi::c_void,ptr};
+use std::ptr;
 use crate::{
     com_surface4_abi::{Surface4VTable,SurfaceThis},
     com_surface4_forward::try_borrow_real_surface4,
