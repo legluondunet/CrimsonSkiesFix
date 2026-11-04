@@ -1,11 +1,12 @@
 # Crimson Skies — vérifier la fermeture du jeu sans modifier la DLL
 
-**Statut :** procédure préparée, **fermeture propre du vrai jeu non encore confirmée**.
+**Statut :** une fermeture volontaire réelle après une session de jeu a été confirmée sous GE-Proton 11-12 (build `0.1.90-f2b2ca42`, retour de processus `0` selon Lutris/umu). L'observateur externe décrit ci-dessous n'a **pas** été utilisé pour cette session ; son protocole reste disponible pour des tests supplémentaires. La validation native Windows 11 est toujours en attente.
 Cette vérification est un critère distinct de la réussite des tests graphiques et de la validation du chargement PE32 de `ddraw.dll`.
 
 ## Ce que montrent les fichiers déjà reçus
 
-- Le journal du test Wine/GE-Proton `CrimsonSkiesFix(20261104-151344).log`, version `0.1.90-7ee1db87`, confirme le fonctionnement du jeu, neuf générations graphiques, les retours menu et quatre allocations ROFFILE protégées, mais se termine pendant une opération graphique. Il n'y a **ni marqueur de fermeture normale ni code de sortie**. Cette fin de journal **n'implique pas** un crash.
+- Un journal de test antérieur Wine/GE-Proton `CrimsonSkiesFix(20261104-151344).log`, version `0.1.90-7ee1db87`, confirme le fonctionnement du jeu, neuf générations graphiques, les retours menu et quatre allocations ROFFILE protégées, mais se termine pendant une opération graphique. Il n'y a **ni marqueur de fermeture normale ni code de sortie**. Cette fin de journal **n'implique pas** un crash.
+- Un test réel plus récent, `CrimsonSkiesFix(20261104-175953).log` sous GE-Proton 11-12 avec le build `0.1.90-f2b2ca42`, montre un retour au menu après le jeu, avec signature réaffichée et protection ROFFILE 2/2. Le journal Lutris/umu correspondant indique explicitement `Initial process has exited (return code: 0)`, `All processes have quit` et `Exit with return code 0`, sans exception non gérée rapportée. **C'est un résultat de fermeture normale observé sur cette session**, pas un résultat de l'observateur Python ni un test Windows natif.
 - Un autre journal historique `crimson_skies_wine.log` contient une ancienne **exception non gérée** `c0000005` à `ROFFILE.DLL + 0x22E0` et un **code de sortie Wine/umu de 5**. Il ne concerne pas la même session que le dernier journal avec le correctif ROFFILE activé. Il ne faut pas en déduire que la version actuelle plante encore.
 - `DllMain` de `ddraw.dll` est volontairement minimal et n'écrit aucun journal pendant `DLL_PROCESS_DETACH`, sous le verrou du chargeur Windows. **Ne pas ajouter une écriture, un chargement DLL, un verrou applicatif ou une attente dans DllMain** simplement pour produire un message « clean exit ». Une telle instrumentation pourrait elle-même provoquer un blocage.
 
@@ -63,8 +64,8 @@ Le programme peut se terminer avec `0` malgré une erreur interne gérée; inver
 
 Le workflow GitHub Actions exécute le `--self-test` de l'observateur sur Windows et Linux. Il teste la distinction entre sortie zéro, sortie non nulle, message d'exception non gérée, code de sortie du lanceur, exception Windows et signal POSIX **sans jeu ni interface graphique**.
 
-**Critère utilisateur restant :** deux fermetures volontaires du jeu sous Wine/GE-Proton avec le binaire exact, sans écran de plantage, puis fournir uniquement le `CrimsonSkiesFix-exitcheck.report.txt` et, si un résultat est douteux, les sorties stdout/stderr correspondantes. Les trois fichiers peuvent contenir des chemins ou des informations système à examiner avant partage.
+**État des preuves :** une sortie volontaire après une partie est déjà validée sous GE-Proton 11-12 par le journal Lutris/umu (code `0`) et le journal DLL correspondant. Un test supplémentaire de fermeture depuis le menu principal, éventuellement avec `verify_game_exit.py`, reste utile mais **facultatif** pour consolider cette couverture. Pour un nouveau test, fournir `CrimsonSkiesFix-exitcheck.report.txt` et, seulement en cas d'anomalie, les sorties stdout/stderr ; ces fichiers peuvent contenir des chemins locaux à relire avant partage.
 
-Si les deux tests passent, enregistrer les SHA du proxy et du jeu, et marquer la fermeture Wine comme validée. La fermeture sous Windows 11 reste un critère **séparé**, à exécuter lorsque l'ordinateur Windows sera disponible.
+La fermeture sous Windows 11 reste un critère **séparé**, à exécuter lorsque l'ordinateur Windows sera disponible. Ne pas attribuer à l'observateur Python le succès enregistré par Lutris/umu.
 
 legluondunet assisted by ChatGPT (OpenAI)
