@@ -508,15 +508,21 @@ fn logical_display_desc(words:&mut [u32;31], mode:Mode)->bool{
 /// Called only after native IDirectDraw4::GetDisplayMode succeeds.
 pub unsafe fn rewrite_display_mode(dd4:*mut c_void,d:*mut c_void)->bool {
     if d.is_null(){return false;}
-    let Ok(guard)=RUNTIME.lock() else{return false;};
-    let Some(runtime)=guard.as_ref() else{return false;};
-    if runtime.dd4!=dd4 as usize{return false;}
-    let Some(epoch)=runtime.epoch.as_ref() else{return false;};
-    let words=&mut *(d.cast::<[u32;31]>());
-    let (native_w,native_h,native_bpp)=(words[3],words[2],words[21]);
-    if !logical_display_desc(words,epoch.mode){return false;}
+    // Keep the mode snapshot AND descriptor rewrite in the same epoch.
+    // Only the diagnostic file write is moved outside RUNTIME: logging
+    // must not prolong a process-wide COM resource mutex hold.
+    let (mode,native_w,native_h,native_bpp)={
+        let Ok(guard)=RUNTIME.lock() else{return false;};
+        let Some(runtime)=guard.as_ref() else{return false;};
+        if runtime.dd4!=dd4 as usize{return false;}
+        let Some(epoch)=runtime.epoch.as_ref() else{return false;};
+        let words=&mut *(d.cast::<[u32;31]>());
+        let (native_w,native_h,native_bpp)=(words[3],words[2],words[21]);
+        if !logical_display_desc(words,epoch.mode){return false;}
+        (epoch.mode,native_w,native_h,native_bpp)
+    };
     log(&format!("WINDOWED-GAME: DD4 GetDisplayMode virtualized: physical={native_w}x{native_h}x{native_bpp} logical={}x{}x{} (desktop untouched)",
-        epoch.mode.width,epoch.mode.height,epoch.mode.bpp));
+        mode.width,mode.height,mode.bpp));
     true
 }
 #[cfg(test)]
