@@ -240,9 +240,7 @@ exception is evidence for a normal exit, not a guarantee that every runtime
 resource was freed. A nonzero status needs interpretation.
 
 The exact protocol and optional Windows 11 instructions are in
-[exit validation](docs/exit-validation-2026-11-04.md). The **real game's
-voluntary exit under Wine and Windows 11 remains to be confirmed**; automated
-synthetic process tests do not replace that check.
+[exit validation](docs/exit-validation-2026-11-04.md). A **real GE-Proton 11-12 gameplay session** on `0.1.90-f2b2ca42` has now been observed to end with `0` in Lutris/umu, with no unhandled exception reported; this successful session did **not** run the Python observer. Native Windows 11 game exit remains untested. Automated synthetic process tests do not replace actual gameplay verification.
 
 ## Build and tests
 
