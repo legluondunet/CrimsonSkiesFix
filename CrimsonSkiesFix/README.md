@@ -145,6 +145,22 @@ free functions remain unchanged. No game assets are modified on disk.
 **Limits and fail-safe behavior:** unsupported binaries and failed
 verifications are refused and logged as `ROFFILE-FIX: NOT installed`.
 Installation of a supported binary is logged as `ROFFILE-FIX: installed`.
+The diagnostic also tracks completed calls to the patched allocator using
+lock-free counters. On the **next rendering callback after actual use** it logs,
+for example:
+
+```text
+ROFFILE-FIX: allocation calls=1 padded_success=1 failures=0 last_input_size=1024; counted in cdecl hook, reported outside hook
+```
+
+`allocation calls` proves the game actually entered the patched allocation
+path, unlike the installation marker alone. `padded_success` counts completed
+`n+2` allocations, while `failures` counts unsuccessful/overflow requests.
+The reported byte count is an example, not an expected file size. The logger
+never runs from the native allocation hook, and reports are throttled.
+If no allocation count appears after installation, then use of the hook has
+**not been demonstrated** in that test. It does not mean the patch failed.
+
 A DLL loaded and parsed entirely before the next graphics callback could
 escape this opportunistic hook; an absent installation log means the fix
 was never confirmed active. The exact root cause still requires a Wine
