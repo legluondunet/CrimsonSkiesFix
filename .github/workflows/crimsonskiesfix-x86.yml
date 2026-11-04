@@ -21,6 +21,12 @@ jobs:
         working-directory: CrimsonSkiesFix
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A pull_request checkout defaults to a synthetic merge commit.
+          # Build the actual PR head recorded in build-info.txt instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Independent release candidate verifier self-test
+        run: python tools/verify_release_candidate.py --self-test
       - name: Read-only GOS script inspector self-test
         run: python tools/inspect_gos_scripts.py --self-test
       - name: Read-only ROF UI archive inspector self-test
@@ -142,6 +148,13 @@ jobs:
           }
           if (Test-Path 'dist/CrimsonSkiesFix.log') { throw 'Log must not be bundled' }
           if (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.log') { throw 'Old log path must not be bundled' }
+      - name: Verify staged artifact using independent Python verifier
+        shell: pwsh
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python tools/verify_release_candidate.py --directory dist --expected-commit $env:CRIMSONSKIESFIX_COMMIT --cargo-toml Cargo.toml --license ../LICENSE
+          if ($LASTEXITCODE -ne 0) { throw 'Independent candidate validation failed before upload' }
       - name: Publish experimental x86 proxy and clean game layout
         uses: actions/upload-artifact@v4
         with:
@@ -158,9 +171,26 @@ jobs:
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw "Windowed probe is not i686: 0x$($machine.ToString('X'))" }
           Write-Host 'Standalone windowed probe verified x86'
-      - name: Publish standalone windowed DirectDraw resource probe
-        uses: actions/upload-artifact@v4
+
+  verify-downloaded-artifact:
+    name: verify-download
+    needs: windows-x86
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: CrimsonSkiesFix-windowed-probe-Windows-x86-EXPERIMENTAL
-          path: CrimsonSkiesFix/target/i686-pc-windows-msvc/release/windowed_ddraw_probe.exe
-          if-no-files-found: error
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download actual Windows x86 candidate archive
+        uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
+          path: candidate
+      - name: Verify downloaded archive, manifest, license and PE32 DLL
+        env:
+          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 CrimsonSkiesFix/tools/verify_release_candidate.py \
+            --directory candidate \
+            --expected-commit "$CRIMSONSKIESFIX_COMMIT" \
+            --cargo-toml CrimsonSkiesFix/Cargo.toml \
+            --license LICENSE

@@ -54,7 +54,7 @@ cargo test --locked --target i686-pc-windows-msvc
 cargo build --locked --release --target i686-pc-windows-msvc
 ```
 
-The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the PE32 DLL, runs Rust and Python regression checks, validates the clean distribution layout, and performs a native `LoadLibraryW` / `GetProcAddress` / `FreeLibrary` smoke test. The standalone `windowed_ddraw_probe.exe` is diagnostic and is **not** required to run the game.
+The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the PE32 DLL, runs Rust and Python regression checks, validates the clean distribution layout, and performs a native `LoadLibraryW` / `GetProcAddress` / `FreeLibrary` smoke test. The standalone `windowed_ddraw_probe.exe` remains in the repository for DirectDraw regression tests and its x86 build is checked by CI. It is **not** required to run the game and is no longer published as a downloadable artifact.
 
 Release status and remaining checks are tracked in [release readiness audit](CrimsonSkiesFix/docs/release-readiness-2026-11-04.md). Native Windows 11 gameplay remains a distinct, manual acceptance criterion.
 

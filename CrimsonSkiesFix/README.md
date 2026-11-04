@@ -225,7 +225,7 @@ cargo build --locked --release --target i686-pc-windows-msvc
 
 The repository commits `Cargo.lock` to pin the tested `flate2` dependency tree.
 
-The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is a **separate experimental diagnostic tool**, not required in the game directory.
+The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is an internal experimental DirectDraw diagnostic; its build and tests remain part of CI, but it is no longer published as an artifact and must not be placed in the game directory.
 
 For original GameOS Video UI research and owner test evidence, see [Video Preferences native UI](docs/video-preferences-native-ui.md) and [GOS archive inspector](tools/inspect_gos_rof.py). Earlier experiments and detailed changelogs remain available in the repository's Git history.
 
