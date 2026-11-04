@@ -214,6 +214,36 @@ The initialization report provides privacy-filtered Windows/Wine, CPU, display, 
 
 Useful GOS log markers: `GOS-VIDEO-LOCK:`, `MENU-RESOLUTION-LABEL:`, `WINDOWED-WIDE:`, `MENU-BRANDING:`. If a new build fails, restore the previous `ddraw.dll` and relevant optional INI settings; for an already-installed GOS overlay use the explicit `restore` setting first.
 
+## Validate that the game exits normally
+
+A successful graphics session does not establish that Crimson Skies shuts
+down cleanly. The DLL intentionally performs **no file I/O under the loader
+lock in `DllMain`**, so the last line of `CrimsonSkiesFix.log` cannot be
+used as an exit-status indicator.
+
+The repository includes an optional read-only external process observer:
+`tools/verify_game_exit.py`. On Linux, launch the **actual game process**
+using the same working Wine/GE-Proton runner and prefix as your normal setup:
+
+```sh
+python3 /path/to/verify_game_exit.py \
+  --cwd "/path/to/Crimson Skies" \
+  -- /path/to/your/wine-runner CRIMSON.EXE
+```
+
+After quitting from the game's own menu, inspect
+`CrimsonSkiesFix-exitcheck.report.txt`, plus the matching stdout/stderr files
+if a nonzero code or unhandled exception is reported. A detached Lutris or
+Steam GUI launcher is **not** a valid command to monitor, because it may
+return while the game is still running. Exit status `0` with no unhandled
+exception is evidence for a normal exit, not a guarantee that every runtime
+resource was freed. A nonzero status needs interpretation.
+
+The exact protocol and optional Windows 11 instructions are in
+[exit validation](docs/exit-validation-2026-11-04.md). The **real game's
+voluntary exit under Wine and Windows 11 remains to be confirmed**; automated
+synthetic process tests do not replace that check.
+
 ## Build and tests
 
 ```powershell
