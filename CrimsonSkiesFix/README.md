@@ -1,4 +1,4 @@
-# CrimsonSkiesFix 0.1.88 — experimental DirectDraw proxy
+# CrimsonSkiesFix 0.1.89 — experimental DirectDraw proxy
 
 **Status:** x86 DirectDraw proof of concept; the 60-calls/s limiter on
 modern primary Flip was measured under Wine, but gameplay simulation
@@ -17,9 +17,13 @@ The 0.1.89 DLL now includes a native Rust implementation that
 **automatically constructs this GOS overlay from the user's own
 original game assets**, avoiding Python or a separate patching utility.
 It does not bundle original game scripts or touch the EXE or main
-`crimson.rof` archive. The early-DirectDraw initialization timing has
-**not yet been tested with an unpatched owner install**, so the
-integration is experimental and opt-in.
+`crimson.rof` archive. The **automatic native installation was validated** by the owner
+on 4 November 2026 under Manjaro / Wine 11.0 / GE-Proton11-12,
+using the 0.1.89-7bc1caad x86 DLL. The startup log explicitly
+records `GOS-VIDEO-LOCK: installed native-disabled GOS Video controls
+(original archived in .bak)` before the game graphics initialization.
+The feature remains opt-in pending further compatibility and
+rollback testing.
 
 In the existing `CrimsonSkiesFix/CrimsonSkiesFix.ini`:
 
@@ -53,51 +57,58 @@ automatically undo the installed ROF patch. Use `restore` before
 uninstalling or to return to the original game's video selectors.
 No restoration is attempted on normal exit or a crash.
 
-The first-launch path still needs the owner's runtime test; CI cannot
-prove whether the archive loads before the first DirectDraw export.
-Keep the PR **draft** until this runtime test is completed.
+The owner's `CrimsonSkiesFix(20261104-002130).log` confirms that the
+native patch was installed successfully at DLL startup, the Video
+Preferences resolution label remained `1920x1080`, the original GOS
+mode tables remained unchanged, and the MainMenu version signature
+reappeared after returning from Preferences. The owner confirms the
+actual disabled/grey interaction state. This validates the automatic
+installation path on their configuration, **not** every Windows or
+Wine configuration or automatic rollback. Keep the PR **draft**
+pending compatibility and cleanup review.
 
 
 ## Experimental native GOS dropdown lock (historical Python prototype)
 
-Analysis of the owner-supplied \`CTL.SCRIPT\` and
-\`SHAREDITEMS.SCRIPT\` proves the original dropdown \`@ctl@PM\`
-understands \`mail(10000, object)\`: it clears the input region,
+Analysis of the owner-supplied `CTL.SCRIPT` and
+`SHAREDITEMS.SCRIPT` proves the original dropdown `@ctl@PM`
+understands `mail(10000, object)`: it clears the input region,
 disables its child arrows and dims the selected value to
-\`0xff808080\`. \`10018\` re-enables the control. The actual
-Graphics and Resolution GOS objects are \`HVA\` and \`IVA\`.
+`0xff808080`. `10018` re-enables the control. The actual
+Graphics and Resolution GOS objects are `HVA` and `IVA`.
 
 An **optional reversible experiment** is implemented in
-\`tools/patch_gos_video_overlay.py\` (requires the sibling
-\`tools/inspect_gos_rof.py\` module). It builds a two-member
-\`crimptch.rof\` overlay that preserves the existing AIRFRAME patch
+`tools/patch_gos_video_overlay.py` (requires the sibling
+`tools/inspect_gos_rof.py` module). It builds a two-member
+`crimptch.rof` overlay that preserves the existing AIRFRAME patch
 and adds an original VIDEO script with native disable messages.
 The source script and game binaries are never bundled into the repo.
 **No game file changes in the preview command.** The tool verifies
 the original exe/ROF/script SHA-256 before generating a preview:
 
-\`\`\`sh
+```sh
 python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
   "/path/to/Crimson Skies" --preview video-disabled-preview.rof
-\`\`\`
+```
 
 **Only for an explicit user-initiated runtime trial**, installing
 the modified *small patch overlay* creates a permanent original
 backup before replacement (the 60 MB crimson.rof and game EXE remain
-unchanged). Revert with \`--restore\`:
+unchanged). Revert with `--restore`:
 
-\`\`\`sh
+```sh
 python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
   "/path/to/Crimson Skies" --install
 python3 CrimsonSkiesFix/tools/patch_gos_video_overlay.py \
   "/path/to/Crimson Skies" --restore
-\`\`\`
+```
 
 This experiment tests the original engine's native disabled state.
-This **historical Python prototype** is separate from the native 0.1.89 DLL integration above,
-and has not yet been tested in the owner's running game. Therefore
-keep PR #9 in draft and don't merge before owner validation. The
-v0.1.88 DLL baseline remains unchanged.
+This historical Python prototype was validated by the owner on
+3 November 2026 with the v0.1.88 DLL, before the successful
+0.1.89 native DLL integration. It remains useful for diagnostic
+inspection and explicit recovery; it is no longer needed for the
+normal opt-in native installation.
 
 ## Video dropdowns confirmed from owner's original script — next control-class test
 
