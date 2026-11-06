@@ -150,6 +150,11 @@ static REAL_DLL:OnceLock<Option<usize>>=OnceLock::new();
 static FIRST_FLIP:Once=Once::new();
 static FIRST_BLT:Once=Once::new();
 static COOPERATIVE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+// Bounded, passive diagnostics of the earliest native DirectDraw calls.
+// In particular, failed Create/Enumerate calls were previously silent.
+static STARTUP_DDRAW_CREATE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static STARTUP_DDRAW_ENUM_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static STARTUP_LEGACY_SURFACE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static DDRAW_QI_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static SURFACE_QI_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static WINDOW_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -398,9 +403,21 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         }
     });
     let function=symbol(b"DirectDrawCreate\0");
-    if function.is_null(){return DDERR_GENERIC;}
+    let trace=cfg().log_enabled &&
+        STARTUP_DDRAW_CREATE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32;
+    if function.is_null(){
+        if trace {log("STARTUP-DDRAW: DirectDrawCreate system export unavailable");}
+        return DDERR_GENERIC;
+    }
     let real:CreateFn=std::mem::transmute(function);
     let hr=real(guid,out,outer);
+    if trace {
+        log(&format!(
+            "STARTUP-DDRAW: DirectDrawCreate guid={} outer={} hr={:#010x} object_returned={}",
+            if guid.is_null(){"NULL"}else{"provided"},
+            if outer.is_null(){"NULL"}else{"provided"},
+            hr as u32,hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let dd=*out;
         let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
@@ -415,9 +432,22 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
 #[no_mangle]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
     let function=symbol(b"DirectDrawEnumerateA\0");
-    if function.is_null(){return DDERR_GENERIC;}
+    let trace=cfg().log_enabled &&
+        STARTUP_DDRAW_ENUM_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32;
+    if function.is_null(){
+        if trace {log("STARTUP-DDRAW: DirectDrawEnumerateA system export unavailable");}
+        return DDERR_GENERIC;
+    }
     let real:EnumerateFn=std::mem::transmute(function);
-    real(callback,context)
+    let hr=real(callback,context);
+    if trace {
+        log(&format!(
+            "STARTUP-DDRAW: DirectDrawEnumerateA callback={} context={} hr={:#010x}",
+            if callback.is_null(){"NULL"}else{"provided"},
+            if context.is_null(){"NULL"}else{"provided"},
+            hr as u32));
+    }
+    hr
 }
 
 #[no_mangle]
