@@ -114,9 +114,20 @@ unsafe extern "system" fn surface_blt(this:*mut c_void,dst:*const c_void,source:
 }
 
 pub(super) unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
-    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {return DDERR_GENERIC};
+    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {
+        if cfg().log_enabled {log("STARTUP-DDRAW: IDirectDraw::CreateSurface original callback unavailable");}
+        return DDERR_GENERIC;
+    };
     let call:SurfaceFn=std::mem::transmute(addr);
     let hr=call(this,desc,out,outer);
+    if cfg().log_enabled &&
+        STARTUP_LEGACY_SURFACE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32 {
+        log(&format!(
+            "STARTUP-DDRAW: IDirectDraw::CreateSurface desc={} outer={} hr={:#010x} object_returned={}",
+            if desc.is_null(){"NULL"}else{"provided"},
+            if outer.is_null(){"NULL"}else{"provided"},
+            hr as u32,hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let surface=*out;
         if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize) {
