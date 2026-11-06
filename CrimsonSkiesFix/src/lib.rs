@@ -276,6 +276,17 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    // Diagnostic-only transparent proxy: forward the three exported entry
+    // points to the original system DLL, without touching game code, GOS
+    // resources, COM vtables or any DirectDraw interfaces. The exact EXE
+    // hash gate above still applies. No option is changed permanently.
+    if config.directdraw_passthrough {
+        let Some(real)=real_module() else {
+            log("ERROR: system32\\ddraw.dll cannot be loaded in pass-through");
+            return ptr::null();
+        };
+        return win32::system_export(real,name);
+    }
     // No work from DllMain: authenticated game and INI are ready here.
     // The native GOS resource override is default-enabled for the exact
     // authenticated EXE, but can be switched off or restored in the INI.
@@ -346,6 +357,16 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     if !exe_gate::verify_once(){
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
+    }
+    if cfg().directdraw_passthrough {
+        let function=symbol(b"DirectDrawCreate\0");
+        if function.is_null(){return DDERR_GENERIC;}
+        let real:CreateFn=std::mem::transmute(function);
+        let hr=real(guid,out,outer);
+        log(&format!(
+            "PASSTHROUGH: DirectDrawCreate original hr={:#010x} object_returned={}; no COM hooks",
+            hr as u32,hr>=0 && !out.is_null() && !(*out).is_null()));
+        return hr;
     }
     // Install the verified GOS callback even if Log=0: the command-14
     // Graphics guard and menu-visibility state must not depend on logging.
@@ -457,6 +478,12 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
     let real:CreateExFn=std::mem::transmute(function);
     // Diagnostic-only until newer DirectDraw COM interfaces are understood.
     let hr=real(guid,out,iid,outer);
+    if cfg().directdraw_passthrough {
+        log(&format!(
+            "PASSTHROUGH: DirectDrawCreateEx original hr={:#010x} object_returned={}; no COM hooks",
+            hr as u32,hr>=0 && !out.is_null() && !(*out).is_null()));
+        return hr;
+    }
     log(&format!("COM-TRACE: DirectDrawCreateEx iid={} result={hr:#x} object_returned={}",
         guid_label(iid.cast()),hr>=0 && !out.is_null() && !(*out).is_null()));
     if hr>=0 && !out.is_null() && !(*out).is_null(){
