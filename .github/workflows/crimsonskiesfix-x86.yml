@@ -45,6 +45,8 @@ jobs:
         env:
           CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: cargo build --locked --release --target i686-pc-windows-msvc
+      - name: Verify all 22 native DirectDraw exports and canonical ordinals
+        run: python tools/verify_ddraw_exports.py --dll target/i686-pc-windows-msvc/release/ddraw.dll --definitions src/ddraw_exports.def
       - name: Verify PE machine is Intel x86
         shell: pwsh
         run: |
@@ -198,3 +200,8 @@ jobs:
             --expected-commit "$CRIMSONSKIESFIX_COMMIT" \
             --cargo-toml CrimsonSkiesFix/Cargo.toml \
             --license LICENSE
+      - name: Verify downloaded DLL exports independently on Ubuntu
+        run: |
+          python3 CrimsonSkiesFix/tools/verify_ddraw_exports.py \
+            --dll candidate/ddraw.dll \
+            --definitions CrimsonSkiesFix/src/ddraw_exports.def
