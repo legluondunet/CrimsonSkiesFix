@@ -36,6 +36,8 @@ pub const DEFAULT_INI: &str = concat!(
     "; Try this only under native Windows when UI/HUD is cropped at 125% DPI.\n",
     "; May alter legacy game behavior; never default-on or apply under Wine.\n",
     "NativeDpiAware=0\n",
+    "; Experimental native Windows A/B: hook verified game's DD4 mode setup BEFORE first exclusive request; off by default.\n",
+    "NativeDD4Bootstrap=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
