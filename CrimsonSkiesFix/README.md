@@ -242,6 +242,18 @@ resource was freed. A nonzero status needs interpretation.
 The exact protocol and optional Windows 11 instructions are in
 [exit validation](docs/exit-validation-2026-11-04.md). A **real GE-Proton 11-12 gameplay session** on `0.1.90-f2b2ca42` has now been observed to end with `0` in Lutris/umu, with no unhandled exception reported; this successful session did **not** run the Python observer. Native Windows 11 game exit remains untested. Automated synthetic process tests do not replace actual gameplay verification.
 
+## Local Windows x86 build without GitHub Actions
+
+As of 7 November 2026, the owner's GitHub Actions free minutes are exhausted:
+the jobs are blocked **before any compilation step**. Do not interpret the
+failed Actions status as evidence that the proposed Rust 22-export fix failed
+to compile. Use the [local Windows build and acceptance protocol](docs/windows-local-build.md)
+on a Windows MSVC developer environment. The source includes
+`tools/build_windows_local.ps1`, which builds the 32-bit DLL, runs tests and
+both 22-export name/ordinal and loader checks, and creates a hash/provenance
+verified candidate ZIP without touching game files. The resulting DLL is
+**not Windows-gameplay-validated** until the owner tests that exact candidate.
+
 ## Build and tests
 
 ```powershell
