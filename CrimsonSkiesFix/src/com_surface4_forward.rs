@@ -41,6 +41,7 @@ const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 // A flood of per-frame errors must not hide the failure that prevented init.
 static VIRTUAL_DIAG_COUNT:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_COPY_COUNT:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_COPY_FAILURE_DETAILS:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
 fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
     if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
@@ -569,6 +570,43 @@ unsafe fn trace_native_copy_format(source:SurfaceThis,flags:u32){
         words[3],words[2],words[21],words[19],words[22],words[23],words[24],words[26],flags));
 }
 
+fn rect_summary(r:*mut Rect)->String {
+    if r.is_null(){return "full".into();}
+    let r=unsafe{&*r};
+    format!("({},{})-({},{})",r.left,r.top,r.right,r.bottom)
+}
+/// On an actual Windows native RGB565 Blt failure, capture the operation
+/// metadata once per few samples, without touching any pixels or inventing
+/// success. Some legacy Blt options can be unsupported by native drivers.
+unsafe fn report_native_copy_failure(
+    dest:SurfaceThis,source:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,hr:i32,
+    source_is_facade:bool,
+){
+    if !crate::cfg().log_enabled{return;}
+    let count=GRAPH_COPY_FAILURE_DETAILS.fetch_add(1,Ordering::Relaxed)+1;
+    if count>8 && count!=32 && count!=128{return;}
+    let desc=|surface:SurfaceThis|->String{
+        if surface.is_null(){return "NULL".into();}
+        let mut words=[0u32;31];
+        words[0]=124;
+        let method=(real_vtable(surface).get_surface_desc);
+        let result=method(surface,words.as_mut_ptr().cast());
+        if result<0 || words[0]!=124 {
+            return format!("GetSurfaceDesc hr={:#010x}",result as u32);
+        }
+        format!("{}x{} bits={} flags={:#x} masks={:#x}/{:#x}/{:#x} caps={:#x}",
+            words[3],words[2],words[21],words[19],
+            words[22],words[23],words[24],words[26])
+    };
+    crate::log(&format!(
+        "NATIVE-BLT-FAIL: count={count} HRESULT={:#010x} flags={:#010x}          source_virtual={} source_same_as_target={} dst_rect={} src_rect={}          source=[{}] dest=[{}] (original HRESULT unchanged)",
+         hr as u32,flags,source_is_facade,source==dest,
+         rect_summary(dst_rect),rect_summary(src_rect),
+         desc(source),desc(dest)
+    ));
+}
+
 /// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
 /// Surface4. Native texture/offscreen source copies can be forwarded safely
 /// when the source is unwrapped to a real COM pointer. Depth Blt remains
@@ -624,6 +662,8 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
                 }
             }else{
+                report_native_copy_failure(current.real,real_source,p1,p3,p4,hr,
+                    is_our_forwarder(p2));
                 virtual_issue(node.role,"native backbuffer source Blt failed",hr);
             }
             return hr;
@@ -1285,6 +1325,13 @@ mod tests{
         }
         assert_eq!(desktop.refs.load(Ordering::SeqCst),1);
         assert_eq!(staging.refs.load(Ordering::SeqCst),1);
+    }
+
+    #[test]
+    fn native_blt_failure_rectangle_summary_is_bounded(){
+        let mut rect=Rect{left:2,top:3,right:11,bottom:13};
+        assert_eq!(rect_summary(ptr::null_mut()),"full");
+        assert_eq!(rect_summary(&mut rect),"(2,3)-(11,13)");
     }
 
     #[test]
