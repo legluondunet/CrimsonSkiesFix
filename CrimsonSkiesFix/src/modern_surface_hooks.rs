@@ -156,6 +156,8 @@ unsafe extern "system" fn modern_get_surface_desc(this:*mut c_void,desc:*mut c_v
 // read-only 640x480/800x600 front surface before touching any pixels.
 // Surface2/3 use the 108-byte DDSURFACEDESC; Surface4/7 use 124-byte
 // DDSURFACEDESC2. Both share dwHeight/dwWidth offsets.
+static NATIVE_MENU_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_ELIGIBLE:Once=Once::new();
 unsafe fn native_main_menu_viewport(surface:*mut c_void)->Option<borderless_native_blt::Rect>{
     // With Log=0 the native menu path installs only QI+Flip, not the
     // passive GetSurfaceDesc trampoline; borrow the genuine vtable method.
@@ -221,7 +223,13 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
         diagnostics::is_native_windows() &&
         modern_surface_primary(this)==Some(true)
     {
-        if let Some(view)=native_main_menu_viewport(this){
+        let viewport=native_main_menu_viewport(this);
+        if cfg().log_enabled && NATIVE_MENU_PROBE_COUNT.fetch_add(1,Ordering::Relaxed)<4 {
+            log(&format!("MENU-BRANDING: native primary Flip observed; strict 4:3 menu viewport={viewport:?}"));
+        }
+        if let Some(view)=viewport {
+            NATIVE_MENU_ELIGIBLE.call_once(||log(
+                "MENU-BRANDING: native Windows primary Flip in verified 4:3 menu dimensions; Campaign artwork inspection enabled"));
             let _=menu_brand::draw_native_primary(this,view);
         }else{
             menu_brand::mark_not_drawn();
