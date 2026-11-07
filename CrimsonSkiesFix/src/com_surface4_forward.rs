@@ -678,16 +678,16 @@ fn xrgb_to_565(pixel:u32)->u16{
 unsafe fn scale_xrgb320_to_rgb565800(
     src:*const u8,src_pitch:usize,dst:*mut u8,dst_pitch:usize
 ){
-    // Exact 320x240 -> 800x600, 2.5x nearest neighbour. Use 16.16
-    // fixed-point source steps matching legacy software DirectDraw scaling.
-    let step_x=(320u64<<16)/800;
-    let step_y=(240u64<<16)/600;
+    // Exact integer nearest-neighbour scaling 320x240 -> 800x600
+    // (ratio 2.5). Use rational mapping to avoid 16.16 truncation
+    // incorrectly selecting pixel 159 rather than 160 at dest x=400,
+    // which creates an artificial seam in the image.
     for y in 0usize..600 {
-        let sy=((y as u64*step_y)>>16).min(239) as usize;
+        let sy=y*240/600;
         let sr=src.add(sy*src_pitch);
         let dr=dst.add(y*dst_pitch);
         for x in 0usize..800 {
-            let sx=((x as u64*step_x)>>16).min(319) as usize;
+            let sx=x*320/800;
             let color=ptr::read_unaligned(sr.add(sx*4).cast::<u32>());
             ptr::write_unaligned(dr.add(x*2).cast::<u16>(),xrgb_to_565(color));
         }
