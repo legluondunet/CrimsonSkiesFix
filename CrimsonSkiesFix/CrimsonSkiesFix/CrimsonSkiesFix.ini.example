@@ -60,6 +60,13 @@ EarlyNativePhysicalMode=0
 ; Changes the process DPI mode for this launch; may regress some old UI.
 ; Keep 0 by default, always 0 on Wine/Proton.
 NativeDpiAware=0
+; EXPERIMENTAL Windows-native A/B: attach the game's verified real DD4
+; owner before its first mode switch, enabling windowed DirectDraw preflight.
+; Tested only through CI, not yet functionally validated on native Windows.
+; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1, Log=1.
+; Uses an in-memory exact-EXE entrypoint hook; original game file unchanged.
+; Keep 0 normally. Never active on Wine/Proton.
+NativeDD4Bootstrap=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
