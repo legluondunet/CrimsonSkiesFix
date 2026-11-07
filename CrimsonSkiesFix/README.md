@@ -250,7 +250,7 @@ all 22 native DDRAW exports and packages a source-hashed candidate without
 installing Visual Studio or modifying the native Windows 11 test machine.
 Successful cross-compilation alone is **not** Windows gameplay validation.
 
-As of 7 November 2026, the owner's GitHub Actions free minutes are exhausted:
+As of 7 November 2026, the owner's **private-repository** GitHub Actions allowance is exhausted, while public SpiderMan2k1Fix still runs free standard hosted runners:
 the jobs are blocked **before any compilation step**. Do not interpret the
 failed Actions status as evidence that the proposed Rust 22-export fix failed
 to compile. Use the [local Windows build and acceptance protocol](docs/windows-local-build.md)
