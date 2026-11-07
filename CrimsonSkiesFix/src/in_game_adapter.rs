@@ -203,6 +203,7 @@ struct Epoch {
     // Dedicated offscreen menu image, never exposed to the game. The
     // strong COM reference outlives the borrowed pointer in the Flip graph.
     menu_scratch:Option<Com>,
+    movie_rgb565_scratch:Option<Com>,
     clipper:Com,
 }
 struct Runtime {
@@ -546,6 +547,23 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
             }
         }
     }else{None};
+    // Windows native DD4 returns E_NOTIMPL for XRGB8888 320x240 ->
+    // RGB565 800x600 scaled video copies. Allocate a dedicated SYSTEM
+    // memory RGB565 scratch so no CPU lock touches the active D3D3 target.
+    // The existing Wine/probe and default nonbootstrap paths stay untouched.
+    let movie_rgb565_scratch=if mode.width==800 && mode.height==600 &&
+        crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows(){
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,800,600,Some(16))){
+            Ok(surface)=>{
+                log("NATIVE-MOVIE-BLT: optional RGB565 800x600 system-memory scratch created");
+                Some(surface)
+            },
+            Err(err)=>{
+                log(&format!("NATIVE-MOVIE-BLT: optional scratch creation failed: {err}"));
+                None
+            }
+        }
+    }else{None};
     log("WINDOWED-DIAG: primary Lock/Unlock staging probe begin");
     verify_primary_lock_staging(&primary_lock,mode)?;
     log("WINDOWED-DIAG: primary Lock/Unlock staging probe OK");
@@ -560,6 +578,12 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
     com_surface4_forward::arm_graph_primary_lock_surface(primary.ptr(),primary_lock.ptr())
         .map_err(|hr|format!("arm primary Lock staging: {:#010x}",hr as u32))?;
+    if let Some(scratch)=movie_rgb565_scratch.as_ref(){
+        match com_surface4_forward::arm_graph_movie_conversion_staging(back.ptr(),scratch.ptr()){
+            Ok(())=>log("NATIVE-MOVIE-BLT: scratch validated and bound to virtual RGB565 backbuffer"),
+            Err(hr)=>log(&format!("NATIVE-MOVIE-BLT: scratch validation failed hr={:#010x}; original Blt failures preserved",hr as u32))
+        }
+    }
     com_surface4_forward::attach_graph_surface4(primary.ptr(),back.ptr())
         .map_err(|hr|format!("attach virtual BB {:#010x}",hr as u32))?;
     com_surface4_forward::attach_graph_surface4(back.ptr(),depth.ptr())
@@ -603,7 +627,7 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
-        physical_depth:real_depth,menu_scratch,clipper})
+        physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,clipper})
 }
 // Give the game its *logical* DD4 mode, not the desktop's physical mode.
 // Crimson Skies requests 640x480x16 (or 800x600x16), while our real
