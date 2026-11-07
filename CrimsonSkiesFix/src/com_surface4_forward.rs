@@ -42,6 +42,8 @@ const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 static VIRTUAL_DIAG_COUNT:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_COPY_COUNT:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_COPY_FAILURE_DETAILS:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_MOVIE_CONVERT_SUCCESS:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_MOVIE_CONVERT_FAILED:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
 fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
     if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
@@ -137,6 +139,7 @@ struct Surface4Forwarder{
     // A 640x480/800x600 RGB565 native staging surface for Primary::Lock.
     // Never return the real 1920x1080 desktop primary's lock pointer to the game.
     primary_lock_surface:AtomicPtr<c_void>, // one owned COM ref if armed
+    movie_rgb565_staging:AtomicPtr<c_void>, // native 800x600 system-memory RGB565, one owned COM ref
     retired:AtomicBool, // permanent tombstone after a resolution epoch ends
 }
 
@@ -157,6 +160,7 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         real,refs:AtomicU32::new(1),
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
         virtual_flip:Mutex::new(None),primary_lock_surface:AtomicPtr::new(ptr::null_mut()),
+        movie_rgb565_staging:AtomicPtr::new(ptr::null_mut()),
         retired:AtomicBool::new(false),
     });
     Ok(Box::into_raw(obj).cast())
@@ -213,6 +217,38 @@ pub unsafe fn arm_graph_primary_lock_surface(
     let vt=real_vtable(staging);
     if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
     if p.primary_lock_surface.compare_exchange(
+        ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (vt.release)(staging);
+        return Err(E_FAIL);
+    }
+    Ok(())
+}
+
+/// Optional native-only 320x240 XRGB8888 movie -> RGB565 staging buffer.
+/// Registered BEFORE exposing the synthetic game graph, on the *backbuffer*.
+/// The caller owns the original native reference; the wrapper acquires one
+/// independent COM AddRef. Missing staging only means native Blt errors are
+/// passed through as before. Never install on the Wine/probe path.
+pub unsafe fn arm_graph_movie_conversion_staging(
+    back:SurfaceThis,staging:SurfaceThis
+)->Result<(),i32>{
+    if !is_our_forwarder(back) || staging.is_null(){return Err(E_INVALIDARG);}
+    let p=&*back.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG)};
+    if node.role!=SurfaceRole::Backbuffer ||
+       (node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+       p.real==staging || p.retired.load(Ordering::Acquire){
+        return Err(E_INVALIDARG);
+    }
+    let vt=real_vtable(staging);
+    let mut d=[0u32;31];d[0]=124;
+    if (vt.get_surface_desc)(staging,d.as_mut_ptr().cast())<0 ||
+       (d[3],d[2],d[21],d[22],d[23],d[24])!=(800,600,16,0xf800,0x07e0,0x001f) ||
+       d[26]&0x800==0{
+        return Err(E_INVALIDARG);
+    }
+    if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
+    if p.movie_rgb565_staging.compare_exchange(
         ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
         (vt.release)(staging);
         return Err(E_FAIL);
@@ -479,6 +515,8 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
                     }
                     let staging=obj.primary_lock_surface.swap(ptr::null_mut(),Ordering::AcqRel);
                     if !staging.is_null(){(real_vtable(staging).release)(staging);}
+                    let movie=obj.movie_rgb565_staging.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !movie.is_null(){(real_vtable(movie).release)(movie);}
                     let real=borrowed_real(this);
                     (real_vtable(real).release)(real);
                     drop(Box::from_raw(this.cast::<Surface4Forwarder>()));
@@ -625,6 +663,98 @@ unsafe fn report_native_copy_failure(
     ));
 }
 
+// Strictly bounded native 32-bit movie/video conversion. The Windows HAL
+// cannot stretch+convert 320x240 XRGB8888 -> 800x600 RGB565 itself and
+// returns E_NOTIMPL. The same-format system RGB565 -> video RGB565 Blt
+// already succeeded in the owner's log. Do NOT touch the real destination
+// by CPU Lock while a D3D3 HAL device is bound to it: convert into the
+// preallocated system-memory scratch and present via ordinary native Blt.
+fn xrgb_to_565(pixel:u32)->u16{
+    let r=((pixel>>16)&255)*31;
+    let g=((pixel>>8)&255)*63;
+    let b=(pixel&255)*31;
+    (((r+127)/255)<<11 | ((g+127)/255)<<5 | ((b+127)/255)) as u16
+}
+unsafe fn scale_xrgb320_to_rgb565800(
+    src:*const u8,src_pitch:usize,dst:*mut u8,dst_pitch:usize
+){
+    // Exact 320x240 -> 800x600, 2.5x nearest neighbour. Use 16.16
+    // fixed-point source steps matching legacy software DirectDraw scaling.
+    let step_x=(320u64<<16)/800;
+    let step_y=(240u64<<16)/600;
+    for y in 0usize..600 {
+        let sy=((y as u64*step_y)>>16).min(239) as usize;
+        let sr=src.add(sy*src_pitch);
+        let dr=dst.add(y*dst_pitch);
+        for x in 0usize..800 {
+            let sx=((x as u64*step_x)>>16).min(319) as usize;
+            let color=ptr::read_unaligned(sr.add(sx*4).cast::<u32>());
+            ptr::write_unaligned(dr.add(x*2).cast::<u16>(),xrgb_to_565(color));
+        }
+    }
+}
+unsafe fn convert_known_native_movie_blt(
+    native_dest:SurfaceThis,native_source:SurfaceThis,scratch:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,fx:*mut c_void
+)->Result<i32,&'static str>{
+    if native_dest.is_null() || native_source.is_null() || scratch.is_null() ||
+       dst_rect.is_null() || !src_rect.is_null() ||
+       flags!=DDBLT_WAIT || !fx.is_null(){
+        return Err("not an exact supported movie Blt");
+    }
+    let area=*dst_rect;
+    if area!=Rect{left:0,top:0,right:800,bottom:600}{
+        return Err("movie Blt rectangle differs");
+    }
+    let src_vt=real_vtable(native_source);
+    let dst_vt=real_vtable(native_dest);
+    let scratch_vt=real_vtable(scratch);
+    let mut sd=[0u32;31];sd[0]=124;
+    let mut dd=[0u32;31];dd[0]=124;
+    if (src_vt.get_surface_desc)(native_source,sd.as_mut_ptr().cast())<0 ||
+       (dst_vt.get_surface_desc)(native_dest,dd.as_mut_ptr().cast())<0{
+        return Err("native video surface GetSurfaceDesc failed");
+    }
+    if (sd[3],sd[2],sd[21],sd[22],sd[23],sd[24])!=(320,240,32,0xff0000,0xff00,0xff) ||
+       sd[26]&0x800==0 ||
+       (dd[3],dd[2],dd[21],dd[22],dd[23],dd[24])!=(800,600,16,0xf800,0x07e0,0x001f){
+        return Err("video format/caps mismatch");
+    }
+    let mut src_lock=[0u32;31];src_lock[0]=124;
+    let hr=(src_vt.lock)(native_source,ptr::null_mut(),src_lock.as_mut_ptr().cast(),
+        0x11,ptr::null_mut()); // DDLOCK_WAIT|DDLOCK_READONLY
+    if hr<0{return Err("video source Lock failed");}
+    let mut dst_lock=[0u32;31];dst_lock[0]=124;
+    let hr=(scratch_vt.lock)(scratch,ptr::null_mut(),dst_lock.as_mut_ptr().cast(),
+        0x1,ptr::null_mut()); // DDLOCK_WAIT
+    if hr<0{
+        let _=(src_vt.unlock)(native_source,ptr::null_mut());
+        return Err("movie RGB565 staging Lock failed");
+    }
+    let valid=(src_lock[0],src_lock[3],src_lock[2],src_lock[21])==(124,320,240,32) &&
+        (dst_lock[0],dst_lock[3],dst_lock[2],dst_lock[21])==(124,800,600,16) &&
+        src_lock[4]>=1280 && dst_lock[4]>=1600 &&
+        src_lock[4]<=65536 && dst_lock[4]<=65536 &&
+        src_lock[9]!=0 && dst_lock[9]!=0;
+    if valid{
+        scale_xrgb320_to_rgb565800(
+            (src_lock[9] as usize) as *const u8,src_lock[4] as usize,
+            (dst_lock[9] as usize) as *mut u8,dst_lock[4] as usize
+        );
+    }
+    // Unlock both regardless of the outcome. Never pass locked video
+    // memory to native Blt, or leave a failed frame half-converted.
+    let dst_unlock=(scratch_vt.unlock)(scratch,ptr::null_mut());
+    let src_unlock=(src_vt.unlock)(native_source,ptr::null_mut());
+    if !valid || dst_unlock<0 || src_unlock<0{
+        return Err("movie lock geometry/unlock failed");
+    }
+    let hr=(dst_vt.blt)(native_dest,dst_rect,scratch,ptr::null_mut(),
+        DDBLT_WAIT,ptr::null_mut());
+    if hr<0{return Err("RGB565 staging -> backbuffer native Blt failed");}
+    Ok(hr)
+}
+
 /// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
 /// Surface4. Native texture/offscreen source copies can be forwarded safely
 /// when the source is unwrapped to a real COM pointer. Depth Blt remains
@@ -680,6 +810,30 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
                 }
             }else{
+                // Activate ONLY for the EXACT observed native Windows
+                // unsupported XRGB8888 movie stretch and an already-owned,
+                // format-checked staging surface. Wine and other modes
+                // never provision this scratch and keep the old native Blt.
+                let scratch=current.movie_rgb565_staging.load(Ordering::Acquire);
+                if hr==E_NOTIMPL && !scratch.is_null() && !is_our_forwarder(p2) {
+                    match convert_known_native_movie_blt(
+                        current.real,real_source,scratch,p1,p3,p4,p5
+                    ){
+                        Ok(converted)=>{
+                            let count=GRAPH_MOVIE_CONVERT_SUCCESS.fetch_add(1,Ordering::Relaxed)+1;
+                            if count<=5 || count%120==0{
+                                crate::log(&format!("NATIVE-MOVIE-BLT: converted XRGB8888 320x240 -> RGB565 800x600 via system-memory staging; original native E_NOTIMPL recovered count={count} result={converted:#x}"));
+                            }
+                            return converted;
+                        },
+                        Err(reason)=>{
+                            let count=GRAPH_MOVIE_CONVERT_FAILED.fetch_add(1,Ordering::Relaxed)+1;
+                            if count<=8 || count%120==0{
+                                crate::log(&format!("NATIVE-MOVIE-BLT: bounded safe fallback unavailable: {reason}; original HRESULT preserved count={count}"));
+                            }
+                        }
+                    }
+                }
                 report_native_copy_failure(current.real,real_source,p1,p3,p4,hr,
                     is_our_forwarder(p2));
                 virtual_issue(node.role,"native backbuffer source Blt failed",hr);
@@ -1345,6 +1499,29 @@ mod tests{
         assert_eq!(staging.refs.load(Ordering::SeqCst),1);
     }
 
+    #[test]
+    fn xrgb8888_to_rgb565_native_fallback_color_and_nearest_scaling(){
+        assert_eq!(xrgb_to_565(0x00ff0000),0xf800);
+        assert_eq!(xrgb_to_565(0x0000ff00),0x07e0);
+        assert_eq!(xrgb_to_565(0x000000ff),0x001f);
+        assert_eq!(xrgb_to_565(0x00ffffff),0xffff);
+        let mut source=vec![0u8;320*240*4];
+        for y in 0..240usize{
+            for x in 0..320usize{
+                let pixel=if x<160{0x00ff0000u32}else{0x0000ff00u32};
+                source[(y*320+x)*4..(y*320+x+1)*4].copy_from_slice(&pixel.to_le_bytes());
+            }
+        }
+        let mut out=vec![0u8;800*600*2];
+        unsafe{scale_xrgb320_to_rgb565800(source.as_ptr(),1280,out.as_mut_ptr(),1600);}
+        let at=|x:usize,y:usize|{
+            u16::from_le_bytes(out[(y*800+x)*2..(y*800+x+1)*2].try_into().unwrap())
+        };
+        assert_eq!(at(0,0),0xf800);
+        assert_eq!(at(399,599),0xf800);
+        assert_eq!(at(400,0),0x07e0);
+        assert_eq!(at(799,599),0x07e0);
+    }
     #[test]
     fn native_blt_failure_rectangle_summary_is_bounded(){
         let mut rect=Rect{left:2,top:3,right:11,bottom:13};
