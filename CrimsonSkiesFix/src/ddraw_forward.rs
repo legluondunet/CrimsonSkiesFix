@@ -15,7 +15,7 @@
 //! The canonical name + ordinal mapping lives in ddraw_exports.def.
 #![cfg(all(windows, target_arch = "x86", target_env = "msvc"))]
 
-use std::{ffi::c_void, sync::atomic::{AtomicUsize, Ordering}};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::arch::global_asm;
 
 const SYSTEM_EXPORT_NAMES: [&[u8]; 22] = [
@@ -62,7 +62,7 @@ extern "C" fn resolve_target(index: u32) -> usize {
         std::process::exit(126);
     };
     let target = unsafe { crate::win32::system_export(system, name) } as usize;
-    if target == 0 || target as *const c_void == system {
+    if target == 0 {
         crate::log("DDRAW-FORWARD: required native DDRAW export unavailable");
         std::process::exit(126);
     }
