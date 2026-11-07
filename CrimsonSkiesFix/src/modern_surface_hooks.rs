@@ -87,6 +87,35 @@ fn log_render_chain_preflight(request:u32,parent:u32,child:u32) {
     }
 }
 
+// Windows-native read-only presentation observations. No COM vtable,
+// surface pixels, HWND styles, system modes or cursor state are modified.
+// Log only real primary->backbuffer mode transitions and a bounded sample
+// of successful primary Flip events, never every Flip.
+static NATIVE_BACKBUFFER_MODE:Mutex<Option<(u32,u32)>>=Mutex::new(None);
+static NATIVE_PRIMARY_FLIP_SAMPLE:AtomicUsize=AtomicUsize::new(0);
+unsafe fn native_backbuffer_dimensions(surface:*mut c_void)->Option<(u32,u32)>{
+    let addr=orig(surface,SURFACE_GET_DESC).or_else(||{
+        let candidate=method(surface,SURFACE_GET_DESC);
+        (candidate!=0 &&
+         candidate!=modern_get_surface_desc as *const () as usize).then_some(candidate)
+    })?;
+    let call:GetSurfaceDescFn=std::mem::transmute(addr);
+    // DirectDrawSurface4 returns DDSURFACEDESC2 (124 bytes); older
+    // Surface2/3 implementations can require DDSURFACEDESC (108 bytes).
+    // Both start with dwSize, dwFlags, dwHeight, dwWidth.
+    for size in [124u32,108u32]{
+        let mut desc=[0u32;31];
+        desc[0]=size;
+        if call(surface,desc.as_mut_ptr().cast())>=0 && desc[0]==size{
+            let dims=(desc[3],desc[2]);
+            if dims.0>=320 && dims.1>=200 && dims.0<=8192 && dims.1<=4320{
+                return Some(dims);
+            }
+        }
+    }
+    None
+}
+
 // The GetAttachedSurface ABI is the same for Surface2/3/4/7.
 // Call through with the original DDSCAPS or DDSCAPS2 pointer unchanged.
 // Do not Release the returned COM interface: ownership belongs to the game.
@@ -119,6 +148,20 @@ unsafe extern "system" fn modern_get_attached_surface(
                 if a&DDSCAPS_PRIMARYSURFACE!=0 && b&DDSCAPS_BACKBUFFER!=0 {
                     SURFACE_FIRST_PRIMARY_ATTACH.call_once(||log(
                         "SURFACE-CHAIN: confirmed primary front buffer -> attached backbuffer (game-provided; no modification)"));
+                    if diagnostics::is_native_windows(){
+                        if let Some(dims)=native_backbuffer_dimensions(*out) {
+                            if let Ok(mut last)=NATIVE_BACKBUFFER_MODE.lock(){
+                                if last.as_ref()!=Some(&dims) {
+                                    *last=Some(dims);
+                                    drop(last);
+                                    log(&format!(
+                                        "NATIVE-VIDEO: primary->backbuffer geometry switched to {}x{}; {}",
+                                        dims.0,dims.1,win32::native_presentation_snapshot()
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
                 // The requested caps pointer is game-owned, not modified.
                 if !caps.is_null(){log_render_chain_preflight(*caps,a,b);}
@@ -181,6 +224,16 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
     }
     let call:FlipFn=std::mem::transmute(addr);
     let result=call(this,target,flags);
+    if result>=0 && cfg().log_enabled && diagnostics::is_native_windows() &&
+        modern_surface_primary(this)==Some(true) {
+        let frames=NATIVE_PRIMARY_FLIP_SAMPLE.fetch_add(1,Ordering::Relaxed)+1;
+        // A 120-Flip period is only an API sampling interval, not 2 seconds
+        // or a guaranteed displayed frame rate. Stop after ten samples.
+        if frames==1 || (frames%120==0 && frames<=1200) {
+            log(&format!("NATIVE-VIDEO: successful_primary_flip={frames}; {}",
+                win32::native_presentation_snapshot()));
+        }
+    }
     // This code runs AFTER the original Flip and only counts successful
     // calls on the real primary surface. It never modifies the HRESULT.
     if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
