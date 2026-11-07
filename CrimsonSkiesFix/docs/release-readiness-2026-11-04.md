@@ -14,6 +14,7 @@
 | Persistent game-asset modification | `GosVideoLock=on` modifies only the verified small `crimptch.rof` overlay with a separate original backup; `off` does not auto-restore. | Keep explicit restore and opt-out guidance prominent in the README. Do NOT package game files or perform automatic uninstall edits. |
 | Root repository description | Historical README still said modern widescreen was largely unvalidated/opt-in, despite repeated owner-successful Wine logs. | Align with the detailed README and distinguish validated Wine runtime from pending Windows 11 gameplay. |
 | Windows compatibility | Repeated user tests under Manjaro/Wine/GE-Proton confirm native widescreen, menus, GOS preferences and surface transitions. The runner tests only Windows DLL load/exports. | **Blocking criterion for a claimed stable Windows release:** real game session on a native Windows computer, ideally Windows 11, with startup, GOS settings, in-game rendering, transitions, video playback, Alt+Tab and clean exit. |
+| Native Windows DirectDraw HAL baseline (2026-11-06/07) | The stock game and a **separate 22-export no-hook DDRAW proxy** run in hardware Accelerator mode on Windows 11. Both the old Rust **3-export** DLL and a separate 3-export control DLL fail to enumerate Accelerator. | A complete 22-export Rust proxy is now proposed in PR #23; only its actual Windows binary plus gameplay can close this gate. Do not claim that the control DLL proves the Rust patch. |
 
 ## Updated user artifact contract
 
@@ -66,7 +67,7 @@ artifact; do not verify an earlier downloaded archive against today's
 unrelated `main`. A successful offline check is a package-integrity
 statement only.
 
-**Prepared, but not executed:** a single-session Windows 11 acceptance
+**Prepared, and partially executed with a confirmed native HAL regression:** a single-session Windows 11 acceptance
 protocol in `docs/windows11-acceptance-2026-11-04.md`, and non-published
 draft notes in `docs/release-notes-draft.md`. These documents do not
 authorize a GitHub tag, release, or merge.
@@ -77,6 +78,7 @@ authorize a GitHub tag, release, or merge.
 - [ ] Independently verify the exact final downloaded `ddraw.dll` archive's five files, license, binary hash, source SHA and logged identity (using the `verify-download` job and optionally the offline verifier). The standalone `windowed_ddraw_probe.exe` remains compiled, checked as PE32 and covered by its automated tests, but is no longer uploaded as a separate artifact or included in the game package.
 - [x] Prior Wine/GE-Proton gameplay validation exists for PR #18 build `7ee1db87` (9 graphics generations, 8 retired chains, ROFFILE 4/4, signature preserved), but **this is not a test of a future DLL after a code change**.
 - [x] **Real voluntary exit under Wine/GE-Proton after gameplay**: owner-supplied Lutris/umu output for build `0.1.90-f2b2ca42` reports `Initial process has exited (return code: 0)`, `All processes have quit`, and `Exit with return code 0`, with no unhandled exception. The paired DLL log `CrimsonSkiesFix(20261104-175953).log` records return to MainMenu and signature re-entry. The external observer script was **not** used for this success; an independent menu-only quit test remains optional extra coverage.
+- [ ] **Verify the complete native DDRAW 22-name/ordinal table** in the exact Rust x86 PE32 DLL and independently in its downloaded artifact. The old 3-export build fails HAL detection on Windows 11 despite passing the earlier three-export loader smoke.
 - [ ] Native Windows 11 gameplay session with the exact new release candidate: startup chooser bypass, first image, movies in 4:3, MainMenu, Video preferences/lock/actual resolution, gameplay and FOV/HUD at native monitor size, several 1920×1080↔800×600 transitions, Alt+Tab focus recovery, and clean exit.
 - [ ] Confirm the owner's explicit decision to designate a release stable; publish an appropriately versioned tag and release notes only after approval.
 
