@@ -31,6 +31,7 @@ mod window_erase_guard;
 mod diagnostics;
 mod diagnostics_graphics;
 mod native_video_imports;
+mod native_getproc_trace;
 mod presentation;
 mod scene_correlation;
 mod borderless_contract;
@@ -297,7 +298,12 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
     if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
-        NATIVE_IMPORT_AUDIT_ONCE.call_once(native_video_imports::report);
+        NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
+            native_video_imports::report();
+            // Only diagnostic Win32 IAT hook after SHA-256 admission, never
+            // a system export hook and never under the Windows loader lock.
+            native_getproc_trace::install();
+        });
     }
     // Diagnostic-only transparent proxy: forward the three exported entry
     // points to the original system DLL, without touching game code, GOS
