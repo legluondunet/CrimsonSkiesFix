@@ -51,7 +51,7 @@ use com_vtable::{method,orig,replace_method};
 use d3d3_hooks::observe_d3d3;
 use modern_ddraw_hooks::observe_modern_ddraw;
 use modern_surface_hooks::{modern_surface_caps,probe_modern_surface_layout,observe_modern_surface};
-use legacy_ddraw_hooks::{ddraw_query_interface,surface_query_interface,set_cooperative,set_display_mode,create_surface};
+use legacy_ddraw_hooks::{ddraw_query_interface,surface_query_interface,set_cooperative,set_display_mode,restore_display_mode,create_surface};
 use com_labels::{guid_label,ddraw_iface,surface_iface,surface_roles,describe_surface_layout,is_d3d3_iid};
 use frame_pacing::pace_frame;
 use render_sampling::sample_render_calls;
@@ -87,6 +87,7 @@ type EnumerateFn=unsafe extern "system" fn(*mut c_void,*mut c_void)->Hr;
 type CreateExFn=unsafe extern "system" fn(*const c_void,*mut *mut c_void,*const c_void,*mut c_void)->Hr;
 type CooperativeFn=unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr;
 type DisplayModeFn=unsafe extern "system" fn(*mut c_void,u32,u32,u32)->Hr;
+type RestoreModeFn=unsafe extern "system" fn(*mut c_void)->Hr;
 type SurfaceFn=unsafe extern "system" fn(*mut c_void,*mut c_void,*mut *mut c_void,*mut c_void)->Hr;
 type FlipFn=unsafe extern "system" fn(*mut c_void,*mut c_void,u32)->Hr;
 type BltFn=unsafe extern "system" fn(*mut c_void,*const c_void,*mut c_void,*const c_void,u32,*mut c_void)->Hr;
@@ -116,6 +117,7 @@ const COM_QUERY_INTERFACE:usize=0;
 const DD_CREATE_SURFACE:usize=6;
 const DD_SET_COOPERATIVE:usize=20;
 const DD_SET_DISPLAY_MODE:usize=21;
+const DD_RESTORE_DISPLAY_MODE:usize=19; // stable IDirectDraw 1/2/4/7 COM slot
 const DD_GET_DISPLAY_MODE:usize=12;
 const SURFACE_BLT:usize=5;
 const SURFACE_USAGE_ADD_ATTACHED_SURFACE:usize=3;
@@ -495,8 +497,9 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
         let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as *const () as usize);
         let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as *const () as usize);
+        let restore=replace_method(dd,DD_RESTORE_DISPLAY_MODE,restore_display_mode as *const () as usize);
         let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as *const () as usize);
-        log(&format!("DirectDrawCreate interception: query_interface={qi}, cooperative={a}, mode={b}, surface={c}"));
+        log(&format!("DirectDrawCreate interception: query_interface={qi}, cooperative={a}, mode={b}, restore_mode={restore}, surface={c}"));
     }
     hr
 }
