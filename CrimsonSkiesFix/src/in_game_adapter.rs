@@ -228,6 +228,10 @@ fn identical_game_cooperative_request(
 /// Only accept a valid process-owned HWND and standard exclusive request.
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
+    if crate::cfg().log_enabled {
+        log(&format!("WINDOWED-DIAG: DD4 SetCooperativeLevel enter dd4={:p} hwnd={:p} flags={:#010x}",
+            dd4,hwnd,flags));
+    }
     // A second identical game-exclusive request is expected during video
     // startup, after the virtual PRIMARY and HAL device have been created.
     // Keep the native DD4 in NORMAL, and preserve the live virtual COM graph.
@@ -276,7 +280,9 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     }
     // Prepare the actual DD4 cooperative level, but do not modify window
     // styles, suppress SetDisplayMode or expose any game surfaces yet.
+    log("WINDOWED-DIAG: DD4 native SetCooperativeLevel(DDSCL_NORMAL) begin");
     let hr=original(dd4,hwnd,DDSCL_NORMAL);
+    log(&format!("WINDOWED-DIAG: DD4 native SetCooperativeLevel(DDSCL_NORMAL) returned {:#010x}",hr as u32));
     if hr<0{
         log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}), original exclusive path retained",hr as u32));
         return None;
@@ -298,7 +304,9 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
         // Only the original unwrapped EXE, authenticated by exe_gate,
         // can reach this path. No support for third-party widescreen EXEs.
+        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
         let result=crate::native_widescreen::apply_or_reuse_early_patch(monitor_w,monitor_h);
+        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
         log(&format!(
             "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
             monitor_w,monitor_h));
@@ -318,6 +326,10 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     refresh:u32,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u32)->Hr)
     ->Option<Hr>{
+    if crate::cfg().log_enabled {
+        log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
+            dd4,w,h,bpp,refresh,flags));
+    }
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
@@ -346,8 +358,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
         log("WINDOWED-GAME: old virtual chain retired; stale Flip/Blt disarmed");
     }
+    log(&format!("WINDOWED-DIAG: prepare_epoch begin mode={}x{}x{} native_3d={}",
+        w,h,bpp,native_3d));
     let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,
         mode,runtime.generation+1,native_3d);
+    log(&format!("WINDOWED-DIAG: prepare_epoch returned success={}",result.is_ok()));
     match result {
         Ok(next)=>{
             runtime.generation+=1;
@@ -405,22 +420,38 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
 unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
     let client=monitor.dimensions().ok_or("invalid target monitor geometry")?;
+    log("WINDOWED-DIAG: native primary CreateSurface begin");
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
+    log("WINDOWED-DIAG: native primary CreateSurface OK");
+    log("WINDOWED-DIAG: native clipper.CreateClipper/SetHWnd/SetClipper begin");
     let clipper=new_clipper(dd4,hwnd,&real_primary)?;
+    log("WINDOWED-DIAG: native clipper setup OK");
+    log("WINDOWED-DIAG: native RGB565 video-memory D3D backbuffer CreateSurface begin");
     let real_back=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,
         mode.width,mode.height,Some(16)))?;
+    log("WINDOWED-DIAG: native RGB565 D3D backbuffer CreateSurface OK");
     // The real owner Wine HAL advertises pure 32-bit depth with 24 bits
     // of active Z (0x00ffffff); a native failure is never masked.
+    log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface begin");
     let real_depth=alloc(dd4,desc(DD_CAPS_Z|DD_CAPS_VIDEOMEM,
         mode.width,mode.height,Some(32)))
         .or_else(|_|alloc(dd4,desc(DD_CAPS_Z,mode.width,mode.height,Some(32))))?;
+    log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface OK");
+    log("WINDOWED-DIAG: validate native RGB565/Z32 formats begin");
     check_native_rgb_depth(&real_back,&real_depth,mode)?;
+    log("WINDOWED-DIAG: native RGB565/Z32 formats OK; attach Z32 begin");
     attach_depth(&real_back,&real_depth)?;
+    log("WINDOWED-DIAG: attach Z32 OK; depth-fill begin");
     native_fill(&real_depth,true)?;
+    log("WINDOWED-DIAG: depth-fill OK; color-fill begin");
     native_fill(&real_back,false)?;
+    log("WINDOWED-DIAG: color-fill OK; native D3D3 HAL CreateDevice probe begin");
     prove_hal(dd4,&real_back)?;
+    log("WINDOWED-DIAG: native D3D3 HAL CreateDevice probe OK");
+    log("WINDOWED-DIAG: native RGB565 system-memory primary Lock staging CreateSurface begin");
     let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
         mode.width,mode.height,Some(16)))?;
+    log("WINDOWED-DIAG: native primary Lock staging CreateSurface OK");
     // Menu logo is composited on a PRIVATE RGB565 surface and then copied
     // to the physical primary in the same frame. The game's D3D backbuffer
     // remains untouched, even during a playing animated menu background.
@@ -435,9 +466,12 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
             }
         }
     }else{None};
+    log("WINDOWED-DIAG: primary Lock/Unlock staging probe begin");
     verify_primary_lock_staging(&primary_lock,mode)?;
+    log("WINDOWED-DIAG: primary Lock/Unlock staging probe OK");
     log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
         mode.width,mode.height));
+    log("WINDOWED-DIAG: native→virtual Surface4 graph construction begin");
     let primary=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_primary.ptr(),SurfaceRole::Primary,mode,native_3d)
         .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
     let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d)
@@ -463,12 +497,15 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     }
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
+    log("WINDOWED-DIAG: physical windowed Blt backend preparation begin");
     let mut backend=NativeWindowedBlt::from_borrowed_com(
         real_primary.ptr(),real_back.ptr(),(0,0),client,mode
     ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
     let plan=contract.plan.viewport;
+    log("WINDOWED-DIAG: physical windowed two-Blt preflight begin");
     borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
         .map_err(|e|format!("native two-Blt preflight: {e:?}"))?;
+    log("WINDOWED-DIAG: physical preflight OK; validate virtual graph evidence begin");
     contract.expose(BackendEvidence{
         process_owned_window:true,normal_directdraw:true,
         render_target:RenderTarget::RealDirectDrawSurface4,
@@ -476,6 +513,7 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
         real_zbuffer_32:true,primary_with_clipper:true,
         working_blt:true,complete_surface_com:true
     }).map_err(|e|format!("graph evidence: {e:?}"))?;
+    log("WINDOWED-DIAG: evidence OK; arm virtual primary Flip begin");
     com_surface4_forward::arm_graph_primary_flip(
         primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
