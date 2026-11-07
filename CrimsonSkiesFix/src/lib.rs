@@ -32,6 +32,7 @@ mod diagnostics;
 mod diagnostics_graphics;
 mod native_video_imports;
 mod native_getproc_trace;
+mod native_owner_mode_trace;
 mod presentation;
 mod scene_correlation;
 mod borderless_contract;
