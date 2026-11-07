@@ -497,7 +497,9 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
         let qi=replace_method(dd,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
         let a=replace_method(dd,DD_SET_COOPERATIVE,set_cooperative as *const () as usize);
         let b=replace_method(dd,DD_SET_DISPLAY_MODE,set_display_mode as *const () as usize);
-        let restore=replace_method(dd,DD_RESTORE_DISPLAY_MODE,restore_display_mode as *const () as usize);
+        let restore=if cfg().log_enabled && diagnostics::is_native_windows(){
+            replace_method(dd,DD_RESTORE_DISPLAY_MODE,restore_display_mode as *const () as usize)
+        }else{false};
         let c=replace_method(dd,DD_CREATE_SURFACE,create_surface as *const () as usize);
         log(&format!("DirectDrawCreate interception: query_interface={qi}, cooperative={a}, mode={b}, restore_mode={restore}, surface={c}"));
     }
