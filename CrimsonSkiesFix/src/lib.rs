@@ -30,6 +30,7 @@ mod window_exposure;
 mod window_erase_guard;
 mod diagnostics;
 mod diagnostics_graphics;
+mod native_video_imports;
 mod presentation;
 mod scene_correlation;
 mod borderless_contract;
@@ -146,6 +147,7 @@ const DDSCAPS_FLIP:u32=0x0000_0010;
 const DDSCAPS_COMPLEX:u32=0x0000_0008;
 
 static CONFIG:OnceLock<Config>=OnceLock::new();
+static NATIVE_IMPORT_AUDIT_ONCE:Once=Once::new();
 static LOG:OnceLock<Mutex<File>>=OnceLock::new();
 // Only enabled for a controlled crash reproduction. The detailed source and
 // destination pointers are in a separate, bounded rotating file.
@@ -294,6 +296,9 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
+        NATIVE_IMPORT_AUDIT_ONCE.call_once(native_video_imports::report);
+    }
     // Diagnostic-only transparent proxy: forward the three exported entry
     // points to the original system DLL, without touching game code, GOS
     // resources, COM vtables or any DirectDraw interfaces. The exact EXE
