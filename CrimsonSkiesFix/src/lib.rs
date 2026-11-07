@@ -329,7 +329,7 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // Apply the FOV/HUD delta at the earliest DirectDraw export with the
     // same monitor geometry later used by the actual game's window.
     static EARLY_NATIVE_ONCE:Once=Once::new();
-    if config.experimental_windowed_adapter && config.native_3d_widescreen {
+    if config.experimental_windowed_adapter && config.native_3d_widescreen && !config.defer_early_native_patch {
         EARLY_NATIVE_ONCE.call_once(||{
             log("WINDOWED-DIAG: early FOV/HUD monitor query begin");
             let size=win32::capture_launch_monitor().and_then(|r|r.dimensions())
@@ -342,6 +342,13 @@ unsafe fn symbol(name:&[u8])->*const c_void {
                 log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
             }
         });
+    }
+    if config.experimental_windowed_adapter && config.native_3d_widescreen && config.defer_early_native_patch {
+        // Controlled A/B diagnosis: do not modify the EXE during early
+        // DirectDraw discovery. The existing DD4 cooperative path still
+        // applies the same verified in-memory patch if the game reaches it.
+        // This changes no Windows DPI awareness, system mode or game asset.
+        log("WINDOWED-DIAG: early FOV/HUD patch intentionally deferred to DD4 (debug-only)");
     }
     // Observe the exact in-game MainMenu/Preferences script transitions
     // only after strict game executable authentication.
