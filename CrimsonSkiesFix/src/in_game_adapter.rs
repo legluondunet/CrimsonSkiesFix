@@ -461,6 +461,16 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             }
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
+            // Check the actual Windows physical display state after every
+            // native virtual mode transition. A successful virtual Blt is
+            // not proof that another module did not switch the OS display.
+            if crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows() {
+                let observed=win32::physical_primary_monitor_dimensions();
+                log(&format!(
+                    "NATIVE-DESKTOP-VERIFY: virtual_mode={}x{}x{} physical_screen={observed:?} expected_screen={:?} retained={} (read-only)",
+                    w,h,bpp,runtime.render_client,observed==Some(runtime.render_client)
+                ));
+            }
             Some(0)
         }
         Err(err)=>{
