@@ -32,6 +32,10 @@ pub const DEFAULT_INI: &str = concat!(
     "; Native Windows uses physical monitor pixels automatically to avoid DPI scaling bugs.\n",
     "; Diagnostic only: force the same physical-pixel probe on Wine/Proton.\n",
     "EarlyNativePhysicalMode=0\n",
+    "; Diagnostic ONLY: opt into system-DPI awareness before the game's first HWND.\n",
+    "; Try this only under native Windows when UI/HUD is cropped at 125% DPI.\n",
+    "; May alter legacy game behavior; never default-on or apply under Wine.\n",
+    "NativeDpiAware=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
@@ -60,6 +64,8 @@ pub struct Config {
     pub defer_early_native_patch: bool,
     // Diagnostic-only: use EnumDisplaySettingsW physical mode for early EXE patch.
     pub early_native_physical_mode: bool,
+    // Debug-only: early process-wide SYSTEM DPI awareness for a native Windows A/B.
+    pub native_dpi_aware: bool,
     // Diagnostic-only: export forwarding without any DirectDraw or game hooks.
     pub directdraw_passthrough: bool,
     pub surface_usage_trace: bool,
@@ -70,7 +76,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -137,6 +143,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
+            ("debug", "nativedpiaware") =>
+                if let Some(v) = enabled(value) { settings.native_dpi_aware = v; },
             ("debug", "earlynativephysicalmode") =>
                 if let Some(v) = enabled(value) { settings.early_native_physical_mode = v; },
             ("debug", "deferearlynativepatch") =>
@@ -169,7 +177,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -193,6 +201,14 @@ mod tests {
         assert!(!Config::default().early_native_physical_mode);
         assert!(parse("[Debug]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
         assert!(!parse("[Graphics]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
+    }
+    #[test]
+    fn native_dpi_aware_is_debug_only_and_disabled_by_default(){
+        assert!(!Config::default().native_dpi_aware);
+        assert!(parse("[Debug]\nNativeDpiAware=1").native_dpi_aware);
+        assert!(!parse("[Graphics]\nNativeDpiAware=1").native_dpi_aware);
+        assert!(!parse("[Compatibility]\nNativeDpiAware=1").native_dpi_aware);
+        assert!(!parse("[Debug]\nNativeDpiAware=0").native_dpi_aware);
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
