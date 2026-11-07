@@ -36,7 +36,7 @@ impl Image<'_>{
             return Some(rva as usize);
         }
         for &(va,virtual_size,raw_offset,raw_size) in &self.sections {
-            let delta=rva.checked_sub(va)?;
+            let Some(delta)=rva.checked_sub(va) else{continue;};
             if delta<virtual_size.max(raw_size) && delta<raw_size {
                 let file=raw_offset.checked_add(delta)? as usize;
                 if file<self.bytes.len(){return Some(file);}
