@@ -50,8 +50,10 @@ Log=0
 ; Diagnostic only: postpone the in-memory FOV/HUD patch to DD4 negotiation.
 ; Keep 0 normally; use 1 for one native Windows startup A/B test.
 DeferEarlyNativePatch=0
-; Diagnostic only: read the physical one-monitor Windows display mode without DPI virtualization.
-; Use 1 ONLY with DeferEarlyNativePatch=0 for an early patch 1920x1200 A/B test.
+; Native Windows automatically reads physical monitor pixels (e.g. 1920x1200)
+; even if the legacy game sees DPI-virtualized 1536x960 coordinates.
+; Diagnostic only: set 1 to also force this physical-pixel mode under Wine/Proton.
+; Keep 0 in regular use. DeferEarlyNativePatch=1 takes precedence.
 EarlyNativePhysicalMode=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
