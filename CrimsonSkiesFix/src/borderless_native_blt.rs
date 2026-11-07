@@ -19,7 +19,8 @@ pub struct NativeWindowedBlt {
     primary:Ptr,
     source_surface:Ptr,
     origin:(i32,i32),
-    client:(u32,u32),
+    client:(u32,u32), // contract/render pixel extent
+    output_client:(u32,u32), // Win32 DPI-logical HWND coordinates
     source:Mode,
     // Borrowed DD4 offscreen RGB565 scratch owned by the current game epoch.
     // Never use it outside the matching native Surface4 graph lifetime.
@@ -40,7 +41,29 @@ impl NativeWindowedBlt {
            !(matches!((source.width,source.height),(640,480)|(800,600)) ||
              (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
-        Ok(Self{primary,source_surface,origin,client,source,menu_scratch:ptr::null_mut(),menu_prepared:false})
+        Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false})
+    }
+    /// Windowed DirectDraw primary coordinates on native Windows are the
+    /// DPI-logical Win32 client size, while the 3D render graph must remain
+    /// the physical monitor raster (1920x1200 at 125% scaling). Convert
+    /// only final presentation rectangles, NOT source modes/FOV/HUD/Z.
+    /// The independent probe and Wine/Proton use output_client==client.
+    pub fn set_output_client(&mut self,output:(u32,u32))->Result<(),i32>{
+        if output.0==0 || output.1==0 ||
+           (u64::from(output.0)*u64::from(self.client.1))!=
+           (u64::from(output.1)*u64::from(self.client.0)){
+            return Err(BAD);
+        }
+        self.output_client=output;
+        Ok(())
+    }
+    fn logical_edge(&self,edge:u32,horizontal:bool)->Result<i32,i32>{
+        let (logical,physical)=if horizontal{
+            (self.output_client.0,self.client.0)
+        }else{(self.output_client.1,self.client.1)};
+        if edge>physical{return Err(BAD);}
+        let scaled=u64::from(edge)*u64::from(logical)/u64::from(physical);
+        i32::try_from(scaled).map_err(|_|BAD)
     }
     /// Called during graph initialization; the caller retains the strong
     /// COM ownership until the entire epoch is retired.
@@ -107,14 +130,15 @@ impl NativeWindowedBlt {
            view.y.checked_add(view.height).is_none_or(|y|y>self.client.1){
             return Err(BAD);
         }
-        let left=i32::try_from(i64::from(self.origin.0)+i64::from(view.x))
-            .map_err(|_|BAD)?;
-        let top=i32::try_from(i64::from(self.origin.1)+i64::from(view.y))
-            .map_err(|_|BAD)?;
-        let right=i32::try_from(i64::from(self.origin.0)+i64::from(view.x)+i64::from(view.width))
-            .map_err(|_|BAD)?;
-        let bottom=i32::try_from(i64::from(self.origin.1)+i64::from(view.y)+i64::from(view.height))
-            .map_err(|_|BAD)?;
+        // Both left and right edges must be mapped, not just the width,
+        // so 4:3 menus stay centered after DPI virtualization and we never
+        // crop the right/bottom of a physical screenshot.
+        let left=self.origin.0.checked_add(self.logical_edge(view.x,true)?).ok_or(BAD)?;
+        let top=self.origin.1.checked_add(self.logical_edge(view.y,false)?).ok_or(BAD)?;
+        let right=self.origin.0.checked_add(
+            self.logical_edge(view.x+view.width,true)?).ok_or(BAD)?;
+        let bottom=self.origin.1.checked_add(
+            self.logical_edge(view.y+view.height,false)?).ok_or(BAD)?;
         Ok(Rect{left,top,right,bottom})
     }
     unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
@@ -209,6 +233,22 @@ mod tests{
             Call{rect:Rect{left:240,top:0,right:1680,bottom:1080},
                  source:true,flags:WAIT,fx_size:0,fill:0}
         ]);
+    }
+    #[test]
+    fn physical_render_rects_are_mapped_to_dpi_logical_client(){
+        let (_vt,mut primary,mut source)=objects(0);
+        let real_primary=(&mut primary as *mut FakeSurface).cast();
+        let real_source=(&mut source as *mut FakeSurface).cast();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
+            real_primary,real_source,(0,0),(1920,1200),mode
+        ).unwrap()};
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        let menu=backend.screen_rect(Viewport{x:160,y:0,width:1600,height:1200}).unwrap();
+        assert_eq!(menu,Rect{left:128,top:0,right:1408,bottom:960});
+        let whole=backend.screen_rect(Viewport{x:0,y:0,width:1920,height:1200}).unwrap();
+        assert_eq!(whole,Rect{left:0,top:0,right:1536,bottom:960});
+        assert_eq!(backend.set_output_client((1536,950)),Err(BAD));
     }
     #[test]
     fn origin_translation_and_hresult_failure(){
