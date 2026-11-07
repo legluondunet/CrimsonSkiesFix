@@ -334,14 +334,24 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             log("WINDOWED-DIAG: early FOV/HUD monitor query begin");
             let logical=win32::capture_launch_monitor().and_then(|r|r.dimensions())
                 .or_else(win32::sole_primary_monitor_dimensions);
-            // Strict A/B: only the one-monitor physical mode is eligible.
-            // Never change the process DPI awareness, game window or desktop
-            // mode merely to work around legacy Win32 DPI virtualization.
-            let size=if config.early_native_physical_mode {
-                let physical=win32::physical_primary_monitor_dimensions();
-                log(&format!("WINDOWED-DIAG: physical early native probe logical={logical:?} physical={physical:?} (read-only, no DPI changes)"));
-                physical
-            }else{logical};
+            // Native Windows 11 under 125% scaling reported virtual
+            // 1536x960 although the physical monitor and game HAL render
+            // 1920x1200. The early EXE patch must use PHYSICAL pixels to
+            // avoid "Failed to initialize video". Wine/Proton retain the
+            // already-validated logical-monitored path. Never change global
+            // DPI awareness, OS display mode or game files.
+            let native_windows=diagnostics::is_native_windows();
+            let physical=if native_windows || config.early_native_physical_mode {
+                win32::physical_primary_monitor_dimensions()
+            }else{None};
+            let size=win32::early_patch_dimensions(
+                logical,physical,native_windows,config.early_native_physical_mode
+            );
+            if native_windows || config.early_native_physical_mode {
+                log(&format!(
+                    "WINDOWED-DIAG: physical early native probe logical={logical:?} physical={physical:?} native_windows={native_windows} selected={size:?} (read-only, no DPI changes)"
+                ));
+            }
             if let Some((w,h))=size {
                 log(&format!("WINDOWED-DIAG: early FOV/HUD patch begin target={}x{}",w,h));
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
