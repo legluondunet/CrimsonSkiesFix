@@ -66,6 +66,8 @@ pub struct Config {
     pub early_native_physical_mode: bool,
     // Debug-only: early process-wide SYSTEM DPI awareness for a native Windows A/B.
     pub native_dpi_aware: bool,
+    // Native Windows A/B: exact-game in-memory entrypoint bootstrap for DD4.
+    pub native_dd4_bootstrap: bool,
     // Diagnostic-only: export forwarding without any DirectDraw or game hooks.
     pub directdraw_passthrough: bool,
     pub surface_usage_trace: bool,
@@ -76,7 +78,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -143,6 +145,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
+            ("debug", "nativedd4bootstrap") =>
+                if let Some(v) = enabled(value) { settings.native_dd4_bootstrap = v; },
             ("debug", "nativedpiaware") =>
                 if let Some(v) = enabled(value) { settings.native_dpi_aware = v; },
             ("debug", "earlynativephysicalmode") =>
@@ -201,6 +205,13 @@ mod tests {
         assert!(!Config::default().early_native_physical_mode);
         assert!(parse("[Debug]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
         assert!(!parse("[Graphics]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
+    }
+    #[test]
+    fn native_dd4_bootstrap_is_debug_only_opt_in(){
+        assert!(!Config::default().native_dd4_bootstrap);
+        assert!(parse("[Debug]\nNativeDD4Bootstrap=1").native_dd4_bootstrap);
+        assert!(!parse("[Graphics]\nNativeDD4Bootstrap=1").native_dd4_bootstrap);
+        assert!(!parse("[Debug]\nNativeDD4Bootstrap=0").native_dd4_bootstrap);
     }
     #[test]
     fn native_dpi_aware_is_debug_only_and_disabled_by_default(){
