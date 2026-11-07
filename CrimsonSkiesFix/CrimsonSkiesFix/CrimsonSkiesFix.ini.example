@@ -47,6 +47,9 @@ RoffileTerminatorFix=1
 ; Ordinary logging disabled by default; EXE admission failures still logged.
 ; Some experimental adapter diagnostics may also be logged automatically.
 Log=0
+; Diagnostic only: postpone the in-memory FOV/HUD patch to DD4 negotiation.
+; Keep 0 normally; use 1 for one native Windows startup A/B test.
+DeferEarlyNativePatch=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
