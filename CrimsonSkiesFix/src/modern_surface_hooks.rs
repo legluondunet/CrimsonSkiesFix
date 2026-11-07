@@ -140,8 +140,8 @@ unsafe fn trace_native_primary_ddraw_owner(primary:*mut c_void){
             let table=*(owner.cast::<usize>());
             log(&format!(
                 "NATIVE-OWNER: primary->Surface4->GetDDInterface success; parent_slot20_coop_hooked={} parent_slot21_mode_hooked={} parent_slot19_restore_hooked={} parent_is_known_game_DD4={} parent_qi_hooked={} (COM refs released; no mode or vtable modifications)",
-                coop==modern_set_cooperative as usize || coop==set_cooperative as usize,
-                mode==modern_set_display_mode as usize || mode==set_display_mode as usize,
+                coop==modern_ddraw_hooks::modern_set_cooperative as usize || coop==set_cooperative as usize,
+                mode==modern_ddraw_hooks::modern_set_display_mode as usize || mode==set_display_mode as usize,
                 restore==restore_display_mode as usize,
                 dd4_table!=0 && table==dd4_table,
                 method(owner,COM_QUERY_INTERFACE)==ddraw_query_interface as usize
