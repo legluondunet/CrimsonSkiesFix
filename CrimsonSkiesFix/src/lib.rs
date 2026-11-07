@@ -230,6 +230,13 @@ fn cfg()->Config {
         let ini=win32::ini_path();
         let parsed=ini.as_ref().and_then(|p|fs::read_to_string(p).ok())
             .map(|s|config::parse(&s)).unwrap_or_default();
+        // One debug-only A/B test for 125%-scaled native Windows: request
+        // SYSTEM DPI awareness before *any* game HWND is created and before
+        // the passive Win32 display inventory. Never enable by default,
+        // under Wine/Proton, or during pure DirectDraw pass-through.
+        let dpi_diagnostic=if parsed.native_dpi_aware && !parsed.directdraw_passthrough {
+            Some(win32::enable_native_system_dpi_experiment())
+        }else{None};
         if parsed.log_enabled || parsed.experimental_windowed_adapter {
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=OpenOptions::new().create(true).write(true).truncate(true).open(path) {
@@ -238,6 +245,7 @@ fn cfg()->Config {
             }
             if LOG.get().is_some() {
                 log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
+                if let Some(ref result)=dpi_diagnostic {log(result);}
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
             }
