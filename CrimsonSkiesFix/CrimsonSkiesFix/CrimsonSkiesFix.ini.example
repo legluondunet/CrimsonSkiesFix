@@ -55,6 +55,11 @@ DeferEarlyNativePatch=0
 ; Diagnostic only: set 1 to also force this physical-pixel mode under Wine/Proton.
 ; Keep 0 in regular use. DeferEarlyNativePatch=1 takes precedence.
 EarlyNativePhysicalMode=0
+; Experimental native Windows ONLY: opt into SYSTEM DPI awareness before first window.
+; Helps isolate 125% DPI clipping of physical 1920x1200 gameplay and focus loss.
+; Changes the process DPI mode for this launch; may regress some old UI.
+; Keep 0 by default, always 0 on Wine/Proton.
+NativeDpiAware=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
