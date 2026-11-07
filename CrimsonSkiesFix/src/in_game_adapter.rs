@@ -206,6 +206,7 @@ struct Runtime {
     render_client:(u32,u32), // native physical DirectDraw pixels
     generation:u64,
     exposed:bool,
+    native_preparing:bool, // in-flight native probe; release state mutex across COM calls
     native_widescreen_ready:bool,
     epoch:Option<Epoch>,
 }
@@ -240,6 +241,10 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     {
         let Ok(guard)=RUNTIME.lock() else{return Some(E_FAIL)};
         if let Some(runtime)=guard.as_ref(){
+            if runtime.native_preparing {
+                log("WINDOWED-GAME: nested DD4 cooperative request during native HAL preflight rejected");
+                return Some(E_FAIL);
+            }
             if runtime.exposed {
                 let same=identical_game_cooperative_request(
                     runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
@@ -331,7 +336,7 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
             crate::native_widescreen::PatchResult::AlreadyNative)
     }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
-        monitor,render_client,generation:0,exposed:false,native_widescreen_ready,epoch:None});
+        monitor,render_client,generation:0,exposed:false,native_preparing:false,native_widescreen_ready,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
 }
@@ -349,6 +354,10 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
+    if runtime.native_preparing {
+        log("WINDOWED-GAME: nested SetDisplayMode during native HAL preflight rejected");
+        return Some(E_FAIL);
+    }
     let mode=Mode{width:w,height:h,bpp};
     let (mon_w,mon_h)=runtime.render_client;
     let native_3d=runtime.native_widescreen_ready && bpp==16 &&
@@ -374,9 +383,41 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
     log(&format!("WINDOWED-DIAG: prepare_epoch begin mode={}x{}x{} native_3d={}",
         w,h,bpp,native_3d));
-    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.render_client,
-        mode,runtime.generation+1,native_3d);
+    // Under Windows native, CreateDevice can synchronously call our OWN
+    // hooked DirectDraw4::GetDisplayMode/CreateSurface/QueryInterface while
+    // proving the driver's HAL. They may inspect RUNTIME, so holding the
+    // non-recursive mutex here deadlocks inside the native CreateDevice call.
+    // Keep the complete Runtime alive but publish an explicit preparation
+    // guard, drop the mutex, and then revalidate ownership after the call.
+    // Preserve the already-validated Wine/Proton call order untouched.
+    let native_unlock=crate::diagnostics::is_native_windows() && crate::cfg().native_dd4_bootstrap;
+    let hwnd_for_probe=runtime.hwnd as Hwnd;
+    let client_for_probe=runtime.render_client;
+    let generation_for_probe=runtime.generation+1;
+    let result=if native_unlock {
+        runtime.native_preparing=true;
+        log("WINDOWED-DIAG: releasing adapter state mutex for reentrant native HAL preflight");
+        drop(state);
+        let result=prepare_epoch(dd4,hwnd_for_probe,client_for_probe,mode,generation_for_probe,native_3d);
+        state=match RUNTIME.lock(){Ok(guard)=>guard,Err(_)=>return Some(E_FAIL)};
+        let Some(current)=state.as_mut() else {
+            log("WINDOWED-GAME: runtime disappeared during native HAL preflight; fail closed");
+            return Some(E_FAIL);
+        };
+        if current.dd4!=dd4 as usize || !current.native_preparing ||
+           current.generation+1!=generation_for_probe {
+            log("WINDOWED-GAME: runtime changed during native HAL preflight; fail closed");
+            current.native_preparing=false;
+            return Some(E_FAIL);
+        }
+        current.native_preparing=false;
+        log("WINDOWED-DIAG: native HAL preflight returned; adapter state mutex reacquired");
+        result
+    }else{
+        prepare_epoch(dd4,hwnd_for_probe,client_for_probe,mode,generation_for_probe,native_3d)
+    };
     log(&format!("WINDOWED-DIAG: prepare_epoch returned success={}",result.is_ok()));
+    let Some(runtime)=state.as_mut() else{return Some(E_FAIL)};
     match result {
         Ok(next)=>{
             runtime.generation+=1;
@@ -711,6 +752,11 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL)};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
+    // Native HAL validation may internally create PRIMARY or Z surfaces.
+    // These are driver-owned requests, not the game's post-negotiation
+    // request for a virtual surface. Forward them unchanged while the
+    // adapter's real HAL graph is still being constructed.
+    if runtime.native_preparing && !runtime.exposed{return None;}
     // COM output ownership is transferred only on S_OK. On any refusal,
     // never accidentally return the caller's previous surface pointer.
     *out=ptr::null_mut();
