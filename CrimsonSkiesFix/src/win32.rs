@@ -69,10 +69,12 @@ extern "system" {
     fn EnumDisplaySettingsW(device_name:*const u16,mode_number:u32,mode:*mut DevModeW)->i32;
 }
 
-/// Debug-only native-Windows A/B: read current physical mode of the sole
-/// primary display without changing the process' DPI awareness or desktop.
-/// EnumDisplaySettingsW explicitly does NOT participate in DPI virtualization.
-/// Refuse multi-monitor setups rather than selecting the wrong monitor.
+/// Read current PHYSICAL pixels of the sole primary display without changing
+/// process DPI awareness or the system display mode. Some native Windows 11
+/// hosts virtualize GetMonitorInfoW/GetSystemMetrics to 1536x960 even though
+/// their actual display and DirectDraw native surfaces are 1920x1200.
+/// EnumDisplaySettingsW reports physical pixels even for DPI-unaware games.
+/// Refuse multi-monitor setups rather than silently patching the wrong output.
 pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
     if unsafe{GetSystemMetrics(80)}!=1 {return None;}
     let mut mode:DevModeW=unsafe{std::mem::zeroed()};
@@ -84,6 +86,20 @@ pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
     let size=(mode.pels_width,mode.pels_height);
     if size.0==0 || size.1==0 {return None;}
     Some(size)
+}
+
+/// The Windows-native early FOV/HUD patch must use a physical, validated
+/// display mode. If it cannot be retrieved, defer instead of applying a
+/// potentially DPI-virtualized resolution that breaks video initialization.
+/// Keep Wine/Proton's established logical-monitor behavior unchanged.
+/// A debug override lets us A/B test the physical path on Wine if needed.
+pub fn early_patch_dimensions(
+    logical:Option<(u32,u32)>,
+    physical:Option<(u32,u32)>,
+    native_windows:bool,
+    debug_force_physical:bool
+)->Option<(u32,u32)> {
+    if native_windows || debug_force_physical { physical } else { logical }
 }
 
 #[repr(C)]
@@ -476,6 +492,24 @@ mod monitor_geometry_tests {
         assert_eq!(Rect{left:400,top:300,right:100,bottom:200}.dimensions(),None);
     }
 }
+#[cfg(test)]
+mod early_geometry_policy_tests {
+    use super::*;
+    #[test]
+    fn physical_pixels_are_required_for_native_windows_but_not_for_wine(){
+        let logical=Some((1536,960));
+        let physical=Some((1920,1200));
+        assert_eq!(early_patch_dimensions(logical,physical,true,false),physical);
+        assert_eq!(early_patch_dimensions(logical,physical,false,false),logical);
+        assert_eq!(early_patch_dimensions(logical,physical,false,true),physical);
+        // No accidental patch to virtualized pixels if native physical mode
+        // cannot be determined; let game initialize without early widescreen.
+        assert_eq!(early_patch_dimensions(logical,None,true,false),None);
+        assert_eq!(early_patch_dimensions(logical,None,false,false),logical);
+        assert_eq!(early_patch_dimensions(logical,None,false,true),None);
+    }
+}
+
 #[cfg(test)]
 mod physical_current_mode_layout_tests {
     use super::*;
