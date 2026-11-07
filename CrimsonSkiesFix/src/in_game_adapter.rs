@@ -628,7 +628,12 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     com_surface4_forward::arm_graph_primary_flip_with_output(
         primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
-        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
+        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+        // Native Windows 125% DPI screenshot A/B only: no global DPI,
+        // pointer or WndProc changes and never activate on Wine/Proton.
+        crate::cfg().native_gdi_sidebars &&
+            crate::cfg().native_dd4_bootstrap &&
+            crate::diagnostics::is_native_windows()
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
