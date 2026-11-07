@@ -19,6 +19,7 @@ const PATCH_LEN:usize=6;                  // mov edx,[absolute] is exactly 6 byt
 const MEM_COMMIT:u32=0x1000;
 const MEM_RESERVE:u32=0x2000;
 const PAGE_EXECUTE_READWRITE:u32=0x40;
+const PAGE_EXECUTE_READ:u32=0x20;
 static TRAMPOLINE:AtomicUsize=AtomicUsize::new(0);
 static ENTER_COUNT:AtomicUsize=AtomicUsize::new(0);
 
@@ -69,6 +70,8 @@ pub fn install()->bool {
     if !crate::cfg().native_dd4_bootstrap ||
        !crate::cfg().experimental_windowed_adapter ||
        !crate::cfg().native_3d_widescreen ||
+       !crate::cfg().log_enabled ||
+       crate::cfg().native_dpi_aware ||
        !diagnostics::is_native_windows() ||
        crate::cfg().directdraw_passthrough {return false;}
     if TRAMPOLINE.load(Ordering::Acquire)!=0{return true;}
@@ -99,9 +102,12 @@ pub fn install()->bool {
         ptr::copy_nonoverlapping(entry,trampoline,PATCH_LEN);
         let jmp_back=relative_jmp(trampoline as usize+PATCH_LEN,entry as usize+PATCH_LEN);
         ptr::copy_nonoverlapping(jmp_back.as_ptr(),trampoline.add(PATCH_LEN),5);
-        if FlushInstructionCache(GetCurrentProcess(),trampoline.cast(),11)==0{
+        let mut old_trampoline_protection=0u32;
+        if FlushInstructionCache(GetCurrentProcess(),trampoline.cast(),11)==0 ||
+           VirtualProtect(trampoline.cast(),16,PAGE_EXECUTE_READ,
+               &mut old_trampoline_protection)==0 {
             VirtualFree(trampoline.cast(),0,0x8000);
-            log("NATIVE-BOOTSTRAP: trampoline cache flush failed; game untouched");
+            log("NATIVE-BOOTSTRAP: trampoline final RX protection/flush failed; game untouched");
             return false;
         }
         let mut old=0u32;
