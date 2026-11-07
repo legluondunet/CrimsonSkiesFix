@@ -32,6 +32,7 @@ mod diagnostics;
 mod diagnostics_graphics;
 mod native_video_imports;
 mod native_getproc_trace;
+mod native_cursor_trace;
 mod native_owner_mode_trace;
 mod native_dd4_bootstrap;
 mod presentation;
@@ -305,6 +306,9 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             // Only diagnostic Win32 IAT hook after SHA-256 admission, never
             // a system export hook and never under the Windows loader lock.
             native_getproc_trace::install();
+            // Native windowed A/B only; exact EXE USER32 import provenance,
+            // no cursor/input modifications or system export detours.
+            native_cursor_trace::install();
         });
     }
     // Diagnostic-only transparent proxy: forward the three exported entry
