@@ -475,6 +475,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     "NATIVE-DESKTOP-VERIFY: virtual_mode={}x{}x{} physical_screen={observed:?} expected_screen={:?} retained={} (read-only)",
                     w,h,bpp,runtime.render_client,observed==Some(runtime.render_client)
                 ));
+                log(&format!(
+                    "NATIVE-MOUSE-GEOMETRY: mode={}x{} Win32 HWND logical={:?} native_snapshot={} (read-only; no input remapping)",
+                    w,h,win32::game_client_geometry(runtime.hwnd as Hwnd),
+                    win32::native_presentation_snapshot()
+                ));
             }
             Some(0)
         }
