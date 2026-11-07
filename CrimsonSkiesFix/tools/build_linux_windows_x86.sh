@@ -25,7 +25,6 @@ cd "$crate_root"
 
 # Download only x86 Microsoft CRT + SDK rather than default x64/ARM variants.
 export XWIN_ARCH=x86
-export RUSTFLAGS='-C target-feature=+crt-static'
 export CRIMSONSKIESFIX_COMMIT="$commit"
 
 echo "LOCAL-LINUX: source=$commit target=$target"
@@ -39,6 +38,8 @@ rustup target add "$target"
 # Run Linux unit tests, and compile Windows-targeted tests without launching
 # Win32 executables on Linux. Real Windows testing is a separate step.
 cargo test --locked
+# +crt-static belongs to the Windows MSVC CRT; never apply it to host Linux tests.
+export RUSTFLAGS='-C target-feature=+crt-static'
 cargo xwin test --locked --target "$target" --no-run
 cargo xwin build --locked --release --target "$target" --bin ddraw_loader_smoke
 cargo xwin build --locked --release --target "$target" --lib
