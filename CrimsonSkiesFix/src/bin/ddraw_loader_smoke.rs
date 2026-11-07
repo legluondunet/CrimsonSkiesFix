@@ -29,15 +29,40 @@ fn run()->Result<(),String>{
         return Err(format!("Windows loader rejected 32-bit proxy {}",path.display()));
     }
     let result=(||{
-        for symbol in [
-            b"DirectDrawCreate\0".as_slice(),
-            b"DirectDrawCreateEx\0".as_slice(),
-            b"DirectDrawEnumerateA\0".as_slice(),
-        ] {
-            let ptr=unsafe{GetProcAddress(module,symbol.as_ptr().cast())};
-            if ptr.is_null(){
-                return Err(format!("missing expected DirectDraw export {}",
-                    String::from_utf8_lossy(&symbol[..symbol.len()-1])));
+        // Test the exact native Windows export surface, not merely the three
+        // game-facing hooks. An incomplete table prevents D3D HAL discovery
+        // even if the 3 existing exports can be resolved and called.
+        const EXPORTS: [(&[u8],usize);22] = [
+            (b"AcquireDDThreadLock\0",1),
+            (b"CompleteCreateSysmemSurface\0",2),
+            (b"D3DParseUnknownCommand\0",3),
+            (b"DDGetAttachedSurfaceLcl\0",4),
+            (b"DDInternalLock\0",5),
+            (b"DDInternalUnlock\0",6),
+            (b"DSoundHelp\0",7),
+            (b"DirectDrawCreate\0",8),
+            (b"DirectDrawCreateClipper\0",9),
+            (b"DirectDrawCreateEx\0",10),
+            (b"DirectDrawEnumerateA\0",11),
+            (b"DirectDrawEnumerateExA\0",12),
+            (b"DirectDrawEnumerateExW\0",13),
+            (b"DirectDrawEnumerateW\0",14),
+            (b"DllCanUnloadNow\0",15),
+            (b"DllGetClassObject\0",16),
+            (b"GetDDSurfaceLocal\0",17),
+            (b"GetOLEThunkData\0",18),
+            (b"GetSurfaceFromDC\0",19),
+            (b"RegisterSpecialCase\0",20),
+            (b"ReleaseDDThreadLock\0",21),
+            (b"SetAppCompatData\0",22),
+        ];
+        for (name,ordinal) in EXPORTS {
+            let by_name=unsafe{GetProcAddress(module,name.as_ptr().cast())};
+            let by_ordinal=unsafe{GetProcAddress(module,ordinal as *const c_char)};
+            if by_name.is_null() || by_ordinal.is_null() || by_name!=by_ordinal {
+                return Err(format!(
+                    "missing/inconsistent DirectDraw export {} @{}",
+                    String::from_utf8_lossy(&name[..name.len()-1]),ordinal));
             }
         }
         Ok(())
@@ -54,7 +79,7 @@ fn main(){
         eprintln!("DDRAW-LOAD-SMOKE: ERROR: {e}");
         std::process::exit(1);
     }
-    println!("DDRAW-LOAD-SMOKE: PASS; 32-bit proxy loaded and released; 3 DirectDraw exports found (game not launched)");
+    println!("DDRAW-LOAD-SMOKE: PASS; 32-bit proxy loaded and released; 22 DirectDraw names and ordinals found (game not launched)");
 }
 
 #[cfg(not(windows))]
