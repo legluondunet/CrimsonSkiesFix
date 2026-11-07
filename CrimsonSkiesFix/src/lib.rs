@@ -110,7 +110,6 @@ const S_OK:Hr=0;
 const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
 const DDSCL_NORMAL:u32=0x0000_0008;
 const DDSCAPS_PRIMARYSURFACE:u32=0x0000_0200;
-const DLL_PROCESS_ATTACH:u32=1;
 // IDirectDraw v1 slots. Surface Flip/Blt/GetCaps slots are also stable in
 // later surface interface versions; QueryInterface interception is TODO.
 const COM_QUERY_INTERFACE:usize=0;
