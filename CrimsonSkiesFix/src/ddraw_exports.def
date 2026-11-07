@@ -1,0 +1,27 @@
+; The working Windows 11 full-export control established these names + ordinals.
+; Preserve all 22 as real functions; no PE forwarders to `ddraw` (would recurse).
+; Native DLL accepts ordinal callers as well as named imports.
+LIBRARY ddraw.dll
+EXPORTS
+    AcquireDDThreadLock=crimson_ddraw_forward_0 @1
+    CompleteCreateSysmemSurface=crimson_ddraw_forward_1 @2
+    D3DParseUnknownCommand=crimson_ddraw_forward_2 @3
+    DDGetAttachedSurfaceLcl=crimson_ddraw_forward_3 @4
+    DDInternalLock=crimson_ddraw_forward_4 @5
+    DDInternalUnlock=crimson_ddraw_forward_5 @6
+    DSoundHelp=crimson_ddraw_forward_6 @7
+    DirectDrawCreate @8
+    DirectDrawCreateClipper=crimson_ddraw_forward_8 @9
+    DirectDrawCreateEx @10
+    DirectDrawEnumerateA @11
+    DirectDrawEnumerateExA=crimson_ddraw_forward_11 @12
+    DirectDrawEnumerateExW=crimson_ddraw_forward_12 @13
+    DirectDrawEnumerateW=crimson_ddraw_forward_13 @14
+    DllCanUnloadNow=crimson_ddraw_forward_14 @15
+    DllGetClassObject=crimson_ddraw_forward_15 @16
+    GetDDSurfaceLocal=crimson_ddraw_forward_16 @17
+    GetOLEThunkData=crimson_ddraw_forward_17 @18
+    GetSurfaceFromDC=crimson_ddraw_forward_18 @19
+    RegisterSpecialCase=crimson_ddraw_forward_19 @20
+    ReleaseDDThreadLock=crimson_ddraw_forward_20 @21
+    SetAppCompatData=crimson_ddraw_forward_21 @22
