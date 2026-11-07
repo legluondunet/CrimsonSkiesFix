@@ -34,6 +34,59 @@ pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
 }
 
 #[repr(C)]
+struct DevModeW {
+    device_name:[u16;32],
+    spec_version:u16,
+    driver_version:u16,
+    size:u16,
+    driver_extra:u16,
+    fields:u32,
+    printer_or_display:[u8;16],
+    color:u16,
+    duplex:u16,
+    y_resolution:u16,
+    tt_option:u16,
+    collate:u16,
+    form_name:[u16;32],
+    log_pixels:u16,
+    bits_per_pel:u32,
+    pels_width:u32,
+    pels_height:u32,
+    display_flags:u32,
+    display_frequency:u32,
+    icm_method:u32,
+    icm_intent:u32,
+    media_type:u32,
+    dither_type:u32,
+    reserved1:u32,
+    reserved2:u32,
+    panning_width:u32,
+    panning_height:u32,
+}
+
+#[link(name="user32")]
+extern "system" {
+    fn EnumDisplaySettingsW(device_name:*const u16,mode_number:u32,mode:*mut DevModeW)->i32;
+}
+
+/// Debug-only native-Windows A/B: read current physical mode of the sole
+/// primary display without changing the process' DPI awareness or desktop.
+/// EnumDisplaySettingsW explicitly does NOT participate in DPI virtualization.
+/// Refuse multi-monitor setups rather than selecting the wrong monitor.
+pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
+    if unsafe{GetSystemMetrics(80)}!=1 {return None;}
+    let mut mode:DevModeW=unsafe{std::mem::zeroed()};
+    mode.size=std::mem::size_of::<DevModeW>() as u16;
+    const ENUM_CURRENT_SETTINGS:u32=0xffff_ffff;
+    if unsafe{EnumDisplaySettingsW(std::ptr::null(),ENUM_CURRENT_SETTINGS,&mut mode)}==0 {
+        return None;
+    }
+    let size=(mode.pels_width,mode.pels_height);
+    if size.0==0 || size.1==0 {return None;}
+    Some(size)
+}
+
+#[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Point { pub x:i32, pub y:i32 }
 #[repr(C)]
@@ -423,6 +476,18 @@ mod monitor_geometry_tests {
         assert_eq!(Rect{left:400,top:300,right:100,bottom:200}.dimensions(),None);
     }
 }
+#[cfg(test)]
+mod physical_current_mode_layout_tests {
+    use super::*;
+    #[test]
+    fn windows_devmodew_has_the_official_i686_layout(){
+        assert_eq!(std::mem::size_of::<DevModeW>(),220);
+        assert_eq!(std::mem::offset_of!(DevModeW,size),68);
+        assert_eq!(std::mem::offset_of!(DevModeW,pels_width),172);
+        assert_eq!(std::mem::offset_of!(DevModeW,pels_height),176);
+    }
+}
+
 #[cfg(test)]
 mod early_monitor_tests{
     use super::*;
