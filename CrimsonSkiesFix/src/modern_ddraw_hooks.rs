@@ -180,13 +180,18 @@ pub(super) unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as *const () as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as *const () as usize);
+    // Read-only 19th-slot mode-restore diagnostic. Leave Wine and standard
+    // (Log=0) native operation bit-for-bit unchanged.
+    let restore=if cfg().log_enabled && diagnostics::is_native_windows(){
+        replace_method(object,DD_RESTORE_DISPLAY_MODE,restore_display_mode as *const () as usize)
+    }else{false};
     let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as *const () as usize);
     if name=="IDirectDraw4" && cfg().experimental_windowed_adapter {
         let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as *const () as usize);
         if cfg().log_enabled {log(&format!("WINDOWED-GAME: DD4 GetDisplayMode hook_installed={get_mode}"));}
     }
     if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
-        log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
+        log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} restore_mode={restore} surface={surface} (observation only)"));
     }
 }
 
@@ -222,5 +227,6 @@ mod tests {
         assert_eq!(DD_GET_DISPLAY_MODE,12);
         assert_eq!(DD_SET_COOPERATIVE,20);
         assert_eq!(DD_SET_DISPLAY_MODE,21);
+        assert_eq!(DD_RESTORE_DISPLAY_MODE,19);
     }
 }
