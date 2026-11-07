@@ -3,7 +3,7 @@
 //! mode selection and GOS/launcher behavior through unchanged callbacks.
 use super::*;
 
-unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
+pub(super) unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
     if !hwnd.is_null() && cfg().log_enabled && PRE_EXCLUSIVE_DESKTOP.get().is_none(){
@@ -41,7 +41,7 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
     hr
 }
 
-unsafe extern "system" fn modern_set_display_mode(
+pub(super) unsafe extern "system" fn modern_set_display_mode(
     this:*mut c_void,w:u32,h:u32,bpp:u32,refresh:u32,flags:u32
 )->Hr {
     let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else{return DDERR_GENERIC};
