@@ -1,6 +1,6 @@
 # Build the Windows x86 MSVC DirectDraw DLL on Manjaro Linux
 
-GitHub Actions is disabled due to the owner's exhausted free quota. This
+The owner's private-repository Actions allowance is exhausted; public repositories like SpiderMan2k1Fix still use free standard hosted runners. This
 source branch can produce a **local Windows x86 MSVC DLL** on Manjaro with
 `cargo-xwin`, without installing Visual Studio or compilers on Windows.
 
