@@ -176,6 +176,7 @@ extern "system" {
     fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
     fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
     fn GetClientRect(hwnd:Hwnd,rect:*mut Rect)->i32;
+    fn GetClipCursor(rect:*mut Rect)->i32;
     fn ClientToScreen(hwnd:Hwnd,point:*mut Point)->i32;
 }
 
@@ -488,6 +489,59 @@ pub fn game_windows_snapshot()->String {
     if result==0 {return "EnumWindows failed".into();}
     format!("process_windows={} visible={} unowned_visible={} sizes=[{}] (observation only; no HWND selected)",
         probe.all,probe.visible,probe.top_level_visible,probe.geometry.join(","))
+}
+
+#[derive(Default)]
+struct UniqueVisibleGameWindow {
+    count:u32,
+    pointer:usize,
+}
+unsafe extern "system" fn unique_visible_game_window_callback(hwnd:Hwnd,context:isize)->i32{
+    let state=&mut *(context as *mut UniqueVisibleGameWindow);
+    let mut owner=0u32;
+    if GetWindowThreadProcessId(hwnd,&mut owner)==0 ||
+       owner!=GetCurrentProcessId() ||
+       IsWindowVisible(hwnd)==0 ||
+       !GetWindow(hwnd,4 /* GW_OWNER */).is_null(){
+        return 1;
+    }
+    state.count+=1;
+    state.pointer=hwnd as usize;
+    1
+}
+
+/// Read-only physical/current Windows mode, game HWND, client geometry and
+/// cursor confinement. Useful to distinguish a 1920x1200 native texture
+/// from an ACTUAL borderless 1920x1200 window during 800x600 menus/videos.
+/// No HWND retained, no SetWindowPos/ClipCursor/DPI/DirectDraw mutations.
+pub fn native_presentation_snapshot()->String{
+    let physical=physical_primary_monitor_dimensions();
+    let desktop=(unsafe{GetSystemMetrics(0)},unsafe{GetSystemMetrics(1)});
+    let mut clip=Rect::default();
+    let clipping=if unsafe{GetClipCursor(&mut clip)}!=0 {
+        format!("origin={},{} size={:?}",
+            clip.left,clip.top,clip.dimensions())
+    }else{"Unavailable".into()};
+    let mut candidate=UniqueVisibleGameWindow::default();
+    let result=unsafe{EnumWindows(unique_visible_game_window_callback,
+        &mut candidate as *mut _ as isize)};
+    if result==0 {
+        return format!("physical={physical:?} desktop={desktop:?} cursor_clip={clipping} game_window=EnumWindows-failed");
+    }
+    if candidate.count!=1 {
+        return format!("physical={physical:?} desktop={desktop:?} cursor_clip={clipping} game_window_count={} (ambiguous; no HWND selected)",candidate.count);
+    }
+    let hwnd=candidate.pointer as Hwnd;
+    let snapshot=game_window_snapshot(hwnd);
+    let client=game_client_geometry(hwnd);
+    // WS_POPUP/WS_CAPTION describe window decorations, NOT whether
+    // DirectDraw has genuinely left exclusive fullscreen mode.
+    let style=unsafe{GetWindowLongW(hwnd,GWL_STYLE)} as u32;
+    let popup=style&WS_POPUP!=0;
+    let caption=style&0x00c0_0000!=0;
+    format!(
+        "physical={physical:?} desktop={desktop:?} cursor_clip={clipping} {snapshot} client_screen={client:?} popup={popup} caption={caption} (read-only; popup alone does not prove DDRAW windowed mode)"
+    )
 }
 
 // The early Crimson Skies SetCooperativeLevel calls may use a NULL HWND.
