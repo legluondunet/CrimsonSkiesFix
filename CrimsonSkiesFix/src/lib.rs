@@ -144,7 +144,6 @@ const DDSCAPS_BACKBUFFER:u32=0x0000_0004;
 const DDSCAPS_FLIP:u32=0x0000_0010;
 const DDSCAPS_COMPLEX:u32=0x0000_0008;
 
-static MODULE:AtomicUsize=AtomicUsize::new(0);
 static CONFIG:OnceLock<Config>=OnceLock::new();
 static LOG:OnceLock<Mutex<File>>=OnceLock::new();
 // Only enabled for a controlled crash reproduction. The detailed source and
@@ -267,7 +266,14 @@ fn cfg()->Config {
 fn real_module()->Option<*mut c_void> {
     let result=(*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
         .map(|x|x as *mut c_void);
-    if result.map(|x|x as usize)==Some(MODULE.load(Ordering::Relaxed)) {
+    // Resolve the proxy module from our own function address, not from a
+    // user-defined exported DllMain. The latter adds an unwanted 23rd PE
+    // export to the canonical 22-entry native DirectDraw export table.
+    let Some(own)=win32::own_module() else {
+        log("DDRAW-FORWARD: unable to identify loaded proxy module");
+        return None;
+    };
+    if result==Some(own) {
         log(SYSTEM_DDRAW_RECURSION_ERROR);
         return None;
     }
@@ -493,13 +499,6 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
         if let Some(version)=ddraw_iface(iid.cast()){observe_modern_ddraw(*out,version);}
     }
     hr
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn DllMain(module:*mut c_void,reason:u32,_reserved:*mut c_void)->i32 {
-    if reason==DLL_PROCESS_ATTACH {MODULE.store(module as usize,Ordering::Relaxed);}
-    // No file I/O, DLL loading or hook installation under the loader lock.
-    1
 }
 
 #[cfg(test)]
