@@ -356,7 +356,18 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // Apply the FOV/HUD delta at the earliest DirectDraw export with the
     // same monitor geometry later used by the actual game's window.
     static EARLY_NATIVE_ONCE:Once=Once::new();
-    if config.experimental_windowed_adapter && config.native_3d_widescreen && !config.defer_early_native_patch {
+    // On native Windows only, the opt-in intro A/B leaves the game's initial
+    // 1024/800 movie mode untouched. Patching to desktop resolution here
+    // would force the native exclusive video path into an unsupported mode.
+    // The original DD4 cooperative path applies FOV/HUD after MainMenu.
+    let native_intro_exclusive=config.native_intro_exclusive &&
+        config.native_dd4_bootstrap && config.experimental_windowed_adapter &&
+        config.native_3d_widescreen && diagnostics::is_native_windows();
+    if native_intro_exclusive {
+        log("NATIVE-INTRO: original exclusive DirectDraw retained for startup video; early widescreen patch deferred");
+    }
+    if config.experimental_windowed_adapter && config.native_3d_widescreen &&
+       !config.defer_early_native_patch && !native_intro_exclusive {
         EARLY_NATIVE_ONCE.call_once(||{
             log("WINDOWED-DIAG: early FOV/HUD monitor query begin");
             let logical=win32::capture_launch_monitor().and_then(|r|r.dimensions())
