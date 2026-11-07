@@ -67,6 +67,8 @@ NativeDpiAware=0
 ; Uses an in-memory exact-EXE entrypoint hook; original game file unchanged.
 ; Keep 0 normally. Never active on Wine/Proton.
 NativeDD4Bootstrap=0
+; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
+NativeGdiSidebars=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
