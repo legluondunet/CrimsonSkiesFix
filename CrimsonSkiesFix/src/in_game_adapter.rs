@@ -202,7 +202,8 @@ struct Runtime {
     dd4:usize,
     dd4_owner:Com, // strong COM parent ref for the entire experiment
     hwnd:usize,
-    monitor:win32::Rect,
+    monitor:win32::Rect, // DPI-logical HWND/Win32 coordinates
+    render_client:(u32,u32), // native physical DirectDraw pixels
     generation:u64,
     exposed:bool,
     native_widescreen_ready:bool,
@@ -271,8 +272,23 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         log("WINDOWED-GAME: invalid launch monitor dimensions; original path retained");
         return None;
     };
-    log(&format!("WINDOWED-GAME: target monitor origin={},{} size={}x{}",
-        monitor.left,monitor.top,monitor_w,monitor_h));
+    // Native Windows 11 may show 1536x960 DPI-logical Win32 pixels while
+    // DirectDraw uses the 1920x1200 physical raster. Do not change process
+    // awareness: separate the game-owned window geometry from HAL pixel
+    // dimensions, and fail closed for ambiguous monitors/aspect ratios.
+    let render_client=if crate::diagnostics::is_native_windows(){
+        let Some(physical)=win32::physical_primary_monitor_dimensions() else{
+            log("WINDOWED-GAME: native physical monitor ambiguous; original exclusive path retained");
+            return None;
+        };
+        if (physical.0 as u64)*(monitor_h as u64)!=(physical.1 as u64)*(monitor_w as u64){
+            log("WINDOWED-GAME: native logical/physical aspect mismatch; original exclusive path retained");
+            return None;
+        }
+        physical
+    }else{(monitor_w,monitor_h)};
+    log(&format!("WINDOWED-GAME: target monitor origin={},{} logical={}x{} physical_render={}x{}",
+        monitor.left,monitor.top,monitor_w,monitor_h,render_client.0,render_client.1));
     let Ok(mut guard)=RUNTIME.lock() else{return None;};
     if guard.as_ref().is_some_and(|state|state.exposed){
         log("WINDOWED-GAME: repeated cooperative call while graph exposed: fail closed");
@@ -305,17 +321,17 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         // Only the original unwrapped EXE, authenticated by exe_gate,
         // can reach this path. No support for third-party widescreen EXEs.
         log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
-        let result=crate::native_widescreen::apply_or_reuse_early_patch(monitor_w,monitor_h);
+        let result=crate::native_widescreen::apply_or_reuse_early_patch(render_client.0,render_client.1);
         log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
         log(&format!(
             "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
-            monitor_w,monitor_h));
+            render_client.0,render_client.1));
         matches!(result,
             crate::native_widescreen::PatchResult::Patched |
             crate::native_widescreen::PatchResult::AlreadyNative)
     }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
-        monitor,generation:0,exposed:false,native_widescreen_ready,epoch:None});
+        monitor,render_client,generation:0,exposed:false,native_widescreen_ready,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
 }
@@ -334,9 +350,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
     let mode=Mode{width:w,height:h,bpp};
-    let (mon_w,mon_h)=(
-        (runtime.monitor.right-runtime.monitor.left) as u32,
-        (runtime.monitor.bottom-runtime.monitor.top) as u32);
+    let (mon_w,mon_h)=runtime.render_client;
     let native_3d=runtime.native_widescreen_ready && bpp==16 &&
         w==mon_w && h==mon_h && w>=960 && h>=600;
     if !matches!((w,h,bpp),(640,480,16)|(800,600,16)) && !native_3d{
@@ -360,7 +374,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
     log(&format!("WINDOWED-DIAG: prepare_epoch begin mode={}x{}x{} native_3d={}",
         w,h,bpp,native_3d));
-    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,
+    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.render_client,
         mode,runtime.generation+1,native_3d);
     log(&format!("WINDOWED-DIAG: prepare_epoch returned success={}",result.is_ok()));
     match result {
@@ -417,9 +431,9 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
     }
 }
-unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
+unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
-    let client=monitor.dimensions().ok_or("invalid target monitor geometry")?;
+    if client.0==0 || client.1==0{return Err("invalid target raster".into());}
     log("WINDOWED-DIAG: native primary CreateSurface begin");
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
     log("WINDOWED-DIAG: native primary CreateSurface OK");
