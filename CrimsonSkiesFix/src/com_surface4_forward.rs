@@ -583,14 +583,16 @@ unsafe fn report_native_copy_failure(
     dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,hr:i32,
     source_is_facade:bool,
 ){
-    if !crate::cfg().log_enabled{return;}
+    // The shared module is also compiled in the standalone probe binary,
+    // which deliberately has no game Config. crate::log handles per-host
+    // logging enablement, and a strict sample cap limits read-only probes.
     let count=GRAPH_COPY_FAILURE_DETAILS.fetch_add(1,Ordering::Relaxed)+1;
     if count>8 && count!=32 && count!=128{return;}
     let desc=|surface:SurfaceThis|->String{
         if surface.is_null(){return "NULL".into();}
         let mut words=[0u32;31];
         words[0]=124;
-        let method=(real_vtable(surface).get_surface_desc);
+        let method=real_vtable(surface).get_surface_desc;
         let result=method(surface,words.as_mut_ptr().cast());
         if result<0 || words[0]!=124 {
             return format!("GetSurfaceDesc hr={:#010x}",result as u32);
