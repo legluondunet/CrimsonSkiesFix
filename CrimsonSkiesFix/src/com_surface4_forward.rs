@@ -703,7 +703,7 @@ unsafe fn convert_known_native_movie_blt(
         return Err("not an exact supported movie Blt");
     }
     let area=*dst_rect;
-    if area!=Rect{left:0,top:0,right:800,bottom:600}{
+    if area!=(Rect{left:0,top:0,right:800,bottom:600}){
         return Err("movie Blt rectangle differs");
     }
     let src_vt=real_vtable(native_source);
