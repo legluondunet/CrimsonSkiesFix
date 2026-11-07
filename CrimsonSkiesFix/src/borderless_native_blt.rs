@@ -141,6 +141,31 @@ impl NativeWindowedBlt {
             self.logical_edge(view.y+view.height,false)?).ok_or(BAD)?;
         Ok(Rect{left,top,right,bottom})
     }
+    /// Native Windows 11 may repaint the sidebars white AFTER the first
+    /// full-window black clear, e.g. WM_PAINT/DPI compositor updates.
+    /// Refresh ONLY the pillarbox regions, never the moving 4:3 image,
+    /// before each frame when the render raster differs from HWND logical
+    /// coordinates. This avoids the legacy full-screen clear flicker.
+    /// Wine/probe (output_client==client) remains unchanged.
+    fn maintain_native_black_sidebars(&mut self,view:Viewport)->Result<(),i32>{
+        if self.output_client==self.client || view.x==0 ||
+           view.x.checked_add(view.width).is_none_or(|x|x>=self.client.0){
+            return Ok(());
+        }
+        if view.y!=0 || view.height!=self.client.1{return Err(BAD);}
+        let content=self.screen_rect(view)?;
+        let left=self.screen_rect(Viewport{x:0,y:0,width:self.client.0,height:self.client.1})?;
+        let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
+        for bar in [
+            Rect{left:left.left,top:left.top,right:content.left,bottom:left.bottom},
+            Rect{left:content.right,top:left.top,right:left.right,bottom:left.bottom}
+        ] {
+            if bar.right>bar.left {
+                unsafe{self.blt(&bar,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr())?;}
+            }
+        }
+        Ok(())
+    }
     unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
         let vtable=*(self.primary.cast::<*const usize>());
         let call:Blt=std::mem::transmute(*vtable.add(5));
@@ -158,6 +183,7 @@ impl WindowedBlt for NativeWindowedBlt {
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
         let dest=self.screen_rect(view)?;
+        self.maintain_native_black_sidebars(view)?;
         let source=self.source_for_present();
         unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())}
     }
@@ -233,6 +259,34 @@ mod tests{
             Call{rect:Rect{left:240,top:0,right:1680,bottom:1080},
                  source:true,flags:WAIT,fx_size:0,fill:0}
         ]);
+    }
+    #[test]
+    fn native_dpi_menu_maintains_black_bars_without_clearing_content(){
+        let (vt,mut p,mut source)=objects(0);
+        p.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut p as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),mode
+        ).unwrap()};
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        let view=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,view),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,view),Ok(()));
+        let calls=p.calls.lock().unwrap();
+        assert_eq!(calls.len(),6);
+        for i in [0usize,3]{
+            assert_eq!(calls[i].rect,Rect{left:0,top:0,right:128,bottom:960});
+            assert_eq!(calls[i+1].rect,Rect{left:1408,top:0,right:1536,bottom:960});
+            assert_eq!(calls[i+2].rect,Rect{left:128,top:0,right:1408,bottom:960});
+            assert_eq!(calls[i].flags,FILL|WAIT);
+            assert_eq!(calls[i+1].flags,FILL|WAIT);
+            assert_eq!(calls[i+2].flags,WAIT);
+            assert_eq!(calls[i].source,false);
+            assert_eq!(calls[i+1].source,false);
+            assert_eq!(calls[i+2].source,true);
+        }
     }
     #[test]
     fn physical_render_rects_are_mapped_to_dpi_logical_client(){
