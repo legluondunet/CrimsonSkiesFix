@@ -157,7 +157,13 @@ unsafe extern "system" fn modern_get_surface_desc(this:*mut c_void,desc:*mut c_v
 // Surface2/3 use the 108-byte DDSURFACEDESC; Surface4/7 use 124-byte
 // DDSURFACEDESC2. Both share dwHeight/dwWidth offsets.
 unsafe fn native_main_menu_viewport(surface:*mut c_void)->Option<borderless_native_blt::Rect>{
-    let addr=orig(surface,SURFACE_GET_DESC)?;
+    // With Log=0 the native menu path installs only QI+Flip, not the
+    // passive GetSurfaceDesc trampoline; borrow the genuine vtable method.
+    let addr=orig(surface,SURFACE_GET_DESC).or_else(||{
+        let real=method(surface,SURFACE_GET_DESC);
+        (real!=0 && real!=modern_get_surface_desc as *const () as usize)
+            .then_some(real)
+    })?;
     let call:GetSurfaceDescFn=std::mem::transmute(addr);
     for size in [124u32,108u32] {
         let mut words=[0u32;31];
@@ -448,7 +454,10 @@ unsafe extern "system" fn audit_surface_get_ddinterface(this:*mut c_void,out:*mu
     hr
 }
 pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
-    if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
+    if surface.is_null(){return;}
+    let native_brand=cfg().experimental_windowed_adapter &&
+        diagnostics::is_native_windows();
+    if !(cfg().log_enabled || cfg().modern_fps_pacing || native_brand){return;}
     // The experimental virtual Surface4 owns its own vtable. Never patch
     // its global 45-slot façade through the passive native-vtable tracer.
     if cfg().experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
@@ -456,6 +465,12 @@ pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     }
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize);
     let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as *const () as usize);
+    // Normal native Windows gameplay needs only QI propagation and Flip
+    // for the guarded MainMenu signature. Do not turn on all passive
+    // tracing methods merely because Log=0 and branding is enabled.
+    if !cfg().log_enabled && !cfg().modern_fps_pacing {
+        return;
+    }
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as *const () as usize);
     let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as *const () as usize);
     let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as *const () as usize);
