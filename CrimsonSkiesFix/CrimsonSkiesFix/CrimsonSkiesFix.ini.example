@@ -50,6 +50,9 @@ Log=0
 ; Diagnostic only: postpone the in-memory FOV/HUD patch to DD4 negotiation.
 ; Keep 0 normally; use 1 for one native Windows startup A/B test.
 DeferEarlyNativePatch=0
+; Diagnostic only: read the physical one-monitor Windows display mode without DPI virtualization.
+; Use 1 ONLY with DeferEarlyNativePatch=0 for an early patch 1920x1200 A/B test.
+EarlyNativePhysicalMode=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
