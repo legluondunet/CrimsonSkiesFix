@@ -80,6 +80,7 @@ extern "system" {
     pub fn LoadLibraryW(path:*const u16)->*mut c_void;
     pub fn GetProcAddress(module:*mut c_void,name:*const c_char)->*const c_void;
     pub fn GetModuleFileNameW(module:*mut c_void,buffer:*mut u16,len:u32)->u32;
+    pub fn GetModuleHandleExW(flags:u32,name_or_address:*const u16,module:*mut *mut c_void)->i32;
     pub fn VirtualProtect(address:*mut c_void,size:usize,new_protect:u32,old_protect:*mut u32)->i32;
     pub fn QueryPerformanceCounter(value:*mut i64)->i32;
     pub fn QueryPerformanceFrequency(value:*mut i64)->i32;
@@ -181,11 +182,24 @@ pub fn ini_path()->Option<PathBuf> {
     regular_file(&modern).then_some(modern)
 }
 
+// Obtain the *actual* DLL HMODULE from an address inside this image.
+// This avoids needing a user-exported DllMain (which would become an
+// unwanted 23rd PE export). Do not change the module reference count.
+pub fn own_module()->Option<*mut c_void> {
+    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT:u32=0x0000_0002;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS:u32=0x0000_0004;
+    let mut module:*mut c_void=std::ptr::null_mut();
+    let address=crate::DirectDrawCreate as *const () as *const u16;
+    let flags=GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+        |GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    let ok=unsafe {GetModuleHandleExW(flags,address,&mut module)};
+    (ok!=0&&!module.is_null()).then_some(module)
+}
+
 // Obtain the actual loaded DLL directory rather than assuming that the
 // process working directory or executable directory always matches.
 fn dll_directory()->Option<PathBuf> {
-    let handle=crate::MODULE.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void;
-    if handle.is_null(){return None;}
+    let handle=own_module()?;
     let mut buffer=[0u16;32768];
     let n=unsafe{GetModuleFileNameW(handle,buffer.as_mut_ptr(),buffer.len() as u32)} as usize;
     if n==0 || n>=buffer.len(){return None;}
