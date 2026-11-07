@@ -179,6 +179,64 @@ extern "system" {
     fn ClientToScreen(hwnd:Hwnd,point:*mut Point)->i32;
 }
 
+
+#[link(name="user32")]
+extern "system" {
+    fn SetProcessDPIAware()->i32;
+    fn IsProcessDPIAware()->i32;
+}
+
+fn dpi_experiment_eligible(native:bool,monitor_count:i32,has_window:Option<bool>)->bool{
+    native && monitor_count==1 && has_window==Some(false)
+}
+unsafe extern "system" fn find_any_owned_window(hwnd:Hwnd,context:isize)->i32 {
+    let found=&mut *(context as *mut bool);
+    let mut pid=0u32;
+    if GetWindowThreadProcessId(hwnd,&mut pid)!=0 && pid==GetCurrentProcessId(){
+        *found=true;
+    }
+    1
+}
+fn has_any_owned_top_level_window()->Option<bool>{
+    let mut found=false;
+    let enumerated=unsafe{EnumWindows(find_any_owned_window,&mut found as *mut _ as isize)};
+    (enumerated!=0).then_some(found)
+}
+
+/// One controlled native Windows A/B only; never default enabled.
+/// Call at first game DirectDraw export, before window creation. The native
+/// Windows 11 125% scale experiment isolates whether 1920x1200 framebuffer
+/// pixels are being clipped/zoomed by legacy DPI-virtualized HWND geometry.
+/// This changes PROCESS DPI awareness until exit. Do not run on Wine/Proton;
+/// do not attempt if any process top-level HWND already exists; no HWND,
+/// resolution or game file is changed by this helper.
+pub fn enable_native_system_dpi_experiment()->String {
+    let native=crate::diagnostics::is_native_windows();
+    let monitors=unsafe{GetSystemMetrics(80)};
+    let windows=has_any_owned_top_level_window();
+    if !dpi_experiment_eligible(native,monitors,windows){
+        return format!(
+            "DPI-EXPERIMENT: refused native_windows={native} monitors={monitors} already_has_window={windows:?}; no changes"
+        );
+    }
+    if unsafe{IsProcessDPIAware()}!=0 {
+        return "DPI-EXPERIMENT: process already DPI-aware (manifest or earlier setup); no change attempted".into();
+    }
+    unsafe{SetLastError(0);}
+    let result=unsafe{SetProcessDPIAware()};
+    let error=if result==0{unsafe{GetLastError()}}else{0};
+    let now_aware=unsafe{IsProcessDPIAware()}!=0;
+    let client_pixels=(
+        unsafe{GetSystemMetrics(0)},
+        unsafe{GetSystemMetrics(1)}
+    );
+    let physical=physical_primary_monitor_dimensions();
+    format!(
+        "DPI-EXPERIMENT: opt-in SetProcessDPIAware result={} win32_error={} aware_after={} system_metrics={:?} physical_mode={physical:?} (no display mode changes)",
+        result!=0,error,now_aware,client_pixels
+    )
+}
+
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
 // read the executable directory, not the process's mutable working directory.
 // No directory creation, filesystem operation or migration takes place in DllMain.
@@ -477,6 +535,24 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
     let mut discarded=0;
     VirtualProtect(slot.cast(),std::mem::size_of::<usize>(),previous,&mut discarded);
     true
+}
+
+#[cfg(test)]
+mod native_dpi_experiment_tests {
+    use super::*;
+    #[test]
+    fn only_native_one_monitor_with_no_existing_windows_is_eligible(){
+        assert!(dpi_experiment_eligible(true,1,Some(false)));
+        for case in [
+            (false,1,Some(false)),
+            (true,0,Some(false)),
+            (true,2,Some(false)),
+            (true,1,Some(true)),
+            (true,1,None)
+        ] {
+            assert!(!dpi_experiment_eligible(case.0,case.1,case.2));
+        }
+    }
 }
 
 #[cfg(test)]
