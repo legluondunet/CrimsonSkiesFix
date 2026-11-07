@@ -150,38 +150,6 @@ unsafe extern "system" fn modern_get_surface_desc(this:*mut c_void,desc:*mut c_v
     hr
 }
 
-// The native Win11 game uses a real DirectDraw front/back flip-chain.
-// Its menu frames never traverse the virtual DD4 Flip bridge which owns
-// the usual RGB565 scratch-signature compositor. Determine an exact,
-// read-only 640x480/800x600 front surface before touching any pixels.
-// Surface2/3 use the 108-byte DDSURFACEDESC; Surface4/7 use 124-byte
-// DDSURFACEDESC2. Both share dwHeight/dwWidth offsets.
-static NATIVE_MENU_PROBE_COUNT:AtomicUsize=AtomicUsize::new(0);
-static NATIVE_MENU_ELIGIBLE:Once=Once::new();
-unsafe fn native_main_menu_viewport(surface:*mut c_void)->Option<borderless_native_blt::Rect>{
-    // With Log=0 the native menu path installs only QI+Flip, not the
-    // passive GetSurfaceDesc trampoline; borrow the genuine vtable method.
-    let addr=orig(surface,SURFACE_GET_DESC).or_else(||{
-        let real=method(surface,SURFACE_GET_DESC);
-        (real!=0 && real!=modern_get_surface_desc as *const () as usize)
-            .then_some(real)
-    })?;
-    let call:GetSurfaceDescFn=std::mem::transmute(addr);
-    for size in [124u32,108u32] {
-        let mut words=[0u32;31];
-        words[0]=size;
-        if call(surface,words.as_mut_ptr().cast())<0{continue;}
-        if words[0]!=size{continue;}
-        let (w,h)=(words[3],words[2]);
-        if menu_brand::should_probe_menu_frame(w,h){
-            return Some(borderless_native_blt::Rect{
-                left:0,top:0,right:w as i32,bottom:h as i32
-            });
-        }
-    }
-    None
-}
-
 // Newer DirectDraw versions share the opaque CreateSurface calling
 // convention, though the descriptor and surface types differ.
 unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
@@ -213,28 +181,6 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
     }
     let call:FlipFn=std::mem::transmute(addr);
     let result=call(this,target,flags);
-    // Native Windows does not reach the synthetic DD4 windowed graph;
-    // its MainMenu therefore cannot use the offscreen scratch signature.
-    // Use the same Campaign-button pixel-art verification on the real
-    // displayed primary *after* a successful game Flip, and only for an
-    // exact native 4:3 menu-sized surface. Never alter the backbuffer,
-    // EXE, display mode or the returned HRESULT.
-    if result>=0 && menu_scene::main_menu_was_seen() &&
-        diagnostics::is_native_windows() &&
-        modern_surface_primary(this)==Some(true)
-    {
-        let viewport=native_main_menu_viewport(this);
-        if cfg().log_enabled && NATIVE_MENU_PROBE_COUNT.fetch_add(1,Ordering::Relaxed)<4 {
-            log(&format!("MENU-BRANDING: native primary Flip observed; strict 4:3 menu viewport={viewport:?}"));
-        }
-        if let Some(view)=viewport {
-            NATIVE_MENU_ELIGIBLE.call_once(||log(
-                "MENU-BRANDING: native Windows primary Flip in verified 4:3 menu dimensions; Campaign artwork inspection enabled"));
-            let _=menu_brand::draw_native_primary(this,view);
-        }else{
-            menu_brand::mark_not_drawn();
-        }
-    }
     // This code runs AFTER the original Flip and only counts successful
     // calls on the real primary surface. It never modifies the HRESULT.
     if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
@@ -462,10 +408,7 @@ unsafe extern "system" fn audit_surface_get_ddinterface(this:*mut c_void,out:*mu
     hr
 }
 pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
-    if surface.is_null(){return;}
-    let native_brand=cfg().experimental_windowed_adapter &&
-        diagnostics::is_native_windows();
-    if !(cfg().log_enabled || cfg().modern_fps_pacing || native_brand){return;}
+    if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
     // The experimental virtual Surface4 owns its own vtable. Never patch
     // its global 45-slot façade through the passive native-vtable tracer.
     if cfg().experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
@@ -473,12 +416,6 @@ pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
     }
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize);
     let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as *const () as usize);
-    // Normal native Windows gameplay needs only QI propagation and Flip
-    // for the guarded MainMenu signature. Do not turn on all passive
-    // tracing methods merely because Log=0 and branding is enabled.
-    if !cfg().log_enabled && !cfg().modern_fps_pacing {
-        return;
-    }
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as *const () as usize);
     let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as *const () as usize);
     let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as *const () as usize);
