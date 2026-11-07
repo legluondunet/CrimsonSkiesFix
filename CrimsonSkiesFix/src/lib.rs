@@ -14,6 +14,9 @@ mod menu_resolution_label;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
+// Native Windows requires the complete DDRAW export surface for hardware HAL.
+#[cfg(all(target_arch = "x86", target_env = "msvc"))]
+mod ddraw_forward;
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
