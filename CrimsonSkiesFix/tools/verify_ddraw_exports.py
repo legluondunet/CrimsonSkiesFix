@@ -107,8 +107,20 @@ def exports(dll: Path) -> dict[str, int]:
     addr_names = u32(table + 32)
     addr_ordinals = u32(table + 36)
     if base != 1 or functions != COUNT or names != COUNT:
+        # An explicit .def may be combined with Rust's no_mangle exports.
+        # List unexpected exports before refusing the candidate, to make
+        # linker/ABI issues actionable without relaxing this strict gate.
+        entries: list[str] = []
+        if 0 < names <= 64 and 0 < functions <= 64:
+            name_table = offset(addr_names, 4 * names)
+            ordinal_table = offset(addr_ordinals, 2 * names)
+            for index in range(names):
+                entry_name = read_name(u32(name_table + 4 * index))
+                ordinal = base + u16(ordinal_table + 2 * index)
+                entries.append(f"{entry_name}@{ordinal}")
         raise ExportError(
-            f"invalid export shape: base={base}, funcs={functions}, names={names}"
+            f"invalid export shape: base={base}, funcs={functions}, names={names}; "
+            f"actual={sorted(entries)}"
         )
     f = offset(addr_funcs, 4 * functions)
     n = offset(addr_names, 4 * names)
