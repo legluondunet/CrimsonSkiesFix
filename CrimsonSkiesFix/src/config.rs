@@ -29,6 +29,8 @@ pub const DEFAULT_INI: &str = concat!(
     "Log=0\n",
     "; Diagnostic only: postpone the in-memory FOV/HUD patch until DD4 mode negotiation.\n",
     "DeferEarlyNativePatch=0\n",
+    "; Diagnostic only: try DPI-independent physical primary pixels for early FOV/HUD patch.\n",
+    "EarlyNativePhysicalMode=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
@@ -55,6 +57,8 @@ pub struct Config {
     pub log_enabled: bool,
     // Diagnostic-only: defer in-memory widescreen patch to native DD4 setup.
     pub defer_early_native_patch: bool,
+    // Diagnostic-only: use EnumDisplaySettingsW physical mode for early EXE patch.
+    pub early_native_physical_mode: bool,
     // Diagnostic-only: export forwarding without any DirectDraw or game hooks.
     pub directdraw_passthrough: bool,
     pub surface_usage_trace: bool,
@@ -65,7 +69,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -132,6 +136,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
+            ("debug", "earlynativephysicalmode") =>
+                if let Some(v) = enabled(value) { settings.early_native_physical_mode = v; },
             ("debug", "deferearlynativepatch") =>
                 if let Some(v) = enabled(value) { settings.defer_early_native_patch = v; },
             ("debug", "directdrawpassthrough") =>
@@ -162,7 +168,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -180,6 +186,12 @@ mod tests {
         assert!(parse("[DEBUG]\ndeferearlynativepatch=on").defer_early_native_patch);
         assert!(!parse("[Debug]\nDeferEarlyNativePatch=0").defer_early_native_patch);
         assert!(!parse("[Graphics]\nDeferEarlyNativePatch=1").defer_early_native_patch);
+    }
+    #[test]
+    fn physical_mode_debug_probe_is_off_by_default_and_scoped_to_debug(){
+        assert!(!Config::default().early_native_physical_mode);
+        assert!(parse("[Debug]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
+        assert!(!parse("[Graphics]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
     }
     #[test]
     fn experimental_adapter_is_on_by_default_and_graphics_scoped(){
