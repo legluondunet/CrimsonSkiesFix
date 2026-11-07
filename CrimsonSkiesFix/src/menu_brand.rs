@@ -133,18 +133,6 @@ fn report_error(message:&str){
 /// backbuffer every frame, so the signature and animated background form a
 /// single present operation and never alter game-owned surface contents.
 pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
-    draw_on_surface(scratch,viewport,false)
-}
-
-/// Native Windows uses the real legacy DirectDraw flip-chain, not the
-/// synthetic DD4 bridge. Draw *after* its successful primary Flip, onto
-/// the displayed front surface. No new COM graph, no mode switch, and no
-/// changes to the game's backbuffer. The next native Flip replaces the
-/// front, so each true MainMenu frame must be independently verified.
-pub fn draw_native_primary(primary:Surface,viewport:Rect)->bool{
-    draw_on_surface(primary,viewport,true)
-}
-fn draw_on_surface(scratch:Surface,viewport:Rect,native_primary:bool)->bool{
     if scratch.is_null(){mark_not_drawn();return false;}
     let Some(mut destination)=label_rect(viewport) else{return false;};
     unsafe{
@@ -158,14 +146,7 @@ fn draw_on_surface(scratch:Surface,viewport:Rect,native_primary:bool)->bool{
             report_error(&format!("offscreen IDirectDrawSurface4::GetDC hr={hr:#010x}"));
             return false;
         }
-        // A native front surface can reject readback even while allowing
-        // GDI drawing. If all samples are unavailable, require the *current*
-        // MainMenu script in addition to the GOS dialog guard. Returning
-        // from gameplay is handled by the real campaign-art probe when it
-        // works; never stamp unrelated screens on a blind readback.
-        let visible=main_menu_art_present(dc,viewport) &&
-            (!native_primary || !GETPIXEL_UNAVAILABLE.load(Ordering::Acquire)
-                || menu_scene::main_menu_active());
+        let visible=main_menu_art_present(dc,viewport);
         let scene=if visible{2}else{1};
         let old=ART_STATE.swap(scene,Ordering::AcqRel);
         if old!=scene && crate::cfg().log_enabled{
@@ -207,20 +188,15 @@ fn draw_on_surface(scratch:Surface,viewport:Rect,native_primary:bool)->bool{
         }else{
             let first=!REPORTED.swap(true,Ordering::Relaxed);
             let reentered=!DRAWN_LAST_FRAME.swap(true,Ordering::AcqRel);
-            if reentered && !native_primary {
+            if reentered{
                 PENDING_PRESENT_CONFIRMATION.store(true,Ordering::Release);
             }
             if first {
-                log(&format!(
-                    "MENU-BRANDING: {} menu text composited: {} (DrawTextW success; visual result unverified)",
-                    if native_primary{"native Windows front surface after Flip"}
-                    else{"offscreen RGB565 scratch before primary Blt"},
-                    build_info::label()));
+                log(&format!("MENU-BRANDING: offscreen RGB565 menu text composited before primary Blt: {}",build_info::label()));
             }else if reentered && crate::cfg().log_enabled {
                 let n=RESUME_DRAW_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if n<=16 {
-                    log(&format!("MENU-BRANDING: MainMenu signature composited after return; reentry={n} path={} script_main={} label={}",
-                        if native_primary{"native-primary"}else{"offscreen-scratch"},
+                    log(&format!("MENU-BRANDING: MainMenu signature COMPOSITED after return; reentry={n} script_main={} label={}",
                         menu_scene::main_menu_active(),build_info::label()));
                 }
             }
@@ -259,13 +235,6 @@ mod tests {
             assert!(target.right<=viewport.right&&target.bottom<=viewport.bottom);
         }
         assert!(label_rect(Rect{left:0,top:0,right:12,bottom:12}).is_none());
-    }
-    #[test]
-    fn native_legacy_menu_path_is_restricted_to_4_by_3_frames(){
-        assert!(should_inspect_game_frame(800,600,true));
-        assert!(should_inspect_game_frame(640,480,true));
-        assert!(!should_inspect_game_frame(1920,1200,true));
-        assert!(!should_inspect_game_frame(800,600,false));
     }
     #[test]
     fn surface4_slots_are_documented_and_distinct(){
