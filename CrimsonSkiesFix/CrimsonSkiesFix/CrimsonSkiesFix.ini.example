@@ -67,6 +67,15 @@ NativeDpiAware=0
 ; Uses an in-memory exact-EXE entrypoint hook; original game file unchanged.
 ; Keep 0 normally. Never active on Wine/Proton.
 NativeDD4Bootstrap=0
+; Native Windows opt-in only: preserve original exclusive DirectDraw through
+; the 800x600 movie mode and its exit. Virtual/windowed DD4 is only allowed
+; after the game loads MainMenu and a later cooperative-mode request occurs.
+; Avoids exposing synthetic RGB565 movie surfaces to native DirectShow.
+; Requires NativeDD4Bootstrap=1 and ExperimentalWindowedAdapter=1.
+; FOV/HUD patch is postponed until virtual activation. Never active on Wine.
+; A/B experiment: 0 keeps the existing implementation; 1 may restore native
+; resolution changes during the intro and still needs a real-game test.
+NativeIntroExclusive=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
