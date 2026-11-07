@@ -150,6 +150,30 @@ unsafe extern "system" fn modern_get_surface_desc(this:*mut c_void,desc:*mut c_v
     hr
 }
 
+// The native Win11 game uses a real DirectDraw front/back flip-chain.
+// Its menu frames never traverse the virtual DD4 Flip bridge which owns
+// the usual RGB565 scratch-signature compositor. Determine an exact,
+// read-only 640x480/800x600 front surface before touching any pixels.
+// Surface2/3 use the 108-byte DDSURFACEDESC; Surface4/7 use 124-byte
+// DDSURFACEDESC2. Both share dwHeight/dwWidth offsets.
+unsafe fn native_main_menu_viewport(surface:*mut c_void)->Option<borderless_native_blt::Rect>{
+    let addr=orig(surface,SURFACE_GET_DESC)?;
+    let call:GetSurfaceDescFn=std::mem::transmute(addr);
+    for size in [124u32,108u32] {
+        let mut words=[0u32;31];
+        words[0]=size;
+        if call(surface,words.as_mut_ptr().cast())<0{continue;}
+        if words[0]!=size{continue;}
+        let (w,h)=(words[3],words[2]);
+        if menu_brand::should_probe_menu_frame(w,h){
+            return Some(borderless_native_blt::Rect{
+                left:0,top:0,right:w as i32,bottom:h as i32
+            });
+        }
+    }
+    None
+}
+
 // Newer DirectDraw versions share the opaque CreateSurface calling
 // convention, though the descriptor and surface types differ.
 unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_void,flags:u32)->Hr {
@@ -181,6 +205,22 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
     }
     let call:FlipFn=std::mem::transmute(addr);
     let result=call(this,target,flags);
+    // Native Windows does not reach the synthetic DD4 windowed graph;
+    // its MainMenu therefore cannot use the offscreen scratch signature.
+    // Use the same Campaign-button pixel-art verification on the real
+    // displayed primary *after* a successful game Flip, and only for an
+    // exact native 4:3 menu-sized surface. Never alter the backbuffer,
+    // EXE, display mode or the returned HRESULT.
+    if result>=0 && menu_scene::main_menu_was_seen() &&
+        diagnostics::is_native_windows() &&
+        modern_surface_primary(this)==Some(true)
+    {
+        if let Some(view)=native_main_menu_viewport(this){
+            let _=menu_brand::draw_native_primary(this,view);
+        }else{
+            menu_brand::mark_not_drawn();
+        }
+    }
     // This code runs AFTER the original Flip and only counts successful
     // calls on the real primary surface. It never modifies the HRESULT.
     if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
