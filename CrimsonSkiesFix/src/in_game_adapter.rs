@@ -127,7 +127,14 @@ unsafe fn prove_hal(dd4:*mut c_void,back:&Com)->Result<(),String>{
     let create:Create=std::mem::transmute(
         crate::orig(d3d.ptr(),8).unwrap_or_else(||slot(d3d.ptr(),8)));
     let mut device=ptr::null_mut();
-    require(create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut()),"D3D3 HAL CreateDevice")?;
+    // Keep the exact native HRESULT visible: previous Windows traces ended
+    // inside this call, unable to distinguish a synchronous COM deadlock
+    // from an ordinary unsupported HAL surface/driver failure.
+    log("WINDOWED-DIAG: D3D3 HAL CreateDevice call ENTER (original native method)");
+    let hr=create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut());
+    log(&format!("WINDOWED-DIAG: D3D3 HAL CreateDevice call RETURN hr={:#010x} device_returned={}",
+        hr as u32,!device.is_null()));
+    require(hr,"D3D3 HAL CreateDevice")?;
     let _device=Com::from_out(device)?;
     Ok(())
 }
