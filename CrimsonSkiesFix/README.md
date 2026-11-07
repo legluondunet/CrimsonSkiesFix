@@ -244,6 +244,12 @@ The exact protocol and optional Windows 11 instructions are in
 
 ## Local Windows x86 build without GitHub Actions
 
+**Manjaro alternative:** [build the exact Windows x86 MSVC DLL from Linux](docs/manjaro-cross-build.md)
+with `tools/build_linux_windows_x86.sh` and `cargo-xwin`. The script verifies
+all 22 native DDRAW exports and packages a source-hashed candidate without
+installing Visual Studio or modifying the native Windows 11 test machine.
+Successful cross-compilation alone is **not** Windows gameplay validation.
+
 As of 7 November 2026, the owner's GitHub Actions free minutes are exhausted:
 the jobs are blocked **before any compilation step**. Do not interpret the
 failed Actions status as evidence that the proposed Rust 22-export fix failed
