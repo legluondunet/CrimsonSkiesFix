@@ -293,6 +293,21 @@ pub unsafe fn arm_graph_primary_flip(
     origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>,
     window:usize,focus_repaint:bool,menu_scratch:*mut c_void
 )->Result<(),i32>{
+    arm_graph_primary_flip_with_output(
+        primary,contract,generation,origin,client,client,fps_limit,
+        window,focus_repaint,menu_scratch)
+}
+/// The native Windows game can render at physical resolution while the
+/// windowed DirectDraw primary accepts DPI-logical rectangle coordinates.
+/// This explicit variant changes ONLY output Blt rectangles; the virtual
+/// graph, mode, COM ownership and frame semantics stay physical. The
+/// original helper above retains existing Wine/probe behavior.
+pub unsafe fn arm_graph_primary_flip_with_output(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void
+)->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
     let Some(node)=p.graph else{return Err(E_INVALIDARG);};
@@ -320,6 +335,7 @@ pub unsafe fn arm_graph_primary_flip(
     let mut backend=NativeWindowedBlt::from_borrowed_com(
         p.real,b.real,origin,client,node.mode
     ).map_err(|_|E_INVALIDARG)?;
+    backend.set_output_client(output_client).map_err(|_|E_INVALIDARG)?;
     backend.set_menu_scratch(menu_scratch);
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
