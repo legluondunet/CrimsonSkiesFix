@@ -151,7 +151,10 @@ unsafe fn trace_native_primary_ddraw_owner(primary:*mut c_void){
             // pointer against the results of version-specific QueryInterface
             // before hooking mode calls: v1 has a 3-argument SetDisplayMode
             // whereas v2/4/7 use 5. Do not guess the x86 call ABI.
-            if let Some(version)=crate::native_owner_mode_trace::classify(owner){
+            if coop==modern_ddraw_hooks::modern_set_cooperative as usize &&
+               mode==modern_ddraw_hooks::modern_set_display_mode as usize {
+                log("NATIVE-OWNER-HOOK: actual primary owner already uses full windowed DD4 hooks; passive native tracer not installed");
+            }else if let Some(version)=crate::native_owner_mode_trace::classify(owner){
                 crate::native_owner_mode_trace::instrument(owner,version);
             }else{
                 log("NATIVE-OWNER-HOOK: returned COM owner version unrecognized; no interception installed");
