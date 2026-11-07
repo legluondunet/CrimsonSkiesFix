@@ -313,6 +313,7 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // It represents the launch screen, not the cursor's later location.
     // The actual game HWND is validated separately before it can be moved.
     if config.experimental_windowed_adapter {
+        log("WINDOWED-DIAG: launch monitor capture branch entered");
         static SCREEN_ONCE:Once=Once::new();
         SCREEN_ONCE.call_once(||{
             if let Some(rect)=win32::capture_launch_monitor(){
@@ -330,10 +331,13 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     static EARLY_NATIVE_ONCE:Once=Once::new();
     if config.experimental_windowed_adapter && config.native_3d_widescreen {
         EARLY_NATIVE_ONCE.call_once(||{
+            log("WINDOWED-DIAG: early FOV/HUD monitor query begin");
             let size=win32::capture_launch_monitor().and_then(|r|r.dimensions())
                 .or_else(win32::sole_primary_monitor_dimensions);
             if let Some((w,h))=size {
+                log(&format!("WINDOWED-DIAG: early FOV/HUD patch begin target={}x{}",w,h));
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
+                log("WINDOWED-DIAG: early FOV/HUD patch returned");
             }else{
                 log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
             }
@@ -344,6 +348,7 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if config.experimental_windowed_adapter {
         static MENU_SCENE_ONCE:Once=Once::new();
         MENU_SCENE_ONCE.call_once(||{
+            log("WINDOWED-DIAG: menu_scene hook install begin");
             let installed=unsafe{menu_scene::install()};
             log(&format!("MENU-SCENE: hook_available={installed}"));
         });
@@ -381,6 +386,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     static GOS_MENU_EVENT_ONCE:Once=Once::new();
     GOS_MENU_EVENT_ONCE.call_once(||{
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            log("WINDOWED-DIAG: menu_gos_event hook install begin");
             let active=unsafe{menu_gos_event::install()};
             log(&format!("MENU-GOS-EVENT: hook_available={active}"));
         }
@@ -390,6 +396,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
     GOS_RESOLUTION_LABEL_ONCE.call_once(||{
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            log("WINDOWED-DIAG: menu_resolution_label hook install begin");
             let installed=unsafe{menu_resolution_label::install()};
             log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
         }
@@ -399,6 +406,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     static GOS_UI_TRACE_ONCE:Once=Once::new();
     GOS_UI_TRACE_ONCE.call_once(||{
         if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            log("WINDOWED-DIAG: menu_ui_trace hook install begin");
             let (data,control)=unsafe{menu_ui_trace::install()};
             log(&format!("MENU-GOS-UI: data_registered={data} control_registered={control}"));
         }
@@ -409,6 +417,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     static GOS_UI_PAGES_ONCE:Once=Once::new();
     GOS_UI_PAGES_ONCE.call_once(||{
         if cfg().experimental_windowed_adapter && cfg().log_enabled {
+            log("WINDOWED-DIAG: menu_ui_pages hook install begin");
             let (pages,localize)=unsafe{menu_ui_pages::install()};
             log(&format!("MENU-GOS-PAGE: page_registered={pages} localize_registered={localize}"));
         }
@@ -418,6 +427,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     static VIDEO_EVENT_ONCE:Once=Once::new();
     VIDEO_EVENT_ONCE.call_once(||{
         if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+            log("WINDOWED-DIAG: menu_mode_event hook install begin");
             let installed=unsafe{menu_mode_event::install()};
             log(&format!("MENU-VIDEO-EVENT: hook_available={installed}"));
         }
