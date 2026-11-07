@@ -5,7 +5,7 @@
 //!
 //! This is intentionally an early in-game integration build. The game may use
 //! unsupported COM methods, QI versions or window transitions. Default-on for the accepted EXE.
-use std::{ffi::c_void,ptr,sync::Mutex};
+use std::{ffi::c_void,ptr,sync::{Mutex,atomic::{AtomicU8,AtomicUsize,Ordering}}};
 use crate::{
     Hr,Guid,Hwnd,log,win32,
     borderless_contract::{AdapterContract,BackendEvidence,RenderTarget,SurfaceRole},
@@ -220,6 +220,51 @@ struct Runtime {
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 
+// Windows-native-only startup A/B: avoid exposing synthetic RGB565/virtual
+// primary surfaces to the DirectShow MPEG introduction. Do not switch a
+// running virtual graph back into exclusive mode: that was previously
+// demonstrated unsafe. Instead keep the ORIGINAL exclusive DD4 path until
+// the game has completed an observed 800x600 -> another mode transition
+// and entered its MainMenu. Only future cooperative requests may arm the
+// windowed adapter. Wine/Proton and the default mode are unaffected.
+const INTRO_BEFORE_MOVIE:u8=0;
+const INTRO_IN_MOVIE_MODE:u8=1;
+const INTRO_LEFT_MOVIE_MODE:u8=2;
+static NATIVE_INTRO_PHASE:AtomicU8=AtomicU8::new(INTRO_BEFORE_MOVIE);
+static NATIVE_INTRO_SKIPPED:AtomicUsize=AtomicUsize::new(0);
+fn native_intro_exclusive_enabled()->bool{
+    let cfg=crate::cfg();
+    cfg.native_intro_exclusive && cfg.native_dd4_bootstrap &&
+    cfg.experimental_windowed_adapter && cfg.native_3d_widescreen &&
+    crate::diagnostics::is_native_windows()
+}
+fn next_intro_phase(current:u8,mode:Mode)->u8{
+    match (current,(mode.width,mode.height,mode.bpp)) {
+        (INTRO_BEFORE_MOVIE,(800,600,16))=>INTRO_IN_MOVIE_MODE,
+        (INTRO_IN_MOVIE_MODE,(800,600,16))=>INTRO_IN_MOVIE_MODE,
+        (INTRO_IN_MOVIE_MODE,_)=>INTRO_LEFT_MOVIE_MODE,
+        _=>current,
+    }
+}
+fn native_intro_ready(phase:u8,main_seen:bool)->bool{
+    phase==INTRO_LEFT_MOVIE_MODE && main_seen
+}
+fn observe_native_intro_mode(mode:Mode){
+    if !native_intro_exclusive_enabled(){return;}
+    let before=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
+    let after=next_intro_phase(before,mode);
+    if after!=before && NATIVE_INTRO_PHASE.compare_exchange(
+        before,after,Ordering::AcqRel,Ordering::Acquire).is_ok() {
+        log(match after {
+            INTRO_IN_MOVIE_MODE=>
+                "NATIVE-INTRO: original 800x600 exclusive movie mode observed; virtual graph remains disabled",
+            INTRO_LEFT_MOVIE_MODE=>
+                "NATIVE-INTRO: game left 800x600 movie mode; waiting for MainMenu before allowing virtual DD4",
+            _=>"NATIVE-INTRO: unexpected phase transition",
+        });
+    }
+}
+
 // The game can repeat its *same* DDSCL_EXCLUSIVE|DDSCL_FULLSCREEN
 // request after our windowed graph has already been exposed. That is an
 // idempotent request from the game's perspective; do NOT forward it to
@@ -241,6 +286,21 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     if crate::cfg().log_enabled {
         log(&format!("WINDOWED-DIAG: DD4 SetCooperativeLevel enter dd4={:p} hwnd={:p} flags={:#010x}",
             dd4,hwnd,flags));
+    }
+    // Do not expose any virtual surfaces while native DirectShow owns the
+    // introduction. This branch is reached before any windowed runtime has
+    // been created; after exposure, existing strict graph checks win.
+    if native_intro_exclusive_enabled() &&
+        !native_intro_ready(NATIVE_INTRO_PHASE.load(Ordering::Acquire),
+                            crate::menu_scene::main_menu_was_seen()) {
+        let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
+        if no_windowed_runtime {
+            let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
+            if count<8 {
+                log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; no virtual COM graph");
+            }
+            return None;
+        }
     }
     // A second identical game-exclusive request is expected during video
     // startup, after the virtual PRIMARY and HAL device have been created.
@@ -359,6 +419,9 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
             dd4,w,h,bpp,refresh,flags));
     }
+    // Observation only while the original native movie graph owns DD4.
+    // Never advance this state on Wine or without explicit opt-in.
+    observe_native_intro_mode(Mode{width:w,height:h,bpp});
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
@@ -639,6 +702,34 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         physical_lock_primary:primary_lock,physical_back:real_back,
         physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,clipper})
 }
+#[cfg(test)]
+mod native_intro_exclusive_tests {
+    use super::*;
+
+    #[test]
+    fn requires_800x600_then_a_distinct_mode_before_arming() {
+        let video=Mode{width:800,height:600,bpp:16};
+        let game=Mode{width:1920,height:1200,bpp:16};
+        let boot=Mode{width:1024,height:768,bpp:16};
+        assert_eq!(next_intro_phase(INTRO_BEFORE_MOVIE,boot),INTRO_BEFORE_MOVIE);
+        assert_eq!(next_intro_phase(INTRO_BEFORE_MOVIE,video),INTRO_IN_MOVIE_MODE);
+        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,video),INTRO_IN_MOVIE_MODE);
+        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,boot),INTRO_LEFT_MOVIE_MODE);
+        assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,video),INTRO_LEFT_MOVIE_MODE);
+        assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,game),INTRO_LEFT_MOVIE_MODE);
+    }
+
+    #[test]
+    fn never_arms_without_both_video_exit_and_main_menu() {
+        for phase in [INTRO_BEFORE_MOVIE,INTRO_IN_MOVIE_MODE] {
+            assert!(!native_intro_ready(phase,false));
+            assert!(!native_intro_ready(phase,true));
+        }
+        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,false));
+        assert!(native_intro_ready(INTRO_LEFT_MOVIE_MODE,true));
+    }
+}
+
 // Give the game its *logical* DD4 mode, not the desktop's physical mode.
 // Crimson Skies requests 640x480x16 (or 800x600x16), while our real
 // fullscreen-sized HWND is windowed at the monitor's native resolution.
