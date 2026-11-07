@@ -33,6 +33,7 @@ mod diagnostics_graphics;
 mod native_video_imports;
 mod native_getproc_trace;
 mod native_owner_mode_trace;
+mod native_dd4_bootstrap;
 mod presentation;
 mod scene_correlation;
 mod borderless_contract;
@@ -389,6 +390,16 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         // applies the same verified in-memory patch if the game reaches it.
         // This changes no Windows DPI awareness, system mode or game asset.
         log("WINDOWED-DIAG: early FOV/HUD patch intentionally deferred to DD4 (debug-only)");
+    }
+    // Experimental native Windows bridge: intercept the EXACT authenticated
+    // game's DD4 mode-setup function BEFORE its first exclusive request.
+    // Default OFF. This is distinct from read-only owner diagnostics.
+    if config.native_dd4_bootstrap {
+        static DD4_BOOTSTRAP_ONCE:Once=Once::new();
+        DD4_BOOTSTRAP_ONCE.call_once(||{
+            let ok=native_dd4_bootstrap::install();
+            log(&format!("NATIVE-BOOTSTRAP: enabled={} installed={ok}",config.native_dd4_bootstrap));
+        });
     }
     // Observe the exact in-game MainMenu/Preferences script transitions
     // only after strict game executable authentication.
