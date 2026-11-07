@@ -1,8 +1,11 @@
 # Local Windows x86 build when GitHub Actions minutes are exhausted
 
-The owner confirmed on 2026-11-07 that GitHub Actions is disabled because
-the free account has reached its service quota. Jobs that fail before their
-first step are **not evidence of a Rust compiler error**. Keep the PR review
+The owner confirmed on 2026-11-07 that the account's included
+GitHub Actions compute allowance is exhausted for **private repositories**.
+The **public** SpiderMan2k1Fix repository still runs its standard hosted
+runners for free. CrimsonSkiesFix is currently **private**; its jobs that fail
+before their first step are **not evidence of a Rust compiler error**.
+Keep the PR review
 process and branch protection intact; produce test builds **on the user's
 native Windows 11 PC** instead, with source commit and SHA-256 recorded.
 
