@@ -332,14 +332,22 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if config.experimental_windowed_adapter && config.native_3d_widescreen && !config.defer_early_native_patch {
         EARLY_NATIVE_ONCE.call_once(||{
             log("WINDOWED-DIAG: early FOV/HUD monitor query begin");
-            let size=win32::capture_launch_monitor().and_then(|r|r.dimensions())
+            let logical=win32::capture_launch_monitor().and_then(|r|r.dimensions())
                 .or_else(win32::sole_primary_monitor_dimensions);
+            // Strict A/B: only the one-monitor physical mode is eligible.
+            // Never change the process DPI awareness, game window or desktop
+            // mode merely to work around legacy Win32 DPI virtualization.
+            let size=if config.early_native_physical_mode {
+                let physical=win32::physical_primary_monitor_dimensions();
+                log(&format!("WINDOWED-DIAG: physical early native probe logical={logical:?} physical={physical:?} (read-only, no DPI changes)"));
+                physical
+            }else{logical};
             if let Some((w,h))=size {
                 log(&format!("WINDOWED-DIAG: early FOV/HUD patch begin target={}x{}",w,h));
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
                 log("WINDOWED-DIAG: early FOV/HUD patch returned");
             }else{
-                log("WINDOWED-WIDE: early patch deferred; launch monitor unknown");
+                log("WINDOWED-WIDE: early patch deferred; no eligible launch monitor dimensions");
             }
         });
     }
