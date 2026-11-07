@@ -400,12 +400,16 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     let native_unlock=crate::diagnostics::is_native_windows() && crate::cfg().native_dd4_bootstrap;
     let hwnd_for_probe=runtime.hwnd as Hwnd;
     let client_for_probe=runtime.render_client;
+    let output_for_probe=if native_unlock {
+        let Some(logical)=runtime.monitor.dimensions() else{return Some(E_FAIL)};
+        logical
+    }else{client_for_probe};
     let generation_for_probe=runtime.generation+1;
     let result=if native_unlock {
         runtime.native_preparing=true;
         log("WINDOWED-DIAG: releasing adapter state mutex for reentrant native HAL preflight");
         drop(state);
-        let result=prepare_epoch(dd4,hwnd_for_probe,client_for_probe,mode,generation_for_probe,native_3d);
+        let result=prepare_epoch(dd4,hwnd_for_probe,client_for_probe,output_for_probe,mode,generation_for_probe,native_3d);
         state=match RUNTIME.lock(){Ok(guard)=>guard,Err(_)=>return Some(E_FAIL)};
         let Some(current)=state.as_mut() else {
             log("WINDOWED-GAME: runtime disappeared during native HAL preflight; fail closed");
@@ -421,7 +425,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         log("WINDOWED-DIAG: native HAL preflight returned; adapter state mutex reacquired");
         result
     }else{
-        prepare_epoch(dd4,hwnd_for_probe,client_for_probe,mode,generation_for_probe,native_3d)
+        prepare_epoch(dd4,hwnd_for_probe,client_for_probe,output_for_probe,mode,generation_for_probe,native_3d)
     };
     log(&format!("WINDOWED-DIAG: prepare_epoch returned success={}",result.is_ok()));
     let Some(runtime)=state.as_mut() else{return Some(E_FAIL)};
@@ -490,8 +494,12 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
 }
 unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
-    mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
-    if client.0==0 || client.1==0{return Err("invalid target raster".into());}
+    output_client:(u32,u32),mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
+    if client.0==0 || client.1==0 || output_client.0==0 || output_client.1==0{
+        return Err("invalid render or logical output raster".into());
+    }
+    log(&format!("WINDOWED-DIAG: physical_render={}x{} logical_blt_output={}x{} (DPI-safe presentation)",
+        client.0,client.1,output_client.0,output_client.1));
     log("WINDOWED-DIAG: native primary CreateSurface begin");
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
     log("WINDOWED-DIAG: native primary CreateSurface OK");
@@ -573,6 +581,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     let mut backend=NativeWindowedBlt::from_borrowed_com(
         real_primary.ptr(),real_back.ptr(),(0,0),client,mode
     ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
+    backend.set_output_client(output_client)
+        .map_err(|hr|format!("logical output coordinates: {:#010x}",hr as u32))?;
     let plan=contract.plan.viewport;
     log("WINDOWED-DIAG: physical windowed two-Blt preflight begin");
     borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
@@ -586,8 +596,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         working_blt:true,complete_surface_com:true
     }).map_err(|e|format!("graph evidence: {e:?}"))?;
     log("WINDOWED-DIAG: evidence OK; arm virtual primary Flip begin");
-    com_surface4_forward::arm_graph_primary_flip(
-        primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit),
+    com_surface4_forward::arm_graph_primary_flip_with_output(
+        primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
         menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
