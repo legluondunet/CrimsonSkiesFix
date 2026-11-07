@@ -693,13 +693,20 @@ unsafe fn scale_xrgb320_to_rgb565800(
         }
     }
 }
+/// The same native 320x240 XRGB8888 movie Blt is called with WAIT in
+/// startup, but flags=0 after MainMenu initialization. Accept both normal
+/// copy modes; reject effects/async/keys. The final native scratch copy
+/// always uses WAIT so success only follows completed pixels.
+fn native_movie_blt_flags_supported(flags:u32)->bool{
+    flags==0 || flags==DDBLT_WAIT
+}
 unsafe fn convert_known_native_movie_blt(
     native_dest:SurfaceThis,native_source:SurfaceThis,scratch:SurfaceThis,
     dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,fx:*mut c_void
 )->Result<i32,&'static str>{
     if native_dest.is_null() || native_source.is_null() || scratch.is_null() ||
        dst_rect.is_null() || !src_rect.is_null() ||
-       flags!=DDBLT_WAIT || !fx.is_null(){
+       !native_movie_blt_flags_supported(flags) || !fx.is_null(){
         return Err("not an exact supported movie Blt");
     }
     let area=*dst_rect;
@@ -1499,6 +1506,14 @@ mod tests{
         assert_eq!(staging.refs.load(Ordering::SeqCst),1);
     }
 
+    #[test]
+    fn native_movie_fallback_accepts_both_observed_wait_variants(){
+        assert!(native_movie_blt_flags_supported(0));
+        assert!(native_movie_blt_flags_supported(DDBLT_WAIT));
+        for flags in [1,2,0x200,0x400,0x0100_0200] {
+            assert!(!native_movie_blt_flags_supported(flags));
+        }
+    }
     #[test]
     fn xrgb8888_to_rgb565_native_fallback_color_and_nearest_scaling(){
         assert_eq!(xrgb_to_565(0x00ff0000),0xf800);
