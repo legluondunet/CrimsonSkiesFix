@@ -42,6 +42,12 @@ pub struct NativeWindowedBlt {
     // DDraw Blt. Never an input/focus hook, never active on Wine by default.
     gdi_sidebar_hwnd:usize,
     gdi_sidebar_reported:bool,
+    // Borrowed full-client RGB32 offscreen surface; the verified DD4
+    // epoch retains its strong COM reference through Flip retirement.
+    // BLACK background pixels live in this surface, not in drawn bars.
+    full_frame_composite:Ptr,
+    composite_black_ready:bool,
+    composed_frames:u64,
 }
 impl NativeWindowedBlt {
     /// SAFETY: caller retains live IDirectDrawSurface4 COM references to
@@ -58,7 +64,9 @@ impl NativeWindowedBlt {
              (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false,
-            gdi_sidebar_hwnd:0,gdi_sidebar_reported:false})
+            gdi_sidebar_hwnd:0,gdi_sidebar_reported:false,
+            full_frame_composite:ptr::null_mut(),composite_black_ready:false,
+            composed_frames:0})
     }
     /// Native Windows movie-only A/B: the game's *logical* 800x600x16
     /// presentation bridge may borrow a separately verified real XRGB8888
@@ -97,6 +105,88 @@ impl NativeWindowedBlt {
     pub fn enable_native_gdi_sidebars(&mut self,hwnd:usize){
         self.gdi_sidebar_hwnd=hwnd;
         self.gdi_sidebar_reported=false;
+    }
+    /// Exact native XRGB8888 800x600 UI only. Surface pixel dimensions
+    /// must equal the DPI-logical game HWND client, and be verified by
+    /// DD4 GetSurfaceDesc before enabling. No COM refs are acquired here.
+    /// The caller owns the surface throughout the active Flip session.
+    pub fn enable_full_frame_composition(&mut self,surface:Ptr)->Result<(),i32>{
+        if surface.is_null() || surface==self.primary ||
+           surface==self.source_surface || self.origin!=(0,0) ||
+           (self.source.width,self.source.height,self.source.bpp)!=(800,600,16) ||
+           self.output_client.0==0 || self.output_client.1==0{
+            return Err(BAD);
+        }
+        self.full_frame_composite=surface;
+        self.composite_black_ready=false;
+        self.composed_frames=0;
+        // When composing, never paint GDI or isolated primary gutters.
+        self.gdi_sidebar_hwnd=0;
+        Ok(())
+    }
+    pub fn disable_full_frame_composition(&mut self){
+        self.full_frame_composite=ptr::null_mut();
+        self.composite_black_ready=false;
+        self.composed_frames=0;
+    }
+    pub fn full_frame_composition_enabled(&self)->bool{
+        !self.full_frame_composite.is_null()
+    }
+    fn composite_full_rect(&self)->Result<Rect,i32>{
+        let right=i32::try_from(self.output_client.0).map_err(|_|BAD)?;
+        let bottom=i32::try_from(self.output_client.1).map_err(|_|BAD)?;
+        Ok(Rect{left:0,top:0,right,bottom})
+    }
+    fn composite_content_rect(&self,view:Viewport)->Result<Rect,i32>{
+        if crate::presentation::fit_viewport(
+            self.source.width,self.source.height,self.client.0,self.client.1
+        )!=Some(view){return Err(BAD);}
+        // SAME floor-per-edge DPI mapping as physical primary presentation.
+        let content=crate::presentation::output_viewport(
+            (self.source.width,self.source.height),self.client,self.output_client
+        ).ok_or(BAD)?;
+        let left=i32::try_from(content.x).map_err(|_|BAD)?;
+        let top=i32::try_from(content.y).map_err(|_|BAD)?;
+        let right=i32::try_from(content.x+content.width).map_err(|_|BAD)?;
+        let bottom=i32::try_from(content.y+content.height).map_err(|_|BAD)?;
+        Ok(Rect{left,top,right,bottom})
+    }
+    fn fill_composite_black(&mut self)->Result<(),i32>{
+        let full=self.composite_full_rect()?;
+        let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
+        // ColorFill acts only on the ENTIRE offscreen surface. The pixels
+        // not overwritten by the centered 4:3 source remain permanently
+        // black until the next focus refresh; no sidebar rectangles.
+        unsafe{Self::blt_to(
+            self.full_frame_composite,&full,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr()
+        )?;}
+        self.composite_black_ready=true;
+        Ok(())
+    }
+    fn present_composite(&mut self,view:Viewport)->Result<(),i32>{
+        if !self.composite_black_ready{self.fill_composite_black()?;}
+        let dest=self.composite_content_rect(view)?;
+        let full=self.screen_rect(Viewport{
+            x:0,y:0,width:self.client.0,height:self.client.1
+        })?;
+        let source=self.source_for_present();
+        let surface=self.full_frame_composite;
+        // Offscreen 4:3 stretch and ONE complete real-primary Blt, with
+        // black pixels carried by that same source. No primary gutter
+        // color fills or GDI after the full-frame presentation.
+        unsafe{
+            Self::blt_to(surface,&dest,source,WAIT,ptr::null_mut())?;
+            self.blt(&full,surface,WAIT,ptr::null_mut())?;
+        }
+        self.composed_frames=self.composed_frames.saturating_add(1);
+        if self.composed_frames==1 || self.composed_frames%120==0{
+            crate::log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: presented frame={} offscreen={}x{} viewport=({},{}..{},{}), single full primary Blt, background=0x000000",
+                self.composed_frames,self.output_client.0,self.output_client.1,
+                dest.left,dest.top,dest.right,dest.bottom
+            ));
+        }
+        Ok(())
     }
     fn logical_edge(&self,edge:u32,horizontal:bool)->Result<i32,i32>{
         let (logical,physical)=if horizontal{
@@ -245,22 +335,51 @@ impl NativeWindowedBlt {
             ));
         }
     }
-    unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
-        let vtable=*(self.primary.cast::<*const usize>());
+    unsafe fn blt_to(target:Ptr,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
+        if target.is_null(){return Err(BAD);}
+        let vtable=*(target.cast::<*const usize>());
+        if vtable.is_null(){return Err(BAD);}
         let call:Blt=std::mem::transmute(*vtable.add(5));
-        let hr=call(self.primary,rect,source,ptr::null(),flags,fx);
+        let hr=call(target,rect,source,ptr::null(),flags,fx);
         if hr<0{Err(hr)}else{Ok(())}
+    }
+    unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
+        Self::blt_to(self.primary,rect,source,flags,fx)
     }
 }
 impl WindowedBlt for NativeWindowedBlt {
     fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),i32>{
         if (w,h)!=self.client{return Err(BAD);}
+        if self.full_frame_composition_enabled(){
+            match self.fill_composite_black(){
+                Ok(())=>return Ok(()),
+                Err(hr)=>{
+                    crate::log(&format!(
+                        "NATIVE-FULL-FRAME-COMPOSE: offscreen black clear failed hr={:#010x}; reverting to validated primary clear/Blt",
+                        hr as u32
+                    ));
+                    self.disable_full_frame_composition();
+                }
+            }
+        }
         let dest=self.screen_rect(Viewport{x:0,y:0,width:w,height:h})?;
         let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
         unsafe{self.blt(&dest,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr())}
     }
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
+        if self.full_frame_composition_enabled(){
+            match self.present_composite(view){
+                Ok(())=>return Ok(()),
+                Err(hr)=>{
+                    crate::log(&format!(
+                        "NATIVE-FULL-FRAME-COMPOSE: composition/presentation failed hr={:#010x}; reverting to validated 4:3 direct Blt",
+                        hr as u32
+                    ));
+                    self.disable_full_frame_composition();
+                }
+            }
+        }
         let dest=self.screen_rect(view)?;
         self.maintain_native_black_sidebars(view)?;
         let source=self.source_for_present();
