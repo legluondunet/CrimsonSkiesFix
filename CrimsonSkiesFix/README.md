@@ -238,8 +238,19 @@ explicit `=0` values remain respected. Under native Windows, these settings
 can still be disabled individually in `[Debug]` to isolate hardware/driver
 regressions. The initial Windows owner validation used an explicit test
 configuration; a **new default-install Windows 11 runtime smoke test** is still
-needed before a public stable release. The unchanged Wine/GE-Proton path
-continues to use RGB565 game presentation.
+needed before a public stable release. The Wine/GE-Proton path continues to use RGB565 game presentation.
+**Wine-only native Blt safety** from v0.1.55 now installs its minimal
+Surface4 QueryInterface/GetAttachedSurface/Blt guards whenever the verified
+virtual windowed adapter is enabled, even with `[Debug] Log=0` and
+`[Graphics] ModernFPSPacing=0`. It unwraps authenticated synthetic
+surface sources before passing them to Wine's native DirectDraw Blt; it does
+not enable opt-in tracing, extra Flip interception, or FPS pacing. Previously
+this guard was accidentally tied to the logging/pacing switches, so the
+default INI could leave it inactive. A native Windows run with `Log=0`
+retains its previously validated hooks. `ExperimentalWindowedAdapter=0`
+intentionally disables the virtual graph and therefore does not exercise
+this specific source-unwrapping protection. This change requires owner
+runtime verification at the original reproducible Wine crash location.
 
 ## Logging and diagnostics
 
