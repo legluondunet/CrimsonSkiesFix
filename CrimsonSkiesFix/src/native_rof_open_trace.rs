@@ -138,11 +138,15 @@ unsafe extern "system" fn observe_a(
     let last=GetLastError();
     if let Some(archive)=matched {
         if EVENTS_A.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
-            let identity=if result as usize!=INVALID_HANDLE_VALUE{
-                crate::native_rof_read_trace::opened_archive_identity(result)
-            }else{"open-failed"};
-            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity={identity} success={} (pass-through; resource member selection unobserved)",
-                result as usize!=INVALID_HANDLE_VALUE));
+            if result as usize!=INVALID_HANDLE_VALUE{
+                let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
+                log(&format!(
+                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity={} route={} content={} bytes={:?} installed_bytes={:?} success=true [pass-through; member selection unobserved]",
+                    p.identity,p.route,p.content,p.bytes,p.installed_bytes
+                ));
+            }else{
+                log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity=open-failed success=false [pass-through]"));
+            }
         }
     }
     SetLastError(last);
@@ -160,11 +164,15 @@ unsafe extern "system" fn observe_w(
     let last=GetLastError();
     if let Some(archive)=matched {
         if EVENTS_W.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
-            let identity=if result as usize!=INVALID_HANDLE_VALUE{
-                crate::native_rof_read_trace::opened_archive_identity(result)
-            }else{"open-failed"};
-            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity={identity} success={} (pass-through; resource member selection unobserved)",
-                result as usize!=INVALID_HANDLE_VALUE));
+            if result as usize!=INVALID_HANDLE_VALUE{
+                let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
+                log(&format!(
+                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity={} route={} content={} bytes={:?} installed_bytes={:?} success=true [pass-through; member selection unobserved]",
+                    p.identity,p.route,p.content,p.bytes,p.installed_bytes
+                ));
+            }else{
+                log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity=open-failed success=false [pass-through]"));
+            }
         }
     }
     SetLastError(last);
