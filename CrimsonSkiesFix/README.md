@@ -206,10 +206,14 @@ never runs from the native allocation hook, and reports are throttled.
 If no allocation count appears after installation, then use of the hook has
 **not been demonstrated** in that test. It does not mean the patch failed.
 
-A DLL loaded and parsed entirely before the next graphics callback could
-escape this opportunistic hook; an absent installation log means the fix
-was never confirmed active. The hook remains restricted to the exact supported
-ROFFILE.DLL SHA-256 and known instruction signatures. Unrecognized editions
+When ROFFILE.DLL is loaded through the authenticated game's observed
+`LoadLibrary` import, the Wine EOF repair is now attempted immediately
+**after** the loader returns and **before** original ROF archive observation.
+Graphics-frame probing remains a fallback for other loading paths. A DLL
+loaded and parsed through an unobserved path can still escape the repair;
+an absent `ROFFILE-FIX: installed` log means activation was not confirmed.
+The hook remains restricted to the exact supported ROFFILE.DLL SHA-256
+and known instruction signatures. Unrecognized editions
 are not modified. Tests under native Windows and additional long Wine sessions
 remain desirable; no assumption of identical behavior on every computer
 is made.
