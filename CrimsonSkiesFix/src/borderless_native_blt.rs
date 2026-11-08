@@ -512,6 +512,108 @@ mod tests{
         }
     }
     #[test]
+    fn full_frame_movie_composition_blits_black_and_video_offscreen_then_one_full_primary(){
+        let (vt,mut primary,mut source)=objects(0);
+        primary.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mut offscreen=FakeSurface{
+            vtable:vt.as_ptr(),calls:Mutex::new(Vec::new()),fail_at:0
+        };
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{
+            NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+                (&mut primary as *mut FakeSurface).cast(),
+                (&mut source as *mut FakeSurface).cast(),
+                (0,0),(1920,1200),mode
+            ).unwrap()
+        };
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        assert!(backend.enable_full_frame_composition(
+            (&mut offscreen as *mut FakeSurface).cast()
+        ).is_ok());
+        assert!(backend.full_frame_composition_enabled());
+        backend.enable_native_gdi_sidebars(0x1234); // explicitly incompatible
+        // Re-arm the composition surface to clear the optional GDI HWND.
+        backend.enable_full_frame_composition(
+            (&mut offscreen as *mut FakeSurface).cast()
+        ).unwrap();
+        assert_eq!(backend.gdi_sidebar_hwnd,0);
+        let vp=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.clear_full_window_black(1920,1200),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        let scratch=offscreen.calls.lock().unwrap();
+        assert_eq!(scratch.len(),3);
+        assert_eq!(scratch[0],Call{
+            rect:Rect{left:0,top:0,right:1536,bottom:960},
+            source:false,flags:FILL|WAIT,fx_size:100,fill:0
+        });
+        for call in &scratch[1..]{
+            assert_eq!(call.rect,Rect{left:128,top:0,right:1408,bottom:960});
+            assert_eq!(call.flags,WAIT);
+            assert!(call.source);
+        }
+        let physical=primary.calls.lock().unwrap();
+        assert_eq!(physical.len(),2); // exactly ONE complete Blt per frame
+        for call in physical.iter(){
+            assert_eq!(call.rect,Rect{left:0,top:0,right:1536,bottom:960});
+            assert_eq!(call.flags,WAIT);
+            assert!(call.source);
+        }
+    }
+    #[test]
+    fn full_frame_composition_failure_reverts_to_prior_direct_draw_frame(){
+        let (vt,mut primary,mut source)=objects(0);
+        primary.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mut offscreen=FakeSurface{
+            vtable:vt.as_ptr(),calls:Mutex::new(Vec::new()),fail_at:2
+        };
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{
+            NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+                (&mut primary as *mut FakeSurface).cast(),
+                (&mut source as *mut FakeSurface).cast(),
+                (0,0),(1920,1200),mode
+            ).unwrap()
+        };
+        backend.set_output_client((1536,960)).unwrap();
+        backend.enable_full_frame_composition(
+            (&mut offscreen as *mut FakeSurface).cast()
+        ).unwrap();
+        let vp=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.clear_full_window_black(1920,1200),Ok(()));
+        // Scratch's source copy fails, so no partial offscreen frame is
+        // sent to the HWND. Existing sidebar + direct viewport Blts run.
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        assert!(!backend.full_frame_composition_enabled());
+        let calls=primary.calls.lock().unwrap();
+        assert_eq!(calls.len(),3);
+        assert_eq!(calls[0].rect,Rect{left:0,top:0,right:128,bottom:960});
+        assert_eq!(calls[1].rect,Rect{left:1408,top:0,right:1536,bottom:960});
+        assert_eq!(calls[2].rect,Rect{left:128,top:0,right:1408,bottom:960});
+    }
+    #[test]
+    fn full_frame_composition_is_refused_for_gameplay_or_unverified_surfaces(){
+        let (_vt,mut primary,mut source)=objects(0);
+        let game=Mode{width:1920,height:1200,bpp:16};
+        let mut native=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut primary as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),game
+        ).unwrap()};
+        assert!(native.enable_full_frame_composition(
+            4usize as Ptr
+        ).is_err());
+        let mut movie=unsafe{NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+            (&mut primary as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),Mode{width:800,height:600,bpp:16}
+        ).unwrap()};
+        assert!(movie.enable_full_frame_composition(ptr::null_mut()).is_err());
+        assert!(movie.enable_full_frame_composition(
+            (&mut primary as *mut FakeSurface).cast()
+        ).is_err());
+    }
+    #[test]
     fn native_gdi_sidebars_are_explicitly_opt_in(){
         let (_vt,mut p,mut source)=objects(0);
         let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
