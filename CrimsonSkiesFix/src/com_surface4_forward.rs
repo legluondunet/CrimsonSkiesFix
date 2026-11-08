@@ -180,6 +180,67 @@ impl ExposureState {
         restore
     }
 }
+// Passive bounded diagnostic of intervals between *successful game-facing
+// virtual Surface4::Flip completions*. This measures the CPU submission
+// cadence, NOT the moment a frame reaches the physical display or compositor.
+// Leave completely unallocated/disabled by default. No per-frame file writes.
+const FRAME_TIME_WINDOW:usize=120;
+#[derive(Default)]
+struct FrameTimeWindow{
+    previous:Option<Instant>,
+    intervals_us:[u32;FRAME_TIME_WINDOW],
+    native_present_us:[u32;FRAME_TIME_WINDOW],
+    filled:usize,
+    pauses:u32,
+}
+impl FrameTimeWindow{
+    fn observe(&mut self,done_at:Instant,blt_duration:Duration,
+        mode:Mode,fps:Option<u32>)->Option<String>{
+        let Some(previous)=self.previous.replace(done_at) else{return None;};
+        let elapsed=done_at.saturating_duration_since(previous);
+        // Focus loss, loading screens and actual pauses are reported
+        // separately rather than mislabeled as ordinary frame jitter.
+        if elapsed>=Duration::from_millis(500){
+            self.pauses=self.pauses.saturating_add(1);
+            return None;
+        }
+        let us=elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
+        if us==0{return None;}
+        self.intervals_us[self.filled]=us;
+        self.native_present_us[self.filled]=
+            blt_duration.as_micros().min(u128::from(u32::MAX)) as u32;
+        self.filled+=1;
+        if self.filled<FRAME_TIME_WINDOW{return None;}
+        let mut sorted=self.intervals_us;
+        sorted.sort_unstable();
+        let mut native_sorted=self.native_present_us;
+        native_sorted.sort_unstable();
+        let p50=sorted[FRAME_TIME_WINDOW/2-1];
+        let p95=sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let p99=sorted[(FRAME_TIME_WINDOW*99+99)/100-1];
+        let worst=sorted[FRAME_TIME_WINDOW-1];
+        let blt95=native_sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let bltmax=native_sorted[FRAME_TIME_WINDOW-1];
+        let target_us=1_000_000/fps.unwrap_or(60).max(1);
+        let slow2=self.intervals_us.iter()
+            .filter(|&&v|v>target_us.saturating_mul(2)).count();
+        let slow3=self.intervals_us.iter()
+            .filter(|&&v|v>target_us.saturating_mul(3)).count();
+        let sum:u64=self.intervals_us.iter().map(|&v|u64::from(v)).sum();
+        let avg_us=sum/FRAME_TIME_WINDOW as u64;
+        let pauses=self.pauses;
+        self.filled=0;
+        self.pauses=0;
+        Some(format!(
+            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} native_blt_p95_ms={:.3} native_blt_max_ms={:.3} [successful virtual Flip completion spacing, NOT display/present timestamps]",
+            mode.width,mode.height,mode.bpp,FRAME_TIME_WINDOW,
+            fps.unwrap_or(60),avg_us as f64/1000.0,p50 as f64/1000.0,
+            p95 as f64/1000.0,p99 as f64/1000.0,worst as f64/1000.0,
+            slow2,slow3,pauses,blt95 as f64/1000.0,
+            bltmax as f64/1000.0
+        ))
+    }
+}
 struct GraphFlipSession{
     bridge:FlipToBltBridge,
     backend:NativeWindowedBlt,
@@ -187,6 +248,7 @@ struct GraphFlipSession{
     mode:Mode,
     fps_limit:Option<u32>, // None in standalone probe and COM unit tests
     last_present:Option<Instant>, // reset whenever the mode epoch changes
+    frame_time_window:Option<FrameTimeWindow>, // optional steady-state telemetry, no per-frame logging
     window:usize,
     focus_repaint:bool,
     exposure:ExposureState,
@@ -568,7 +630,9 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
-        fps_limit,last_present:None,window,focus_repaint,exposure:ExposureState::default(),
+        fps_limit,last_present:None,
+        frame_time_window:crate::frame_time_trace_enabled().then(FrameTimeWindow::default),
+        window,focus_repaint,exposure:ExposureState::default(),
         erase_count_seen:0,paint_count_seen:0});
     Ok(())
 }
@@ -1318,6 +1382,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
         let pump_window=session.window;
+        let timing_enabled=session.frame_time_window.is_some();
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         // The original script dispatcher reports only four CALL sites.
         // Returning from gameplay can restore the genuine MainMenu
@@ -1332,7 +1397,9 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             crate::menu_brand::mark_not_drawn();
         }
         let composed=backend.menu_frame_prepared();
+        let timing_started=timing_enabled.then(Instant::now);
         let presentation=bridge.present_with_refresh(*epoch,*mode,backend,repaint);
+        let timing_finished=timing_started.map(|_|Instant::now());
         if let Some(started)=movie_started{
             let hr=match &presentation{
                 Ok(_)=>S_OK,
@@ -1372,11 +1439,22 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 E_FAIL // includes latched failure; never exclusive
             },
         };
+        let frame_timing=if flip_result==S_OK {
+            match (timing_started,timing_finished,session.frame_time_window.as_mut()){
+                (Some(start),Some(end),Some(window))=>
+                    window.observe(end,end.saturating_duration_since(start),
+                        node.mode,session.fps_limit),
+                _=>None,
+            }
+        }else{None};
         // The OS window procedure can re-enter game code and COM.
         // ABSOLUTELY release the entire virtual Flip mutex before attempting
         // to dispatch even one queued Win32 message. Without the explicit
         // native-only, off-by-default arm this does nothing (including Wine).
         drop(state);
+        // Emit at most one summary per 120 successful Flips and outside
+        // the graph mutex. No synchronous logging in each sampled frame.
+        if let Some(summary)=frame_timing{crate::log(&summary);}
         if movie {
             if let Some((n,calls,total))=
                 window_erase_guard::pump_native_movie_window(
@@ -2569,5 +2647,62 @@ mod tests{
             assert_eq!((vt.release)(facade),0);
         }
         assert_eq!(real.refs.load(Ordering::SeqCst),1);
+    }
+}
+
+#[cfg(test)]
+mod frame_time_telemetry_tests{
+    use super::*;
+    #[test]
+    fn regular_60fps_virtual_flips_show_no_hitch(){
+        let mut t=FrameTimeWindow::default();
+        let base=Instant::now();
+        assert!(t.observe(base,Duration::from_millis(1),
+            Mode{width:1920,height:1080,bpp:16},Some(60)).is_none());
+        let mut result=None;
+        for n in 1..=120u64{
+            result=t.observe(base+Duration::from_micros(n*16_667),
+                Duration::from_millis(1),
+                Mode{width:1920,height:1080,bpp:16},Some(60));
+        }
+        let report=result.unwrap();
+        assert!(report.contains("samples=120"));
+        assert!(report.contains("slow_2x=0 slow_3x=0"));
+        assert!(report.contains("mode=1920x1080x16"));
+        assert!(report.contains("p95_ms=16.667"));
+    }
+    #[test]
+    fn one_50ms_hitch_counts_only_at_window_summary(){
+        let mut t=FrameTimeWindow::default();
+        let mode=Mode{width:1920,height:1080,bpp:16};
+        let mut timestamp=Instant::now();
+        assert!(t.observe(timestamp,Duration::from_millis(1),mode,Some(60)).is_none());
+        let mut report=None;
+        for n in 1..=120{
+            timestamp+=if n==45{Duration::from_millis(50)}
+                else{Duration::from_micros(16_667)};
+            report=t.observe(timestamp,Duration::from_millis(1),mode,Some(60));
+        }
+        let report=report.unwrap();
+        assert!(report.contains("slow_2x=1 slow_3x=1"));
+        assert!(report.contains("max_ms=50.000"));
+    }
+    #[test]
+    fn focus_pause_is_not_counted_as_frame_stutter(){
+        let mut t=FrameTimeWindow::default();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let base=Instant::now();
+        t.observe(base,Duration::ZERO,mode,Some(60));
+        assert!(t.observe(base+Duration::from_secs(5),
+            Duration::ZERO,mode,Some(60)).is_none());
+        let mut r=None;
+        for n in 1..=120{
+            r=t.observe(base+Duration::from_secs(5)+
+                Duration::from_micros(n*16_667),
+                Duration::ZERO,mode,Some(60));
+        }
+        let r=r.unwrap();
+        assert!(r.contains("ignored_pauses=1"));
+        assert!(r.contains("slow_2x=0 slow_3x=0"));
     }
 }

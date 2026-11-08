@@ -76,6 +76,8 @@ pub const DEFAULT_INI: &str = concat!(
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
     "CrashBltTrace=0\n",
+    "; Diagnostic only: report 120 successive successful DD4 Flip frametimes, not on-screen display timestamps. Requires Log=1.\n",
+    "FrameTimeTrace=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,11 +125,12 @@ pub struct Config {
     pub directdraw_passthrough: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
+    pub frame_time_trace: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -186,6 +189,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.roffile_terminator_fix = v; },
             ("debug", "crashblttrace") =>
                 if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
+            ("debug", "frametimetrace") =>
+                if let Some(v) = enabled(value) { settings.frame_time_trace = v; },
             ("debug", "surfaceusagetrace") =>
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
@@ -351,7 +356,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -503,6 +508,14 @@ mod tests {
             parse("[Debug]\nColorCapture=1\nColorProbe=1"),
             Config::default()
         );
+    }
+    #[test]
+    fn frametime_trace_is_debug_only_off_by_default_and_requires_logging(){
+        assert!(!Config::default().frame_time_trace);
+        assert!(parse("[Debug]\nFrameTimeTrace=1\nLog=1").frame_time_trace);
+        assert!(!parse("[Graphics]\nFrameTimeTrace=1").frame_time_trace);
+        assert!(!parse("[Debug]\nFrameTimeTrace=1\nFrameTimeTrace=0").frame_time_trace);
+        assert!(!parse("[Debug]\nFrameTimeTrace=bad").frame_time_trace);
     }
     #[test]
     fn crash_blt_trace_is_debug_only_and_off_by_default(){

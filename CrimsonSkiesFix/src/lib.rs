@@ -221,6 +221,12 @@ fn log(message:&str) {
     }
 }
 
+// Passive frame-spacing telemetry is opt-in and never writes per-frame logs.
+fn frame_time_trace_enabled()->bool{
+    let c=cfg();
+    c.log_enabled && c.frame_time_trace
+}
+
 // All system inventory code now lives in Rust (no C FFI module).
 fn cfg()->Config {
     *CONFIG.get_or_init(|| {

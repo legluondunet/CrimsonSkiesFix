@@ -105,6 +105,9 @@ mod menu_brand {
     pub fn draw_main_menu(_surface:*mut c_void,_viewport:super::borderless_native_blt::Rect)->bool{false}
 }
 
+// No game-owned Flip stream exists in this standalone probe.
+fn frame_time_trace_enabled()->bool{false}
+
 // The standalone surface probe never locks RGB32 movie surfaces.
 
 
