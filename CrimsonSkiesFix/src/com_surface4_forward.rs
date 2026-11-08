@@ -439,6 +439,27 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32(
     fps_limit:Option<u32>,window:usize,focus_repaint:bool,
     menu_scratch:*mut c_void,native_gdi_sidebars:bool,native_movie_rgb32:bool
 )->Result<(),i32>{
+    arm_graph_primary_flip_with_output_movie_rgb32_composed(
+        primary,contract,generation,origin,client,output_client,
+        fps_limit,window,focus_repaint,menu_scratch,native_gdi_sidebars,
+        native_movie_rgb32,ptr::null_mut()
+    )
+}
+/// Experimental native RGB32 800x600 movie/menu path. The final surface
+/// is an independently owned, full-window logical-size 32-bit offscreen
+/// surface that has passed actual DD4 preflight. The epoch holds its COM
+/// reference until the virtual Flip session has been retired.
+/// All other entrypoints preserve their existing behavior.
+pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void,native_gdi_sidebars:bool,native_movie_rgb32:bool,
+    full_frame_composite:*mut c_void
+)->Result<(),i32>{
+    if !full_frame_composite.is_null() && !native_movie_rgb32{
+        return Err(E_INVALIDARG);
+    }
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
     let Some(node)=p.graph else{return Err(E_INVALIDARG);};
@@ -481,7 +502,12 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32(
         )
     }.map_err(|_|E_INVALIDARG)?;
     backend.set_output_client(output_client).map_err(|_|E_INVALIDARG)?;
-    if native_gdi_sidebars && output_client!=client {
+    if !full_frame_composite.is_null(){
+        // Mutually exclusive with GDI gutter painting: only complete
+        // offscreen frames reach the native real desktop primary.
+        backend.enable_full_frame_composition(full_frame_composite)
+            .map_err(|_|E_INVALIDARG)?;
+    }else if native_gdi_sidebars && output_client!=client {
         backend.enable_native_gdi_sidebars(window);
     }
     backend.set_menu_scratch(menu_scratch);
