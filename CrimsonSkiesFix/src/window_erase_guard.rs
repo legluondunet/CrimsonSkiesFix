@@ -177,7 +177,6 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
         })
     }
 }
-}
 
 #[cfg(test)]
 mod tests{
