@@ -691,6 +691,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         crate::diagnostics::is_native_windows(){
         crate::window_erase_guard::disarm_native_menu_mouse_remap();
         crate::window_erase_guard::disarm_native_system_cursor_probe();
+        crate::window_erase_guard::disarm_native_gos_cursor_bridge();
     }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
@@ -834,6 +835,27 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     Ok(())=>log("NATIVE-SYSTEM-CURSOR-PROBE: armed for actual MainMenu/Preferences; original input untouched, game WndProc executes first; OS arrow diagnostic only"),
                     Err(reason)=>log(&format!(
                         "NATIVE-SYSTEM-CURSOR-PROBE: refused ({reason}); original game cursor unchanged")),
+                }
+            }
+            // Standalone native-only GOS mouse cursor bridge. The game's
+            // actual MainMenu script must become active BEFORE any relative
+            // DirectInput delta is translated; the active virtual 800x600
+            // RGB32 graph and physical output viewport must be verified
+            // here. The original GOS cursor sprite and button state remain
+            // game-owned, no synthetic mouse clicks.
+            if crate::cfg().native_gos_cursor_bridge &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                let output=(expected.2,expected.3);
+                match crate::window_erase_guard::arm_native_gos_cursor_bridge(
+                    runtime.hwnd,output,runtime.render_client
+                ){
+                    Ok(view)=>log(&format!(
+                        "NATIVE-GOS-CURSOR-BRIDGE: armed original GOS mouse via native DirectInput relative movement; viewport=({},{} {}x{}) logical_source=800x600; only MainMenu/Preferences script; native windows only",
+                        view.left,view.top,view.width,view.height)),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-GOS-CURSOR-BRIDGE: refused ({reason}); original mouse unchanged")),
                 }
             }
             // Experimental native Win11 RGB32 800x600 only: reinterpret
