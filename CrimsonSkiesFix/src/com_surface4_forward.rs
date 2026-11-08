@@ -188,18 +188,18 @@ const FRAME_TIME_WINDOW:usize=120;
 struct FrameTimeWindow{
     previous:Option<Instant>,
     intervals_us:[u32;FRAME_TIME_WINDOW],
-    native_present_us:[u32;FRAME_TIME_WINDOW],
+    present_call_us:[u32;FRAME_TIME_WINDOW],
     filled:usize,
     pauses:u32,
 }
 impl Default for FrameTimeWindow{
     fn default()->Self{
         Self{previous:None,intervals_us:[0;FRAME_TIME_WINDOW],
-            native_present_us:[0;FRAME_TIME_WINDOW],filled:0,pauses:0}
+            present_call_us:[0;FRAME_TIME_WINDOW],filled:0,pauses:0}
     }
 }
 impl FrameTimeWindow{
-    fn observe(&mut self,done_at:Instant,blt_duration:Duration,
+    fn observe(&mut self,done_at:Instant,presentation_duration:Duration,
         mode:Mode,fps:Option<u32>)->Option<String>{
         let Some(previous)=self.previous.replace(done_at) else{return None;};
         let elapsed=done_at.saturating_duration_since(previous);
@@ -212,20 +212,20 @@ impl FrameTimeWindow{
         let us=elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
         if us==0{return None;}
         self.intervals_us[self.filled]=us;
-        self.native_present_us[self.filled]=
-            blt_duration.as_micros().min(u128::from(u32::MAX)) as u32;
+        self.present_call_us[self.filled]=
+            presentation_duration.as_micros().min(u128::from(u32::MAX)) as u32;
         self.filled+=1;
         if self.filled<FRAME_TIME_WINDOW{return None;}
         let mut sorted=self.intervals_us;
         sorted.sort_unstable();
-        let mut native_sorted=self.native_present_us;
+        let mut native_sorted=self.present_call_us;
         native_sorted.sort_unstable();
         let p50=sorted[FRAME_TIME_WINDOW/2-1];
         let p95=sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
         let p99=sorted[(FRAME_TIME_WINDOW*99+99)/100-1];
         let worst=sorted[FRAME_TIME_WINDOW-1];
-        let blt95=native_sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
-        let bltmax=native_sorted[FRAME_TIME_WINDOW-1];
+        let present95=native_sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let presentmax=native_sorted[FRAME_TIME_WINDOW-1];
         let target_us=1_000_000/fps.unwrap_or(60).max(1);
         let slow2=self.intervals_us.iter()
             .filter(|&&v|v>target_us.saturating_mul(2)).count();
@@ -237,12 +237,12 @@ impl FrameTimeWindow{
         self.filled=0;
         self.pauses=0;
         Some(format!(
-            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} native_blt_p95_ms={:.3} native_blt_max_ms={:.3} [successful virtual Flip completion spacing, NOT display/present timestamps]",
+            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} [successful virtual Flip completion spacing, NOT display/present timestamps]",
             mode.width,mode.height,mode.bpp,FRAME_TIME_WINDOW,
             fps.unwrap_or(60),avg_us as f64/1000.0,p50 as f64/1000.0,
             p95 as f64/1000.0,p99 as f64/1000.0,worst as f64/1000.0,
-            slow2,slow3,pauses,blt95 as f64/1000.0,
-            bltmax as f64/1000.0
+            slow2,slow3,pauses,present95 as f64/1000.0,
+            presentmax as f64/1000.0
         ))
     }
 }
