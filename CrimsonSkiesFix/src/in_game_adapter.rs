@@ -235,6 +235,10 @@ const INTRO_IN_MOVIE_MODE:u8=1;
 const INTRO_LEFT_MOVIE_MODE:u8=2;
 static NATIVE_INTRO_PHASE:AtomicU8=AtomicU8::new(INTRO_BEFORE_MOVIE);
 static NATIVE_INTRO_SKIPPED:AtomicUsize=AtomicUsize::new(0);
+// One-shot owner / HWND captured while the original DD4 stays EXCLUSIVE.
+// Its next SetDisplayMode decides whether virtual rendering is admissible.
+// We must not prematurely enter NORMAL merely because MainMenu is active.
+static NATIVE_INTRO_PENDING:Mutex<Option<(usize,usize)>>=Mutex::new(None);
 // Sample once BEFORE the game's first native exclusive DD4 request.
 // EnumDisplaySettingsW subsequently returns the temporary 1024/800 game
 // mode, which must never be confused with the initial monitor raster.
@@ -329,6 +333,13 @@ fn identical_game_cooperative_request(
 /// Only accept a valid process-owned HWND and standard exclusive request.
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
+    cooperative_with_intent(dd4,hwnd,flags,original,false)
+}
+// commit_pending=true is used only by display_mode after a one-shot
+// (DD4,HWND) match plus the game's exact requested native raster.
+unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
+    original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr,
+    commit_pending:bool)->Option<Hr>{
     if crate::cfg().log_enabled {
         log(&format!("WINDOWED-DIAG: DD4 SetCooperativeLevel enter dd4={:p} hwnd={:p} flags={:#010x}",
             dd4,hwnd,flags));
@@ -342,25 +353,38 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     if native_intro {
         let _=native_intro_launch_physical();
     }
-    if native_intro {
+    if native_intro && !commit_pending {
         let phase=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
         let main_active=crate::menu_scene::main_menu_was_seen() &&
                         crate::menu_scene::main_menu_active();
-        if !native_intro_ready(phase,main_active) {
-            let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
-            if no_windowed_runtime {
-                let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
-                if phase==INTRO_LEFT_MOVIE_MODE {
-                    if count<8 {
-                        log("NATIVE-INTRO: reject LATE virtual DD4 activation after native 3D mode; original exclusive path preserved (ESC/menu white-screen guard)");
-                    }
-                }else if count<8 {
-                    log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; awaiting 800x600 MainMenu transition");
-                }
+        let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
+        if no_windowed_runtime && native_intro_ready(phase,main_active) {
+            // The game's next SetDisplayMode is not known yet. Original
+            // Windows 11 actually requests 1024x768, so do not briefly
+            // flip native DirectDraw to DDSCL_NORMAL in anticipation.
+            if flags!=DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null() ||
+               win32::launch_monitor_or_game_window(hwnd).is_none() {
+                log("NATIVE-INTRO: cannot stage DD4 handoff; original cooperative request retained");
                 return None;
             }
-        }else if RUNTIME.lock().ok().is_some_and(|r|r.is_none()){
-            log("NATIVE-INTRO: MainMenu observed before first post-intro DD4 cooperative request; attempting one-time windowed activation before next display mode");
+            let hr=original(dd4,hwnd,flags);
+            if hr>=0 {
+                let Ok(mut pending)=NATIVE_INTRO_PENDING.lock() else{return Some(E_FAIL)};
+                *pending=Some((dd4 as usize,hwnd as usize));
+                log("NATIVE-INTRO: MainMenu eligible, original exclusive DD4 preserved; waiting for NEXT requested SetDisplayMode before changing cooperative level");
+            }
+            return Some(hr);
+        }
+        if no_windowed_runtime {
+            let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
+            if phase==INTRO_LEFT_MOVIE_MODE {
+                if count<8{
+                    log("NATIVE-INTRO: reject LATE virtual DD4 activation after native 3D mode; original exclusive path preserved (ESC/menu white-screen guard)");
+                }
+            }else if count<8{
+                log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; awaiting 800x600 MainMenu transition");
+            }
+            return None;
         }
     }
     // A second identical game-exclusive request is expected during video
@@ -510,9 +534,45 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
             dd4,w,h,bpp,refresh,flags));
     }
+    // Consume the one-shot pending owner before changing the video phase.
+    // This ensures a legacy 1024x768 request sees exactly the original
+    // exclusive behavior and never visits DDSCL_NORMAL even briefly.
+    let requested=Mode{width:w,height:h,bpp};
+    if native_intro_exclusive_enabled() {
+        let pending=match NATIVE_INTRO_PENDING.lock(){
+            Ok(mut guard)=>guard.take(),
+            Err(_)=>return Some(E_FAIL),
+        };
+        if let Some((owner,game_hwnd))=pending{
+            let physical=native_intro_launch_physical();
+            let eligible=owner==dd4 as usize &&
+                NATIVE_INTRO_PHASE.load(Ordering::Acquire)==INTRO_IN_MOVIE_MODE &&
+                physical.is_some_and(|target|native_intro_requested_3d(requested,target));
+            if eligible {
+                type CooperativeFn=unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr;
+                let Some(addr)=crate::orig(dd4,20) else{return Some(E_FAIL)};
+                let native_coop:CooperativeFn=std::mem::transmute(addr);
+                log("NATIVE-INTRO: exact native target mode requested; changing exclusive DD4 to NORMAL only now");
+                match cooperative_with_intent(dd4,game_hwnd as Hwnd,
+                        DDSCL_EXCLUSIVE_FULLSCREEN,native_coop,true) {
+                    Some(hr) if hr>=0 =>{},
+                    Some(hr)=>{
+                        log(&format!("NATIVE-INTRO: deferred DDSCL_NORMAL failed {:#010x}; requested mode not modified",hr as u32));
+                        return Some(hr);
+                    },
+                    None=>log("NATIVE-INTRO: deferred DD4 handoff rejected; retaining original exclusive mode"),
+                }
+            }else{
+                log(&format!(
+                    "NATIVE-INTRO: next requested {}x{}x{} differs from native target {physical:?}; NO intermediate DDSCL_NORMAL and NO FOV/HUD patch",
+                    w,h,bpp
+                ));
+            }
+        }
+    }
     // Observation only while the original native movie graph owns DD4.
     // Never advance this state on Wine or without explicit opt-in.
-    observe_native_intro_mode(Mode{width:w,height:h,bpp});
+    observe_native_intro_mode(requested);
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
@@ -851,6 +911,18 @@ mod native_intro_exclusive_tests {
         assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,game),INTRO_LEFT_MOVIE_MODE);
     }
 
+    #[test]
+    fn legacy_mode_must_not_trigger_pending_native_widescreen_handoff() {
+        let target=(1920,1200);
+        let legacy=Mode{width:1024,height:768,bpp:16};
+        let menu=Mode{width:800,height:600,bpp:16};
+        let native=Mode{width:1920,height:1200,bpp:16};
+        assert!(!native_intro_requested_3d(legacy,target));
+        assert!(!native_intro_requested_3d(menu,target));
+        assert!(native_intro_requested_3d(native,target));
+        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,legacy),INTRO_LEFT_MOVIE_MODE);
+        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,true));
+    }
     #[test]
     fn unpatched_native_intro_must_never_fall_back_with_widescreen_bytes() {
         let target=(1920,1200);
