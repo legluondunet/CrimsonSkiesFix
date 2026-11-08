@@ -147,6 +147,15 @@ NativeDirectInputMouseCoopRepair=0
 NativeGosCursorBridge=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
+; Windows-native XRGB8888 800x600 menu/movie: compose black background
+; and centered aspect-correct 4:3 image on one full-window offscreen
+; DirectDraw surface, then one complete primary Blt per frame.
+; No side-rectangle color fills, no GDI, native 3D remains unmodified.
+; Output dimensions follow current Win32 game HWND client, including DPI.
+; Wine/Proton never use this experiment. Driver errors fall back to the
+; previous validated DirectDraw mode. Default OFF, Debug A/B only.
+; For a clean test leave NativeGdiSidebars=0.
+NativeFullFrameCompose=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ColorProbe=0
