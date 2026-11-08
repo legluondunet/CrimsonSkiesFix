@@ -16,7 +16,7 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
+    sync::{Mutex,TryLockError,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
     time::{Duration,Instant},
 };
 use crate::{
@@ -73,6 +73,12 @@ fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
 const DDBLT_COLORFILL:u32=0x0000_0400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
+// The graph's front buffer is SYNTHETIC and synchronously presents by
+// completing its real windowed Blt pair. GetFlipStatus MUST describe that
+// exact virtual operation, not the non-flippable real desktop primary.
+const DDGFS_CANFLIP:u32=0x1;
+const DDGFS_ISFLIPDONE:u32=0x2;
+const DDERR_WASSTILLDRAWING:i32=0x8876_021cu32 as i32;
 const IID_IUNKNOWN:Guid=Guid{
     d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]
 };
@@ -1171,7 +1177,35 @@ unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->
     (real_vtable(real).get_dc)(real,p1)
 }
 
+/// The native primary lives in DDSCL_NORMAL and does NOT have a physical
+/// flipping chain. The game's advertised virtual PRIMARY does: Flip returns
+/// only after both native Blts complete. Query only the virtual session,
+/// never the unrelated real primary, so status cannot misreport NOTFLIPPABLE.
+fn virtual_primary_flip_status(
+    p:&Surface4Forwarder,flags:u32
+)->i32{
+    if flags!=DDGFS_CANFLIP && flags!=DDGFS_ISFLIPDONE{
+        return E_INVALIDARG;
+    }
+    if p.retired.load(Ordering::Acquire){return E_FAIL;}
+    // Never block in GetFlipStatus while an in-flight Flip holds this
+    // same mutex. The busy HRESULT reflects a genuine incomplete
+    // synchronous Blt pair, never a fabricated DirectShow completion.
+    match p.virtual_flip.try_lock(){
+        Ok(state)=>match state.as_ref(){
+            Some(session) if session.bridge.stats().fault.is_none()=>S_OK,
+            _=>E_FAIL,
+        },
+        Err(TryLockError::WouldBlock)=>DDERR_WASSTILLDRAWING,
+        Err(TryLockError::Poisoned(_))=>E_FAIL,
+    }
+}
 unsafe extern "system" fn forward_get_flip_status(this:SurfaceThis,p1:u32)->i32{
+    if let Some(node)=graph_node(this){
+        if node.role==SurfaceRole::Primary{
+            return virtual_primary_flip_status(&*this.cast::<Surface4Forwarder>(),p1);
+        }
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     let movie=graph_node(this).is_some_and(|n|n.native_movie_rgb32);
@@ -1933,20 +1967,29 @@ mod tests{
             attach_graph_surface4(b,z).unwrap();
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),E_FAIL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),E_FAIL);
             assert_eq!(graph_primary_completed_flips(p),None);
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false,ptr::null_mut()),Err(E_INVALIDARG));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Ok(()));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),S_OK);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),S_OK);
+            assert_eq!((vt.get_flip_status)(p,0),E_INVALIDARG);
+            assert_eq!((vt.get_flip_status)(p,3),E_INVALIDARG);
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!((vt.flip)(p,b,0),S_OK);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),S_OK);
             assert_eq!(graph_primary_completed_flips(p),Some(2));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),S_OK);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3);
             assert_eq!(phys[0].flips.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].flips.load(Ordering::SeqCst),0);
             assert_eq!(retire_graph_primary_flip(p),Ok(2));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),E_FAIL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),E_FAIL);
             assert_eq!(graph_primary_completed_flips(p),None);
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
@@ -2042,6 +2085,13 @@ mod tests{
                 let _=worker.join();
                 panic!("synthetic native Flip did not reach its first Blt");
             }
+            // The virtual flip is in the real Blt callback: ISFLIPDONE
+            // must describe it as pending, without taking the held mutex
+            // or trusting the unrelated native primary GetFlipStatus.
+            assert_eq!((vt.get_flip_status)(primary,DDGFS_ISFLIPDONE),
+                DDERR_WASSTILLDRAWING);
+            assert_eq!((vt.get_flip_status)(primary,DDGFS_CANFLIP),
+                DDERR_WASSTILLDRAWING);
             let retirement_started=Arc::new(AtomicBool::new(false));
             let retirement_finished=Arc::new(AtomicBool::new(false));
             let started=Arc::clone(&retirement_started);
