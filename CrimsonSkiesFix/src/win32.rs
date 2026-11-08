@@ -571,6 +571,41 @@ pub fn game_windows_snapshot()->String {
         probe.all,probe.visible,probe.top_level_visible,probe.geometry.join(","))
 }
 
+// Read-only Alt+Tab diagnostics on the process-owned HWNDs. Never log
+// window titles, class names, exact handles or user paths. The shell can
+// apply additional eligibility rules; "candidate" is not a claim that
+// the Windows task switcher actually displays this entry.
+#[derive(Default)]
+struct AltTabInventory{total:u32,items:Vec<String>}
+unsafe extern "system" fn alt_tab_inventory_callback(hwnd:Hwnd,context:isize)->i32{
+    let state=&mut *(context as *mut AltTabInventory);
+    let mut pid=0;
+    if GetWindowThreadProcessId(hwnd,&mut pid)==0 ||
+       pid!=GetCurrentProcessId(){return 1;}
+    state.total+=1;
+    if state.items.len()<8{
+        let visible=IsWindowVisible(hwnd)!=0;
+        let has_owner=!GetWindow(hwnd,4 /* GW_OWNER */).is_null();
+        let exstyle=GetWindowLongW(hwnd,-20 /* GWL_EXSTYLE */) as u32;
+        let toolwindow=exstyle&0x00000080!=0;
+        let appwindow=exstyle&0x00040000!=0;
+        let candidate=visible && !toolwindow && (!has_owner || appwindow);
+        state.items.push(format!(
+            "win#{} visible={visible} owner={has_owner} toolwindow={toolwindow} appwindow={appwindow} candidate={candidate}",
+            state.total
+        ));
+    }
+    1
+}
+pub fn game_alt_tab_inventory()->String{
+    let mut info=AltTabInventory::default();
+    if unsafe{EnumWindows(alt_tab_inventory_callback,&mut info as *mut _ as isize)}==0{
+        return "EnumWindows failed".to_string();
+    }
+    format!("windows={} [{}] [read-only, no titles or HWND, eligibility approximate]",
+        info.total,info.items.join("; "))
+}
+
 #[derive(Default)]
 struct UniqueVisibleGameWindow {
     count:u32,
