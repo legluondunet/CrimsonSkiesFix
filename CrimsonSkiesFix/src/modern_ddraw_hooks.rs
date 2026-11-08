@@ -22,8 +22,9 @@ pub(super) unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwn
         GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
         in_game_adapter::cooperative(this,hwnd,flags,call)
             .unwrap_or_else(||call(this,hwnd,flags))
-    }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
-        log("WINDOWED-GAME: non-DD4 SetCooperativeLevel blocked after virtual graph exposure");
+    }else if cfg().experimental_windowed_adapter &&
+        in_game_adapter::must_block_other_cooperative_interface(flags){
+        log("NATIVE-STRICT-BORDERLESS: non-DD4 exclusive SetCooperativeLevel blocked (or virtual graph already exposed)");
         0x8000_4001u32 as i32
     }else{call(this,hwnd,flags)};
     if !hwnd.is_null() && cfg().log_enabled {
@@ -51,7 +52,7 @@ pub(super) unsafe extern "system" fn modern_set_display_mode(
         in_game_adapter::display_mode(this,w,h,bpp,refresh,flags,call)
             .unwrap_or_else(||call(this,w,h,bpp,refresh,flags))
     }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
-        log("WINDOWED-GAME: non-DD4 SetDisplayMode blocked after virtual graph exposure");
+        log("NATIVE-STRICT-BORDERLESS: non-DD4 physical SetDisplayMode blocked (or virtual graph already exposed)");
         0x8000_4001u32 as i32
     }else{call(this,w,h,bpp,refresh,flags)}; // 5 arguments since IDirectDraw2
     if hr>=0 {
