@@ -48,6 +48,9 @@ pub const DEFAULT_INI: &str = concat!(
     "; Requires NativeDD4Bootstrap=1 and NativeIntroExclusive=0.\n",
     "; Experimental; disabled by default and never used on Wine/Proton.\n",
     "NativeMovieRGB32=0\n",
+    "; Windows-only: bounded post-Flip game-window message dispatch, experimental; off by default.\n",
+    "; Requires NativeMovieRGB32=1 and NativeDD4Bootstrap=1.\n",
+    "NativeMovieMessagePump=0\n",
     "; Experimental native Windows fallback: paint only 4:3 sidebars through Win32 GDI. Off by default.\n",
     "NativeGdiSidebars=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
@@ -86,6 +89,8 @@ pub struct Config {
     pub native_intro_exclusive: bool,
     // Native Windows movie-only A/B: physical 32-bit XRGB backbuffer and 16-bit logical mode.
     pub native_movie_rgb32: bool,
+    // Windows-only optional bounded, post-Flip WndProc pump to diagnose stalled UI.
+    pub native_movie_message_pump: bool,
     // Diagnostic only: Win32 GDI black gutters after native windowed Blt (not Wine).
     pub native_gdi_sidebars: bool,
     // Diagnostic-only: export forwarding without any DirectDraw or game hooks.
@@ -98,7 +103,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_gdi_sidebars: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_gdi_sidebars: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -171,6 +176,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.native_intro_exclusive = v; },
             ("debug", "nativemoviergb32") =>
                 if let Some(v) = enabled(value) { settings.native_movie_rgb32 = v; },
+            ("debug", "nativemoviemessagepump") =>
+                if let Some(v) = enabled(value) { settings.native_movie_message_pump = v; },
             ("debug", "nativegdisidebars") =>
                 if let Some(v) = enabled(value) { settings.native_gdi_sidebars = v; },
             ("debug", "nativedpiaware") =>
@@ -238,6 +245,13 @@ mod tests {
         assert!(parse("[Debug]\nNativeGdiSidebars=1").native_gdi_sidebars);
         assert!(!parse("[Graphics]\nNativeGdiSidebars=1").native_gdi_sidebars);
         assert!(!parse("[Debug]\nNativeGdiSidebars=0").native_gdi_sidebars);
+    }
+    #[test]
+    fn native_movie_message_pump_is_strictly_opt_in(){
+        assert!(!Config::default().native_movie_message_pump);
+        assert!(parse("[Debug]\nNativeMovieMessagePump=1").native_movie_message_pump);
+        assert!(!parse("[Debug]\nNativeMovieMessagePump=0").native_movie_message_pump);
+        assert!(!parse("[Graphics]\nNativeMovieMessagePump=1").native_movie_message_pump);
     }
     #[test]
     fn native_movie_rgb32_is_debug_only_and_off_by_default(){
