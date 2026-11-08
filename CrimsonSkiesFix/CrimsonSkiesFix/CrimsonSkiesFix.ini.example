@@ -96,6 +96,13 @@ NativeMovieRGB32=0
 ; Never runs in Wine/Proton or normal gameplay; opt-in only.
 ; Keep 0 unless explicitly diagnosing Windows "Not Responding".
 NativeMovieMessagePump=0
+; Native Windows-only 800x600 MainMenu/Preferences A/B: remap only the
+; game's WM_MOUSEMOVE and mouse button client coordinates to the centered
+; 4:3 canvas (e.g. 1536x960 window -> centered 1280x960 -> 800x600).
+; Real OS pointer, DirectInput, all keys, videos and 1920x1200 gameplay
+; remain untouched. Requires verified RGB32 movie graph and WndProc guard.
+; Disabled by default; test separately from NativeMovieMessagePump.
+NativeMenuMouseRemap=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
