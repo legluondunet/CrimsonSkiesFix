@@ -47,6 +47,11 @@ unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
         MAIN_SEEN.store(true,Ordering::Release);
     }
     let old=CURRENT.swap(scene,Ordering::AcqRel);
+    // Only the explicit Windows-native 800x600 menu mouse A/B sees
+    // this signal. The original script loader still executes unchanged.
+    crate::window_erase_guard::set_native_menu_mouse_script_active(
+        scene==MAIN || scene==PREFERENCES
+    );
     if old!=scene {
         log(match scene {
             MAIN=>"MENU-SCENE: entered MainMenu; branding enabled",
