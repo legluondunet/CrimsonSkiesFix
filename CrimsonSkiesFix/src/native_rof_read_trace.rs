@@ -1,4 +1,7 @@
-//! Read-only Windows provenance probe for original ROFFILE.DLL ReadFile.
+//! Windows provenance probe for original ROFFILE.DLL ReadFile.
+//! Also contains a narrow opt-in original-overlay HANDLE routing fallback
+//! for the confirmed native Windows wrong-file-ID resource path. The
+//! provenance observer itself remains pass-through and does not alter reads.
 //! Enabled only after exact original executable + ROFFILE.DLL verification.
 //! It verifies actual Win32 volume/file IDs (not just archive basenames),
 //! logs bounded read offsets, and never records private paths or file bytes.
