@@ -829,7 +829,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 crate::diagnostics::is_native_windows() &&
                 native_movie_rgb32_enabled(mode) {
                 match crate::window_erase_guard::arm_native_system_cursor_probe(
-                    runtime.hwnd
+                    runtime.hwnd,crate::cfg().native_menu_mouse_remap
                 ){
                     Ok(())=>log("NATIVE-SYSTEM-CURSOR-PROBE: armed for actual MainMenu/Preferences; original input untouched, game WndProc executes first; OS arrow diagnostic only"),
                     Err(reason)=>log(&format!(
