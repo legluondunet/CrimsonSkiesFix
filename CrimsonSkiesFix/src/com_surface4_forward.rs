@@ -185,13 +185,18 @@ impl ExposureState {
 // cadence, NOT the moment a frame reaches the physical display or compositor.
 // Leave completely unallocated/disabled by default. No per-frame file writes.
 const FRAME_TIME_WINDOW:usize=120;
-#[derive(Default)]
 struct FrameTimeWindow{
     previous:Option<Instant>,
     intervals_us:[u32;FRAME_TIME_WINDOW],
     native_present_us:[u32;FRAME_TIME_WINDOW],
     filled:usize,
     pauses:u32,
+}
+impl Default for FrameTimeWindow{
+    fn default()->Self{
+        Self{previous:None,intervals_us:[0;FRAME_TIME_WINDOW],
+            native_present_us:[0;FRAME_TIME_WINDOW],filled:0,pauses:0}
+    }
 }
 impl FrameTimeWindow{
     fn observe(&mut self,done_at:Instant,blt_duration:Duration,
