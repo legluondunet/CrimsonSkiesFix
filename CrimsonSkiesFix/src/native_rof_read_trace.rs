@@ -228,11 +228,13 @@ pub unsafe fn redirect_original_overlay_if_verified(
 
 /// Shared routing is independent of optional logging and the host OS.
 /// Keep the prerequisites identical to the managed GOS patch installation.
-pub fn routing_enabled()->bool{
-    let c=crate::cfg();
+fn routing_policy(c:&crate::config::Config)->bool{
     c.gos_video_lock==gos_video_lock::Mode::On &&
         c.experimental_windowed_adapter && c.native_3d_widescreen &&
         c.desktop_resolution && !c.directdraw_passthrough
+}
+pub fn routing_enabled()->bool{
+    routing_policy(crate::cfg())
 }
 
 /// Initialize the authenticated file IDs separately from optional ReadFile
@@ -318,6 +320,29 @@ pub unsafe fn install(module:usize,rva:Option<usize>)->bool{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn routing_is_shared_and_ignores_debug_log_flag(){
+        let mut config=crate::config::Config::default();
+        assert!(routing_policy(&config)); // Log=false default still routes.
+        config.log_enabled=true;
+        assert!(routing_policy(&config));
+        config.gos_video_lock=gos_video_lock::Mode::Off;
+        assert!(!routing_policy(&config));
+        config.gos_video_lock=gos_video_lock::Mode::Restore;
+        assert!(!routing_policy(&config));
+        config.gos_video_lock=gos_video_lock::Mode::On;
+        config.directdraw_passthrough=true;
+        assert!(!routing_policy(&config));
+        config.directdraw_passthrough=false;
+        config.desktop_resolution=false;
+        assert!(!routing_policy(&config));
+        config.desktop_resolution=true;
+        config.native_3d_widescreen=false;
+        assert!(!routing_policy(&config));
+        config.native_3d_widescreen=true;
+        config.experimental_windowed_adapter=false;
+        assert!(!routing_policy(&config));
+    }
     #[test]
     fn only_verified_file_identity_matches(){
         let a=FileId{volume:1,index_hi:2,index_lo:3};
