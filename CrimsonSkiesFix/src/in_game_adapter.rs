@@ -849,7 +849,8 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 native_movie_rgb32_enabled(mode) {
                 let output=(expected.2,expected.3);
                 match crate::window_erase_guard::arm_native_gos_cursor_bridge(
-                    runtime.hwnd,output,runtime.render_client
+                    runtime.hwnd,output,runtime.render_client,
+                    crate::cfg().native_menu_mouse_remap
                 ){
                     Ok(view)=>log(&format!(
                         "NATIVE-GOS-CURSOR-BRIDGE: armed original GOS mouse via native DirectInput relative movement; viewport=({},{} {}x{}) logical_source=800x600; only MainMenu/Preferences script; native windows only",
