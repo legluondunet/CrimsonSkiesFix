@@ -964,6 +964,90 @@ unsafe fn convert_known_native_movie_blt(
     Ok(hr)
 }
 
+/// Widen 16-bit RGB565 to native XRGB8888, keeping the original image's
+/// exact pixels and dimensions. Both surfaces have been locked and pitch
+/// bounds verified by the caller. Never CPU-lock the active D3D3 backbuffer.
+fn rgb565_to_xrgb8888(px:u16)->u32{
+    let r=((px>>11)&31) as u32;
+    let g=((px>>5)&63) as u32;
+    let b=(px&31) as u32;
+    ((r<<3|r>>2)<<16)|((g<<2|g>>4)<<8)|(b<<3|b>>2)
+}
+unsafe fn convert_opening_rgb565_pixels(
+    src:*const u8,src_pitch:usize,dst:*mut u8,dst_pitch:usize
+){
+    for y in 0..600usize{
+        let src_row=src.add(y*src_pitch);
+        let dst_row=dst.add(y*dst_pitch);
+        for x in 0..800usize{
+            let pixel=ptr::read_unaligned(src_row.add(x*2).cast::<u16>());
+            ptr::write_unaligned(dst_row.add(x*4).cast::<u32>(),
+                rgb565_to_xrgb8888(pixel));
+        }
+    }
+}
+unsafe fn present_converted_opening_image(
+    native_dest:SurfaceThis,native_source:SurfaceThis,scratch:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,fx:*mut c_void
+)->Result<i32,&'static str>{
+    let full=Rect{left:0,top:0,right:800,bottom:600};
+    if native_dest.is_null() || native_source.is_null() || scratch.is_null() ||
+       dst_rect.is_null() || src_rect.is_null() ||
+       *dst_rect!=full || *src_rect!=full ||
+       flags!=(DDBLT_ASYNC|DDBLT_WAIT) || !fx.is_null(){
+        return Err("unexpected opening Blt geometry/flags/effects");
+    }
+    let src_vt=real_vtable(native_source);
+    let dst_vt=real_vtable(native_dest);
+    let stage_vt=real_vtable(scratch);
+    let mut src_d=[0u32;31];src_d[0]=124;
+    let mut dst_d=[0u32;31];dst_d[0]=124;
+    if (src_vt.get_surface_desc)(native_source,src_d.as_mut_ptr().cast())<0 ||
+       (dst_vt.get_surface_desc)(native_dest,dst_d.as_mut_ptr().cast())<0 {
+        return Err("opening native surface descriptor failed");
+    }
+    if (src_d[3],src_d[2],src_d[21],src_d[22],src_d[23],src_d[24])!=
+         (800,600,16,0xf800,0x07e0,0x001f) ||
+       src_d[26]&0x800==0 ||
+       (dst_d[3],dst_d[2],dst_d[21],dst_d[22],dst_d[23],dst_d[24])!=
+         (800,600,32,0xff0000,0xff00,0xff) {
+        return Err("opening native source/backbuffer format mismatch");
+    }
+    let mut src_l=[0u32;31];src_l[0]=124;
+    if (src_vt.lock)(native_source,ptr::null_mut(),src_l.as_mut_ptr().cast(),
+        0x11,ptr::null_mut())<0{
+        return Err("opening RGB565 source Lock failed");
+    }
+    let mut stage_l=[0u32;31];stage_l[0]=124;
+    if (stage_vt.lock)(scratch,ptr::null_mut(),stage_l.as_mut_ptr().cast(),
+        0x1,ptr::null_mut())<0{
+        let _=(src_vt.unlock)(native_source,ptr::null_mut());
+        return Err("opening XRGB8888 scratch Lock failed");
+    }
+    let valid=(src_l[0],src_l[3],src_l[2],src_l[21])==(124,800,600,16) &&
+        (stage_l[0],stage_l[3],stage_l[2],stage_l[21])==(124,800,600,32) &&
+        src_l[4]>=1600 && src_l[4]<=65536 &&
+        stage_l[4]>=3200 && stage_l[4]<=65536 &&
+        src_l[9]!=0 && stage_l[9]!=0;
+    if valid{
+        convert_opening_rgb565_pixels(
+            (src_l[9] as usize) as *const u8,src_l[4] as usize,
+            (stage_l[9] as usize) as *mut u8,stage_l[4] as usize
+        );
+    }
+    let stage_unlock=(stage_vt.unlock)(scratch,ptr::null_mut());
+    let src_unlock=(src_vt.unlock)(native_source,ptr::null_mut());
+    if !valid || stage_unlock<0 || src_unlock<0{
+        return Err("opening conversion pitch/geometry/unlock failed");
+    }
+    // Same-format native Blt, already exercised by 320x240 XRGB8888 movies.
+    // Never report a successful frame without a successful physical copy.
+    let hr=(dst_vt.blt)(native_dest,dst_rect,scratch,src_rect,
+        DDBLT_WAIT,ptr::null_mut());
+    if hr<0{return Err("opening same-format XRGB8888 Blt failed");}
+    Ok(hr)
+}
+
 /// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
 /// Surface4. Native texture/offscreen source copies can be forwarded safely
 /// when the source is unwrapped to a real COM pointer. Depth Blt remains
@@ -1013,24 +1097,45 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                 count
             }else{0};
             let movie_started=if movie_trace{Some(Instant::now())}else{None};
-            // The exact first original 800x600 image copies arrived as
-            // DDBLT_ASYNC|DDBLT_WAIT on a native XRGB32 video backbuffer.
-            // Disable only the asynchronous scheduling bit for this proven
-            // source/destination format pair, on either host if encountered.
-            // No unrelated textures, decoded RGB32 movie frames or Wine RGB565
-            // backbuffer graphs are changed.
-            let verified_opening=movie_trace &&
-                node.mode.width==800 && node.mode.height==600 &&
-                p4==(DDBLT_ASYNC|DDBLT_WAIT) &&
-                is_native_opening_image_surface(real_source);
-            let flags=opening_image_blt_flags(p4,verified_opening);
-            if verified_opening && movie_call<=2{
-                crate::log(&format!(
-                    "STARTUP-IMAGE-BLT: verified RGB565 800x600 -> native RGB32 800x600; dst_rect={} src_rect={} original_flags={p4:#010x} effective_flags={flags:#010x}; sync copy requested",
-                    rect_summary(p1),rect_summary(p3)
-                ));
-            }
-            let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,flags,p5);
+            // The original RGB565 800x600 image is complete in the source,
+            // yet the driver's 16->32 native Blt (including WAIT-only) copies
+            // only row zero while returning DD_OK. Convert into a separately
+            // owned XRGB8888 SYSTEMMEM surface, then perform a SAME-FORMAT
+            // native GPU Blt. This path requires the exact verified graph,
+            // original full rectangles and original flags; never a host OS
+            // identity. Other video and gameplay Blts remain untouched.
+            let verified_opening=movie_trace && node.mode.width==800 &&
+                node.mode.height==600 && p4==(DDBLT_ASYNC|DDBLT_WAIT) &&
+                is_native_opening_image_surface(real_source) &&
+                !is_our_forwarder(p2);
+            let scratch=current.opening_rgb32_staging.load(Ordering::Acquire);
+            let hr=if verified_opening && !scratch.is_null(){
+                match present_converted_opening_image(
+                    current.real,real_source,scratch,p1,p3,p4,p5
+                ){
+                    Ok(result)=>{
+                        if movie_call<=2 {
+                            crate::log(&format!(
+                                "STARTUP-IMAGE-BLT: complete RGB565 800x600 converted to private XRGB8888, same-format native Blt succeeded; dst_rect={} src_rect={} original_flags={p4:#010x} final_flags={DDBLT_WAIT:#010x}",
+                                rect_summary(p1),rect_summary(p3)
+                            ));
+                        }
+                        result
+                    },
+                    Err(reason)=>{
+                        if movie_call<=2 {
+                            crate::log(&format!(
+                                "STARTUP-IMAGE-BLT: conversion unavailable ({reason}); original native Blt preserved"
+                            ));
+                        }
+                        (real_vtable(current.real).blt)(
+                            current.real,p1,real_source,p3,p4,p5)
+                    }
+                }
+            }else{
+                (real_vtable(current.real).blt)(
+                    current.real,p1,real_source,p3,p4,p5)
+            };
             if let Some(started)=movie_started{
                 movie_com_trace("backbuffer.native_Blt",movie_call,Some(hr),
                     Some(started.elapsed().as_millis()));
@@ -1985,6 +2090,37 @@ mod tests{
         assert_eq!(at(399,599),0xf800);
         assert_eq!(at(400,0),0x07e0);
         assert_eq!(at(799,599),0x07e0);
+    }
+    #[test]
+    fn opening_rgb565_to_xrgb8888_is_exact_and_pitch_safe(){
+        assert_eq!(rgb565_to_xrgb8888(0xf800),0x00ff0000);
+        assert_eq!(rgb565_to_xrgb8888(0x07e0),0x0000ff00);
+        assert_eq!(rgb565_to_xrgb8888(0x001f),0x000000ff);
+        assert_eq!(rgb565_to_xrgb8888(0xffff),0x00ffffff);
+        let mut src=vec![0u8;600*1604];
+        let mut dst=vec![0x5au8;600*3208];
+        for y in 0..600usize{
+            for x in 0..800usize{
+                let px=if (x+y)%3==0{0xf800u16}else if (x+y)%3==1{
+                    0x07e0
+                }else{0x001f};
+                let at=y*1604+x*2;
+                src[at..at+2].copy_from_slice(&px.to_le_bytes());
+            }
+        }
+        unsafe{convert_opening_rgb565_pixels(
+            src.as_ptr(),1604,dst.as_mut_ptr(),3208
+        );}
+        for (x,y,color) in [(0usize,0usize,0xff0000u32),
+             (1,0,0x00ff00),(2,0,0x0000ff),
+             (0,599,0x0000ff),(799,599,0x00ff00)] {
+            let at=y*3208+x*4;
+            assert_eq!(u32::from_le_bytes(dst[at..at+4].try_into().unwrap()),
+                color,"pixel {x},{y}");
+        }
+        // No writes into row padding.
+        assert!(dst.chunks_exact(3208).all(|row|
+            row[3200..].iter().all(|b|*b==0x5a)));
     }
     #[test]
     fn native_blt_failure_rectangle_summary_is_bounded(){
