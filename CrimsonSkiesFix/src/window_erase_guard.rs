@@ -39,6 +39,9 @@ struct WinMessage{
     hwnd:Hwnd,message:u32,wparam:usize,lparam:isize,time:u32,
     point:Point,lprivate:u32
 }
+#[repr(C)]
+#[derive(Default)]
+struct MouseRect{left:i32,top:i32,right:i32,bottom:i32}
 const PM_REMOVE:u32=1;
 const NATIVE_MOVIE_PUMP_MAX_PER_FLIP:usize=4;
 thread_local!{
@@ -56,6 +59,7 @@ extern "system"{
     fn TranslateMessage(msg:*const WinMessage)->i32;
     fn DispatchMessageW(msg:*const WinMessage)->isize;
     fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
+    fn GetClientRect(hwnd:Hwnd,rect:*mut MouseRect)->i32;
     fn GetWindowLongW(hwnd:Hwnd,index:i32)->i32;
     fn SetWindowLongW(hwnd:Hwnd,index:i32,value:i32)->i32;
     fn CallWindowProcW(proc:isize,hwnd:Hwnd,msg:u32,wparam:usize,lparam:isize)->isize;
@@ -87,12 +91,23 @@ static MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
 static NATIVE_MOVIE_PUMP_HWND:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_PUMP_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_PUMP_MESSAGES:AtomicUsize=AtomicUsize::new(0);
+// Strictly native Windows 800x600 movie/menu opt-in. The exact verified
+// game HWND is armed only after DD4 preflight. The MainMenu/Preferences
+// script observer enables translations solely while a menu is active.
+static MENU_MOUSE_HWND:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_CLIENT_W:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_CLIENT_H:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_SCENE_ACTIVE:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_MAPPED:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
+static MENU_MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
     pub erased:usize,pub painted:usize,
     pub keydown:usize,pub keyup:usize,pub character:usize,pub focus_changes:usize,
     pub mouse_moves:usize,pub mouse_buttons:usize,
+    pub menu_mouse_mapped:usize,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowInputState{
@@ -105,6 +120,7 @@ pub struct WindowInputState{
     pub cursor_visible:Option<bool>,
     pub cursor_screen:Option<(i32,i32)>,
     pub cursor_client_last_move:Option<(i32,i32)>,
+    pub menu_mouse_logical_last_move:Option<(i32,i32)>,
 }
 fn input_event(msg:u32)->(bool,bool,bool,bool){
     (matches!(msg,WM_KEYDOWN|WM_SYSKEYDOWN),
@@ -120,6 +136,52 @@ fn mouse_button_message(msg:u32)->bool{
 fn client_mouse_point(lparam:isize)->(i32,i32){
     let packed=lparam as u32;
     ((packed as u16 as i16) as i32,((packed>>16) as u16 as i16) as i32)
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+struct MenuRect{left:i32,top:i32,width:i32,height:i32}
+fn menu_content_rect(client_w:i32,client_h:i32)->Option<MenuRect>{
+    if client_w<800 || client_h<600 || client_w>8192 || client_h>8192{
+        return None;
+    }
+    // Same centered 4:3 fit used by the native virtual primary Blt.
+    let (width,height)=if i64::from(client_w)*3>=i64::from(client_h)*4{
+        (client_h*4/3,client_h)
+    }else{
+        (client_w,client_w*3/4)
+    };
+    if width<800 || height<600{return None;}
+    Some(MenuRect{left:(client_w-width)/2,top:(client_h-height)/2,width,height})
+}
+fn menu_mouse_point(point:(i32,i32),client_w:i32,client_h:i32)->Option<(i32,i32)>{
+    let view=menu_content_rect(client_w,client_h)?;
+    // Intentionally do not clamp to the viewport: negative/outside
+    // coordinates tell the game that the pointer left its 4:3 canvas.
+    let x=i64::from(point.0-view.left)*800/i64::from(view.width);
+    let y=i64::from(point.1-view.top)*600/i64::from(view.height);
+    let x=i16::try_from(x).ok()?;
+    let y=i16::try_from(y).ok()?;
+    Some((i32::from(x),i32::from(y)))
+}
+fn menu_mouse_message(msg:u32)->bool{
+    msg==WM_MOUSEMOVE || mouse_button_message(msg)
+}
+fn menu_mouse_lparam(hwnd:Hwnd,msg:u32,lparam:isize)->isize{
+    if !menu_mouse_message(msg) ||
+        MENU_MOUSE_HWND.load(Ordering::Acquire)!=hwnd as usize ||
+        MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0{
+        return lparam;
+    }
+    let width=MENU_MOUSE_CLIENT_W.load(Ordering::Acquire) as i32;
+    let height=MENU_MOUSE_CLIENT_H.load(Ordering::Acquire) as i32;
+    let Some((x,y))=menu_mouse_point(client_mouse_point(lparam),width,height) else{
+        return lparam;
+    };
+    MENU_MOUSE_LAST_X.store(x as isize,Ordering::Relaxed);
+    MENU_MOUSE_LAST_Y.store(y as isize,Ordering::Relaxed);
+    MENU_MOUSE_MAPPED.fetch_add(1,Ordering::Relaxed);
+    let packed=(u32::from(x as i16 as u16)) |
+        (u32::from(y as i16 as u16)<<16);
+    packed as isize
 }
 fn intercept_erase(message:u32,matching:bool)->bool{
     message==WM_ERASEBKGND && matching
@@ -160,13 +222,20 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         }
         HOOK_HWND.store(0,Ordering::Release);
         PREVIOUS.store(0,Ordering::Release);
+        disarm_native_menu_mouse_remap();
     }
     if previous==0{
         // Narrow installation race: do not recurse or dispatch via a NULL
         // callback. The original is captured immediately after SetWindowLongW.
         return DefWindowProcW(hwnd,msg,wparam,lparam);
     }
-    CallWindowProcW(previous,hwnd,msg,wparam,lparam)
+    // The original game receives the same messages and button flags;
+    // only mouse client coordinates are scaled to the source 800x600
+    // canvas when the exact native MainMenu/Preferences A/B is enabled.
+    let forwarded=if matching{
+        menu_mouse_lparam(hwnd,msg,lparam)
+    }else{lparam};
+    CallWindowProcW(previous,hwnd,msg,wparam,forwarded)
 }
 
 /// Install once on the exact user-supplied, process-owned gameplay HWND.
@@ -216,6 +285,7 @@ pub fn snapshot(hwnd:usize)->Option<WindowPaintStats>{
             focus_changes:FOCUS_COUNT.load(Ordering::Acquire),
             mouse_moves:MOUSE_MOVE_COUNT.load(Ordering::Acquire),
             mouse_buttons:MOUSE_BUTTON_COUNT.load(Ordering::Acquire),
+            menu_mouse_mapped:MENU_MOUSE_MAPPED.load(Ordering::Acquire),
         })
 }
 
@@ -243,6 +313,11 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
             MOUSE_LAST_X.load(Ordering::Acquire) as i32,
             MOUSE_LAST_Y.load(Ordering::Acquire) as i32
         ));
+        let menu_mouse_logical_last_move=
+            (counts.menu_mouse_mapped>0).then_some((
+                MENU_MOUSE_LAST_X.load(Ordering::Acquire) as i32,
+                MENU_MOUSE_LAST_Y.load(Ordering::Acquire) as i32
+            ));
         Some(WindowInputState{
             counts,
             game_is_foreground:GetForegroundWindow()==hwnd,
@@ -250,8 +325,47 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
             window_thread,
             current_thread:GetCurrentThreadId(),
             cursor_visible,cursor_screen,cursor_client_last_move,
+            menu_mouse_logical_last_move,
         })
     }
+}
+
+/// Validate and arm the native menu-mouse A/B ONLY after the verified
+/// 800x600 RGB32 graph and HWND borderless geometry were accepted.
+/// The scene gate remains closed until the actual MainMenu/Preferences
+/// script loads. This has no effect on DirectInput or the OS cursor.
+pub fn arm_native_menu_mouse_remap(hwnd:usize,client:(u32,u32))->Result<MenuMouseGeometry,String>{
+    if hwnd==0{return Err("NULL menu HWND".into());}
+    let w=i32::try_from(client.0).map_err(|_|"invalid menu width")?;
+    let h=i32::try_from(client.1).map_err(|_|"invalid menu height")?;
+    let view=menu_content_rect(w,h).ok_or("unsupported 4:3 menu viewport")?;
+    unsafe{
+        if IsWindow(hwnd as Hwnd)==0{return Err("invalid menu HWND".into());}
+        let mut pid=0;
+        if GetWindowThreadProcessId(hwnd as Hwnd,&mut pid)!=GetCurrentThreadId() ||
+            pid!=GetCurrentProcessId(){
+            return Err("menu HWND is not owned by current process/thread".into());
+        }
+        let mut actual=MouseRect::default();
+        if GetClientRect(hwnd as Hwnd,&mut actual)==0 ||
+            actual.right-actual.left!=w || actual.bottom-actual.top!=h{
+            return Err("menu HWND client geometry mismatch".into());
+        }
+    }
+    MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
+    MENU_MOUSE_CLIENT_W.store(client.0 as usize,Ordering::Release);
+    MENU_MOUSE_CLIENT_H.store(client.1 as usize,Ordering::Release);
+    MENU_MOUSE_HWND.store(hwnd,Ordering::Release);
+    Ok(MenuMouseGeometry{left:view.left,top:view.top,width:view.width,height:view.height})
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct MenuMouseGeometry{pub left:i32,pub top:i32,pub width:i32,pub height:i32}
+pub fn disarm_native_menu_mouse_remap(){
+    MENU_MOUSE_HWND.store(0,Ordering::Release);
+    MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
+}
+pub fn set_native_menu_mouse_script_active(active:bool){
+    MENU_MOUSE_SCENE_ACTIVE.store(usize::from(active),Ordering::Release);
 }
 
 /// Arm for the exact process-owned game HWND; only the physically verified
@@ -363,7 +477,28 @@ mod tests{
         assert_eq!(std::mem::size_of::<Point>(),8);
         assert_eq!(std::mem::size_of::<CursorInfo>(),20); // x86 only
         assert_eq!(std::mem::size_of::<WinMessage>(),32); // x86 only
+        assert_eq!(std::mem::size_of::<MouseRect>(),16);
         assert_eq!(NATIVE_MOVIE_PUMP_MAX_PER_FLIP,4);
+    }
+    #[test]
+    fn native_menu_4_by_3_mouse_mapping_is_exact_and_reversible(){
+        assert_eq!(menu_content_rect(1536,960),Some(MenuRect{
+            left:128,top:0,width:1280,height:960
+        }));
+        assert_eq!(menu_mouse_point((128,0),1536,960),Some((0,0)));
+        assert_eq!(menu_mouse_point((1407,959),1536,960),Some((799,599)));
+        assert_eq!(menu_mouse_point((1408,960),1536,960),Some((800,600)));
+        assert_eq!(menu_mouse_point((636,542),1536,960),Some((317,338)));
+        assert_eq!(menu_mouse_point((64,480),1536,960),Some((-40,300)));
+        assert_eq!(menu_mouse_point((640,360),1280,720),Some((400,300)));
+        assert_eq!(menu_mouse_point((400,300),800,600),Some((400,300)));
+        assert_eq!(menu_content_rect(640,480),None);
+        assert_eq!(menu_mouse_point((0,0),0,0),None);
+        assert!(!menu_mouse_message(WM_CHAR));
+        assert!(!menu_mouse_message(WM_KEYDOWN));
+        assert!(menu_mouse_message(WM_MOUSEMOVE));
+        assert!(menu_mouse_message(WM_LBUTTONUP));
+        assert_eq!(menu_mouse_lparam(std::ptr::null_mut(),WM_MOUSEMOVE,0x1234),0x1234);
     }
     #[test]
     fn native_movie_pump_requires_a_strictly_armed_window(){
