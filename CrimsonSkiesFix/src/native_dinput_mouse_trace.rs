@@ -10,7 +10,7 @@
 //! Requires Log=1, NativeDD4Bootstrap=1 and explicit trace OR repair flag;
 //! never Wine/Proton or normal DirectDraw mode.
 #![allow(dead_code)]
-use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicUsize,Ordering}};
+use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
 use crate::{diagnostics,log,win32};
 
 type Obj=*mut c_void;
