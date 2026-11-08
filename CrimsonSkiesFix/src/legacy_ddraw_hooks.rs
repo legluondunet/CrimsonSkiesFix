@@ -90,7 +90,7 @@ pub(super) unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,
     }
     // In the strict native experiment, never forward an exclusive request
     // directly after the cooperative shim is bypassed/declined.
-    if in_game_adapter::strict_native_nonexclusive() && flags&0x11==0x11 {
+    if in_game_adapter::strict_native_nonexclusive() && flags&0x10!=0 {
         log("NATIVE-STRICT-BORDERLESS: legacy exclusive cooperative request rejected");
         return DDERR_GENERIC;
     }
