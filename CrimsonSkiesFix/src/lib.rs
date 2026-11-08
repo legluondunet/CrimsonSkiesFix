@@ -330,28 +330,15 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
-    // Install the managed, verified GOS overlay before initializing file-ID
-    // references for our shared Windows/Wine resource hook. Otherwise an
-    // already-loaded ROFFILE could cache an absent pre-patch reference.
-    // Pass-through and explicit opt-out never edit or intercept resources.
+    // Preserve the native opening-screen initialization order from the
+    // previously validated Windows 488a5180 build: register the original
+    // loader observer before applying the managed archive patch.
+    // The verified ROFFILE import probe is delayed until AFTER the patch,
+    // so reference file IDs can never be initialized to a missing overlay.
+    // This is the SAME sequence on Windows and Wine, without OS branches.
     if !config.directdraw_passthrough {
-        static GOS_LOCK_ONCE:Once=Once::new();
-        GOS_LOCK_ONCE.call_once(|| {
-            gos_video_lock::apply(
-                config.gos_video_lock,
-                config.experimental_windowed_adapter &&
-                config.native_3d_widescreen &&
-                config.desktop_resolution
-            );
-        });
-        // Observe only the authenticated game's loader imports. The same
-        // code selects the already-correct archive on Wine or redirects a
-        // verified original copy on Windows; no OS-specific routing branch.
-        static ROF_ROUTING_EARLY_ONCE:Once=Once::new();
-        ROF_ROUTING_EARLY_ONCE.call_once(|| {
-            native_rof_load_trace::install();
-            native_rof_open_trace::probe();
-        });
+        static ROF_LOADER_ONCE:Once=Once::new();
+        ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
     }
     if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
         NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
@@ -379,8 +366,21 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         };
         return win32::system_export(real,name);
     }
-    // The shared authenticated GOS resource patch and loader hook have
-    // already been initialized above, before original script loading.
+    // Keep the original first-image startup order: apply the file patch at
+    // the same lifecycle point as our verified Windows native baseline.
+    // This runs before GameOS script loading. The common routing observer
+    // is installed only after the patched overlay is available.
+    static GOS_LOCK_ONCE:Once=Once::new();
+    GOS_LOCK_ONCE.call_once(|| {
+        gos_video_lock::apply(
+            config.gos_video_lock,
+            config.experimental_windowed_adapter &&
+            config.native_3d_widescreen &&
+            config.desktop_resolution
+        );
+    });
+    static ROF_ROUTING_EARLY_ONCE:Once=Once::new();
+    ROF_ROUTING_EARLY_ONCE.call_once(native_rof_open_trace::probe);
     // Freeze the screen under the cursor at the first game DirectDraw call.
     // It represents the launch screen, not the cursor's later location.
     // The actual game HWND is validated separately before it can be moved.
