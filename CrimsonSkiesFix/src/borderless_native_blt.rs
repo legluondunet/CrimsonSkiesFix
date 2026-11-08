@@ -82,9 +82,10 @@ impl NativeWindowedBlt {
     /// only final presentation rectangles, NOT source modes/FOV/HUD/Z.
     /// The independent probe and Wine/Proton use output_client==client.
     pub fn set_output_client(&mut self,output:(u32,u32))->Result<(),i32>{
-        if output.0==0 || output.1==0 ||
-           (u64::from(output.0)*u64::from(self.client.1))!=
-           (u64::from(output.1)*u64::from(self.client.0)){
+        // Shared with the WndProc's 4:3 input mapping. Win32 DPI
+        // virtualization can round either dimension by one output pixel;
+        // never reject an otherwise correct native monitor on that basis.
+        if !crate::presentation::dpi_output_matches(self.client,output){
             return Err(BAD);
         }
         self.output_client=output;
@@ -420,6 +421,10 @@ mod tests{
         let whole=backend.screen_rect(Viewport{x:0,y:0,width:1920,height:1200}).unwrap();
         assert_eq!(whole,Rect{left:0,top:0,right:1536,bottom:960});
         assert_eq!(backend.set_output_client((1536,950)),Err(BAD));
+        // Windows may round one logical client dimension at fractional DPI.
+        assert_eq!(backend.set_output_client((1536,961)),Ok(()));
+        // But a real aspect mismatch remains invalid.
+        assert_eq!(backend.set_output_client((1536,864)),Err(BAD));
     }
     #[test]
     fn origin_translation_and_hresult_failure(){
