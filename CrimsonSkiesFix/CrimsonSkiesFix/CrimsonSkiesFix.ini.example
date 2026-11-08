@@ -74,9 +74,12 @@ NativeDD4Bootstrap=0
 ; activate a virtual graph late on ESC -> menu (white-screen safeguard).
 ; Avoids exposing synthetic RGB565 intro surfaces to native DirectShow.
 ; Requires NativeDD4Bootstrap=1 and ExperimentalWindowedAdapter=1.
-; FOV/HUD patch is postponed until virtual activation. Never active on Wine.
-; A/B experiment: 0 keeps the existing implementation; 1 may restore native
-; resolution changes during the intro and still needs a real-game test.
+; FOV/HUD patch is committed only after a matching native-resolution
+; SetDisplayMode AND successful virtual HAL preflight. When the unmodified
+; game instead requests 1024x768, the DLL preserves original exclusive
+; DirectDraw without modifying the EXE in memory (safe diagnostic fallback).
+; Never active on Wine. A/B experiment: 0 retains the existing implementation;
+; 1 still needs a real-game widescreen validation.
 NativeIntroExclusive=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
