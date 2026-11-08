@@ -121,6 +121,90 @@ pub fn fit_viewport(src_width:u32,src_height:u32,
     })
 }
 
+/// A Windows HWND's client size can differ from DirectDraw's physical
+/// monitor raster due to DPI virtualization. Per-axis integer rounding
+/// can make their aspect cross-products differ slightly (e.g. a physical
+/// 1366x768 display represented by a logical 1093x614 window at 125%).
+/// Permit up to one output-coordinate pixel of error in EACH dimension,
+/// while rejecting genuine 4:3-to-16:9 mismatches. This is a pure
+/// geometry guard: it never changes the Windows desktop or game mode.
+pub fn dpi_output_matches(render:(u32,u32),output:(u32,u32))->bool{
+    if render.0==0 || render.1==0 || output.0==0 || output.1==0{
+        return false;
+    }
+    u64::from(output.0).saturating_mul(u64::from(render.1))
+        .abs_diff(u64::from(output.1).saturating_mul(u64::from(render.0)))
+        <=u64::from(render.0)+u64::from(render.1)
+}
+
+/// Single source of truth for the displayed content rectangle when Win32
+/// and the real DD4 render target use different pixel coordinate spaces.
+/// Use the EXACT same floor-per-edge scaling as NativeWindowedBlt::screen_rect
+/// to avoid mismatched menu hit testing at odd resolutions / fractional DPI.
+/// The 3D backbuffer and game's requested virtual mode remain unchanged.
+pub fn output_viewport(
+    source:(u32,u32),render:(u32,u32),output:(u32,u32)
+)->Option<Viewport>{
+    if !dpi_output_matches(render,output){return None;}
+    let physical=fit_viewport(source.0,source.1,render.0,render.1)?;
+    let (right,bottom)=(
+        physical.x.checked_add(physical.width)?,
+        physical.y.checked_add(physical.height)?
+    );
+    let edge=|pos:u32,to:u32,from:u32|->Option<u32>{
+        u32::try_from(u64::from(pos)*u64::from(to)/u64::from(from)).ok()
+    };
+    let x=edge(physical.x,output.0,render.0)?;
+    let y=edge(physical.y,output.1,render.1)?;
+    let right=edge(right,output.0,render.0)?;
+    let bottom=edge(bottom,output.1,render.1)?;
+    if right<=x || bottom<=y{return None;}
+    Some(Viewport{x,y,width:right-x,height:bottom-y})
+}
+
+#[cfg(test)]
+mod dpi_output_geometry_tests{
+    use super::*;
+
+    #[test]
+    fn physical_to_win32_viewport_matches_real_two_blt_edges(){
+        for (render,output,expected) in [
+            ((1920,1200),(1536,960),Viewport{x:128,y:0,width:1280,height:960}),
+            ((1920,1080),(1536,864),Viewport{x:192,y:0,width:1152,height:864}),
+            ((2560,1440),(2048,1152),Viewport{x:256,y:0,width:1536,height:1152}),
+            ((3440,1440),(2752,1152),Viewport{x:608,y:0,width:1536,height:1152}),
+            ((3840,2160),(3072,1728),Viewport{x:384,y:0,width:2304,height:1728}),
+            ((640,480),(512,384),Viewport{x:0,y:0,width:512,height:384})
+        ] {
+            assert!(dpi_output_matches(render,output));
+            assert_eq!(output_viewport((800,600),render,output),Some(expected));
+        }
+    }
+    #[test]
+    fn fractional_dpi_rounding_preserves_coordinates_and_source_ratio(){
+        let render=(1366,768);
+        let output=(1093,614);
+        assert!(dpi_output_matches(render,output));
+        let viewport=output_viewport((800,600),render,output).unwrap();
+        let native=fit_viewport(800,600,render.0,render.1).unwrap();
+        assert_eq!(viewport.x,(u64::from(native.x)*1093/1366) as u32);
+        assert_eq!(viewport.width,
+            (u64::from(native.x+native.width)*1093/1366) as u32-viewport.x);
+        assert_eq!(viewport.height,614);
+    }
+    #[test]
+    fn unrelated_aspect_ratios_and_invalid_extent_are_rejected(){
+        assert!(!dpi_output_matches((1920,1200),(1920,1080)));
+        assert!(!dpi_output_matches((1920,1200),(1536,864)));
+        assert!(!dpi_output_matches((0,1080),(1536,864)));
+        assert!(!dpi_output_matches((1920,1080),(0,864)));
+        assert_eq!(output_viewport((0,600),(1920,1200),(1536,960)),None);
+        assert_eq!(output_viewport((800,600),(1920,1200),(1536,864)),None);
+        assert!(dpi_output_matches((1920,1200),(1536,961)));
+        assert!(!dpi_output_matches((1920,1200),(1536,963)));
+    }
+}
+
 // Only produce a preflight plan for modes actually observed in the user's
 // Crimson Skies Wine logs. This does NOT enable borderless at runtime.
 pub fn preflight(mode:Mode,desktop_width:u32,desktop_height:u32,
