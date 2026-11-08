@@ -45,6 +45,26 @@ static GRAPH_COPY_FAILURE_DETAILS:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_MOVIE_CONVERT_SUCCESS:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_MOVIE_CONVERT_FAILED:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
+// Native-only, opt-in RGB32 video diagnostics: enter/leave trace on the
+// real DirectDraw4 surface calls. No COM/DirectShow return values altered.
+// The prior samples ended after successful 120+ Flips, but sampling every
+// 120 calls cannot distinguish a blocked in-flight Blt from missing input.
+static NATIVE_MOVIE_RGB32_BLT_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_RGB32_FLIP_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
+fn movie_com_trace_selected(count:usize)->bool{
+    count<=256 || count%64==0
+}
+fn movie_com_trace(event:&str,count:usize,result:Option<i32>,elapsed_ms:Option<u128>){
+    if !movie_com_trace_selected(count){return;}
+    crate::log(&format!(
+        "NATIVE-MOVIE-COM: {event} count={count} thread={:?} result={} elapsed_ms={}",
+        std::thread::current().id(),
+        result.map(|hr|format!("{:#010x}",hr as u32)).unwrap_or_else(||"ENTER".into()),
+        elapsed_ms.map(|ms|ms.to_string()).unwrap_or_else(||"pending".into())
+    ));
+}
 fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
     if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
         crate::log(&format!("WINDOWED-GAME: virtual Surface4 {method} role={role:?} result={:#010x}",hr as u32));
@@ -854,7 +874,18 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                 virtual_issue(node.role,"Blt source is retired/foreign graph",E_NOTIMPL);
                 return E_NOTIMPL;
             };
+            let movie_trace=node.native_movie_rgb32 && node.role==SurfaceRole::Backbuffer;
+            let movie_call=if movie_trace{
+                let count=NATIVE_MOVIE_RGB32_BLT_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+                movie_com_trace("backbuffer.native_Blt",count,None,None);
+                count
+            }else{0};
+            let movie_started=if movie_trace{Some(Instant::now())}else{None};
             let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,p4,p5);
+            if let Some(started)=movie_started{
+                movie_com_trace("backbuffer.native_Blt",movie_call,Some(hr),
+                    Some(started.elapsed().as_millis()));
+            }
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if count<=4 {trace_native_copy_format(real_source,p4);}
@@ -962,6 +993,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Accept only a NULL target or this primary's own virtual backbuffer.
         if back.is_null(){return E_NOTIMPL;} // incomplete graph is unarmed
         if !p1.is_null()&&p1!=back{return E_INVALIDARG;}
+        let movie=graph_node(back).is_some_and(|n|n.native_movie_rgb32);
+        let movie_call=if movie{
+            let count=NATIVE_MOVIE_RGB32_FLIP_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+            movie_com_trace("primary.virtual_Flip",count,None,None);
+            count
+        }else{0};
+        let movie_started=if movie{Some(Instant::now())}else{None};
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
         // A successful windowed Flip is the sole frame-present boundary.
@@ -1014,7 +1052,18 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             crate::menu_brand::mark_not_drawn();
         }
         let composed=backend.menu_frame_prepared();
-        return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
+        let presentation=bridge.present_with_refresh(*epoch,*mode,backend,repaint);
+        if let Some(started)=movie_started{
+            let hr=match &presentation{
+                Ok(_)=>S_OK,
+                Err(FlipBridgeError::ClearBlackFailed(hr)|
+                    FlipBridgeError::StretchFailed(hr))=>*hr,
+                Err(_)=>E_FAIL,
+            };
+            movie_com_trace("primary.virtual_Flip",movie_call,Some(hr),
+                Some(started.elapsed().as_millis()));
+        }
+        return match presentation{
             Ok(frame)=>{
                 if composed{
                     crate::menu_brand::note_branded_presented();
@@ -1076,7 +1125,19 @@ unsafe extern "system" fn forward_get_attached_surface(this:SurfaceThis,p1:*mut 
 unsafe extern "system" fn forward_get_blt_status(this:SurfaceThis,p1:u32)->i32{
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_blt_status)(real,p1)
+    let movie=graph_node(this).is_some_and(|n|n.native_movie_rgb32);
+    let count=if movie{
+        let n=NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        movie_com_trace("backbuffer.GetBltStatus",n,None,None);
+        n
+    }else{0};
+    let start=if movie{Some(Instant::now())}else{None};
+    let hr=(real_vtable(real).get_blt_status)(real,p1);
+    if let Some(start)=start{
+        movie_com_trace("backbuffer.GetBltStatus",count,Some(hr),
+            Some(start.elapsed().as_millis()));
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_get_caps(this:SurfaceThis,p1:*mut c_void)->i32{
@@ -1113,7 +1174,19 @@ unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->
 unsafe extern "system" fn forward_get_flip_status(this:SurfaceThis,p1:u32)->i32{
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_flip_status)(real,p1)
+    let movie=graph_node(this).is_some_and(|n|n.native_movie_rgb32);
+    let count=if movie{
+        let n=NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        movie_com_trace("backbuffer.GetFlipStatus",n,None,None);
+        n
+    }else{0};
+    let start=if movie{Some(Instant::now())}else{None};
+    let hr=(real_vtable(real).get_flip_status)(real,p1);
+    if let Some(start)=start{
+        movie_com_trace("backbuffer.GetFlipStatus",count,Some(hr),
+            Some(start.elapsed().as_millis()));
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_get_overlay_position(this:SurfaceThis,p1:*mut i32,p2:*mut i32)->i32{
@@ -1379,6 +1452,16 @@ static SURFACE4_FORWARD_VTABLE:Surface4VTable=Surface4VTable{
 mod tests{
     use super::*;
     use std::sync::atomic::{AtomicU32,Ordering};
+
+    #[test]
+    fn native_movie_com_trace_is_bounded_but_preserves_progress_checkpoints(){
+        assert!(movie_com_trace_selected(1));
+        assert!(movie_com_trace_selected(120));
+        assert!(movie_com_trace_selected(256));
+        assert!(!movie_com_trace_selected(257));
+        assert!(movie_com_trace_selected(320));
+        assert!(!movie_com_trace_selected(321));
+    }
 
     #[test]
     fn native_movie_rgb32_format_is_real_xrgb_on_backbuffer_only(){
