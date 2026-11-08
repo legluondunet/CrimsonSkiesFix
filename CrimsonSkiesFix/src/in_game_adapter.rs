@@ -281,6 +281,20 @@ fn next_intro_phase(current:u8,mode:Mode)->u8{
 fn native_intro_ready(phase:u8,main_active:bool)->bool{
     phase==INTRO_IN_MOVIE_MODE && main_active
 }
+// A native-only intro handoff must not commit the 1920x1200 FOV/HUD
+// patch when the next game-requested mode is actually 1024x768.
+// Never enter a virtual graph in that case. The old unconditional patch
+// at SetCooperativeLevel survived the fallback and corrupted native 3D.
+fn native_intro_requested_3d(mode:Mode,target:(u32,u32))->bool{
+    mode.bpp==16 && mode.width==target.0 && mode.height==target.1 &&
+    mode.width>=960 && mode.height>=600
+}
+fn native_intro_can_prepare(mode:Mode,target:(u32,u32),graph_exposed:bool,wide_ready:bool)->bool{
+    let native_3d=native_intro_requested_3d(mode,target);
+    if !graph_exposed {native_3d}
+    else{matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16)) ||
+         (native_3d && wide_ready)}
+}
 fn observe_native_intro_mode(mode:Mode){
     if !native_intro_exclusive_enabled(){return;}
     let before=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
@@ -457,7 +471,17 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
     // Geometry was checked above, including monitors with negative origins.
-    let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
+    let native_widescreen_ready=if native_intro {
+        // At SetCooperativeLevel the game has not yet supplied the new
+        // mode. The observed Win11 sequence requests 1024x768 AFTER
+        // this call: patching 1920x1200 here and then falling back to
+        // exclusive native 1024x768 corrupts geometry, sky and HUD.
+        // Defer the actual in-memory patch until a matching mode AND the
+        // native graph preflight both succeed. If the game requests its
+        // legacy 1024x768, do not patch at all.
+        log("NATIVE-INTRO: widescreen FOV/HUD patch STAGED, not applied before requested display mode is verified");
+        false
+    }else if crate::cfg().native_3d_widescreen{
         // Only the original unwrapped EXE, authenticated by exe_gate,
         // can reach this path. No support for third-party widescreen EXEs.
         log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
@@ -498,9 +522,27 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
     let mode=Mode{width:w,height:h,bpp};
     let (mon_w,mon_h)=runtime.render_client;
-    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
-        w==mon_w && h==mon_h && w>=960 && h>=600;
-    if !matches!((w,h,bpp),(640,480,16)|(800,600,16)) && !native_3d{
+    let intro_pending=native_intro_exclusive_enabled();
+    let native_3d=if intro_pending {
+        native_intro_requested_3d(mode,runtime.render_client) &&
+            (!runtime.exposed || runtime.native_widescreen_ready)
+    }else{
+        runtime.native_widescreen_ready && bpp==16 &&
+            w==mon_w && h==mon_h && w>=960 && h>=600
+    };
+    let supported=if intro_pending{
+        native_intro_can_prepare(mode,runtime.render_client,
+                                 runtime.exposed,runtime.native_widescreen_ready)
+    }else{
+        matches!((w,h,bpp),(640,480,16)|(800,600,16)) || native_3d
+    };
+    if !supported{
+        if intro_pending && !runtime.exposed {
+            log(&format!(
+                "NATIVE-INTRO: game requested original {}x{}x{} instead of verified native {}x{}; NO widescreen patch applied; restoring original exclusive DirectDraw",
+                w,h,bpp,mon_w,mon_h
+            ));
+        }
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
         // Recovery is permitted only while no virtual COM interface exists.
@@ -583,6 +625,29 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
                 log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
                 return Some(E_FAIL);
+            }
+            if intro_pending && native_3d && !runtime.native_widescreen_ready {
+                // Commit the native-only FOV/HUD transform strictly AFTER
+                // native HAL graph preflight AND verified HWND geometry.
+                // No original exclusive fallback is possible past this
+                // point: the game is about to receive virtual surfaces.
+                // full_patch::apply is byte-exact and rolls back failures.
+                log("NATIVE-INTRO: native target mode and virtual graph verified; committing deferred FOV/HUD patch");
+                let patch=crate::native_widescreen::apply_or_reuse_early_patch(
+                    runtime.render_client.0,runtime.render_client.1);
+                if !matches!(patch,
+                    crate::native_widescreen::PatchResult::Patched |
+                    crate::native_widescreen::PatchResult::AlreadyNative) {
+                    log(&format!(
+                        "NATIVE-INTRO: FOV/HUD commit refused result={patch:?}; virtual graph not exposed, native fallback forbidden"
+                    ));
+                    return Some(E_FAIL);
+                }
+                runtime.native_widescreen_ready=true;
+                log(&format!(
+                    "NATIVE-INTRO: FOV/HUD committed after verified native graph; dimensions={}x{} result={patch:?}",
+                    runtime.render_client.0,runtime.render_client.1
+                ));
             }
             if crate::cfg().window_erase_guard {
                 // This experiment is only installed AFTER validating the
@@ -784,6 +849,25 @@ mod native_intro_exclusive_tests {
         assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,boot),INTRO_LEFT_MOVIE_MODE);
         assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,video),INTRO_LEFT_MOVIE_MODE);
         assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,game),INTRO_LEFT_MOVIE_MODE);
+    }
+
+    #[test]
+    fn unpatched_native_intro_must_never_fall_back_with_widescreen_bytes() {
+        let target=(1920,1200);
+        let game=Mode{width:1920,height:1200,bpp:16};
+        let legacy=Mode{width:1024,height:768,bpp:16};
+        let menu=Mode{width:800,height:600,bpp:16};
+        assert!(native_intro_requested_3d(game,target));
+        assert!(!native_intro_requested_3d(legacy,target));
+        assert!(!native_intro_requested_3d(menu,target));
+        assert!(!native_intro_can_prepare(legacy,target,false,false));
+        assert!(!native_intro_can_prepare(menu,target,false,false));
+        assert!(native_intro_can_prepare(game,target,false,false));
+        // Once a virtual graph is exposed, original 4:3 menu modes
+        // remain legal and full native mode needs a committed wide patch.
+        assert!(native_intro_can_prepare(menu,target,true,true));
+        assert!(!native_intro_can_prepare(game,target,true,false));
+        assert!(native_intro_can_prepare(game,target,true,true));
     }
 
     #[test]
