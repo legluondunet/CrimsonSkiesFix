@@ -2,8 +2,9 @@
 //! BEFORE GOS asks it to switch display modes. The owner is published in
 //! global 0x00A17104; mode setup begins in 0x0059F680 (verified PE32 EXE).
 //!
-//! Default OFF; [Debug] NativeDD4Bootstrap=1 explicitly opts in. Never run
-//! under Wine/Proton, in DllMain, or on an unidentified executable. The
+//! Enabled for verified native Windows by default; configurable with
+//! [Debug] NativeDD4Bootstrap=0. Never run under Wine/Proton, in DllMain,
+//! or on an unidentified executable. The
 //! function-entry trampoline preserves all displaced instructions and runs
 //! the original game function with the same ABI/result. No source EXE edits.
 //! When the adapter cannot prove a valid native windowed graph, its
@@ -70,7 +71,6 @@ pub fn install()->bool {
     if !crate::cfg().native_dd4_bootstrap ||
        !crate::cfg().experimental_windowed_adapter ||
        !crate::cfg().native_3d_widescreen ||
-       !crate::cfg().log_enabled ||
        crate::cfg().native_dpi_aware ||
        !diagnostics::is_native_windows() ||
        crate::cfg().directdraw_passthrough {return false;}

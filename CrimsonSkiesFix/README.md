@@ -218,6 +218,25 @@ To turn the fix off on the next launch, set
 `RoffileTerminatorFix=0`. This does not require restoring any original
 game file because the patch never writes to disk.
 
+## Native Windows automatic compatibility
+
+For a **new installation**, seven previously validated native-Windows-only
+compatibility switches are now enabled in the generated INI: `NativeDD4Bootstrap`,
+`NativeMovieRGB32`, `NativeMovieMessagePump`, `NativeFullFrameCompose`,
+`NativeMouseClipRepair`, `NativeDirectInputMouseCoopRepair` and
+`NativeGosCursorBridge`. These keep their strict exact-game and runtime
+preflight guards and do **not** run under Wine/Proton. They no longer require
+`[Debug] Log=1` just to work. Optional mouse tracing, screen cursor
+probes, frame-time profiling and other debug diagnostics stay disabled.
+
+Existing user INI files are **not overwritten or silently migrated**; previous
+explicit `=0` values remain respected. Under native Windows, these settings
+can still be disabled individually in `[Debug]` to isolate hardware/driver
+regressions. The initial Windows owner validation used an explicit test
+configuration; a **new default-install Windows 11 runtime smoke test** is still
+needed before a public stable release. The unchanged Wine/GE-Proton path
+continues to use RGB565 game presentation.
+
 ## Logging and diagnostics
 
 Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
