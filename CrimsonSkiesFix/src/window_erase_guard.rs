@@ -264,11 +264,13 @@ fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32){
 }
 /// Must be called on the verified game window's UI thread after the
 /// 800x600 native RGB32 DD4 graph and HWND borderless geometry succeed.
-pub fn arm_native_system_cursor_probe(hwnd:usize)->Result<(),String>{
+pub fn arm_native_system_cursor_probe(
+    hwnd:usize,menu_mouse_remap_enabled:bool
+)->Result<(),String>{
     if hwnd==0 || snapshot(hwnd).is_none(){
         return Err("verified game HWND/WndProc guard missing".into());
     }
-    if crate::cfg().native_menu_mouse_remap{
+    if menu_mouse_remap_enabled{
         return Err("NativeMenuMouseRemap=1; disable to isolate the OS arrow probe".into());
     }
     unsafe {
