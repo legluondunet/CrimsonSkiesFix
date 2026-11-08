@@ -431,7 +431,9 @@ pub fn crash_blt_trace_path()->Option<PathBuf> {
 
 /// Strictly allowlisted capture names, next to the actual loaded proxy.
 pub fn color_capture_path(label:&str)->Option<PathBuf>{
-    if !matches!(label,"Copy1-Source32"|"Copy3-Source32"|"Copy3-Dest565"){
+    if !matches!(label,
+        "Opening-Source"|"Opening-Backbuffer"|
+        "FirstMovie-Source"|"FirstMovie-Backbuffer"){
         return None;
     }
     let path=dll_directory()?.join(format!(
