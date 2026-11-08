@@ -134,6 +134,17 @@ NativeDirectInputMouseTrace=0
 ; changes. Requires Log=1 + NativeDD4Bootstrap=1. OFF by default.
 ; Does not apply to Wine/Proton, keyboard, controllers or gameplay remap.
 NativeDirectInputMouseCoopRepair=0
+; DIAGNOSTIC native Windows MainMenu/Preferences original GOS cursor bridge.
+; The Win11 dumps show mouse x=799,y=599 (lower-right clamp) while the
+; 800x600 menu is presented centered in a 1536x960 logical HWND. This
+; keeps the ORIGINAL game cursor renderer and mouse buttons intact,
+; adjusting only GUID_SysMouse DirectInput relative dx/dy to the same
+; 4:3 viewport transformation as rendered menu. No fabricated clicks.
+; Requires NativeDD4Bootstrap=1, NativeMovieRGB32=1,
+; NativeDirectInputMouseCoopRepair=1, WindowEraseGuard=1, Log=1.
+; Keep NativeMenuMouseRemap=0 and NativeSystemCursorProbe=0 for isolation.
+; Windows only; OFF by default, no Wine/Proton/gameplay modifications.
+NativeGosCursorBridge=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
