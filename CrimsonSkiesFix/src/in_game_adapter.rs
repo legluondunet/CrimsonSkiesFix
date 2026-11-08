@@ -80,6 +80,9 @@ fn desc(caps:u32,w:u32,h:u32,bits:Option<u32>)->[u32;31]{
         d[1]|=DDSD_PIXELFORMAT;d[18]=32;d[19]=if caps&DD_CAPS_Z!=0{0x400}else{0x40};
         d[21]=b;
         if caps&DD_CAPS_Z!=0{d[23]=0x00ff_ffff;}
+        else if b==32 {
+            d[22]=0x00ff_0000;d[23]=0x0000_ff00;d[24]=0x0000_00ff;
+        }
         else {d[22]=0xf800;d[23]=0x07e0;d[24]=0x001f;}
     }
     d
@@ -145,11 +148,20 @@ unsafe fn native_desc(surface:&Com)->Result<[u32;31],String>{
     require(get(surface.ptr(),d.as_mut_ptr()),"native GetSurfaceDesc")?;
     Ok(d)
 }
-fn check_native_rgb_depth(back:&Com,depth:&Com,mode:Mode)->Result<(),String>{
+fn check_native_rgb_depth(
+    back:&Com,depth:&Com,mode:Mode,movie_rgb32:bool
+)->Result<(),String>{
     unsafe{
         let b=native_desc(back)?;let z=native_desc(depth)?;
-        if (b[3],b[2],b[21],b[22],b[23],b[24])!=(mode.width,mode.height,16,0xf800,0x07e0,0x001f) {
-            return Err(format!("native RGB565 mismatch: {}x{} bpp={}",b[3],b[2],b[21]));
+        let required=if movie_rgb32 {
+            (mode.width,mode.height,32,0xff0000,0xff00,0xff)
+        }else{(mode.width,mode.height,16,0xf800,0x07e0,0x001f)};
+        if (b[3],b[2],b[21],b[22],b[23],b[24])!=required ||
+            (movie_rgb32 && b[19]&0x40==0){
+            return Err(format!(
+                "native {} mismatch: {}x{} bpp={} rgb_masks={:#x}/{:#x}/{:#x}",
+                if movie_rgb32{"XRGB8888 movie"}else{"RGB565"},
+                b[3],b[2],b[21],b[22],b[23],b[24]));
         }
         if (z[3],z[2],z[21])!=(mode.width,mode.height,32) ||
             z[19]&0x400==0 || z[23]==0 {
@@ -754,6 +766,17 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
     }
 }
+fn native_movie_rgb32_mode(mode:Mode)->bool{
+    (mode.width,mode.height,mode.bpp)==(800,600,16)
+}
+fn native_movie_rgb32_enabled(mode:Mode)->bool{
+    let c=crate::cfg();
+    native_movie_rgb32_mode(mode) && c.native_movie_rgb32 &&
+        c.native_dd4_bootstrap && c.experimental_windowed_adapter &&
+        c.native_3d_widescreen && !c.native_intro_exclusive &&
+        !c.directdraw_passthrough &&
+        crate::diagnostics::is_native_windows()
+}
 unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     output_client:(u32,u32),mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
     if client.0==0 || client.1==0 || output_client.0==0 || output_client.1==0{
@@ -761,16 +784,24 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     }
     log(&format!("WINDOWED-DIAG: physical_render={}x{} logical_blt_output={}x{} (DPI-safe presentation)",
         client.0,client.1,output_client.0,output_client.1));
+    let movie_rgb32=native_movie_rgb32_enabled(mode) && !native_3d;
+    if movie_rgb32 {
+        log("NATIVE-MOVIE-RGB32: opt-in physical XRGB8888 backbuffer requested for 800x600 movie; virtual primary remains RGB565 CPU staging, desktop unchanged");
+    }
     log("WINDOWED-DIAG: native primary CreateSurface begin");
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
     log("WINDOWED-DIAG: native primary CreateSurface OK");
     log("WINDOWED-DIAG: native clipper.CreateClipper/SetHWnd/SetClipper begin");
     let clipper=new_clipper(dd4,hwnd,&real_primary)?;
     log("WINDOWED-DIAG: native clipper setup OK");
-    log("WINDOWED-DIAG: native RGB565 video-memory D3D backbuffer CreateSurface begin");
+    log(if movie_rgb32{
+        "NATIVE-MOVIE-RGB32: native XRGB8888 video-memory D3D backbuffer CreateSurface begin"
+    }else{"WINDOWED-DIAG: native RGB565 video-memory D3D backbuffer CreateSurface begin"});
     let real_back=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,
-        mode.width,mode.height,Some(16)))?;
-    log("WINDOWED-DIAG: native RGB565 D3D backbuffer CreateSurface OK");
+        mode.width,mode.height,Some(if movie_rgb32{32}else{16})))?;
+    log(if movie_rgb32{
+        "NATIVE-MOVIE-RGB32: native XRGB8888 D3D backbuffer CreateSurface OK"
+    }else{"WINDOWED-DIAG: native RGB565 D3D backbuffer CreateSurface OK"});
     // The real owner Wine HAL advertises pure 32-bit depth with 24 bits
     // of active Z (0x00ffffff); a native failure is never masked.
     log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface begin");
@@ -778,9 +809,9 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         mode.width,mode.height,Some(32)))
         .or_else(|_|alloc(dd4,desc(DD_CAPS_Z,mode.width,mode.height,Some(32))))?;
     log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface OK");
-    log("WINDOWED-DIAG: validate native RGB565/Z32 formats begin");
-    check_native_rgb_depth(&real_back,&real_depth,mode)?;
-    log("WINDOWED-DIAG: native RGB565/Z32 formats OK; attach Z32 begin");
+    log("WINDOWED-DIAG: validate native RGB565 or movie XRGB8888 + Z32 formats begin");
+    check_native_rgb_depth(&real_back,&real_depth,mode,movie_rgb32)?;
+    log("WINDOWED-DIAG: native color/Z32 formats OK; attach Z32 begin");
     attach_depth(&real_back,&real_depth)?;
     log("WINDOWED-DIAG: attach Z32 OK; depth-fill begin");
     native_fill(&real_depth,true)?;
@@ -797,7 +828,14 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // to the physical primary in the same frame. The game's D3D backbuffer
     // remains untouched, even during a playing animated menu background.
     // If unavailable, graphics/gameplay continue without the version label.
-    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)){
+    // A 16-bit menu scratch cannot transparently compose on the
+    // experimental real 32-bit movie render target; leave the game frame
+    // untouched during this A/B instead of risking an invalid Blt.
+    if movie_rgb32 {
+        log("NATIVE-MOVIE-RGB32: menu branding scratch disabled for this A/B; original game frame preserved");
+    }
+    let menu_scratch=if !movie_rgb32 &&
+        matches!((mode.width,mode.height),(640,480)|(800,600)){
         match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
             mode.width,mode.height,Some(16))) {
             Ok(surface)=>Some(surface),
@@ -811,7 +849,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // RGB565 800x600 scaled video copies. Allocate a dedicated SYSTEM
     // memory RGB565 scratch so no CPU lock touches the active D3D3 target.
     // The existing Wine/probe and default nonbootstrap paths stay untouched.
-    let movie_rgb565_scratch=if mode.width==800 && mode.height==600 &&
+    let movie_rgb565_scratch=if !movie_rgb32 &&
+        mode.width==800 && mode.height==600 &&
         crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows(){
         match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,800,600,Some(16))){
             Ok(surface)=>{
@@ -832,7 +871,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     log("WINDOWED-DIAG: native→virtual Surface4 graph construction begin");
     let primary=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_primary.ptr(),SurfaceRole::Primary,mode,native_3d)
         .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
-    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d)
+    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in_movie_rgb32(
+        real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d,movie_rgb32)
         .map_err(|hr|format!("virtual backbuffer: {:#010x}",hr as u32))?)?;
     let depth=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_depth.ptr(),SurfaceRole::Depth,mode,native_3d)
         .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
@@ -862,9 +902,15 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
     log("WINDOWED-DIAG: physical windowed Blt backend preparation begin");
-    let mut backend=NativeWindowedBlt::from_borrowed_com(
-        real_primary.ptr(),real_back.ptr(),(0,0),client,mode
-    ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
+    let mut backend=if movie_rgb32 {
+        NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+            real_primary.ptr(),real_back.ptr(),(0,0),client,mode
+        )
+    }else{
+        NativeWindowedBlt::from_borrowed_com(
+            real_primary.ptr(),real_back.ptr(),(0,0),client,mode
+        )
+    }.map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
     backend.set_output_client(output_client)
         .map_err(|hr|format!("logical output coordinates: {:#010x}",hr as u32))?;
     let plan=contract.plan.viewport;
@@ -872,15 +918,22 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
         .map_err(|e|format!("native two-Blt preflight: {e:?}"))?;
     log("WINDOWED-DIAG: physical preflight OK; validate virtual graph evidence begin");
-    contract.expose(BackendEvidence{
+    let evidence=BackendEvidence{
         process_owned_window:true,normal_directdraw:true,
         render_target:RenderTarget::RealDirectDrawSurface4,
-        render_target_caps:DD_CAPS_3D,render_target_is_rgb565:true,
+        render_target_caps:DD_CAPS_3D,render_target_is_rgb565:!movie_rgb32,
         real_zbuffer_32:true,primary_with_clipper:true,
         working_blt:true,complete_surface_com:true
-    }).map_err(|e|format!("graph evidence: {e:?}"))?;
+    };
+    if movie_rgb32 {
+        // check_native_rgb_depth() above has already validated the
+        // *exact* real XRGB8888 masks. This separate diagnostic gate does
+        // not relax the standard Wine/Proton RGB565 contract.
+        contract.expose_native_movie_rgb32(evidence)
+    }else{contract.expose(evidence)}
+        .map_err(|e|format!("graph evidence: {e:?}"))?;
     log("WINDOWED-DIAG: evidence OK; arm virtual primary Flip begin");
-    com_surface4_forward::arm_graph_primary_flip_with_output(
+    com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32(
         primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
         menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
@@ -888,8 +941,12 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         // pointer or WndProc changes and never activate on Wine/Proton.
         crate::cfg().native_gdi_sidebars &&
             crate::cfg().native_dd4_bootstrap &&
-            crate::diagnostics::is_native_windows()
+            crate::diagnostics::is_native_windows(),
+        movie_rgb32
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
+    if movie_rgb32 {
+        log("NATIVE-MOVIE-RGB32: preflight passed; virtual 800x600 movie graph uses real XRGB8888 direct Blt; no RGB565 movie-conversion scratch");
+    }
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
         physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,clipper})
@@ -1228,6 +1285,16 @@ mod tests{
         assert!(!accept(original_dd4,hwnd,0x33,true,true));
         assert!(!accept(original_dd4,hwnd,0,true,true));
     }
+    #[test]
+    fn native_movie_rgb32_mode_is_strictly_800x600x16(){
+        for (w,h,bpp,accepted) in [
+            (800,600,16,true), (640,480,16,false),
+            (1024,768,16,false), (1920,1200,16,false),
+            (800,600,32,false)
+        ]{
+            assert_eq!(native_movie_rgb32_mode(Mode{width:w,height:h,bpp}),accepted);
+        }
+    }
     #[test] fn descriptors_remain_native_124_byte_surface4(){
         let p=desc(DD_CAPS_PRIMARY,0,0,None);
         assert_eq!((p[0],p[1],p[26]),(124,1,0x200));
@@ -1235,6 +1302,9 @@ mod tests{
         assert_eq!((z[0],z[2],z[3],z[19],z[21],z[23]),(124,480,640,0x400,32,0x00ff_ffff));
         let b=desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,800,600,Some(16));
         assert_eq!((b[2],b[3],b[21],b[22],b[23],b[24]),(600,800,16,0xf800,0x07e0,0x001f));
+        let movie=desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,800,600,Some(32));
+        assert_eq!((movie[2],movie[3],movie[19],movie[21],movie[22],movie[23],movie[24]),
+            (600,800,0x40,32,0xff0000,0xff00,0xff));
     }
 }
 #[cfg(test)]
