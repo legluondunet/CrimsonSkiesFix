@@ -7,8 +7,9 @@
 //! replaces unsupported GUID_SysMouse exclusive+background (0x9) with the
 //! native nonexclusive+foreground mode (0x6) before the real COM call.
 //! No synthetic input, changes to dimensions, or direct cursor drawing.
-//! Requires Log=1, NativeDD4Bootstrap=1 and explicit trace OR repair flag;
-//! never Wine/Proton or normal DirectDraw mode.
+//! NativeDD4Bootstrap is required; functional native-only cooperative and
+//! cursor repairs do not require Log=1. Optional mouse tracing does.
+//! Never Wine/Proton or normal DirectDraw mode.
 #![allow(dead_code)]
 use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
 use crate::{diagnostics,log,win32};
@@ -137,7 +138,7 @@ unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
     ptr::write_unaligned(bytes.cast::<i32>(),delta.0);
     ptr::write_unaligned(bytes.add(4).cast::<i32>(),delta.1);
     let n=GOS_CURSOR_BRIDGE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
-    (sampled(n) || n==1).then(||format!(
+    (crate::cfg().log_enabled && (sampled(n) || n==1)).then(||format!(
         "NATIVE-GOS-CURSOR-BRIDGE: sample={n} target_800x600={target:?} gos_before={before:?} speed={speed:?} physical_dinput_delta={original:?} logical_dinput_delta={delta:?}; buttons and Z unchanged, native GOS cursor renderer retained"
     ))
 }
@@ -195,7 +196,7 @@ unsafe extern "system" fn observe_factory(
     let installed=if !result.is_null(){
         observe_slot(result,DI_CREATE_DEVICE,observe_create_device as usize,&ORIGINAL_CREATE)
     }else{false};
-    if sampled(count) {
+    if crate::cfg().log_enabled && sampled(count) {
         log(&format!(
             "NATIVE-DINPUT: DirectInputCreateA call={count} version={version:#x} hr={:#010x} interface_returned={} create_device_observer={installed}",
             hr as u32,!result.is_null()
@@ -216,18 +217,26 @@ unsafe extern "system" fn observe_create_device(
         let mut installed=[false;6];
         if !device.is_null(){
             MOUSE_OBJECT.store(device as usize,Ordering::Release);
-            installed[0]=observe_slot(device,DEV_ACQUIRE,observe_acquire as usize,&ORIGINAL_ACQUIRE);
-            installed[1]=observe_slot(device,DEV_UNACQUIRE,observe_unacquire as usize,&ORIGINAL_UNACQUIRE);
-            installed[2]=observe_slot(device,DEV_GET_STATE,observe_get_state as usize,&ORIGINAL_STATE);
-            installed[3]=observe_slot(device,DEV_GET_DATA,observe_get_data as usize,&ORIGINAL_DATA);
-            installed[4]=observe_slot(device,DEV_SET_FORMAT,observe_format as usize,&ORIGINAL_FORMAT);
-            installed[5]=observe_slot(device,DEV_SET_COOP,observe_coop as usize,&ORIGINAL_COOP);
+            let c=crate::cfg();
+            // With Log=0, intercept only functions needed to repair the
+            // proven original mouse mode and its GOS menu cursor movement.
+            let detailed=c.log_enabled && c.native_direct_input_mouse_trace;
+            installed[0]=detailed && observe_slot(device,DEV_ACQUIRE,observe_acquire as usize,&ORIGINAL_ACQUIRE);
+            installed[1]=detailed && observe_slot(device,DEV_UNACQUIRE,observe_unacquire as usize,&ORIGINAL_UNACQUIRE);
+            installed[2]=(detailed || c.native_gos_cursor_bridge) &&
+                observe_slot(device,DEV_GET_STATE,observe_get_state as usize,&ORIGINAL_STATE);
+            installed[3]=detailed && observe_slot(device,DEV_GET_DATA,observe_get_data as usize,&ORIGINAL_DATA);
+            installed[4]=detailed && observe_slot(device,DEV_SET_FORMAT,observe_format as usize,&ORIGINAL_FORMAT);
+            installed[5]=(detailed || c.native_direct_input_mouse_coop_repair) &&
+                observe_slot(device,DEV_SET_COOP,observe_coop as usize,&ORIGINAL_COOP);
         }
-        log(&format!(
-            "NATIVE-DINPUT: CreateDevice GUID_SysMouse=true hr={:#010x} returned={} hooks acquire/unacquire/state/data/format/coop={installed:?}",
-            hr as u32,!device.is_null()
-        ));
-    }else{
+        if crate::cfg().log_enabled {
+            log(&format!(
+                "NATIVE-DINPUT: CreateDevice GUID_SysMouse=true hr={:#010x} returned={} hooks acquire/unacquire/state/data/format/coop={installed:?}",
+                hr as u32,!device.is_null()
+            ));
+        }
+    }else if crate::cfg().log_enabled{
         log(&format!(
             "NATIVE-DINPUT: CreateDevice other_or_unknown_mouse=true hr={:#010x} returned={} [no changes]",
             hr as u32,!device.is_null()
@@ -262,7 +271,7 @@ unsafe extern "system" fn observe_coop(this:Obj,hwnd:Obj,flags:u32)->i32{
     // This is the only altered argument in the opt-in A/B. Preserve the
     // native function's HRESULT and COM object unchanged.
     let hr=call(this,hwnd,effective);
-    if mouse {log(&format!(
+    if mouse && crate::cfg().log_enabled {log(&format!(
         "NATIVE-DINPUT-MOUSE: SetCooperativeLevel requested_flags={flags:#x} effective_flags={effective:#x} repair_applied={} hwnd_present={} hr={:#010x}",
         effective!=flags,!hwnd.is_null(),hr as u32));}
     hr
@@ -294,6 +303,9 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
             log(&note);
         }
     }
+    // The GOS cursor bridge still modifies only verified mouse deltas;
+    // skip all extra metrics/formatting in the normal Log=0 profile.
+    if !crate::cfg().log_enabled{return hr;}
     let n=MOUSE_STATE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     let mut xyz=None;
     let mut buttons=None;
@@ -354,13 +366,18 @@ unsafe extern "system" fn observe_get_data(
 
 /// Hook exactly the admitted EXE's original DirectInputCreateA import.
 /// If another runtime already substituted this import, do nothing.
+fn should_hook_mouse_iat(native:bool,bootstrap:bool,passthrough:bool,
+    logging:bool,trace:bool,coop_repair:bool,cursor_bridge:bool)->bool{
+    native && bootstrap && !passthrough &&
+    (coop_repair || cursor_bridge || (logging && trace))
+}
 pub fn install(){
-    if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
-       !crate::cfg().native_dd4_bootstrap ||
-       !(crate::cfg().native_direct_input_mouse_trace ||
-         crate::cfg().native_direct_input_mouse_coop_repair ||
-         crate::cfg().native_gos_cursor_bridge) ||
-       crate::cfg().directdraw_passthrough {return;}
+    let c=crate::cfg();
+    if !should_hook_mouse_iat(
+        diagnostics::is_native_windows(),c.native_dd4_bootstrap,
+        c.directdraw_passthrough,c.log_enabled,c.native_direct_input_mouse_trace,
+        c.native_direct_input_mouse_coop_repair,c.native_gos_cursor_bridge
+    ){return;}
     unsafe{
         let exe=GetModuleHandleA(ptr::null());
         let dinput=GetModuleHandleA(c"dinput.dll".as_ptr());
@@ -387,6 +404,17 @@ pub fn install(){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn native_functional_mouse_repairs_work_without_logging(){
+        assert!(should_hook_mouse_iat(true,true,false,false,false,true,true));
+        assert!(should_hook_mouse_iat(true,true,false,false,false,true,false));
+        assert!(should_hook_mouse_iat(true,true,false,false,false,false,true));
+        assert!(!should_hook_mouse_iat(false,true,false,false,false,true,true));
+        assert!(!should_hook_mouse_iat(true,false,false,false,false,true,true));
+        assert!(!should_hook_mouse_iat(true,true,true,false,false,true,true));
+        assert!(!should_hook_mouse_iat(true,true,false,false,true,false,false));
+        assert!(should_hook_mouse_iat(true,true,false,true,true,false,false));
+    }
     #[test]
     fn admitted_game_directinput_iat_and_legacy_interface_slots(){
         assert_eq!(FACTORY_IAT_RVA,0x61fbb0);

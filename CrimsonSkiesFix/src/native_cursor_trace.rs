@@ -1,9 +1,10 @@
-//! Diagnostic-only native Windows game IAT cursor provenance.
+//! Native Windows game IAT cursor provenance for verified stale-clip repair.
 //! The SHA256-admitted EXE imports USER32!SetCursorPos, ClipCursor, and
 //! ClientToScreen at exact PE32 IAT RVAs. Before ever remapping mouse
 //! coordinates, trace the game's requests and returned Win32 results.
 //! NEVER changes an argument, cursor clipping, process DPI or input state;
-//! no Wine/Proton or normal (NativeDD4Bootstrap=0) activation.
+//! No Wine/Proton or disabled NativeDD4Bootstrap activation; optional
+//! SetCursorPos/ClientToScreen diagnostic tracing remains opt-in.
 use std::{ffi::{c_char,c_void},sync::{Mutex,atomic::{AtomicUsize,Ordering}}};
 use crate::{diagnostics,log,win32};
 
@@ -111,7 +112,7 @@ unsafe extern "system" fn observe_set_cursor_pos(x:i32,y:i32)->i32{
     let call:SetPosFn=std::mem::transmute(original);
     let result=call(x,y);
     let n=SET_COUNT.fetch_add(1,Ordering::Relaxed);
-    if sample(n) {
+    if crate::cfg().log_enabled && sample(n) {
         log(&format!(
             "NATIVE-CURSOR: game SetCursorPos({x},{y}) result={result} count={} (unchanged)",
             n+1
@@ -133,7 +134,7 @@ unsafe extern "system" fn observe_clip_cursor(rect:*const Rect)->i32{
         }
     }
     let n=CLIP_COUNT.fetch_add(1,Ordering::Relaxed);
-    if sample(n) {
+    if crate::cfg().log_enabled && sample(n) {
         log(&format!(
             "NATIVE-CURSOR: game ClipCursor requested={requested:?} result={result} count={} (unchanged)",
             n+1
@@ -148,7 +149,7 @@ unsafe extern "system" fn observe_client_to_screen(hwnd:*mut c_void,point:*mut P
     let call:ClientFn=std::mem::transmute(original);
     let result=call(hwnd,point);
     let n=CLIENT_COUNT.fetch_add(1,Ordering::Relaxed);
-    if sample(n) {
+    if crate::cfg().log_enabled && sample(n) {
         let after=if point.is_null(){None}else{Some(((*point).x,(*point).y))};
         log(&format!(
             "NATIVE-CURSOR: game ClientToScreen point={before:?} mapped={after:?} success={} hwnd_provided={} count={} (unchanged)",
@@ -179,10 +180,19 @@ unsafe fn hook_import(
     }
     true
 }
+// Read-only provenance for ClipCursor is required to prove that a clip
+// belongs to the original game before expanding any stale rectangle.
+// Debug output is NOT a prerequisite for that functional repair.
+fn should_hook_cursor_iat(native:bool,bootstrap:bool,passthrough:bool,
+    logging:bool,clip_repair:bool)->bool{
+    native && bootstrap && !passthrough && (logging || clip_repair)
+}
 pub fn install(){
     let cfg=crate::cfg();
-    if !diagnostics::is_native_windows() || !cfg.log_enabled ||
-       !cfg.native_dd4_bootstrap || cfg.directdraw_passthrough {return;}
+    if !should_hook_cursor_iat(
+        diagnostics::is_native_windows(),cfg.native_dd4_bootstrap,
+        cfg.directdraw_passthrough,cfg.log_enabled,cfg.native_mouse_clip_repair
+    ){return;}
     unsafe {
         let base=GetModuleHandleW(std::ptr::null()) as usize;
         let mut module:[u16;11]=[0;11];
@@ -192,11 +202,11 @@ pub fn install(){
             log("NATIVE-CURSOR: no USER32 module; game IAT trace not installed");
             return;
         }
-        let set=hook_import(base,user32,SET_CURSOR_POS_RVA,
+        let set=cfg.log_enabled && hook_import(base,user32,SET_CURSOR_POS_RVA,
             b"SetCursorPos\0",observe_set_cursor_pos as usize,&SET_ORIG);
         let clip=hook_import(base,user32,CLIP_CURSOR_RVA,
             b"ClipCursor\0",observe_clip_cursor as usize,&CLIP_ORIG);
-        let client=hook_import(base,user32,CLIENT_TO_SCREEN_RVA,
+        let client=cfg.log_enabled && hook_import(base,user32,CLIENT_TO_SCREEN_RVA,
             b"ClientToScreen\0",observe_client_to_screen as usize,&CLIENT_ORIG);
         log(&format!(
             "NATIVE-CURSOR: read-only game IAT trace SetCursorPos={set} ClipCursor={clip} ClientToScreen={client}; original calls preserved"
@@ -206,6 +216,15 @@ pub fn install(){
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_clip_provenance_does_not_require_debug_logging(){
+        assert!(should_hook_cursor_iat(true,true,false,false,true));
+        assert!(should_hook_cursor_iat(true,true,false,true,false));
+        assert!(!should_hook_cursor_iat(false,true,false,false,true)); // Wine
+        assert!(!should_hook_cursor_iat(true,false,false,false,true));
+        assert!(!should_hook_cursor_iat(true,true,true,false,true));
+        assert!(!should_hook_cursor_iat(true,true,false,false,false));
+    }
     #[test]
     fn user32_game_import_rvas_and_sample_bound(){
         assert_eq!(SET_CURSOR_POS_RVA,0x620434);

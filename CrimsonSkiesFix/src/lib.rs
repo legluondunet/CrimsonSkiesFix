@@ -332,20 +332,23 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         static ROF_LOADER_ONCE:Once=Once::new();
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
     }
-    if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
-        NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
-            native_video_imports::report();
-            // Only diagnostic Win32 IAT hook after SHA-256 admission, never
-            // a system export hook and never under the Windows loader lock.
-            native_getproc_trace::install();
-            // Native windowed A/B only; exact EXE USER32 import provenance,
-            // no cursor/input modifications or system export detours.
-            native_cursor_trace::install();
-            // Native-only passive mouse-device inquiry. WM_MOUSEMOVE can
-            // arrive even when the original game's DirectInput cursor does
-            // not advance; trace actual HRESULT, acquire and movement.
-            native_dinput_mouse_trace::install();
-        });
+    if diagnostics::is_native_windows() && !config.directdraw_passthrough {
+        if config.log_enabled {
+            NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
+                // Diagnostics must never be required to activate an actual
+                // Windows-only compatibility fix.
+                native_video_imports::report();
+                native_getproc_trace::install();
+            });
+        }
+        // Install only the exact native USER32/DINPUT imports required by
+        // requested repairs, even when [Debug] Log=0. Their installers
+        // independently check the authenticated EXE, native host and
+        // required options; optional tracing is not enabled by default.
+        static NATIVE_CURSOR_IAT_ONCE:Once=Once::new();
+        NATIVE_CURSOR_IAT_ONCE.call_once(native_cursor_trace::install);
+        static NATIVE_DINPUT_IAT_ONCE:Once=Once::new();
+        NATIVE_DINPUT_IAT_ONCE.call_once(native_dinput_mouse_trace::install);
     }
     // Diagnostic-only transparent proxy: forward the three exported entry
     // points to the original system DLL, without touching game code, GOS
