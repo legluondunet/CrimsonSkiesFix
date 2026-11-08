@@ -515,12 +515,13 @@ pub fn disarm_native_menu_mouse_remap(){
 /// epoch, AFTER its actual HWND and physical 4:3 viewport are verified.
 /// WndProc WM_* messages stay exactly as originally dispatched.
 pub fn arm_native_gos_cursor_bridge(
-    hwnd:usize,client:(u32,u32),render:(u32,u32)
+    hwnd:usize,client:(u32,u32),render:(u32,u32),
+    menu_mouse_remap_enabled:bool
 )->Result<MenuMouseGeometry,String>{
     if hwnd==0 || snapshot(hwnd).is_none(){
         return Err("verified game HWND/WndProc guard missing".into());
     }
-    if crate::cfg().native_menu_mouse_remap{
+    if menu_mouse_remap_enabled{
         return Err("NativeMenuMouseRemap=1; disable before native GOS cursor bridge".into());
     }
     let w=i32::try_from(client.0).map_err(|_|"bad client width")?;
