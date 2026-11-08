@@ -1,4 +1,4 @@
-//! Passive native Windows probe for late ROFFILE.DLL loading.
+//! Shared Windows/Wine observer for late ROFFILE.DLL loading.
 //!
 //! The first DirectDraw call precedes ROFFILE.DLL loading on owner's
 //! Windows 11. Polling the module at MainMenu observes only subsequent
@@ -10,14 +10,15 @@
 //! ROFFILE.DLL file-open observer immediately on return from LoadLibrary.
 //!
 //! No global hooks, loader-lock callbacks, filename logging, script editing,
-//! GOS behavior changes, or modifications under Wine/Proton.
+//! or direct GOS UI changes. Shared archive routing is installed only after
+//! the exact loaded module and the managed overlay have been authenticated.
 
 use std::{
     ffi::{c_char,c_void},
     ptr,
     sync::atomic::{AtomicUsize,Ordering},
 };
-use crate::{diagnostics,log,win32};
+use crate::{log,win32};
 
 const MIN_IMAGE_SIZE:usize=0x0062_0464; // includes the already authenticated EXE IAT
 const MAX_IMAGE_SIZE:usize=32*1024*1024;
@@ -164,8 +165,7 @@ unsafe fn patch_named_import(
     true
 }
 pub fn install(){
-    if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
-       crate::cfg().directdraw_passthrough{return;}
+    if !crate::native_rof_read_trace::routing_enabled(){return;}
     unsafe{
         let base=GetModuleHandleW(ptr::null()) as usize;
         if base==0 {log("GOS-ROF-LOAD: no game EXE handle; skipping");return;}
@@ -191,7 +191,7 @@ pub fn install(){
         let exa=patch_named_import(base,kernel,slots.exa,b"LoadLibraryExA\0",load_exa as usize,&EXA);
         let exw=patch_named_import(base,kernel,slots.exw,b"LoadLibraryExW\0",load_exw as usize,&EXW);
         log(&format!(
-            "GOS-ROF-LOAD: game import observation LoadLibraryA={a} LoadLibraryW={w} LoadLibraryExA={exa} LoadLibraryExW={exw}; original calls forwarded, no global loader changes"
+            "GOS-ROF-LOAD: shared Windows/Wine game loader observer LoadLibraryA={a} LoadLibraryW={w} LoadLibraryExA={exa} LoadLibraryExW={exw}; original calls forwarded, no global loader changes"
         ));
     }
 }
