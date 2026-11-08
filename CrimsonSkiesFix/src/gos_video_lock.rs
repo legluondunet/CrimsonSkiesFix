@@ -364,6 +364,20 @@ fn overlay_video_matches(bytes: &[u8]) -> Result<bool, String> {
     Ok(true)
 }
 
+/// For a native Windows read-only provenance trace: return the byte
+/// interval of the verified, compressed VIDEO.SCRIPT in the *installed*
+/// patch archive. Never modify the file, never expose archive contents.
+/// A covered range only establishes a disk read, NOT GameOS execution.
+pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
+    let (_, overlay) = paths().ok()?;
+    let bytes = checked_patch(&overlay).ok()?;
+    if !overlay_video_matches(&bytes).ok()? { return None; }
+    let entries = parse(&bytes).ok()?;
+    let video = named(&entries, VIDEO_PATH)?;
+    let end = video.offset.checked_add(video.compressed)?;
+    Some((video.offset as u64, end as u64))
+}
+
 fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(std::iter::once(0)).collect()
 }
