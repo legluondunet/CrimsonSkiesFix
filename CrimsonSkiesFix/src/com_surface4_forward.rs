@@ -1,16 +1,17 @@
-//! Stage B4e: complete *forwarding* IDirectDrawSurface4 COM identity.
+//! x86 IDirectDrawSurface4 COM forwarding and verified virtual game graph.
 //!
-//! Inactive in gameplay. Provides 45 ABI-exact Surface4 functions over
-//! ONE real DirectDraw4 surface, with independent IUnknown identity,
-//! thread-safe COM references and exactly one owned real COM reference.
-//! Every non-IUnknown method forwards to the real Surface4 vtable.
-//! This is NOT yet the game's virtual primary: GetAttachedSurface, Flip,
-//! caps and descriptors still describe the ORIGINAL real surface. A later
-//! verified topology adapter must selectively replace those semantics.
+//! Ordinary surfaces retain ABI-exact native forwarding and independent
+//! COM reference ownership. For an authenticated game-owned DD4 graph,
+//! a strictly scoped virtual primary/backbuffer/depth topology intercepts
+//! selected mode, attachment, Flip and Blt operations for windowed
+//! presentation on native Windows and Wine/Proton. Unrecognized operations
+//! and stale epochs fail closed; the original native surface stays owned
+//! for the life of each wrapper.
 //!
-//! SAFETY: the caller must pass a live real Surface4 pointer, retaining
-//! one reference when constructing the façade. The source interface
-//! must be the exact Win32/x86 IDirectDrawSurface4 ABI.
+//! SAFETY: constructors require a live Win32/x86 IDirectDrawSurface4
+//! pointer with a caller-owned reference, then acquire an independent
+//! native COM reference. The in-game graph requires separate preflight
+//! of the real HAL, Z32, surface formats and screen geometry.
 
 #![allow(dead_code)]
 use std::{

@@ -1,5 +1,7 @@
 # CrimsonSkiesFix — release readiness audit (2026-11-04)
 
+> **Historical checkpoint (4 November 2026).** This is a retained audit snapshot, not the current Windows/Proton validation status. The owner subsequently tested the native Windows 11 game and GE-Proton11-12 during PR #23; see the current [README](../README.md) and PR #23 discussion before making merge or release decisions.
+
 **Target:** experimental `0.1.90` Windows x86 proxy, after owner-validated PR #18 and the packaging/provenance PR #19 merged into `main` (`ebed26ceaf340b6506f0c220c1998ce318b36ed4`). This remains a release-candidate preparation audit, not a declaration of a stable 1.0 release.
 
 ## Findings and dispositions

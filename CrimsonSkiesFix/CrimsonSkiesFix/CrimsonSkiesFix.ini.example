@@ -32,7 +32,7 @@ LegacyOffscreenRGB565=1
 ;           then change this option to off (or on to re-enable).
 ; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1 and
 ; DesktopResolution=1. Unknown original assets fail closed.
-; Wine/GE-Proton owner tests passed; Windows gameplay test deferred.
+; Windows 11 and GE-Proton owner test sessions passed; new PCs may differ.
 GosVideoLock=on
 
 [Compatibility]
@@ -62,32 +62,17 @@ EarlyNativePhysicalMode=0
 NativeDpiAware=0
 ; EXPERIMENTAL Windows-native A/B: attach the game's verified real DD4
 ; owner before its first mode switch, enabling windowed DirectDraw preflight.
-; Tested only through CI, not yet functionally validated on native Windows.
+; Tested in-game under Windows 11 with the exact opt-in compatibility profile.
 ; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1, Log=1.
 ; Uses an in-memory exact-EXE entrypoint hook; original game file unchanged.
 ; Keep 0 normally. Never active on Wine/Proton.
 NativeDD4Bootstrap=0
-; Native Windows opt-in only: preserve original exclusive DirectDraw while
-; the 800x600 introduction plays. At the first following MainMenu coop call,
-; keep exclusive until the NEXT SetDisplayMode reveals the intended raster.
-; The ordinary 1024x768/800x600 path stays exclusively native (no brief
-; DDSCL_NORMAL->DDSCL_EXCLUSIVE round-trip or FOV patch). Only a requested
-; monitor-native mode may attempt the windowed virtual graph. Never enable
-; that graph late on ESC -> menu after native gameplay has already begun.
-; Avoid exposing synthetic RGB565 intro surfaces to native DirectShow.
-; Requires NativeDD4Bootstrap=1 and ExperimentalWindowedAdapter=1.
-; FOV/HUD patch is committed only after a matching native-resolution
-; SetDisplayMode AND successful virtual HAL preflight. When the unmodified
-; game instead requests 1024x768, the DLL preserves original exclusive
-; DirectDraw without modifying the EXE in memory (safe diagnostic fallback).
-; Never active on Wine. A/B experiment: 0 retains the existing implementation;
-; 1 still needs a real-game widescreen validation.
-NativeIntroExclusive=0
 ; Native Win11/DirectShow A/B: use a real 32-bit XRGB backbuffer for 800x600
 ; video and menus instead of real RGB565 plus software movie conversion.
 ; Virtual game mode remains logically 800x600x16; primary CPU Lock is RGB565.
-; Requires NativeDD4Bootstrap=1 and NativeIntroExclusive=0. Not Wine/Proton.
-; Experimental: this format-compatibility probe has NOT been validated in game.
+; Requires NativeDD4Bootstrap=1; never used on Wine/Proton.
+; Visually validated by the owner under Windows 11 using the explicit test profile.
+; Still disabled on fresh installs pending a general default-profile test.
 NativeMovieRGB32=0
 ; Experimental Windows-only UI responsiveness investigation.
 ; On each native RGB32 intro/menu Flip, after the DirectDraw presentation
@@ -143,10 +128,11 @@ NativeDirectInputMouseCoopRepair=0
 ; Requires NativeDD4Bootstrap=1, NativeMovieRGB32=1,
 ; NativeDirectInputMouseCoopRepair=1, WindowEraseGuard=1, Log=1.
 ; Keep NativeMenuMouseRemap=0 and NativeSystemCursorProbe=0 for isolation.
-; Also handles the 800x600 pause interface reached DIRECTLY from verified\n; native 3D gameplay after the original MainMenu was observed. The intro\n; movie phase is excluded; 3D flight input is never remapped.\n; Windows only; OFF by default, no Wine/Proton/gameplay modifications.
+; Also handles the 800x600 pause interface reached DIRECTLY from verified
+; native 3D gameplay after the original MainMenu was observed. The intro
+; movie phase is excluded; 3D flight input is never remapped.
+; Windows only; OFF by default, no Wine/Proton/gameplay modifications.
 NativeGosCursorBridge=0
-; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
-NativeGdiSidebars=0
 ; Windows-native XRGB8888 800x600 menu/movie: compose black background
 ; and centered aspect-correct 4:3 image on one full-window offscreen
 ; DirectDraw surface, then one complete primary Blt per frame.
@@ -154,7 +140,6 @@ NativeGdiSidebars=0
 ; Output dimensions follow current Win32 game HWND client, including DPI.
 ; Wine/Proton never use this experiment. Driver errors fall back to the
 ; previous validated DirectDraw mode. Default OFF, Debug A/B only.
-; For a clean test leave NativeGdiSidebars=0.
 NativeFullFrameCompose=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
@@ -162,5 +147,3 @@ CrashBltTrace=0
 ; Reports p50/p95/p99, >2x/>3x target intervals and presentation-call duration.
 ; Not on-screen swap/present timestamps; requires [Debug] Log=1.
 FrameTimeTrace=0
-ColorProbe=0
-ColorCapture=0

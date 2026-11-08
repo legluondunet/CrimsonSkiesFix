@@ -42,7 +42,7 @@ mod borderless_contract;
 mod borderless_flip; // shared Flip-to-Blt contract, exercised by standalone probe
 mod borderless_native_blt; // shared native Blt backend and MainMenu RGB565 helper
 mod com_surface4_abi;
-mod com_surface4_forward; // inactive wrapper prototype; native source unwrapping helper remains used
+mod com_surface4_forward; // actively used verified virtual Surface4 COM graph (Windows + Wine)
 mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adapter
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
 mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
@@ -107,7 +107,7 @@ const DDERR_GENERIC:Hr=0x8876_0000u32 as i32;
 const DDSCL_NORMAL:u32=0x0000_0008;
 const DDSCAPS_PRIMARYSURFACE:u32=0x0000_0200;
 // IDirectDraw v1 slots. Surface Flip/Blt/GetCaps slots are also stable in
-// later surface interface versions; QueryInterface interception is TODO.
+// later surface interface versions; QueryInterface hooks are installed downstream.
 const COM_QUERY_INTERFACE:usize=0;
 const DD_CREATE_SURFACE:usize=6;
 const DD_SET_COOPERATIVE:usize=20;

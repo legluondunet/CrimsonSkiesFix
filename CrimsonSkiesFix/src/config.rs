@@ -102,7 +102,6 @@ pub struct Config {
     pub native_dpi_aware: bool,
     // Native Windows A/B: exact-game in-memory entrypoint bootstrap for DD4.
     pub native_dd4_bootstrap: bool,
-    // Native Windows A/B: defer cooperative/windowed handoff until the game requests physical native pixels.
     // Native Windows movie-only A/B: physical 32-bit XRGB backbuffer and 16-bit logical mode.
     pub native_movie_rgb32: bool,
     // Windows-only optional bounded, post-Flip WndProc pump to diagnose stalled UI.
@@ -567,6 +566,20 @@ mod tests {
         // the explicitly selected project policy, including enabled recovery.
         let shipped = include_str!("../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
         assert_eq!(parse(shipped), parse(DEFAULT_INI));
+        // Parsing alone is insufficient: unknown/retired keys are silently
+        // ignored and can linger in the published example indefinitely.
+        // Compare the complete normalized key multiset (not a set), which
+        // also catches accidental duplicate entries in either INI.
+        let mut generated:Vec<String>=ini_line_keys(DEFAULT_INI)
+            .into_iter().flatten().collect();
+        let mut template:Vec<String>=ini_line_keys(shipped)
+            .into_iter().flatten().collect();
+        generated.sort_unstable();
+        template.sort_unstable();
+        assert_eq!(template,generated,
+            "INI example must contain exactly the current generated keys");
+        assert!(deduplicate_known_ini(shipped).is_none());
+
         assert_eq!(parse(shipped).gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(parse(shipped).roffile_terminator_fix);
         assert!(parse(shipped).experimental_windowed_adapter);
