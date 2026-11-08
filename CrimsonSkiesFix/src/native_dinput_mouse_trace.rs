@@ -1,11 +1,14 @@
-//! Native Windows-only PASSIVE, opt-in DirectInput mouse investigation.
+//! Native Windows-only DirectInput mouse provenance + isolated cooperative repair.
 //! The admitted game imports DINPUT!DirectInputCreateA via PE32 IAT RVA
 //! 0x61fbb0 (confirmed independently against the actual Win11 minidump).
 //! This traces the MOUSE COM path; WM_MOUSEMOVE alone does not prove the
 //! original game's GOS/DirectInput mouse cursor state is updating.
-//! We do NOT synthesize input, alter HRESULTs, dimensions or cursor state.
-//! Active only with [Debug] NativeDirectInputMouseTrace=1, Log=1 and
-//! NativeDD4Bootstrap=1, never Wine/Proton or normal DirectDraw mode.
+//! Trace is strictly pass-through; optional independent compatibility A/B
+//! replaces unsupported GUID_SysMouse exclusive+background (0x9) with the
+//! native nonexclusive+foreground mode (0x6) before the real COM call.
+//! No synthetic input, changes to dimensions, or direct cursor drawing.
+//! Requires Log=1, NativeDD4Bootstrap=1 and explicit trace OR repair flag;
+//! never Wine/Proton or normal DirectDraw mode.
 #![allow(dead_code)]
 use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicUsize,Ordering}};
 use crate::{diagnostics,log,win32};
@@ -27,6 +30,16 @@ const DEV_GET_STATE:usize=9;
 const DEV_GET_DATA:usize=10;
 const DEV_SET_FORMAT:usize=11;
 const DEV_SET_COOP:usize=13;
+// DISCL_EXCLUSIVE | DISCL_BACKGROUND is illegal for GUID_SysMouse.
+// Keep exact match; do not rewrite any keyboard, controller, other flags,
+// or unverified factory interfaces.
+const MOUSE_EXCLUSIVE_BACKGROUND:u32=0x1|0x8;
+const MOUSE_NONEXCLUSIVE_FOREGROUND:u32=0x2|0x4;
+fn effective_mouse_coop_flags(mouse:bool,repair:bool,flags:u32)->u32{
+    if mouse && repair && flags==MOUSE_EXCLUSIVE_BACKGROUND{
+        MOUSE_NONEXCLUSIVE_FOREGROUND
+    }else{flags}
+}
 // GUID_SysMouse {6f1d2b60-d5a0-11cf-bfc7-444553540000}
 // Native little-endian layout of a Windows GUID.
 const SYS_MOUSE:[u8;16]=[
@@ -56,7 +69,10 @@ extern "system"{
     fn GetModuleHandleA(name:*const c_char)->Obj;
     fn GetProcAddress(module:Obj,name:*const c_char)->*const c_void;
 }
-fn sampled(n:usize)->bool{n<=8 || n%120==0}
+// Avoid ~200,000 diagnostic lines when the original game polls its mouse
+// >23 million times during the native movie graph. Exponential sampling
+// retains lifetime/runaway evidence without dominating startup execution.
+fn sampled(n:usize)->bool{n<=8 || n.is_power_of_two()}
 fn is_mouse(guid:*const u8)->bool{
     if guid.is_null(){return false;}
     unsafe{std::slice::from_raw_parts(guid,16)==SYS_MOUSE}
@@ -161,10 +177,16 @@ unsafe extern "system" fn observe_coop(this:Obj,hwnd:Obj,flags:u32)->i32{
     let p=ORIGINAL_COOP.load(Ordering::Acquire);
     if p==0{return 0x8000_4005u32 as i32;}
     let call:Coop=std::mem::transmute(p);
-    let hr=call(this,hwnd,flags);
-    if tracked(this){log(&format!(
-        "NATIVE-DINPUT-MOUSE: SetCooperativeLevel flags={flags:#x} hwnd_present={} hr={:#010x} [unchanged]",
-        !hwnd.is_null(),hr as u32));}
+    let mouse=tracked(this);
+    let effective=effective_mouse_coop_flags(
+        mouse,crate::cfg().native_direct_input_mouse_coop_repair,flags
+    );
+    // This is the only altered argument in the opt-in A/B. Preserve the
+    // native function's HRESULT and COM object unchanged.
+    let hr=call(this,hwnd,effective);
+    if mouse {log(&format!(
+        "NATIVE-DINPUT-MOUSE: SetCooperativeLevel requested_flags={flags:#x} effective_flags={effective:#x} repair_applied={} hwnd_present={} hr={:#010x}",
+        effective!=flags,!hwnd.is_null(),hr as u32));}
     hr
 }
 unsafe extern "system" fn observe_format(this:Obj,format:*const u32)->i32{
@@ -192,6 +214,9 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
     let n=MOUSE_STATE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     let mut xyz=None;
     let mut buttons=None;
+    let mut first_motion=false;
+    let mut first_pressed=false;
+    let mut first_failure=false;
     if hr>=0{
         MOUSE_STATE_OK.fetch_add(1,Ordering::Relaxed);
         if !data.is_null() && size>=16 && size<=64 {
@@ -201,15 +226,19 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
             let dz=ptr::read_unaligned(bytes.add(8).cast::<i32>());
             let pressed=(0..(size as usize-12).min(8))
                 .filter(|&i|*bytes.add(12+i)&0x80!=0).count();
-            if dx!=0 || dy!=0 || dz!=0{MOUSE_STATE_MOVED.fetch_add(1,Ordering::Relaxed);}
-            if pressed!=0{MOUSE_STATE_PRESSED.fetch_add(1,Ordering::Relaxed);}
+            if dx!=0 || dy!=0 || dz!=0{
+                first_motion=MOUSE_STATE_MOVED.fetch_add(1,Ordering::Relaxed)==0;
+            }
+            if pressed!=0{
+                first_pressed=MOUSE_STATE_PRESSED.fetch_add(1,Ordering::Relaxed)==0;
+            }
             xyz=Some((dx,dy,dz));
             buttons=Some(pressed);
         }
     }else{
-        MOUSE_STATE_FAILED.fetch_add(1,Ordering::Relaxed);
+        first_failure=MOUSE_STATE_FAILED.fetch_add(1,Ordering::Relaxed)==0;
     }
-    if sampled(n){
+    if sampled(n) || first_motion || first_pressed || first_failure{
         log(&format!(
             "NATIVE-DINPUT-MOUSE: GetDeviceState calls={n} hr={:#010x} cbData={size} relative_xyz={xyz:?} buttons_pressed={buttons:?} total_ok={} total_motion={} total_pressed={} total_errors={}",
             hr as u32,
@@ -244,7 +273,9 @@ unsafe extern "system" fn observe_get_data(
 /// If another runtime already substituted this import, do nothing.
 pub fn install(){
     if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
-       !crate::cfg().native_dd4_bootstrap || !crate::cfg().native_direct_input_mouse_trace ||
+       !crate::cfg().native_dd4_bootstrap ||
+       !(crate::cfg().native_direct_input_mouse_trace ||
+         crate::cfg().native_direct_input_mouse_coop_repair) ||
        crate::cfg().directdraw_passthrough {return;}
     unsafe{
         let exe=GetModuleHandleA(ptr::null());
@@ -289,7 +320,20 @@ mod tests{
         let mut other=SYS_MOUSE;other[0]+=1;
         assert!(!is_mouse(other.as_ptr()));
         assert!(!is_mouse(ptr::null()));
-        assert!(sampled(1));assert!(!sampled(9));assert!(sampled(120));
+        assert!(sampled(1));assert!(!sampled(9));assert!(!sampled(120));
+        assert!(sampled(128));assert!(sampled(16_777_216));
+        assert!(!sampled(23_622_120));
+    }
+    #[test]
+    fn mouse_cooperative_policy_is_exact_and_never_acts_on_other_devices(){
+        assert_eq!(MOUSE_EXCLUSIVE_BACKGROUND,0x9);
+        assert_eq!(MOUSE_NONEXCLUSIVE_FOREGROUND,0x6);
+        assert_eq!(effective_mouse_coop_flags(true,true,0x9),0x6);
+        assert_eq!(effective_mouse_coop_flags(true,false,0x9),0x9);
+        assert_eq!(effective_mouse_coop_flags(false,true,0x9),0x9);
+        for flags in [0,0x5,0x6,0xa,0xf,0x10]{
+            assert_eq!(effective_mouse_coop_flags(true,true,flags),flags);
+        }
     }
     #[test]
     fn function_signatures_have_exact_x86_win32_abi(){
