@@ -52,7 +52,7 @@ fn nul_ascii(bytes:&[u8],start:usize,max:usize)->Option<&[u8]>{
     Some(&slice[..stop])
 }
 #[derive(Default,Debug,PartialEq,Eq)]
-struct ImportSlots{ansi:Option<usize>,wide:Option<usize>}
+struct ImportSlots{ansi:Option<usize>,wide:Option<usize>,read:Option<usize>}
 
 /// Parse RVAs as loaded/mapped PE32 image offsets, not file offsets.
 /// Every read is length-checked; do not follow arbitrary pointers.
@@ -90,6 +90,7 @@ fn find_create_file_imports(image:&[u8])->Option<ImportSlots>{
             if iat.checked_add(4)?>image.len(){return None;}
             if symbol==b"CreateFileA"{slots.ansi=Some(iat);}
             if symbol==b"CreateFileW"{slots.wide=Some(iat);}
+            if symbol==b"ReadFile"{slots.read=Some(iat);}
         }
     }
     Some(slots)
@@ -229,9 +230,10 @@ pub fn probe(){
             observe_a as usize,&ORIGINAL_A)};
         let w=unsafe{install_import(module,imports.wide,b"CreateFileW\0",
             observe_w as usize,&ORIGINAL_W)};
+        let read=unsafe{crate::native_rof_read_trace::install(module,imports.read)};
         log(&format!(
-            "GOS-ROF-OPEN: verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={}; observes future opens only, not previously loaded archive members",
-            imports.ansi.is_some(),a,imports.wide.is_some(),w
+            "GOS-ROF-OPEN: verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={}; observes future calls only, member execution unobserved",
+            imports.ansi.is_some(),a,imports.wide.is_some(),w,imports.read.is_some(),read
         ));
         Ok::<(),&'static str>(())
     })();
