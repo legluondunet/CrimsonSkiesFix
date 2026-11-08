@@ -103,6 +103,14 @@ NativeMovieMessagePump=0
 ; remain untouched. Requires verified RGB32 movie graph and WndProc guard.
 ; Disabled by default; test separately from NativeMovieMessagePump.
 NativeMenuMouseRemap=0
+; Native Windows 800x600 movie/menu A/B: the original game can leave
+; ClipCursor restricted to its small pre-borderless window even after
+; the verified HWND grows to the entire monitor.
+; When the OS clip exactly matches the game's traced stale request,
+; expand it to the verified HWND client rectangle, with readback check.
+; Does NOT show the Windows cursor or modify input coordinates.
+; Test with NativeMenuMouseRemap=0 to isolate this single change.
+NativeMouseClipRepair=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
