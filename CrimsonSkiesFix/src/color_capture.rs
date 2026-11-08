@@ -142,16 +142,35 @@ unsafe fn capture_one(p:SurfaceThis,bpp:u32,label:&'static str){
     }
 }
 
-/// Invoked only after successful game-native Blts for specified copy numbers.
-/// Capture of #1 saves the unscaled 800x600 source; capture of #3 saves
-/// BOTH the 320x240 movie source and 800x600 RGB565 destination.
+/// Capture the **actual** opening image and first movie frame from native
+/// DirectDraw, without painting or changing any game surface. On the verified
+/// Windows path, the opening static image source is RGB565 800x600 and the
+/// first movie source is RGB32 320x240; the old fixed-32-bit #1 capture was
+/// unable to capture the opening image and therefore hid the useful evidence.
+unsafe fn surface_bpp(surface:SurfaceThis)->Option<u32>{
+    if surface.is_null(){return None;}
+    let mut desc=[0u32;31];desc[0]=124;
+    let hr=(table(surface).get_surface_desc)(surface,desc.as_mut_ptr().cast());
+    (hr>=0 && desc[0]==124 && matches!(desc[21],16|32))
+        .then_some(desc[21])
+}
+unsafe fn capture_detected(surface:SurfaceThis,label:&'static str){
+    if let Some(bpp)=surface_bpp(surface){
+        capture_one(surface,bpp,label);
+    }else{
+        crate::log(&format!("COLOR-CAPTURE: {label} skipped, unknown pixel format"));
+    }
+}
 pub unsafe fn capture_after_blt(src:SurfaceThis,dst:SurfaceThis,number:usize){
     match number{
-        1=>capture_one(src,32,"Copy1-Source32"),
+        1=>{
+            capture_detected(src,"Opening-Source");
+            capture_detected(dst,"Opening-Backbuffer");
+        },
         3=>{
-            capture_one(src,32,"Copy3-Source32");
-            capture_one(dst,16,"Copy3-Dest565");
-        }
+            capture_detected(src,"FirstMovie-Source");
+            capture_detected(dst,"FirstMovie-Backbuffer");
+        },
         _=>{}
     }
 }
