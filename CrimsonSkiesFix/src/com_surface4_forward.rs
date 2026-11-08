@@ -64,14 +64,24 @@ fn same_guid(a:&Guid,b:&Guid)->bool{
     a.d1==b.d1&&a.d2==b.d2&&a.d3==b.d3&&a.d4==b.d4
 }
 #[derive(Clone,Copy)]
-struct VirtualGraphNode {role:SurfaceRole, mode:Mode}
+struct VirtualGraphNode {
+    role:SurfaceRole, mode:Mode,
+    // Exact native Windows 800x600 movie A/B only. Other graph formats
+    // and Wine/Proton remain RGB565; depth remains Z32 as before.
+    native_movie_rgb32:bool,
+}
 impl VirtualGraphNode {
     fn caps(self)->u32{match self.role{
         SurfaceRole::Primary=>0x1000_e238,
         SurfaceRole::Backbuffer=>0x1000_601c,
         SurfaceRole::Depth=>0x1002_4000,
     }}
-    fn bpp(self)->u32{if self.role==SurfaceRole::Depth{32}else{16}}
+    fn bpp(self)->u32{
+        if self.role==SurfaceRole::Depth ||
+           (self.role==SurfaceRole::Backbuffer && self.native_movie_rgb32) {
+            32
+        }else{16}
+    }
     fn count(self)->u32{if self.role==SurfaceRole::Primary{1}else{0}}
 }
 /// Probe-only eligible native presentation session. The wrapper's
@@ -186,6 +196,21 @@ pub unsafe fn new_graph_surface4(
 pub unsafe fn new_graph_surface4_opt_in(
     real:SurfaceThis,role:SurfaceRole,mode:Mode,native_3d:bool
 )->Result<SurfaceThis,i32>{
+    new_graph_surface4_opt_in_movie_rgb32(real,role,mode,native_3d,false)
+}
+/// Native-only, strict movie surface format A/B. The *physical* RGB32
+/// backbuffer remains format-correct for a direct native XRGB source Blt.
+/// Game-facing logical mode stays 800x600x16; only this backbuffer reports
+/// the actual 32-bit real pixel format to clients of its COM interface.
+pub unsafe fn new_graph_surface4_opt_in_movie_rgb32(
+    real:SurfaceThis,role:SurfaceRole,mode:Mode,native_3d:bool,
+    native_movie_rgb32:bool
+)->Result<SurfaceThis,i32>{
+    if native_movie_rgb32 &&
+       (role!=SurfaceRole::Backbuffer ||
+        (mode.width,mode.height,mode.bpp)!=(800,600,16) || native_3d){
+        return Err(E_INVALIDARG);
+    }
     let legacy=matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16));
     let allow_native=native_3d && mode.bpp==16 &&
         mode.width>=960 && mode.height>=600 &&
@@ -195,7 +220,9 @@ pub unsafe fn new_graph_surface4_opt_in(
         (mode.width as u64)<=(mode.height as u64)*4;
     if !legacy && !allow_native{return Err(E_INVALIDARG);}
     let wrapped=new_forwarding_surface4(real)?;
-    (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{role,mode});
+    (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{
+        role,mode,native_movie_rgb32
+    });
     Ok(wrapped)
 }
 
@@ -300,6 +327,10 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
     *d.add(3)=node.bpp();
     if node.role==SurfaceRole::Depth{
         *d.add(5)=0x00ff_ffff;
+    }else if node.native_movie_rgb32 && node.role==SurfaceRole::Backbuffer{
+        *d.add(4)=0x00ff_0000;
+        *d.add(5)=0x0000_ff00;
+        *d.add(6)=0x0000_00ff;
     }else{
         *d.add(4)=0xf800;
         *d.add(5)=0x07e0;
@@ -344,6 +375,17 @@ pub unsafe fn arm_graph_primary_flip_with_output(
     fps_limit:Option<u32>,window:usize,focus_repaint:bool,
     menu_scratch:*mut c_void,native_gdi_sidebars:bool
 )->Result<(),i32>{
+    arm_graph_primary_flip_with_output_movie_rgb32(
+        primary,contract,generation,origin,client,output_client,
+        fps_limit,window,focus_repaint,menu_scratch,native_gdi_sidebars,false)
+}
+/// Only for the explicit native Windows 800x600 RGB32 movie A/B.
+pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void,native_gdi_sidebars:bool,native_movie_rgb32:bool
+)->Result<(),i32>{
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
     let Some(node)=p.graph else{return Err(E_INVALIDARG);};
@@ -358,6 +400,14 @@ pub unsafe fn arm_graph_primary_flip_with_output(
     if b_node.role!=SurfaceRole::Backbuffer||b_node.mode!=node.mode{
         return Err(E_INVALIDARG);
     }
+    if native_movie_rgb32 &&
+       ((node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+        !b_node.native_movie_rgb32 || !menu_scratch.is_null()){
+        return Err(E_INVALIDARG);
+    }
+    if !native_movie_rgb32 && b_node.native_movie_rgb32{
+        return Err(E_INVALIDARG);
+    }
     let depth=b.attached.load(Ordering::Acquire);
     if !is_our_forwarder(depth){return Err(E_INVALIDARG);}
     let z=&*depth.cast::<Surface4Forwarder>();
@@ -368,9 +418,15 @@ pub unsafe fn arm_graph_primary_flip_with_output(
     // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
     let bridge=FlipToBltBridge::from_exposed(contract,generation)
         .map_err(|_|E_FAIL)?;
-    let mut backend=NativeWindowedBlt::from_borrowed_com(
-        p.real,b.real,origin,client,node.mode
-    ).map_err(|_|E_INVALIDARG)?;
+    let mut backend=if native_movie_rgb32{
+        NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+            p.real,b.real,origin,client,node.mode
+        )
+    }else{
+        NativeWindowedBlt::from_borrowed_com(
+            p.real,b.real,origin,client,node.mode
+        )
+    }.map_err(|_|E_INVALIDARG)?;
     backend.set_output_client(output_client).map_err(|_|E_INVALIDARG)?;
     if native_gdi_sidebars && output_client!=client {
         backend.enable_native_gdi_sidebars(window);
@@ -1323,6 +1379,27 @@ static SURFACE4_FORWARD_VTABLE:Surface4VTable=Surface4VTable{
 mod tests{
     use super::*;
     use std::sync::atomic::{AtomicU32,Ordering};
+
+    #[test]
+    fn native_movie_rgb32_format_is_real_xrgb_on_backbuffer_only(){
+        let mode=Mode{width:800,height:600,bpp:16};
+        for role in [SurfaceRole::Primary,SurfaceRole::Backbuffer,SurfaceRole::Depth]{
+            let node=VirtualGraphNode{
+                role,mode,native_movie_rgb32:role==SurfaceRole::Backbuffer
+            };
+            let mut fmt=[0u32;8];
+            unsafe{virtual_pixel_format(node,fmt.as_mut_ptr())};
+            assert_eq!(fmt[0],32);
+            assert_eq!(fmt[3],if role==SurfaceRole::Primary{16}else{32});
+            if role==SurfaceRole::Backbuffer{
+                assert_eq!((fmt[4],fmt[5],fmt[6]),(0xff0000,0xff00,0xff));
+            }else if role==SurfaceRole::Primary{
+                assert_eq!((fmt[4],fmt[5],fmt[6]),(0xf800,0x07e0,0x001f));
+            }else{
+                assert_eq!(fmt[1],0x400);
+            }
+        }
+    }
 
     #[repr(C)]
     struct RealMock{
