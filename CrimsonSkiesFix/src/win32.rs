@@ -371,7 +371,7 @@ pub fn commit_deduplicated_ini(
     // every external file-system race, but ensures no observed changes
     // between initial read and our atomic rename are overwritten.
     if !regular_file(path) ||
-       fs::read_to_string(path).is_err_or(|latest|latest!=previous){
+       fs::read_to_string(path).map_or(true,|latest|latest!=previous){
         let _=fs::remove_file(&tmp);
         return Err("INI changed during cleanup; original kept".into());
     }
