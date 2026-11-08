@@ -83,6 +83,12 @@ NativeDD4Bootstrap=0
 ; Never active on Wine. A/B experiment: 0 retains the existing implementation;
 ; 1 still needs a real-game widescreen validation.
 NativeIntroExclusive=0
+; Native Win11/DirectShow A/B: use a real 32-bit XRGB backbuffer for 800x600
+; video and menus instead of real RGB565 plus software movie conversion.
+; Virtual game mode remains logically 800x600x16; primary CPU Lock is RGB565.
+; Requires NativeDD4Bootstrap=1 and NativeIntroExclusive=0. Not Wine/Proton.
+; Experimental: this format-compatibility probe has NOT been validated in game.
+NativeMovieRGB32=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
