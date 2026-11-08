@@ -49,6 +49,7 @@ mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adap
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
 mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
 mod native_rof_open_trace; // native-only exact ROFFILE archive-open diagnostic; no GameOS data changes
+mod native_rof_read_trace; // native-only exact archive file-ID ReadFile provenance
 mod native_rof_load_trace; // trace exact game LoadLibrary imports to observe late ROFFILE load
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
