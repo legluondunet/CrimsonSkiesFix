@@ -159,7 +159,7 @@ NativeFullFrameCompose=0
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ; Passive, opt-in successful virtual DD4 Flip spacing over batches of 120 frames.
-; Reports p50/p95/p99, >2x/>3x target intervals and synchronous Blt duration.
+; Reports p50/p95/p99, >2x/>3x target intervals and presentation-call duration.
 ; Not on-screen swap/present timestamps; requires [Debug] Log=1.
 FrameTimeTrace=0
 ColorProbe=0
