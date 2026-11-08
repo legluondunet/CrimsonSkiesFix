@@ -1062,23 +1062,44 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
         mode.width,mode.height,Some(16)))?;
     log("WINDOWED-DIAG: native primary Lock staging CreateSurface OK");
-    // Menu logo is composited on a PRIVATE RGB565 surface and then copied
-    // to the physical primary in the same frame. The game's D3D backbuffer
-    // remains untouched, even during a playing animated menu background.
-    // If unavailable, graphics/gameplay continue without the version label.
-    // A 16-bit menu scratch cannot transparently compose on the
-    // experimental real 32-bit movie render target; leave the game frame
-    // untouched during this A/B instead of risking an invalid Blt.
-    if movie_rgb32 {
-        log("NATIVE-MOVIE-RGB32: menu branding scratch disabled for this A/B; original game frame preserved");
-    }
-    let menu_scratch=if !movie_rgb32 &&
-        matches!((mode.width,mode.height),(640,480)|(800,600)){
+    // The original MainMenu label is already verified under Wine on a
+    // private RGB565 offscreen surface. Native Windows movie/menu uses
+    // XRGB8888 instead, so it needs its OWN matching 32-bit scratch,
+    // never an RGB565->RGB32 implicit driver conversion or GDI on HWND.
+    // This scratch is independent of the full-window black compositor;
+    // the game's animated backbuffer stays completely unmodified.
+    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)) &&
+       (!movie_rgb32 || (crate::cfg().native_full_frame_compose &&
+           crate::diagnostics::is_native_windows())) {
+        let bits=if movie_rgb32{32}else{16};
         match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
-            mode.width,mode.height,Some(16))) {
-            Ok(surface)=>Some(surface),
+            mode.width,mode.height,Some(bits))) {
+            Ok(surface) if !movie_rgb32=>Some(surface),
+            Ok(surface)=>{
+                match native_desc(&surface) {
+                    Ok(d) if d[3]==mode.width && d[2]==mode.height &&
+                      (d[21],d[22],d[23],d[24])==
+                        (32,0x00ff_0000,0x0000_ff00,0x0000_00ff)=>{
+                        log("MENU-BRANDING: native 800x600 XRGB8888 private system-memory GDI scratch verified; original full-window compositor retained");
+                        Some(surface)
+                    },
+                    Ok(d)=>{
+                        log(&format!(
+                            "MENU-BRANDING: native 32-bit scratch format mismatch bpp={} masks={:#x}/{:#x}/{:#x}; signature skipped without affecting game",
+                            d[21],d[22],d[23],d[24]
+                        ));
+                        None
+                    },
+                    Err(error)=>{
+                        log(&format!(
+                            "MENU-BRANDING: native GetSurfaceDesc failed ({error}); no label"
+                        ));
+                        None
+                    }
+                }
+            },
             Err(error)=>{
-                log(&format!("MENU-BRANDING: offscreen scratch unavailable: {error}"));
+                log(&format!("MENU-BRANDING: private {bits}-bit menu scratch unavailable: {error}; game presentation unaffected"));
                 None
             }
         }
