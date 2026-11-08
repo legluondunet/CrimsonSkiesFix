@@ -302,6 +302,9 @@ struct Epoch {
     // strong COM reference outlives the borrowed pointer in the Flip graph.
     menu_scratch:Option<Com>,
     movie_rgb565_scratch:Option<Com>,
+    // CPU-writable private XRGB8888 for RGB565 opening splash conversion;
+    // the wrapper owns an independent strong native COM reference.
+    opening_rgb32_scratch:Option<Com>,
     // Retained strong COM ref; the virtual Flip borrows it only after
     // preflight, and the epoch first retires its graph before release.
     full_frame_composite:Option<Com>,
@@ -1130,6 +1133,36 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
             }
         }
     }else{None};
+    // The native 16-bit opening image has complete pixels, but the native
+    // 16->32 video backbuffer Blt reports DD_OK while copying only scanline 0.
+    // Prepare a dedicated SYSTEMMEM XRGB8888 scratch so the shared COM
+    // forwarder can widen RGB565 itself, then use a working 32->32 Blt.
+    // This is feature/format-gated, not an OS-specific presentation path.
+    let opening_rgb32_scratch=if movie_rgb32{
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+            800,600,Some(32))){
+            Ok(surface)=>match native_desc(&surface){
+                Ok(d) if (d[3],d[2],d[21],d[22],d[23],d[24])==
+                    (800,600,32,0xff0000,0xff00,0xff) &&
+                    d[26]&DD_CAPS_SYSTEMMEM!=0 && d[26]&DD_CAPS_OFFSCREEN!=0=>{
+                    log("STARTUP-IMAGE: private XRGB8888 system-memory staging verified");
+                    Some(surface)
+                },
+                Ok(_)=>{
+                    log("STARTUP-IMAGE: staging pixel format/caps unexpected; original Blt retained");
+                    None
+                },
+                Err(err)=>{
+                    log(&format!("STARTUP-IMAGE: staging descriptor unavailable: {err}"));
+                    None
+                }
+            },
+            Err(err)=>{
+                log(&format!("STARTUP-IMAGE: staging creation failed: {err}; original Blt retained"));
+                None
+            }
+        }
+    }else{None};
     log("WINDOWED-DIAG: primary Lock/Unlock staging probe begin");
     verify_primary_lock_staging(&primary_lock,mode)?;
     log("WINDOWED-DIAG: primary Lock/Unlock staging probe OK");
@@ -1149,6 +1182,16 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         match com_surface4_forward::arm_graph_movie_conversion_staging(back.ptr(),scratch.ptr()){
             Ok(())=>log("NATIVE-MOVIE-BLT: scratch validated and bound to virtual RGB565 backbuffer"),
             Err(hr)=>log(&format!("NATIVE-MOVIE-BLT: scratch validation failed hr={:#010x}; original Blt failures preserved",hr as u32))
+        }
+    }
+    if let Some(scratch)=opening_rgb32_scratch.as_ref(){
+        match com_surface4_forward::arm_graph_opening_rgb32_staging(
+            back.ptr(),scratch.ptr()){
+            Ok(())=>log("STARTUP-IMAGE: dedicated 800x600 XRGB8888 staging bound for original splash"),
+            Err(hr)=>log(&format!(
+                "STARTUP-IMAGE: staging arm unavailable hr={:#010x}; original native Blt retained",
+                hr as u32
+            ))
         }
     }
     com_surface4_forward::attach_graph_surface4(primary.ptr(),back.ptr())
@@ -1306,7 +1349,7 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
         physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,
-        full_frame_composite,clipper})
+        opening_rgb32_scratch,full_frame_composite,clipper})
 }
 #[cfg(test)]
 mod native_intro_exclusive_tests {
