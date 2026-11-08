@@ -445,6 +445,15 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32(
         native_movie_rgb32,ptr::null_mut()
     )
 }
+// The native 800x600 menu scratch is validated as XRGB8888 by the epoch
+// builder. It must be paired with the full-frame compositor; a scratch on
+// the legacy direct presenter remains forbidden (RGB565-only history).
+fn native_movie_menu_scratch_allowed(
+    menu_scratch:*mut c_void,full_frame_composite:*mut c_void
+)->bool{
+    menu_scratch.is_null() || !full_frame_composite.is_null()
+}
+
 /// Experimental native RGB32 800x600 movie/menu path. The final surface
 /// is an independently owned, full-window logical-size 32-bit offscreen
 /// surface that has passed actual DD4 preflight. The epoch holds its COM
@@ -474,9 +483,13 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     if b_node.role!=SurfaceRole::Backbuffer||b_node.mode!=node.mode{
         return Err(E_INVALIDARG);
     }
+    // A native 32-bit menu signature scratch is safe only with the verified
+    // full-frame XRGB8888 composition path. The original RGB565-only
+    // restriction must not reject this newly validated pair of surfaces.
     if native_movie_rgb32 &&
        ((node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
-        !b_node.native_movie_rgb32 || !menu_scratch.is_null()){
+        !b_node.native_movie_rgb32 ||
+        !native_movie_menu_scratch_allowed(menu_scratch,full_frame_composite)){
         return Err(E_INVALIDARG);
     }
     if !native_movie_rgb32 && b_node.native_movie_rgb32{
@@ -1646,6 +1659,16 @@ mod tests{
         assert!(!movie_com_trace_selected(257));
         assert!(movie_com_trace_selected(320));
         assert!(!movie_com_trace_selected(321));
+    }
+
+    #[test]
+    fn native_rgb32_menu_scratch_requires_full_frame_composition(){
+        let scratch=std::ptr::dangling_mut::<c_void>();
+        let composite=2usize as *mut c_void;
+        assert!(native_movie_menu_scratch_allowed(ptr::null_mut(),ptr::null_mut()));
+        assert!(native_movie_menu_scratch_allowed(ptr::null_mut(),composite));
+        assert!(native_movie_menu_scratch_allowed(scratch,composite));
+        assert!(!native_movie_menu_scratch_allowed(scratch,ptr::null_mut()));
     }
 
     #[test]
