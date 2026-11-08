@@ -57,6 +57,9 @@ pub const DEFAULT_INI: &str = concat!(
     "; Native Windows-only A/B: repair stale ClipCursor from pre-borderless small game window.\n",
     "; Requires native DD4 virtual graph and verified game-owned HWND; disabled by default.\n",
     "NativeMouseClipRepair=0\n",
+    "; Native Windows 800x600 only: test visibility using standard OS arrow in MainMenu.\n",
+    "; Requires WindowEraseGuard; no virtual coordinate remap. Debug only, OFF by default.\n",
+    "NativeSystemCursorProbe=0\n",
     "; Experimental native Windows fallback: paint only 4:3 sidebars through Win32 GDI. Off by default.\n",
     "NativeGdiSidebars=0\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
@@ -103,6 +106,8 @@ pub struct Config {
     // Native Windows A/B only: replace a stale verified game ClipCursor rectangle
     // with exact borderless HWND client bounds, after successful setup.
     pub native_mouse_clip_repair: bool,
+    // Diagnostic-only original OS arrow in native menu, never gameplay.
+    pub native_system_cursor_probe: bool,
     // Diagnostic only: Win32 GDI black gutters after native windowed Blt (not Wine).
     pub native_gdi_sidebars: bool,
     // Diagnostic-only: export forwarding without any DirectDraw or game hooks.
@@ -115,7 +120,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_gdi_sidebars: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_gdi_sidebars: false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -194,6 +199,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.native_menu_mouse_remap = v; },
             ("debug", "nativemousecliprepair") =>
                 if let Some(v) = enabled(value) { settings.native_mouse_clip_repair = v; },
+            ("debug", "nativesystemcursorprobe") =>
+                if let Some(v) = enabled(value) { settings.native_system_cursor_probe = v; },
             ("debug", "nativegdisidebars") =>
                 if let Some(v) = enabled(value) { settings.native_gdi_sidebars = v; },
             ("debug", "nativedpiaware") =>
@@ -230,7 +237,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_gdi_sidebars:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_gdi_sidebars:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -261,6 +268,13 @@ mod tests {
         assert!(parse("[Debug]\nNativeGdiSidebars=1").native_gdi_sidebars);
         assert!(!parse("[Graphics]\nNativeGdiSidebars=1").native_gdi_sidebars);
         assert!(!parse("[Debug]\nNativeGdiSidebars=0").native_gdi_sidebars);
+    }
+    #[test]
+    fn native_system_cursor_probe_is_strictly_debug_only(){
+        assert!(!Config::default().native_system_cursor_probe);
+        assert!(parse("[Debug]\nNativeSystemCursorProbe=1").native_system_cursor_probe);
+        assert!(!parse("[Debug]\nNativeSystemCursorProbe=0").native_system_cursor_probe);
+        assert!(!parse("[Graphics]\nNativeSystemCursorProbe=1").native_system_cursor_probe);
     }
     #[test]
     fn native_mouse_clip_repair_is_debug_only_and_off_by_default(){
