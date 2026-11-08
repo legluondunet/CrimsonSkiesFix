@@ -125,6 +125,10 @@ static MENU_GOS_BRIDGE_CLIENT_W:AtomicUsize=AtomicUsize::new(0);
 static MENU_GOS_BRIDGE_CLIENT_H:AtomicUsize=AtomicUsize::new(0);
 static MENU_GOS_BRIDGE_RENDER_W:AtomicUsize=AtomicUsize::new(0);
 static MENU_GOS_BRIDGE_RENDER_H:AtomicUsize=AtomicUsize::new(0);
+// Dedicated GOS bridge scene hint. The legacy WM_MENU scene flag is reset
+// when entering gameplay and never receives a new MainMenu script on ESC.
+// Arm post-gameplay UI only on a *verified* 3D -> 800x600 transition.
+static MENU_GOS_BRIDGE_POST_GAMEPLAY_UI:AtomicUsize=AtomicUsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
@@ -516,7 +520,7 @@ pub fn disarm_native_menu_mouse_remap(){
 /// WndProc WM_* messages stay exactly as originally dispatched.
 pub fn arm_native_gos_cursor_bridge(
     hwnd:usize,client:(u32,u32),render:(u32,u32),
-    menu_mouse_remap_enabled:bool
+    menu_mouse_remap_enabled:bool,post_gameplay_ui:bool
 )->Result<MenuMouseGeometry,String>{
     if hwnd==0 || snapshot(hwnd).is_none(){
         return Err("verified game HWND/WndProc guard missing".into());
@@ -549,6 +553,8 @@ pub fn arm_native_gos_cursor_bridge(
     MENU_GOS_BRIDGE_CLIENT_H.store(client.1 as usize,Ordering::Release);
     MENU_GOS_BRIDGE_RENDER_W.store(render.0 as usize,Ordering::Release);
     MENU_GOS_BRIDGE_RENDER_H.store(render.1 as usize,Ordering::Release);
+    MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.store(
+        usize::from(post_gameplay_ui),Ordering::Release);
     MENU_GOS_BRIDGE_HWND.store(hwnd,Ordering::Release);
     Ok(MenuMouseGeometry{
         left:viewport.left,top:viewport.top,
@@ -557,15 +563,23 @@ pub fn arm_native_gos_cursor_bridge(
 }
 pub fn disarm_native_gos_cursor_bridge(){
     MENU_GOS_BRIDGE_HWND.store(0,Ordering::Release);
+    MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.store(0,Ordering::Release);
+}
+pub fn native_gos_cursor_bridge_post_gameplay_ui()->bool {
+    MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire)!=0 &&
+    MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.load(Ordering::Acquire)!=0
 }
 /// Snapshot the *actual* Windows pointer and transform through the SAME
 /// viewport as presentation. The game cursor still belongs to GOS; this
 /// function itself does not modify the game or the OS. Gated by exact
-/// MainMenu/Preferences script plus owner HWND, focus, UI thread and
-/// a verified physical movie viewport. Non-menu / gutter input is ignored.
+/// MainMenu/Preferences script or exact 3D -> 800x600 post-gameplay UI,
+/// plus owner HWND, focus, UI thread and verified physical 4:3 viewport.
+/// Non-menu / gutter input is ignored. Gameplay never arms this bridge.
 pub fn native_gos_cursor_bridge_target()->Option<(i32,i32)>{
     let hwnd=MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire);
-    if hwnd==0 || MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
+    if hwnd==0 ||
+       (MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 &&
+        MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.load(Ordering::Acquire)==0) ||
        PREVIOUS.load(Ordering::Acquire)==0 ||
        HOOK_HWND.load(Ordering::Acquire)!=hwnd{return None;}
     let w=MENU_GOS_BRIDGE_CLIENT_W.load(Ordering::Acquire) as i32;
