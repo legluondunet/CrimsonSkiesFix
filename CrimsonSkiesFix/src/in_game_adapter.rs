@@ -223,10 +223,13 @@ static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 // Windows-native-only startup A/B: avoid exposing synthetic RGB565/virtual
 // primary surfaces to the DirectShow MPEG introduction. Do not switch a
 // running virtual graph back into exclusive mode: that was previously
-// demonstrated unsafe. Instead keep the ORIGINAL exclusive DD4 path until
-// the game has completed an observed 800x600 -> another mode transition
-// and entered its MainMenu. Only future cooperative requests may arm the
-// windowed adapter. Wine/Proton and the default mode are unaffected.
+// demonstrated unsafe. Keep the ORIGINAL exclusive DD4 path until the
+// 800x600 introduction has presented MainMenu. The first following DD4
+// cooperative request is our ONE opportunity to switch before the game
+// negotiates its next display mode. Once SetDisplayMode leaves 800x600,
+// never switch a running native game back into a virtual graph: on native
+// Win11 this late switch happened on ESC -> MainMenu and yielded a white
+// screen with sound continuing. Wine/Proton and defaults are unaffected.
 const INTRO_BEFORE_MOVIE:u8=0;
 const INTRO_IN_MOVIE_MODE:u8=1;
 const INTRO_LEFT_MOVIE_MODE:u8=2;
@@ -270,8 +273,13 @@ fn next_intro_phase(current:u8,mode:Mode)->u8{
         _=>current,
     }
 }
-fn native_intro_ready(phase:u8,main_seen:bool)->bool{
-    phase==INTRO_LEFT_MOVIE_MODE && main_seen
+// MainMenu is loaded *while still in* the original 800x600 mode.
+// Coop is called BEFORE the subsequent SetDisplayMode. Waiting until
+// SetDisplayMode leaves 800x600 was too late: the next eligible coop
+// occurred during ESC -> MainMenu, after native 3D gameplay, causing an
+// unsafe mid-session switch to synthetic surfaces.
+fn native_intro_ready(phase:u8,main_active:bool)->bool{
+    phase==INTRO_IN_MOVIE_MODE && main_active
 }
 fn observe_native_intro_mode(mode:Mode){
     if !native_intro_exclusive_enabled(){return;}
@@ -283,7 +291,7 @@ fn observe_native_intro_mode(mode:Mode){
             INTRO_IN_MOVIE_MODE=>
                 "NATIVE-INTRO: original 800x600 exclusive movie mode observed; virtual graph remains disabled",
             INTRO_LEFT_MOVIE_MODE=>
-                "NATIVE-INTRO: game left 800x600 movie mode; waiting for MainMenu before allowing virtual DD4",
+                "NATIVE-INTRO: game left original 800x600 mode; late virtual activation permanently disarmed for this launch",
             _=>"NATIVE-INTRO: unexpected phase transition",
         });
     }
@@ -320,17 +328,25 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     if native_intro {
         let _=native_intro_launch_physical();
     }
-    if native_intro &&
-        !native_intro_ready(NATIVE_INTRO_PHASE.load(Ordering::Acquire),
-                            crate::menu_scene::main_menu_was_seen() &&
-                            crate::menu_scene::main_menu_active()) {
-        let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
-        if no_windowed_runtime {
-            let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
-            if count<8 {
-                log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; no virtual COM graph");
+    if native_intro {
+        let phase=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
+        let main_active=crate::menu_scene::main_menu_was_seen() &&
+                        crate::menu_scene::main_menu_active();
+        if !native_intro_ready(phase,main_active) {
+            let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
+            if no_windowed_runtime {
+                let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
+                if phase==INTRO_LEFT_MOVIE_MODE {
+                    if count<8 {
+                        log("NATIVE-INTRO: reject LATE virtual DD4 activation after native 3D mode; original exclusive path preserved (ESC/menu white-screen guard)");
+                    }
+                }else if count<8 {
+                    log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; awaiting 800x600 MainMenu transition");
+                }
+                return None;
             }
-            return None;
+        }else if RUNTIME.lock().ok().is_some_and(|r|r.is_none()){
+            log("NATIVE-INTRO: MainMenu observed before first post-intro DD4 cooperative request; attempting one-time windowed activation before next display mode");
         }
     }
     // A second identical game-exclusive request is expected during video
@@ -782,13 +798,21 @@ mod native_intro_exclusive_tests {
     }
 
     #[test]
-    fn never_arms_without_both_video_exit_and_main_menu() {
-        for phase in [INTRO_BEFORE_MOVIE,INTRO_IN_MOVIE_MODE] {
-            assert!(!native_intro_ready(phase,false));
-            assert!(!native_intro_ready(phase,true));
-        }
+    fn only_arms_before_first_postintro_mode_transition_when_main_menu_is_active() {
+        assert!(!native_intro_ready(INTRO_BEFORE_MOVIE,false));
+        assert!(!native_intro_ready(INTRO_BEFORE_MOVIE,true)); // early boot cannot switch
+        assert!(!native_intro_ready(INTRO_IN_MOVIE_MODE,false)); // movie still active
+        assert!(native_intro_ready(INTRO_IN_MOVIE_MODE,true));  // first next coop, menu seen
         assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,false));
-        assert!(native_intro_ready(INTRO_LEFT_MOVIE_MODE,true));
+        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,true)); // ESC -> menu is too late
+        // Conservative mode sequence from owner logs: early 1024,
+        // introduction/menu 800, gameplay 1024, ESC returns to 800.
+        let intro=next_intro_phase(INTRO_BEFORE_MOVIE,Mode{width:800,height:600,bpp:16});
+        assert_eq!(intro,INTRO_IN_MOVIE_MODE);
+        assert!(native_intro_ready(intro,true));
+        let gameplay=next_intro_phase(intro,Mode{width:1024,height:768,bpp:16});
+        assert_eq!(gameplay,INTRO_LEFT_MOVIE_MODE);
+        assert!(!native_intro_ready(gameplay,true)); // cannot arm on ESC
     }
 }
 
