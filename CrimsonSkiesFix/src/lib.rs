@@ -48,9 +48,9 @@ mod com_surface4_forward; // inactive wrapper prototype; native source unwrappin
 mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adapter
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
 mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
-mod native_rof_open_trace; // native-only exact ROFFILE archive-open diagnostic; no GameOS data changes
-mod native_rof_read_trace; // native-only exact archive file-ID ReadFile provenance
-mod native_rof_load_trace; // trace exact game LoadLibrary imports to observe late ROFFILE load
+mod native_rof_open_trace; // shared Windows/Wine authenticated ROF handle routing
+mod native_rof_read_trace; // shared ROF identity validation + optional ReadFile telemetry
+mod native_rof_load_trace; // shared game LoadLibrary observer for original ROFFILE.DLL
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
@@ -330,15 +330,29 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
-    // Observe the original game's LoadLibrary import and inspect ROFFILE
-    // immediately AFTER its eventual load. A one-shot early ROFFILE check
-    // and the existing lifecycle fallback cover other load patterns.
-    // Both probes are native-only, diagnostic, verified-EXE gated.
-    static NATIVE_ROF_EARLY_ONCE:Once=Once::new();
-    NATIVE_ROF_EARLY_ONCE.call_once(|| {
-        native_rof_load_trace::install();
-        native_rof_open_trace::probe();
-    });
+    // Install the managed, verified GOS overlay before initializing file-ID
+    // references for our shared Windows/Wine resource hook. Otherwise an
+    // already-loaded ROFFILE could cache an absent pre-patch reference.
+    // Pass-through and explicit opt-out never edit or intercept resources.
+    if !config.directdraw_passthrough {
+        static GOS_LOCK_ONCE:Once=Once::new();
+        GOS_LOCK_ONCE.call_once(|| {
+            gos_video_lock::apply(
+                config.gos_video_lock,
+                config.experimental_windowed_adapter &&
+                config.native_3d_widescreen &&
+                config.desktop_resolution
+            );
+        });
+        // Observe only the authenticated game's loader imports. The same
+        // code selects the already-correct archive on Wine or redirects a
+        // verified original copy on Windows; no OS-specific routing branch.
+        static ROF_ROUTING_EARLY_ONCE:Once=Once::new();
+        ROF_ROUTING_EARLY_ONCE.call_once(|| {
+            native_rof_load_trace::install();
+            native_rof_open_trace::probe();
+        });
+    }
     if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
         NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
             native_video_imports::report();
@@ -365,20 +379,8 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         };
         return win32::system_export(real,name);
     }
-    // No work from DllMain: authenticated game and INI are ready here.
-    // The native GOS resource override is default-enabled for the exact
-    // authenticated EXE, but can be switched off or restored in the INI.
-    // A successful ROF patch must precede original GOS script loading.
-    // Explicit off mode does no ROF I/O. Restore is allowed independently.
-    static GOS_LOCK_ONCE:Once=Once::new();
-    GOS_LOCK_ONCE.call_once(|| {
-        gos_video_lock::apply(
-            config.gos_video_lock,
-            config.experimental_windowed_adapter &&
-            config.native_3d_widescreen &&
-            config.desktop_resolution
-        );
-    });
+    // The shared authenticated GOS resource patch and loader hook have
+    // already been initialized above, before original script loading.
     // Freeze the screen under the cursor at the first game DirectDraw call.
     // It represents the launch screen, not the cursor's later location.
     // The actual game HWND is validated separately before it can be moved.
