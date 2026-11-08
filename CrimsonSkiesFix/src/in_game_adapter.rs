@@ -15,6 +15,14 @@ use crate::{
     com_surface4_forward,
 };
 
+// RGB32 menu branding uses an XRGB8888 scratch verified only for the
+// full-frame native compositor. Direct-Blt fallback must never receive it.
+fn select_menu_scratch_for_arm(
+    scratch:*mut c_void,movie_rgb32:bool,full_frame_composition:bool
+)->*mut c_void{
+    if movie_rgb32 && !full_frame_composition{ptr::null_mut()}else{scratch}
+}
+
 const E_FAIL:Hr=0x8000_4005u32 as i32;
 const E_NOTIMPL:Hr=0x8000_4001u32 as i32;
 const DD_CAPS_PRIMARY:u32=0x0000_0200;
@@ -1247,10 +1255,16 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // Both branches retain the original native movie/3D graph shape.
     // The extra pointer is the private full-client surface, borrowed
     // until the same virtual-primary Flip mutex is retired at mode switch.
+    // A native XRGB8888 signature scratch belongs only to that compositor;
+    // the legacy direct presenter must never inherit it on fallback.
+    let menu_scratch_for_arm=select_menu_scratch_for_arm(
+        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+        movie_rgb32,full_frame_composite.is_some()
+    );
     let arm_result=com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32_composed(
         primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
-        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+        menu_scratch_for_arm,
         crate::cfg().native_gdi_sidebars &&
             crate::cfg().native_dd4_bootstrap &&
             crate::diagnostics::is_native_windows() &&
@@ -1269,7 +1283,10 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
             com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32(
                 primary.ptr(),&contract,generation,(0,0),client,output_client,
                 Some(crate::cfg().fps_limit),hwnd as usize,crate::cfg().focus_repaint,
-                menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+                select_menu_scratch_for_arm(
+                    menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+                    movie_rgb32,false
+                ),
                 crate::cfg().native_gdi_sidebars &&
                     crate::cfg().native_dd4_bootstrap &&
                     crate::diagnostics::is_native_windows(),
@@ -1294,6 +1311,14 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
 #[cfg(test)]
 mod native_intro_exclusive_tests {
     use super::*;
+
+    #[test]
+    fn native_rgb32_direct_blt_fallback_never_uses_compositor_scratch(){
+        let scratch=1usize as *mut c_void;
+        assert_eq!(select_menu_scratch_for_arm(scratch,true,true),scratch);
+        assert!(select_menu_scratch_for_arm(scratch,true,false).is_null());
+        assert_eq!(select_menu_scratch_for_arm(scratch,false,false),scratch);
+    }
 
     #[test]
     fn requires_800x600_then_a_distinct_mode_before_arming() {
