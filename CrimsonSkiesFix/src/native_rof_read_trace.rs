@@ -1,7 +1,8 @@
-//! Windows provenance probe for original ROFFILE.DLL ReadFile.
-//! Also contains a narrow opt-in original-overlay HANDLE routing fallback
-//! for the confirmed native Windows wrong-file-ID resource path. The
-//! provenance observer itself remains pass-through and does not alter reads.
+//! Shared Windows/Wine provenance and verified GOS overlay HANDLE routing.
+//! If GameOS already opens the exact managed patch, leave its handle intact.
+//! Otherwise, only a byte-for-byte verified original archive can be
+//! substituted with the already validated managed patch. ReadFile tracing
+//! remains passive, optional, and independent from the routing behavior.
 //! Enabled only after exact original executable + ROFFILE.DLL verification.
 //! It verifies actual Win32 volume/file IDs (not just archive basenames),
 //! logs bounded read offsets, and never records private paths or file bytes.
@@ -143,7 +144,7 @@ fn classify_content(opened:&Path,installed:&Path)->&'static str{
     }
     "other-content"
 }
-/// Native-only call made immediately after a successful original
+/// Called on both Windows and Wine immediately after a successful original
 /// CreateFileA/W from the SHA-verified ROFFILE.DLL.
 pub unsafe fn opened_archive_provenance(
     handle:*mut c_void,archive:&str
@@ -180,7 +181,7 @@ fn readonly_existing_open(access:u32,disposition:u32)->bool{
     disposition==3 && access&(GENERIC_WRITE|GENERIC_ALL|
         DELETE_ACCESS|FILE_WRITE_DATA|FILE_APPEND_DATA)==0
 }
-/// Native-only fail-open repair for the confirmed wrong-file archive route.
+/// Shared Windows/Wine fail-open repair for a wrong-file archive route.
 /// No redirect if the opened file cannot be independently verified as
 /// byte-for-byte identical to the preserved original patch overlay.
 /// The original ROFFILE.DLL, EXE and original game asset files are untouched.
@@ -188,8 +189,9 @@ pub unsafe fn redirect_original_overlay_if_verified(
     original_handle:*mut c_void, access:u32,share:u32,security:*mut c_void,
     disposition:u32,flags:u32,template:*mut c_void
 )->Option<*mut c_void>{
-    if crate::cfg().gos_video_lock!=gos_video_lock::Mode::On ||
-        !readonly_existing_open(access,disposition){return None;}
+    if !routing_enabled() || !readonly_existing_open(access,disposition){
+        return None;
+    }
     if opened_archive_identity(original_handle)!="different-file-id"{return None;}
     let root=std::env::current_exe().ok()
         .and_then(|exe|exe.parent().map(Path::to_path_buf))?;
@@ -222,6 +224,22 @@ pub unsafe fn redirect_original_overlay_if_verified(
     }
     CloseHandle(original_handle);
     Some(new_handle)
+}
+
+/// Shared routing is independent of optional logging and the host OS.
+/// Keep the prerequisites identical to the managed GOS patch installation.
+pub fn routing_enabled()->bool{
+    let c=crate::cfg();
+    c.gos_video_lock==gos_video_lock::Mode::On &&
+        c.experimental_windowed_adapter && c.native_3d_widescreen &&
+        c.desktop_resolution && !c.directdraw_passthrough
+}
+
+/// Initialize the authenticated file IDs separately from optional ReadFile
+/// tracing; otherwise [Debug] Log=0 would silently disable routing.
+pub fn references_ready()->bool{
+    REFERENCES.get_or_init(reference_files)
+        .is_some_and(|r|r.video_span.is_some())
 }
 
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
