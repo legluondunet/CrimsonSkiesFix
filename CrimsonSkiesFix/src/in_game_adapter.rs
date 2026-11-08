@@ -625,6 +625,14 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
     }
+    // The old 800x600 menu input transform must never survive into
+    // native 3D or a new mode. Re-arm only after new HAL/COM, HWND and
+    // exact client geometry have all been verified.
+    if crate::cfg().native_menu_mouse_remap &&
+        crate::cfg().native_dd4_bootstrap &&
+        crate::diagnostics::is_native_windows(){
+        crate::window_erase_guard::disarm_native_menu_mouse_remap();
+    }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
             log(&format!("WINDOWED-GAME: retiring old primary failed {:#010x}",hr as u32));
@@ -729,6 +737,24 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 match crate::window_erase_guard::install(runtime.hwnd){
                     Ok(())=>log("WINDOWED-GAME: WindowEraseGuard installed on verified game HWND (WM_ERASEBKGND only)"),
                     Err(err)=>log(&format!("WINDOWED-GAME: WindowEraseGuard unavailable: {err}")),
+                }
+            }
+            // Experimental native Win11 RGB32 800x600 only: reinterpret
+            // button/move client coordinates for the centered 4:3 source.
+            // Arm *after* the exact HWND and its client rectangle have
+            // been checked. MainMenu/Preferences script callback is a
+            // separate required scene gate; no effect before that.
+            if crate::cfg().native_menu_mouse_remap &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                let output=(expected.2,expected.3);
+                match crate::window_erase_guard::arm_native_menu_mouse_remap(runtime.hwnd,output){
+                    Ok(view)=>log(&format!(
+                        "NATIVE-MENU-MOUSE: opt-in armed for MainMenu/Preferences 800x600; verified HWND client={}x{} content=({},{} {}x{}), WM_MOUSEMOVE/buttons only; script gate initially off",
+                        output.0,output.1,view.left,view.top,view.width,view.height)),
+                    Err(error)=>log(&format!(
+                        "NATIVE-MENU-MOUSE: opt-in refused: {error}; original mouse messages preserved")),
                 }
             }
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
