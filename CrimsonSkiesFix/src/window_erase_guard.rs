@@ -22,6 +22,7 @@ const WM_SETFOCUS:u32=0x0007;
 const WM_KILLFOCUS:u32=0x0008;
 const WM_ACTIVATEAPP:u32=0x001c;
 const WM_MOUSEMOVE:u32=0x0200;
+const WM_SETCURSOR:u32=0x0020;
 const WM_LBUTTONDOWN:u32=0x0201;
 const WM_LBUTTONUP:u32=0x0202;
 const WM_RBUTTONDOWN:u32=0x0204;
@@ -46,6 +47,9 @@ const PM_REMOVE:u32=1;
 const NATIVE_MOVIE_PUMP_MAX_PER_FLIP:usize=4;
 thread_local!{
     static IN_NATIVE_MOVIE_PUMP:Cell<bool>=const{Cell::new(false)};
+    // ShowCursor display count is owned by this Win32 UI thread. Keep
+    // exact increments for reversible cleanup on scene exit/mode change.
+    static NATIVE_CURSOR_PROBE_SHOW_INCREMENTS:Cell<u32>=const{Cell::new(0)};
 }
 
 #[link(name="user32")]
@@ -60,6 +64,9 @@ extern "system"{
     fn DispatchMessageW(msg:*const WinMessage)->isize;
     fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
     fn GetClientRect(hwnd:Hwnd,rect:*mut MouseRect)->i32;
+    fn LoadCursorW(instance:Hwnd,name:*const u16)->Hwnd;
+    fn SetCursor(cursor:Hwnd)->Hwnd;
+    fn ShowCursor(show:i32)->i32;
     fn GetWindowLongW(hwnd:Hwnd,index:i32)->i32;
     fn SetWindowLongW(hwnd:Hwnd,index:i32,value:i32)->i32;
     fn CallWindowProcW(proc:isize,hwnd:Hwnd,msg:u32,wparam:usize,lparam:isize)->isize;
@@ -103,6 +110,12 @@ static MENU_MOUSE_SCENE_ACTIVE:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_MAPPED:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
 static MENU_MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
+// Independent menu-only opt-in to make the native OS arrow visible,
+// allowing a controlled distinction between hidden OS cursor and the
+// game's missing cursor rendering. The normal/legacy cursor is not changed.
+static MENU_SYSTEM_CURSOR_PROBE_HWND:AtomicUsize=AtomicUsize::new(0);
+static MENU_SYSTEM_CURSOR_PROBE_EVENTS:AtomicUsize=AtomicUsize::new(0);
+static MENU_SYSTEM_CURSOR_PROBE_RESTORES:AtomicUsize=AtomicUsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
@@ -110,6 +123,8 @@ pub struct WindowPaintStats{
     pub keydown:usize,pub keyup:usize,pub character:usize,pub focus_changes:usize,
     pub mouse_moves:usize,pub mouse_buttons:usize,
     pub menu_mouse_mapped:usize,
+    pub system_cursor_probe_events:usize,
+    pub system_cursor_probe_restores:usize,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowInputState{
@@ -199,6 +214,85 @@ fn menu_mouse_lparam(hwnd:Hwnd,msg:u32,lparam:isize)->isize{
         (u32::from(y as i16 as u16)<<16);
     packed as isize
 }
+/// Return to the exact ShowCursor count observed before our diagnostic
+/// activated. Never use this while another thread owns the game HWND.
+fn undo_native_system_cursor_probe(){
+    NATIVE_CURSOR_PROBE_SHOW_INCREMENTS.with(|increment|{
+        let count=increment.replace(0);
+        for _ in 0..count{
+            unsafe{ShowCursor(0);}
+        }
+        if count>0{
+            MENU_SYSTEM_CURSOR_PROBE_RESTORES.fetch_add(1,Ordering::Relaxed);
+        }
+    });
+}
+fn native_system_cursor_probe_message(message:u32)->bool{
+    matches!(message,WM_SETCURSOR|WM_MOUSEMOVE)
+}
+/// This is a temporary A/B diagnostic, NOT a final game cursor fix.
+/// The game receives original Win32 events first; AFTER its WndProc
+/// returns, show the Windows arrow in MainMenu/Preferences only. Never
+/// change input coordinates, fake events or paint into DirectDraw.
+fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32){
+    if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=hwnd as usize ||
+       MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
+       !native_system_cursor_probe_message(message){return;}
+    unsafe{
+        // Win32 standard arrow, not a custom file or a global cursor change.
+        let arrow=LoadCursorW(std::ptr::null_mut(),32512usize as *const u16);
+        if arrow.is_null(){return;}
+        // ShowCursor is a per-thread reference count; keep any adjustments
+        // bounded, one-time and reversible. Never repeatedly increment it
+        // on each mousemove; the original game remains the cursor owner.
+        let mut visible=NATIVE_CURSOR_PROBE_SHOW_INCREMENTS.with(|n|n.get()>0);
+        if !visible{
+            let mut count=0u32;
+            for _ in 0..16{
+                count+=1;
+                if ShowCursor(1)>=0{visible=true;break;}
+            }
+            if !visible{
+                for _ in 0..count{ShowCursor(0);}
+                return;
+            }
+            NATIVE_CURSOR_PROBE_SHOW_INCREMENTS.with(|n|n.set(count));
+        }
+        SetCursor(arrow);
+        MENU_SYSTEM_CURSOR_PROBE_EVENTS.fetch_add(1,Ordering::Relaxed);
+    }
+}
+/// Must be called on the verified game window's UI thread after the
+/// 800x600 native RGB32 DD4 graph and HWND borderless geometry succeed.
+pub fn arm_native_system_cursor_probe(hwnd:usize)->Result<(),String>{
+    if hwnd==0 || snapshot(hwnd).is_none(){
+        return Err("verified game HWND/WndProc guard missing".into());
+    }
+    if crate::cfg().native_menu_mouse_remap{
+        return Err("NativeMenuMouseRemap=1; disable to isolate the OS arrow probe".into());
+    }
+    unsafe {
+        let mut pid=0;
+        let owner=GetWindowThreadProcessId(hwnd as Hwnd,&mut pid);
+        if IsWindow(hwnd as Hwnd)==0 || owner==0 ||
+           owner!=GetCurrentThreadId() || pid!=GetCurrentProcessId(){
+            return Err("game HWND not owned by current UI thread/process".into());
+        }
+    }
+    MENU_SYSTEM_CURSOR_PROBE_HWND.store(hwnd,Ordering::Release);
+    Ok(())
+}
+pub fn disarm_native_system_cursor_probe(){
+    let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.swap(0,Ordering::AcqRel);
+    if hwnd!=0{
+        // Mode changes and script dispatch originate on game HWND/UI
+        // owner in the validated native log. Refuse wrong-thread undo.
+        let owner=unsafe{GetWindowThreadProcessId(hwnd as Hwnd,std::ptr::null_mut())};
+        if owner==unsafe{GetCurrentThreadId()}{
+            undo_native_system_cursor_probe();
+        }
+    }
+}
 fn intercept_erase(message:u32,matching:bool)->bool{
     message==WM_ERASEBKGND && matching
 }
@@ -239,6 +333,7 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         HOOK_HWND.store(0,Ordering::Release);
         PREVIOUS.store(0,Ordering::Release);
         disarm_native_menu_mouse_remap();
+        disarm_native_system_cursor_probe();
     }
     if previous==0{
         // Narrow installation race: do not recurse or dispatch via a NULL
@@ -251,7 +346,11 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
     let forwarded=if matching{
         menu_mouse_lparam(hwnd,msg,lparam)
     }else{lparam};
-    CallWindowProcW(previous,hwnd,msg,wparam,forwarded)
+    let result=CallWindowProcW(previous,hwnd,msg,wparam,forwarded);
+    if matching{
+        after_game_wndproc_system_cursor_probe(hwnd,msg);
+    }
+    result
 }
 
 /// Install once on the exact user-supplied, process-owned gameplay HWND.
@@ -302,6 +401,8 @@ pub fn snapshot(hwnd:usize)->Option<WindowPaintStats>{
             mouse_moves:MOUSE_MOVE_COUNT.load(Ordering::Acquire),
             mouse_buttons:MOUSE_BUTTON_COUNT.load(Ordering::Acquire),
             menu_mouse_mapped:MENU_MOUSE_MAPPED.load(Ordering::Acquire),
+            system_cursor_probe_events:MENU_SYSTEM_CURSOR_PROBE_EVENTS.load(Ordering::Acquire),
+            system_cursor_probe_restores:MENU_SYSTEM_CURSOR_PROBE_RESTORES.load(Ordering::Acquire),
         })
 }
 
@@ -392,6 +493,16 @@ pub fn disarm_native_menu_mouse_remap(){
 }
 pub fn set_native_menu_mouse_script_active(active:bool){
     MENU_MOUSE_SCENE_ACTIVE.store(usize::from(active),Ordering::Release);
+    if !active && MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0{
+        // The exact game script loader has left MainMenu/Preferences.
+        // Reset only our own ShowCursor increments, no global cursor
+        // restore, no changes to the game's original callback.
+        let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire) as Hwnd;
+        if unsafe{GetWindowThreadProcessId(hwnd,std::ptr::null_mut())}
+            ==unsafe{GetCurrentThreadId()}{
+            undo_native_system_cursor_probe();
+        }
+    }
 }
 
 /// Arm for the exact process-owned game HWND; only the physically verified
@@ -505,6 +616,15 @@ mod tests{
         assert_eq!(std::mem::size_of::<WinMessage>(),32); // x86 only
         assert_eq!(std::mem::size_of::<MouseRect>(),16);
         assert_eq!(NATIVE_MOVIE_PUMP_MAX_PER_FLIP,4);
+    }
+    #[test]
+    fn native_system_cursor_probe_message_scope_is_menu_mouse_only(){
+        assert!(native_system_cursor_probe_message(WM_SETCURSOR));
+        assert!(native_system_cursor_probe_message(WM_MOUSEMOVE));
+        assert!(!native_system_cursor_probe_message(WM_KEYDOWN));
+        assert!(!native_system_cursor_probe_message(WM_LBUTTONDOWN));
+        assert!(!native_system_cursor_probe_message(WM_NCDESTROY));
+        assert_eq!(MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire),0);
     }
     #[test]
     fn native_menu_4_by_3_mouse_mapping_is_exact_and_reversible(){
