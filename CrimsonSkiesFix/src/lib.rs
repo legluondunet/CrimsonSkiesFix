@@ -33,6 +33,7 @@ mod diagnostics_graphics;
 mod native_video_imports;
 mod native_getproc_trace;
 mod native_cursor_trace;
+mod native_dinput_mouse_trace; // opt-in Windows-only DirectInput mouse COM pass-through audit
 mod native_owner_mode_trace;
 mod native_dd4_bootstrap;
 mod presentation;
@@ -309,6 +310,10 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             // Native windowed A/B only; exact EXE USER32 import provenance,
             // no cursor/input modifications or system export detours.
             native_cursor_trace::install();
+            // Native-only passive mouse-device inquiry. WM_MOUSEMOVE can
+            // arrive even when the original game's DirectInput cursor does
+            // not advance; trace actual HRESULT, acquire and movement.
+            native_dinput_mouse_trace::install();
         });
     }
     // Diagnostic-only transparent proxy: forward the three exported entry
