@@ -336,6 +336,9 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
 /// script loads. This has no effect on DirectInput or the OS cursor.
 pub fn arm_native_menu_mouse_remap(hwnd:usize,client:(u32,u32))->Result<MenuMouseGeometry,String>{
     if hwnd==0{return Err("NULL menu HWND".into());}
+    if snapshot(hwnd).is_none(){
+        return Err("verified game WndProc guard is not installed".into());
+    }
     let w=i32::try_from(client.0).map_err(|_|"invalid menu width")?;
     let h=i32::try_from(client.1).map_err(|_|"invalid menu height")?;
     let view=menu_content_rect(w,h).ok_or("unsupported 4:3 menu viewport")?;
