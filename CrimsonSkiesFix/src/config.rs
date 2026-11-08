@@ -38,9 +38,10 @@ pub const DEFAULT_INI: &str = concat!(
     "NativeDpiAware=0\n",
     "; Experimental native Windows A/B: hook verified game's DD4 mode setup BEFORE first exclusive request; off by default.\n",
     "NativeDD4Bootstrap=0\n",
-    "; Native Windows A/B only: keep original exclusive DirectDraw for intro/video,\n",
-    "; then allow windowed virtual surfaces only after a 800x600 video-mode exit\n",
-    "; AND an observed MainMenu script. Opt-in; never enabled on Wine/Proton.\n",
+    "; Native Windows A/B: original exclusive DirectDraw through intro/menu;\n",
+    "; at the next mode setup, consider virtual surfaces ONLY when the game\n",
+    "; explicitly requests the verified native desktop raster. Never enter\n",
+    "; NORMAL for original 1024x768/800x600. Wine/Proton unchanged.\n",
     "NativeIntroExclusive=0\n",
     "; Experimental native Windows fallback: paint only 4:3 sidebars through Win32 GDI. Off by default.\n",
     "NativeGdiSidebars=0\n",
@@ -76,7 +77,7 @@ pub struct Config {
     pub native_dpi_aware: bool,
     // Native Windows A/B: exact-game in-memory entrypoint bootstrap for DD4.
     pub native_dd4_bootstrap: bool,
-    // Native Windows A/B: original exclusive intro until completed video-mode transition and MainMenu.
+    // Native Windows A/B: defer cooperative/windowed handoff until the game requests physical native pixels.
     pub native_intro_exclusive: bool,
     // Diagnostic only: Win32 GDI black gutters after native windowed Blt (not Wine).
     pub native_gdi_sidebars: bool,
