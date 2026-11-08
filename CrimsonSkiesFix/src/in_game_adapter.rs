@@ -170,6 +170,62 @@ unsafe fn native_desc(surface:&Com)->Result<[u32;31],String>{
     require(get(surface.ptr(),d.as_mut_ptr()),"native GetSurfaceDesc")?;
     Ok(d)
 }
+/// Allocate a full-client offscreen XRGB8888 presentation surface, matching
+/// the CURRENT verified DPI-logical Win32 game client, not a hardcoded
+/// user's desktop resolution. Primary stays clipped and non-exclusive;
+/// gameplay D3D/Z surfaces and source 800x600 movie are left untouched.
+/// Never enter this path on Wine/Proton or for widescreen 3D gameplay.
+unsafe fn allocate_full_frame_composite(
+    dd4:*mut c_void,primary:&Com,output:(u32,u32)
+)->Result<Com,String>{
+    if output.0==0 || output.1==0 || output.0>8192 || output.1>4320 ||
+        u64::from(output.0)*u64::from(output.1)>33_554_432 {
+        return Err(format!("unsupported dynamic client {output:?}"));
+    }
+    let native=native_desc(primary)?;
+    if (native[21],native[22],native[23],native[24])!=
+       (32,0x00ff_0000,0x0000_ff00,0x0000_00ff){
+        return Err(format!(
+            "primary not XRGB8888: bpp={} masks={:#x}/{:#x}/{:#x}",
+            native[21],native[22],native[23],native[24]
+        ));
+    }
+    let mut last_error=String::new();
+    // Prefer a video-memory scratch so video-memory D3D3 movie source
+    // can be stretched into it directly. Do not require CPU locking.
+    // Drivers without video offscreen allocation may use system memory;
+    // the real Blt preflight below must still validate BOTH copies.
+    for mem in [DD_CAPS_VIDEOMEM,DD_CAPS_SYSTEMMEM]{
+        let candidate=alloc(dd4,desc(DD_CAPS_OFFSCREEN|mem,
+            output.0,output.1,Some(32)));
+        match candidate {
+            Ok(surface)=>{
+                match native_desc(&surface){
+                    Ok(d) if (d[3],d[2],d[21],d[22],d[23],d[24])==
+                        (output.0,output.1,32,0x00ff_0000,0x0000_ff00,0x0000_00ff)
+                        && d[26]&DD_CAPS_OFFSCREEN!=0
+                        && d[26]&mem!=0 =>{
+                        log(&format!(
+                            "NATIVE-FULL-FRAME-COMPOSE: verified offscreen {}x{} XRGB8888 caps={:#010x}, memory={}",
+                            output.0,output.1,d[26],
+                            if mem==DD_CAPS_VIDEOMEM{"video"}else{"system"}
+                        ));
+                        return Ok(surface);
+                    },
+                    Ok(d)=>{
+                        last_error=format!(
+                            "surface mismatch {}x{} bpp={} caps={:#x}, memory={mem:#x}",
+                            d[3],d[2],d[21],d[26]
+                        );
+                    },
+                    Err(e)=>last_error=e,
+                }
+            },
+            Err(e)=>last_error=e,
+        }
+    }
+    Err(last_error)
+}
 fn check_native_rgb_depth(
     back:&Com,depth:&Com,mode:Mode,movie_rgb32:bool
 )->Result<(),String>{
@@ -238,6 +294,9 @@ struct Epoch {
     // strong COM reference outlives the borrowed pointer in the Flip graph.
     menu_scratch:Option<Com>,
     movie_rgb565_scratch:Option<Com>,
+    // Retained strong COM ref; the virtual Flip borrows it only after
+    // preflight, and the epoch first retires its graph before release.
+    full_frame_composite:Option<Com>,
     clipper:Com,
 }
 /// Preserve only the original native 800x600 secondary UI after a verified
@@ -1092,10 +1151,62 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     }.map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
     backend.set_output_client(output_client)
         .map_err(|hr|format!("logical output coordinates: {:#010x}",hr as u32))?;
+    // Explicit native RGB32 800x600 A/B only. The offscreen surface is
+    // EXACTLY the HWND's current DPI-logical client size and pixel format.
+    // A failure is nonfatal: keep the known-good direct DD4 Blt backend.
+    let mut full_frame_composite=if movie_rgb32 &&
+        crate::cfg().native_full_frame_compose &&
+        crate::diagnostics::is_native_windows(){
+        match allocate_full_frame_composite(dd4,&real_primary,output_client){
+            Ok(surface)=>{
+                match backend.enable_full_frame_composition(surface.ptr()){
+                    Ok(())=>{
+                        log("NATIVE-FULL-FRAME-COMPOSE: enabled for native 800x600 movie/menu; offscreen black and 4:3 image, one full-window primary Blt; no GDI");
+                        Some(surface)
+                    },
+                    Err(hr)=>{
+                        log(&format!(
+                            "NATIVE-FULL-FRAME-COMPOSE: rejected backend hr={:#010x}; validated direct Blt retained",
+                            hr as u32
+                        ));
+                        None
+                    }
+                }
+            },
+            Err(e)=>{
+                log(&format!(
+                    "NATIVE-FULL-FRAME-COMPOSE: allocation/format refused ({e}); original DirectDraw Blt retained"
+                ));
+                None
+            }
+        }
+    }else{None};
     let plan=contract.plan.viewport;
-    log("WINDOWED-DIAG: physical windowed two-Blt preflight begin");
-    borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
-        .map_err(|e|format!("native two-Blt preflight: {e:?}"))?;
+    log(if full_frame_composite.is_some(){
+        "WINDOWED-DIAG: native offscreen full-frame 4:3 composition preflight begin"
+    }else{
+        "WINDOWED-DIAG: physical windowed two-Blt preflight begin"
+    });
+    match borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan){
+        Ok(())=>{},
+        Err(e) if full_frame_composite.is_some()=>{
+            log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: preflight failed ({e:?}), recovering with prior known-good direct 4:3 presentation"
+            ));
+            backend.disable_full_frame_composition();
+            full_frame_composite=None;
+            borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
+                .map_err(|e|format!("native original direct Blt preflight: {e:?}"))?;
+        },
+        Err(e)=>return Err(format!("native Blt preflight: {e:?}")),
+    }
+    // A driver can fail offscreen Blt yet succeed on the known-good
+    // native primary. The backend has already disabled itself and
+    // completed that fallback without faking a COM present.
+    if full_frame_composite.is_some() && !backend.full_frame_composition_enabled(){
+        log("NATIVE-FULL-FRAME-COMPOSE: driver rejected scratch preflight; using original native DirectDraw presenter");
+        full_frame_composite=None;
+    }
     log("WINDOWED-DIAG: physical preflight OK; validate virtual graph evidence begin");
     let evidence=BackendEvidence{
         process_owned_window:true,normal_directdraw:true,
@@ -1112,17 +1223,40 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     }else{contract.expose(evidence)}
         .map_err(|e|format!("graph evidence: {e:?}"))?;
     log("WINDOWED-DIAG: evidence OK; arm virtual primary Flip begin");
-    com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32(
+    // Both branches retain the original native movie/3D graph shape.
+    // The extra pointer is the private full-client surface, borrowed
+    // until the same virtual-primary Flip mutex is retired at mode switch.
+    let arm_result=com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32_composed(
         primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
         menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
-        // Native Windows 125% DPI screenshot A/B only: no global DPI,
-        // pointer or WndProc changes and never activate on Wine/Proton.
         crate::cfg().native_gdi_sidebars &&
             crate::cfg().native_dd4_bootstrap &&
-            crate::diagnostics::is_native_windows(),
-        movie_rgb32
-    ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
+            crate::diagnostics::is_native_windows() &&
+            full_frame_composite.is_none(),
+        movie_rgb32,
+        full_frame_composite.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
+    );
+    match arm_result{
+        Ok(())=>{},
+        Err(hr) if full_frame_composite.is_some()=>{
+            log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: arm rejected hr={:#010x}; retrying previously validated native direct Blt",
+                hr as u32
+            ));
+            full_frame_composite=None;
+            com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32(
+                primary.ptr(),&contract,generation,(0,0),client,output_client,
+                Some(crate::cfg().fps_limit),hwnd as usize,crate::cfg().focus_repaint,
+                menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+                crate::cfg().native_gdi_sidebars &&
+                    crate::cfg().native_dd4_bootstrap &&
+                    crate::diagnostics::is_native_windows(),
+                movie_rgb32
+            ).map_err(|hr|format!("arm original native graph: {:#010x}",hr as u32))?;
+        },
+        Err(hr)=>return Err(format!("arm graph: {:#010x}",hr as u32)),
+    }
     if movie_rgb32 {
         log("NATIVE-MOVIE-RGB32: preflight passed; virtual 800x600 movie graph uses real XRGB8888 direct Blt; no RGB565 movie-conversion scratch");
         if crate::cfg().native_movie_message_pump {
@@ -1133,7 +1267,8 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     }
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
-        physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,clipper})
+        physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,
+        full_frame_composite,clipper})
 }
 #[cfg(test)]
 mod native_intro_exclusive_tests {
