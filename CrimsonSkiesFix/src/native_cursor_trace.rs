@@ -4,14 +4,14 @@
 //! coordinates, trace the game's requests and returned Win32 results.
 //! NEVER changes an argument, cursor clipping, process DPI or input state;
 //! no Wine/Proton or normal (NativeDD4Bootstrap=0) activation.
-use std::{ffi::{c_char,c_void},sync::atomic::{AtomicUsize,Ordering}};
+use std::{ffi::{c_char,c_void},sync::{Mutex,atomic::{AtomicUsize,Ordering}}};
 use crate::{diagnostics,log,win32};
 
 #[repr(C)]
 #[derive(Copy,Clone)]
 struct Point{x:i32,y:i32}
 #[repr(C)]
-#[derive(Copy,Clone)]
+#[derive(Copy,Clone,Debug,PartialEq,Eq)]
 struct Rect{left:i32,top:i32,right:i32,bottom:i32}
 type SetPosFn=unsafe extern "system" fn(i32,i32)->i32;
 type ClipFn=unsafe extern "system" fn(*const Rect)->i32;
@@ -27,7 +27,16 @@ static CLIENT_ORIG:AtomicUsize=AtomicUsize::new(0);
 static SET_COUNT:AtomicUsize=AtomicUsize::new(0);
 static CLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
 static CLIENT_COUNT:AtomicUsize=AtomicUsize::new(0);
+// Last successful ClipCursor request observed through the exact admitted
+// game's USER32 IAT. A separate opt-in repair may act only when the
+// current OS clip STILL equals the game's own stale request.
+static GAME_LAST_CLIP:Mutex<Option<Rect>>=Mutex::new(None);
 
+#[link(name="user32")]
+extern "system" {
+    fn GetClipCursor(rect:*mut Rect)->i32;
+    fn ClipCursor(rect:*const Rect)->i32;
+}
 #[link(name="kernel32")]
 extern "system" {
     fn GetModuleHandleW(name:*const u16)->*mut c_void;
@@ -35,6 +44,66 @@ extern "system" {
 }
 
 fn sample(n:usize)->bool {n<12 || (n<480 && n%120==0)}
+
+// Pure geometry proof: repair ONLY a smaller, non-empty game-requested
+// clip strictly contained in the verified borderless game client, and
+// only if the current OS restriction is the very same original request.
+// Never broaden a deliberate full-window clip or a foreign/changed clip.
+fn stale_clip_target(requested:Rect,current:Rect,client:(i32,i32,u32,u32))->Option<Rect>{
+    if requested!=current || requested.right<=requested.left ||
+       requested.bottom<=requested.top{return None;}
+    let (x,y,w,h)=client;
+    let right=x.checked_add(i32::try_from(w).ok()?)?;
+    let bottom=y.checked_add(i32::try_from(h).ok()?)?;
+    if w<800 || h<600{return None;}
+    let target=Rect{left:x,top:y,right,bottom};
+    if requested.left<target.left || requested.top<target.top ||
+       requested.right>target.right || requested.bottom>target.bottom ||
+       requested.right-requested.left >= target.right-target.left ||
+       requested.bottom-requested.top >= target.bottom-target.top{
+        return None;
+    }
+    Some(target)
+}
+
+/// Native Windows opt-in, called ONLY after a real DD4 preflight and
+/// validated borderless HWND geometry. The game's pre-borderless clip
+/// can remain stuck at e.g. (440,187)-(1096,726) even though the window
+/// has grown to (0,0)-(1536,960). This preserves cursor ownership and
+/// bounds it to the verified game client. No WM, GetCursorPos or pointer
+/// coordinate interception; original ClipCursor IAT hook remains passive.
+pub fn repair_stale_game_cursor_clip(hwnd:*mut c_void)->Result<String,String>{
+    if !crate::diagnostics::is_native_windows() || !crate::cfg().native_dd4_bootstrap ||
+       !crate::cfg().native_mouse_clip_repair || hwnd.is_null(){
+        return Err("native repair not enabled / no verified HWND".into());
+    }
+    let client=win32::game_client_geometry(hwnd)
+        .ok_or("game-owned HWND client geometry unavailable")?;
+    let recorded=GAME_LAST_CLIP.lock()
+        .map_err(|_|"ClipCursor record poisoned")?
+        .ok_or("no successful game ClipCursor(rect) was observed")?;
+    let mut current=Rect{left:0,top:0,right:0,bottom:0};
+    unsafe {
+        if GetClipCursor(&mut current)==0{
+            return Err("GetClipCursor failed".into());
+        }
+        let target=stale_clip_target(recorded,current,client)
+            .ok_or("existing cursor restriction is not the game's stale small clip")?;
+        if ClipCursor(&target)==0{
+            return Err("ClipCursor(new verified borderless client) failed".into());
+        }
+        let mut verified=Rect{left:0,top:0,right:0,bottom:0};
+        if GetClipCursor(&mut verified)==0 || verified!=target{
+            // Never leave a mismatched or unexpected OS cursor restriction
+            // behind if read-back verification fails.
+            let _=ClipCursor(&current);
+            return Err("cursor clip readback mismatch; original restored".into());
+        }
+        Ok(format!(
+            "game_requested={recorded:?} OS_before={current:?} borderless_client={target:?} OS_verified={verified:?}"
+        ))
+    }
+}
 
 unsafe extern "system" fn observe_set_cursor_pos(x:i32,y:i32)->i32{
     let original=SET_ORIG.load(Ordering::Acquire);
@@ -58,6 +127,11 @@ unsafe extern "system" fn observe_clip_cursor(rect:*const Rect)->i32{
     };
     let call:ClipFn=std::mem::transmute(original);
     let result=call(rect);
+    if result!=0 {
+        if let Ok(mut last)=GAME_LAST_CLIP.lock() {
+            *last=if rect.is_null(){None}else{Some(*rect)};
+        }
+    }
     let n=CLIP_COUNT.fetch_add(1,Ordering::Relaxed);
     if sample(n) {
         log(&format!(
@@ -142,6 +216,22 @@ mod tests {
         assert!(!sample(12));
         assert!(sample(120));
         assert!(!sample(481));
+    }
+    #[test]
+    fn native_stale_cursor_clip_requires_exact_game_provenance(){
+        let old=Rect{left:440,top:187,right:1096,bottom:726};
+        let full=Rect{left:0,top:0,right:1536,bottom:960};
+        assert_eq!(stale_clip_target(old,old,(0,0,1536,960)),Some(full));
+        assert_eq!(stale_clip_target(old,full,(0,0,1536,960)),None);
+        assert_eq!(stale_clip_target(full,full,(0,0,1536,960)),None);
+        assert_eq!(stale_clip_target(old,old,(0,0,640,480)),None);
+        assert_eq!(stale_clip_target(old,old,(100,0,1536,960)),None);
+        assert_eq!(stale_clip_target(old,old,(0,0,1536,600)),None);
+        assert_eq!(stale_clip_target(Rect{left:0,top:0,right:0,bottom:0},
+            Rect{left:0,top:0,right:0,bottom:0},(0,0,1536,960)),None);
+        let shifted=Rect{left:-500,top:50,right:1036,bottom:1010};
+        let inside=Rect{left:-250,top:200,right:800,bottom:900};
+        assert_eq!(stale_clip_target(inside,inside,(-500,50,1536,960)),Some(shifted));
     }
     #[test]
     fn win32_cursor_pointer_types_match_win32_i686_abi(){
