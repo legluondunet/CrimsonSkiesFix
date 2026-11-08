@@ -554,15 +554,11 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
     let bridge=FlipToBltBridge::from_exposed(contract,generation)
         .map_err(|_|E_FAIL)?;
-    let mut backend=if native_movie_rgb32{
-        NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
-            p.real,b.real,origin,client,node.mode
-        )
-    }else{
-        NativeWindowedBlt::from_borrowed_com(
-            p.real,b.real,origin,client,node.mode
-        )
-    }.map_err(|_|E_INVALIDARG)?;
+    // Common Blt backend; the DD4 epoch has already verified its real
+    // RGB565 or XRGB8888 surface format and graph invariants.
+    let mut backend=NativeWindowedBlt::from_borrowed_com(
+        p.real,b.real,origin,client,node.mode
+    ).map_err(|_|E_INVALIDARG)?;
     backend.set_output_client(output_client).map_err(|_|E_INVALIDARG)?;
     if !full_frame_composite.is_null(){
         backend.enable_full_frame_composition(full_frame_composite)

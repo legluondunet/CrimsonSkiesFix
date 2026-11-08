@@ -1080,8 +1080,7 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // This scratch is independent of the full-window black compositor;
     // the game's animated backbuffer stays completely unmodified.
     let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)) &&
-       (!movie_rgb32 || (crate::cfg().native_full_frame_compose &&
-           crate::diagnostics::is_native_windows())) {
+       (!movie_rgb32 || crate::cfg().native_full_frame_compose) {
         let bits=if movie_rgb32{32}else{16};
         match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
             mode.width,mode.height,Some(bits))) {
@@ -1212,23 +1211,19 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
     log("WINDOWED-DIAG: physical windowed Blt backend preparation begin");
-    let mut backend=if movie_rgb32 {
-        NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
-            real_primary.ptr(),real_back.ptr(),(0,0),client,mode
-        )
-    }else{
-        NativeWindowedBlt::from_borrowed_com(
-            real_primary.ptr(),real_back.ptr(),(0,0),client,mode
-        )
-    }.map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
+    // Shared presentation backend; format choice and validation occur
+    // above before the actual COM graph is exposed, on both platforms.
+    let mut backend=NativeWindowedBlt::from_borrowed_com(
+        real_primary.ptr(),real_back.ptr(),(0,0),client,mode
+    ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
     backend.set_output_client(output_client)
         .map_err(|hr|format!("logical output coordinates: {:#010x}",hr as u32))?;
     // Explicit native RGB32 800x600 A/B only. The offscreen surface is
     // EXACTLY the HWND's current DPI-logical client size and pixel format.
     // A failure is nonfatal: keep the known-good direct DD4 Blt backend.
+    // movie_rgb32 already includes native host gating and real DD4 format.
     let mut full_frame_composite=if movie_rgb32 &&
-        crate::cfg().native_full_frame_compose &&
-        crate::diagnostics::is_native_windows(){
+        crate::cfg().native_full_frame_compose {
         match allocate_full_frame_composite(dd4,&real_primary,output_client){
             Ok(surface)=>{
                 match backend.enable_full_frame_composition(surface.ptr()){

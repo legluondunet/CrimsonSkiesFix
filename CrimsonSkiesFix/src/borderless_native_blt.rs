@@ -50,22 +50,6 @@ impl NativeWindowedBlt {
             full_frame_composite:ptr::null_mut(),composite_black_ready:false,
             composed_frames:0})
     }
-    /// Native Windows movie-only A/B: the game's *logical* 800x600x16
-    /// presentation bridge may borrow a separately verified real XRGB8888
-    /// 800x600 backbuffer. It can Blt directly to the 32-bit native primary
-    /// without CPU RGB565 conversion, matching the successful original
-    /// exclusive Windows movie target format. The caller MUST verify that
-    /// native format, DD4 HAL and clipper before invoking this constructor.
-    /// Do not use this with menu RGB565 branding scratch or on Wine/Proton.
-    pub unsafe fn from_borrowed_com_native_movie_rgb32(
-        primary:Ptr,source_surface:Ptr,origin:(i32,i32),
-        client:(u32,u32),source:Mode
-    )->Result<Self,i32>{
-        if (source.width,source.height,source.bpp)!=(800,600,16){
-            return Err(BAD);
-        }
-        Self::from_borrowed_com(primary,source_surface,origin,client,source)
-    }
     /// Windowed DirectDraw primary coordinates on native Windows are the
     /// DPI-logical Win32 client size, while the 3D render graph must remain
     /// the physical monitor raster (1920x1200 at 125% scaling). Convert
@@ -360,23 +344,23 @@ mod tests{
         (vt,p,s)
     }
     #[test]
-    fn native_rgb32_movie_backend_is_strictly_800x600_logical_16(){
+    fn shared_windowed_backend_accepts_both_verified_pixel_graph_modes(){
+        // The DD4 epoch validates the real pixel format before presentation.
+        // This common presenter does not branch on Windows vs Wine.
         let primary=1usize as Ptr;
         let back=2usize as Ptr;
-        for (w,h,bpp,accepted) in [
-            (800,600,16,true),
-            (640,480,16,false),
-            (1920,1200,16,false),
-            (800,600,32,false)
+        for (w,h,bpp,client,accepted) in [
+            (800,600,16,(1920,1200),true),
+            (640,480,16,(1920,1200),true),
+            (1920,1200,16,(1920,1200),true),
+            (800,600,32,(1920,1200),false)
         ]{
             let mode=Mode{width:w,height:h,bpp};
-            let result=unsafe{
-                NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
-                    primary,back,(0,0),(1920,1200),mode)
-            };
+            let result=unsafe{NativeWindowedBlt::from_borrowed_com(
+                primary,back,(0,0),client,mode)};
             assert_eq!(result.is_ok(),accepted);
         }
-        assert!(unsafe{NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+        assert!(unsafe{NativeWindowedBlt::from_borrowed_com(
             ptr::null_mut(),back,(0,0),(1920,1200),
             Mode{width:800,height:600,bpp:16})}.is_err());
     }
@@ -457,7 +441,7 @@ mod tests{
         };
         let mode=Mode{width:800,height:600,bpp:16};
         let mut backend=unsafe{
-            NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+            NativeWindowedBlt::from_borrowed_com(
                 (&mut primary as *mut FakeSurface).cast(),
                 (&mut source as *mut FakeSurface).cast(),
                 (0,0),(1920,1200),mode
@@ -500,7 +484,7 @@ mod tests{
         };
         let mode=Mode{width:800,height:600,bpp:16};
         let mut backend=unsafe{
-            NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+            NativeWindowedBlt::from_borrowed_com(
                 (&mut primary as *mut FakeSurface).cast(),
                 (&mut source as *mut FakeSurface).cast(),
                 (0,0),(1920,1200),mode
@@ -536,7 +520,7 @@ mod tests{
         assert!(native.enable_full_frame_composition(
             4usize as Ptr
         ).is_err());
-        let mut movie=unsafe{NativeWindowedBlt::from_borrowed_com_native_movie_rgb32(
+        let mut movie=unsafe{NativeWindowedBlt::from_borrowed_com(
             (&mut primary as *mut FakeSurface).cast(),
             (&mut source as *mut FakeSurface).cast(),
             (0,0),(1920,1200),Mode{width:800,height:600,bpp:16}
