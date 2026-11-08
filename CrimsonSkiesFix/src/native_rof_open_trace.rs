@@ -52,7 +52,7 @@ fn nul_ascii(bytes:&[u8],start:usize,max:usize)->Option<&[u8]>{
     Some(&slice[..stop])
 }
 #[derive(Default,Debug,PartialEq,Eq)]
-struct ImportSlots{ansi:Option<usize>,wide:Option<usize>,read:Option<usize>}
+struct ImportSlots{ansi:Option<usize>,wide:Option<usize>,read:Option<usize>,mapping_a:bool,mapping_w:bool}
 
 /// Parse RVAs as loaded/mapped PE32 image offsets, not file offsets.
 /// Every read is length-checked; do not follow arbitrary pointers.
@@ -91,6 +91,8 @@ fn find_create_file_imports(image:&[u8])->Option<ImportSlots>{
             if symbol==b"CreateFileA"{slots.ansi=Some(iat);}
             if symbol==b"CreateFileW"{slots.wide=Some(iat);}
             if symbol==b"ReadFile"{slots.read=Some(iat);}
+            if symbol==b"CreateFileMappingA"{slots.mapping_a=true;}
+            if symbol==b"CreateFileMappingW"{slots.mapping_w=true;}
         }
     }
     Some(slots)
@@ -136,7 +138,10 @@ unsafe extern "system" fn observe_a(
     let last=GetLastError();
     if let Some(archive)=matched {
         if EVENTS_A.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
-            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} success={} (pass-through; resource member selection unobserved)",
+            let identity=if result as usize!=INVALID_HANDLE_VALUE{
+                crate::native_rof_read_trace::opened_archive_identity(result)
+            }else{"open-failed"};
+            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity={identity} success={} (pass-through; resource member selection unobserved)",
                 result as usize!=INVALID_HANDLE_VALUE));
         }
     }
@@ -155,7 +160,10 @@ unsafe extern "system" fn observe_w(
     let last=GetLastError();
     if let Some(archive)=matched {
         if EVENTS_W.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
-            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} success={} (pass-through; resource member selection unobserved)",
+            let identity=if result as usize!=INVALID_HANDLE_VALUE{
+                crate::native_rof_read_trace::opened_archive_identity(result)
+            }else{"open-failed"};
+            log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity={identity} success={} (pass-through; resource member selection unobserved)",
                 result as usize!=INVALID_HANDLE_VALUE));
         }
     }
@@ -232,8 +240,8 @@ pub fn probe(){
             observe_w as usize,&ORIGINAL_W)};
         let read=unsafe{crate::native_rof_read_trace::install(module,imports.read)};
         log(&format!(
-            "GOS-ROF-OPEN: verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={}; observes future calls only, member execution unobserved",
-            imports.ansi.is_some(),a,imports.wide.is_some(),w,imports.read.is_some(),read
+            "GOS-ROF-OPEN: verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={} CreateFileMappingA_import={} CreateFileMappingW_import={}; observes future calls only, member execution unobserved",
+            imports.ansi.is_some(),a,imports.wide.is_some(),w,imports.read.is_some(),read,imports.mapping_a,imports.mapping_w
         ));
         Ok::<(),&'static str>(())
     })();
