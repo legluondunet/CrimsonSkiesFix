@@ -5,7 +5,7 @@
 //! Reading the compressed VIDEO member is NOT proof of script execution.
 use std::{
     ffi::{c_char,c_void,OsString},fs::{self,File},mem::MaybeUninit,
-    os::windows::{ffi::OsStringExt,io::AsRawHandle},path::{Path,PathBuf},
+    os::windows::{ffi::{OsStrExt,OsStringExt},io::AsRawHandle},path::{Path,PathBuf},
     sync::{OnceLock,atomic::{AtomicUsize,Ordering}},
 };
 use crate::{gos_video_lock,log,win32};
@@ -39,6 +39,9 @@ extern "system"{
     fn GetFinalPathNameByHandleW(handle:*mut c_void,path:*mut u16,
         capacity:u32,flags:u32)->u32;
     fn SetFilePointerEx(handle:*mut c_void,distance:i64,new_pointer:*mut i64,move_method:u32)->i32;
+    fn CreateFileW(name:*const u16,access:u32,share:u32,security:*mut c_void,
+        disposition:u32,flags:u32,template:*mut c_void)->*mut c_void;
+    fn CloseHandle(handle:*mut c_void)->i32;
     fn GetLastError()->u32;
     fn SetLastError(error:u32);
 }
@@ -164,6 +167,58 @@ pub unsafe fn opened_archive_provenance(
     OpenedArchiveProvenance{identity,route,content,bytes,installed_bytes}
 }
 
+fn readonly_existing_open(access:u32,disposition:u32)->bool{
+    const GENERIC_WRITE:u32=0x4000_0000;
+    const GENERIC_ALL:u32=0x1000_0000;
+    const DELETE_ACCESS:u32=0x0001_0000;
+    const FILE_WRITE_DATA:u32=0x2;
+    const FILE_APPEND_DATA:u32=0x4;
+    disposition==3 && access&(GENERIC_WRITE|GENERIC_ALL|
+        DELETE_ACCESS|FILE_WRITE_DATA|FILE_APPEND_DATA)==0
+}
+/// Native-only fail-open repair for the confirmed wrong-file archive route.
+/// No redirect if the opened file cannot be independently verified as
+/// byte-for-byte identical to the preserved original patch overlay.
+/// The original ROFFILE.DLL, EXE and original game asset files are untouched.
+pub unsafe fn redirect_original_overlay_if_verified(
+    original_handle:*mut c_void, access:u32,share:u32,security:*mut c_void,
+    disposition:u32,flags:u32,template:*mut c_void
+)->Option<*mut c_void>{
+    if crate::cfg().gos_video_lock!=gos_video_lock::Mode::On ||
+        !readonly_existing_open(access,disposition){return None;}
+    if opened_archive_identity(original_handle)!="different-file-id"{return None;}
+    let root=std::env::current_exe().ok()
+        .and_then(|exe|exe.parent().map(Path::to_path_buf))?;
+    let actual_path=final_path_for_handle(original_handle)?;
+    if !matches!(route_of(&actual_path,&root),
+        "game-root/GOSDATA/ASSETS"|"game-root/ASSETS"|"Windows-VirtualStore"){
+        return None;
+    }
+    let installed=root.join("GOSDATA").join("ASSETS").join("crimptch.rof");
+    if gos_video_lock::installed_video_compressed_span().is_none(){return None;}
+    if classify_content(&actual_path,&installed)!="original-overlay-backup"{
+        return None;
+    }
+    // Use Unicode for the verified game-root path, preserving every open
+    // parameter and never relying on Windows ANSI path conversions.
+    let mut wide:Vec<u16>=installed.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let new_handle=CreateFileW(
+        wide.as_ptr(),access,share,security,disposition,flags,template
+    );
+    if new_handle.is_null() || new_handle as usize==usize::MAX{return None;}
+    let Some(references)=REFERENCES.get().copied().flatten() else{
+        CloseHandle(new_handle);
+        return None;
+    };
+    if id_for_handle(new_handle)!=Some(references.overlay){
+        CloseHandle(new_handle);
+        return None;
+    }
+    CloseHandle(original_handle);
+    Some(new_handle)
+}
+
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
     count>0 && start<span.1 && start.saturating_add(count as u64)>span.0
 }
@@ -269,6 +324,15 @@ mod tests{
         assert_eq!(route_of(
             Path::new(r"D:\Other\crimptch.rof"),root
         ),"outside-game-root");
+    }
+    #[test]
+    fn repaired_resource_open_must_be_read_only_and_open_existing(){
+        assert!(readonly_existing_open(0x8000_0000,3));
+        assert!(readonly_existing_open(0x0000_0001,3));
+        assert!(!readonly_existing_open(0x4000_0000,3));
+        assert!(!readonly_existing_open(0x1000_0000,3));
+        assert!(!readonly_existing_open(0x0000_0002,3));
+        assert!(!readonly_existing_open(0x8000_0000,2));
     }
     #[test]
     fn readfile_abi_and_win32_file_info_layout(){
