@@ -89,6 +89,13 @@ NativeIntroExclusive=0
 ; Requires NativeDD4Bootstrap=1 and NativeIntroExclusive=0. Not Wine/Proton.
 ; Experimental: this format-compatibility probe has NOT been validated in game.
 NativeMovieRGB32=0
+; Experimental Windows-only UI responsiveness investigation.
+; On each native RGB32 intro/menu Flip, after the DirectDraw presentation
+; lock has been released, dispatch at most 4 queued messages for the exact
+; verified game HWND on its owner thread. Nested pumps are suppressed.
+; Never runs in Wine/Proton or normal gameplay; opt-in only.
+; Keep 0 unless explicitly diagnosing Windows "Not Responding".
+NativeMovieMessagePump=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
