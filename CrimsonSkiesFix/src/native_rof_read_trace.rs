@@ -4,8 +4,8 @@
 //! logs bounded read offsets, and never records private paths or file bytes.
 //! Reading the compressed VIDEO member is NOT proof of script execution.
 use std::{
-    ffi::{c_char,c_void},fs::File,mem::MaybeUninit,
-    os::windows::io::AsRawHandle,path::Path,
+    ffi::{c_char,c_void,OsString},fs::{self,File},mem::MaybeUninit,
+    os::windows::{ffi::OsStringExt,io::AsRawHandle},path::{Path,PathBuf},
     sync::{OnceLock,atomic::{AtomicUsize,Ordering}},
 };
 use crate::{gos_video_lock,log,win32};
@@ -36,6 +36,8 @@ extern "system"{
     fn GetModuleHandleA(name:*const c_char)->*mut c_void;
     fn GetProcAddress(module:*mut c_void,name:*const c_char)->*const c_void;
     fn GetFileInformationByHandle(handle:*mut c_void,info:*mut FileInfo)->i32;
+    fn GetFinalPathNameByHandleW(handle:*mut c_void,path:*mut u16,
+        capacity:u32,flags:u32)->u32;
     fn SetFilePointerEx(handle:*mut c_void,distance:i64,new_pointer:*mut i64,move_method:u32)->i32;
     fn GetLastError()->u32;
     fn SetLastError(error:u32);
@@ -76,6 +78,92 @@ pub unsafe fn opened_archive_identity(handle:*mut c_void)->&'static str{
         None=>"different-file-id",
     }
 }
+/// Diagnostic labels only: do not reveal user directories or arbitrary
+/// file contents. The comparison uses the exact physical path returned for
+/// the same handle that ROFFILE.DLL opened.
+pub struct OpenedArchiveProvenance {
+    pub identity:&'static str,
+    pub route:&'static str,
+    pub content:&'static str,
+    pub bytes:Option<u64>,
+    pub installed_bytes:Option<u64>,
+}
+fn final_path_for_handle(handle:*mut c_void)->Option<PathBuf>{
+    let mut chars=[0u16;4096];
+    let n=unsafe{GetFinalPathNameByHandleW(
+        handle,chars.as_mut_ptr(),chars.len() as u32,0
+    )} as usize;
+    if n==0 || n>=chars.len(){return None;}
+    Some(PathBuf::from(OsString::from_wide(&chars[..n])))
+}
+fn canonical_compare_string(path:&Path)->String{
+    let value=path.to_string_lossy().replace('/',"\\").to_lowercase();
+    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+}
+fn route_of(path:&Path,root:&Path)->&'static str{
+    let p=canonical_compare_string(path);
+    let r=canonical_compare_string(root);
+    if p.starts_with(&(r.clone()+r"\gosdata\assets\")){
+        "game-root/GOSDATA/ASSETS"
+    }else if p.starts_with(&(r.clone()+r"\assets\")){
+        "game-root/ASSETS"
+    }else if p.starts_with(&(r.clone()+r"\")){
+        "game-root/other"
+    }else if p.contains(r"\virtualstore\"){
+        "Windows-VirtualStore"
+    }else{
+        "outside-game-root"
+    }
+}
+fn file_bytes(handle:*mut c_void)->Option<u64>{
+    let mut info=MaybeUninit::<FileInfo>::uninit();
+    if unsafe{GetFileInformationByHandle(handle,info.as_mut_ptr())}==0{return None;}
+    let v=unsafe{info.assume_init()};
+    Some(((v.size_hi as u64)<<32)|(v.size_lo as u64))
+}
+fn classify_content(opened:&Path,installed:&Path)->&'static str{
+    const LIMIT:u64=4*1024*1024;
+    let Ok(m)=fs::metadata(opened) else{return "unavailable";};
+    if !m.is_file() || m.len()>LIMIT{return "unavailable-or-oversized";}
+    let Ok(raw)=fs::read(opened) else{return "unavailable";}
+    if let Ok(current)=fs::read(installed){
+        if raw==current{return "installed-managed-patch";}
+    }
+    let backup=installed.with_file_name(
+        "crimptch.rof.CrimsonSkiesFix.original.bak");
+    if let Ok(original)=fs::read(backup){
+        if raw==original{return "original-overlay-backup";}
+    }
+    "other-content"
+}
+/// Native-only call made immediately after a successful original
+/// CreateFileA/W from the SHA-verified ROFFILE.DLL.
+pub unsafe fn opened_archive_provenance(
+    handle:*mut c_void,archive:&str
+)->OpenedArchiveProvenance{
+    let identity=opened_archive_identity(handle);
+    let game_root=std::env::current_exe().ok()
+        .and_then(|exe|exe.parent().map(Path::to_path_buf));
+    let opened=final_path_for_handle(handle);
+    let route=match (opened.as_ref(),game_root.as_ref()){
+        (Some(path),Some(root))=>route_of(path,root),
+        _=>"unknown",
+    };
+    let bytes=file_bytes(handle);
+    let installed=game_root.as_ref().map(|root|root.join("GOSDATA")
+        .join("ASSETS").join(archive));
+    let installed_bytes=installed.as_ref()
+        .and_then(|path|fs::metadata(path).ok().map(|m|m.len()));
+    let content=if archive=="crimptch.rof"{
+        match (opened.as_ref(),installed.as_ref()){
+            (Some(opened),Some(installed))=>
+                classify_content(opened,installed),
+            _=>"unavailable",
+        }
+    }else{"not-checked"};
+    OpenedArchiveProvenance{identity,route,content,bytes,installed_bytes}
+}
+
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
     count>0 && start<span.1 && start.saturating_add(count as u64)>span.0
 }
@@ -165,6 +253,22 @@ mod tests{
         assert!(overlaps_read(199,2,(100,200)));
         assert!(!overlaps_read(200,1,(100,200)));
         assert!(!overlaps_read(0,0,(100,200)));
+    }
+    #[test]
+    fn only_sanitized_file_route_labels_are_exposed(){
+        let root=Path::new(r"C:\Games\Crimson Skies");
+        assert_eq!(route_of(
+            Path::new(r"\\?\C:\Games\Crimson Skies\GOSDATA\ASSETS\crimptch.rof"),root
+        ),"game-root/GOSDATA/ASSETS");
+        assert_eq!(route_of(
+            Path::new(r"C:\Games\Crimson Skies\ASSETS\crimptch.rof"),root
+        ),"game-root/ASSETS");
+        assert_eq!(route_of(
+            Path::new(r"C:\Users\Dummy\AppData\Local\VirtualStore\Games\crimptch.rof"),root
+        ),"Windows-VirtualStore");
+        assert_eq!(route_of(
+            Path::new(r"D:\Other\crimptch.rof"),root
+        ),"outside-game-root");
     }
     #[test]
     fn readfile_abi_and_win32_file_info_layout(){
