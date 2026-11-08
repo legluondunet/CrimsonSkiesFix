@@ -5,7 +5,7 @@
 //!
 //! This is intentionally an early in-game integration build. The game may use
 //! unsupported COM methods, QI versions or window transitions. Default-on for the accepted EXE.
-use std::{ffi::c_void,ptr,sync::{Mutex,atomic::{AtomicU8,AtomicUsize,Ordering}}};
+use std::{ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicU8,AtomicUsize,Ordering}}};
 use crate::{
     Hr,Guid,Hwnd,log,win32,
     borderless_contract::{AdapterContract,BackendEvidence,RenderTarget,SurfaceRole},
@@ -232,6 +232,30 @@ const INTRO_IN_MOVIE_MODE:u8=1;
 const INTRO_LEFT_MOVIE_MODE:u8=2;
 static NATIVE_INTRO_PHASE:AtomicU8=AtomicU8::new(INTRO_BEFORE_MOVIE);
 static NATIVE_INTRO_SKIPPED:AtomicUsize=AtomicUsize::new(0);
+// Sample once BEFORE the game's first native exclusive DD4 request.
+// EnumDisplaySettingsW subsequently returns the temporary 1024/800 game
+// mode, which must never be confused with the initial monitor raster.
+// Caching None also prevents a late unsafe retry during an exclusive mode.
+static NATIVE_INTRO_LAUNCH_PHYSICAL:OnceLock<Option<(u32,u32)>>=OnceLock::new();
+fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
+    logical.0>0 && logical.1>0 && physical.0>0 && physical.1>0 &&
+    u64::from(logical.0)*u64::from(physical.1)==
+    u64::from(logical.1)*u64::from(physical.0)
+}
+fn native_intro_launch_physical()->Option<(u32,u32)>{
+    *NATIVE_INTRO_LAUNCH_PHYSICAL.get_or_init(||{
+        let logical=win32::capture_launch_monitor().and_then(|r|r.dimensions());
+        let physical=win32::physical_primary_monitor_dimensions();
+        let accepted=match (logical,physical) {
+            (Some(l),Some(p)) if same_aspect(l,p)=>Some(p),
+            _=>None,
+        };
+        log(&format!(
+            "NATIVE-INTRO: pre-exclusive monitor capture logical={logical:?} physical={physical:?} accepted={accepted:?} (frozen for this process, no display changes)"
+        ));
+        accepted
+    })
+}
 fn native_intro_exclusive_enabled()->bool{
     let cfg=crate::cfg();
     cfg.native_intro_exclusive && cfg.native_dd4_bootstrap &&
@@ -290,9 +314,16 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // Do not expose any virtual surfaces while native DirectShow owns the
     // introduction. This branch is reached before any windowed runtime has
     // been created; after exposure, existing strict graph checks win.
-    if native_intro_exclusive_enabled() &&
+    let native_intro=native_intro_exclusive_enabled();
+    // This must happen BEFORE forwarding the very first exclusive coop call,
+    // even though virtual-mode activation is intentionally still forbidden.
+    if native_intro {
+        let _=native_intro_launch_physical();
+    }
+    if native_intro &&
         !native_intro_ready(NATIVE_INTRO_PHASE.load(Ordering::Acquire),
-                            crate::menu_scene::main_menu_was_seen()) {
+                            crate::menu_scene::main_menu_was_seen() &&
+                            crate::menu_scene::main_menu_active()) {
         let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
         if no_windowed_runtime {
             let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
@@ -350,13 +381,33 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // awareness: separate the game-owned window geometry from HAL pixel
     // dimensions, and fail closed for ambiguous monitors/aspect ratios.
     let render_client=if crate::diagnostics::is_native_windows(){
-        let Some(physical)=win32::physical_primary_monitor_dimensions() else{
-            log("WINDOWED-GAME: native physical monitor ambiguous; original exclusive path retained");
+        // During the original native intro, the physical *current display
+        // mode* becomes 1024x768/800x600. The verified launch raster,
+        // not that transient exclusive mode, is the intended output.
+        // Other configurations keep their established live-mode behavior.
+        let current=if native_intro {
+            win32::physical_primary_monitor_dimensions()
+        }else{None};
+        let physical=if native_intro {
+            native_intro_launch_physical()
+        }else{
+            win32::physical_primary_monitor_dimensions()
+        };
+        let Some(physical)=physical else{
+            log("WINDOWED-GAME: native physical monitor ambiguous or uncaptured; original exclusive path retained");
             return None;
         };
-        if (physical.0 as u64)*(monitor_h as u64)!=(physical.1 as u64)*(monitor_w as u64){
-            log("WINDOWED-GAME: native logical/physical aspect mismatch; original exclusive path retained");
+        if !same_aspect((monitor_w,monitor_h),physical) {
+            log(&format!(
+                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} initial_physical={physical:?} current_exclusive={current:?}; original exclusive path retained",
+                monitor_w,monitor_h
+            ));
             return None;
+        }
+        if native_intro{
+            log(&format!(
+                "NATIVE-INTRO: using verified pre-exclusive physical raster={physical:?} instead of current exclusive display mode={current:?}; native windowed transition eligible"
+            ));
         }
         physical
     }else{(monitor_w,monitor_h)};
@@ -717,6 +768,17 @@ mod native_intro_exclusive_tests {
         assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,boot),INTRO_LEFT_MOVIE_MODE);
         assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,video),INTRO_LEFT_MOVIE_MODE);
         assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,game),INTRO_LEFT_MOVIE_MODE);
+    }
+
+    #[test]
+    fn launch_physical_aspect_is_checked_without_accepting_exclusive_modes() {
+        assert!(same_aspect((1536,960),(1920,1200)));
+        assert!(same_aspect((1920,1200),(1920,1200)));
+        assert!(!same_aspect((1536,960),(1024,768)));
+        assert!(!same_aspect((1536,960),(800,600)));
+        assert!(!same_aspect((0,960),(1920,1200)));
+        assert!(!same_aspect((1536,960),(0,1200)));
+        assert!(!same_aspect((1,0),(1,0)));
     }
 
     #[test]
