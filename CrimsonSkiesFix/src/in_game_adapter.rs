@@ -28,6 +28,7 @@ const DDSD_HEIGHT:u32=0x2;
 const DDSD_WIDTH:u32=0x4;
 const DDSD_PIXELFORMAT:u32=0x1000;
 const DDSCL_NORMAL:u32=8;
+const DDSCL_EXCLUSIVE:u32=0x10;
 const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
 // Strict native Windows borderless operation must NEVER forward the
 // original game's exclusive cooperative request or real SetDisplayMode
@@ -449,8 +450,7 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
     }
     if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
-        if strict_native_nonexclusive() &&
-           flags&DDSCL_EXCLUSIVE_FULLSCREEN == DDSCL_EXCLUSIVE_FULLSCREEN {
+        if strict_native_nonexclusive() && flags&DDSCL_EXCLUSIVE!=0 {
             log("NATIVE-STRICT-BORDERLESS: invalid/NULL game HWND; exclusive cooperative request REJECTED");
             return Some(E_FAIL);
         }
@@ -1375,7 +1375,7 @@ pub fn must_block_other_cooperative_interface(flags:u32)->bool{
     // Normal cooperation remains allowed before the virtual graph; any
     // *exclusive* request from another DirectDraw interface is forbidden.
     (strict_native_nonexclusive() &&
-     flags&DDSCL_EXCLUSIVE_FULLSCREEN==DDSCL_EXCLUSIVE_FULLSCREEN) ||
+     flags&DDSCL_EXCLUSIVE!=0) ||
     RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
 }
 /// Only valid while the game holds a live virtual backbuffer reference.
