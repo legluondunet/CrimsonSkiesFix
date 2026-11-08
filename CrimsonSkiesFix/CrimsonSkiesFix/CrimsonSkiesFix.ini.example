@@ -68,11 +68,13 @@ NativeDpiAware=0
 ; Keep 0 normally. Never active on Wine/Proton.
 NativeDD4Bootstrap=0
 ; Native Windows opt-in only: preserve original exclusive DirectDraw while
-; the 800x600 introduction plays. Once MainMenu has loaded in this mode,
-; try windowed DD4 at the very next cooperative request, BEFORE the game
-; changes display mode for gameplay. If that opportunity was missed, never
-; activate a virtual graph late on ESC -> menu (white-screen safeguard).
-; Avoids exposing synthetic RGB565 intro surfaces to native DirectShow.
+; the 800x600 introduction plays. At the first following MainMenu coop call,
+; keep exclusive until the NEXT SetDisplayMode reveals the intended raster.
+; The ordinary 1024x768/800x600 path stays exclusively native (no brief
+; DDSCL_NORMAL->DDSCL_EXCLUSIVE round-trip or FOV patch). Only a requested
+; monitor-native mode may attempt the windowed virtual graph. Never enable
+; that graph late on ESC -> menu after native gameplay has already begun.
+; Avoid exposing synthetic RGB565 intro surfaces to native DirectShow.
 ; Requires NativeDD4Bootstrap=1 and ExperimentalWindowedAdapter=1.
 ; FOV/HUD patch is committed only after a matching native-resolution
 ; SetDisplayMode AND successful virtual HAL preflight. When the unmodified
