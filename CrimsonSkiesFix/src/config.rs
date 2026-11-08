@@ -249,6 +249,21 @@ fn ini_line_keys(content:&str)->Vec<Option<String>>{
     }).collect()
 }
 
+/// A known key with an invalid value is not a suitable survivor of a
+/// duplicate cleanup, even when the current default happens to match
+/// an earlier valid entry. Only FPSLimit and GosVideoLock are non-boolean.
+fn known_ini_value_valid(key:&str,line:&str)->bool{
+    let clean=line.split([';', '#']).next().unwrap_or("").trim();
+    let Some((_,value))=clean.split_once('=') else{return false;};
+    match key {
+        "graphics/fpslimit"=>value.trim().parse::<u32>().is_ok(),
+        "graphics/gosvideolock"=>
+            matches!(value.trim().to_ascii_lowercase().as_str(),
+                "on"|"off"|"restore"|"1"|"0"|"true"|"false"),
+        _=>enabled(value).is_some()
+    }
+}
+
 /// Normalize repeated known INI keys while preserving the EXACT effective
 /// parsed configuration, comments, unknown options and original line endings.
 /// Example: if an old valid value is followed by an invalid duplicate, the
@@ -277,6 +292,8 @@ pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
         // last text line: invalid trailing values are ignored by parse().
         let mut accepted=false;
         for &candidate in indexes.iter().rev(){
+            let Some(key)=keys[candidate].as_deref() else{continue;};
+            if !known_ini_value_valid(key,lines[candidate]){continue;}
             for &i in indexes{keep[i]=i==candidate;}
             let trial:String=lines.iter().enumerate()
                 .filter_map(|(i,line)|keep[i].then_some(*line)).collect();
@@ -328,6 +345,15 @@ mod tests {
         assert!(!cleaned.contains("FPSLimit=oops\n"));
         assert!(cleaned.contains("NativeDD4Bootstrap=1\n"));
         assert!(!cleaned.contains("NativeDD4Bootstrap=invalid\n"));
+    }
+    #[test]
+    fn redundant_default_on_value_prefers_valid_over_invalid_duplicate(){
+        let ini="[Debug]\nNativeDD4Bootstrap=1\nNativeDD4Bootstrap=broken\n";
+        let (output,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,1);
+        assert!(output.contains("NativeDD4Bootstrap=1\n"));
+        assert!(!output.contains("NativeDD4Bootstrap=broken\n"));
+        assert_eq!(parse(&output),parse(ini));
     }
     #[test]
     fn identical_and_mixed_case_keys_only_cleaned_inside_known_sections(){
