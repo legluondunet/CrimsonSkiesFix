@@ -62,6 +62,16 @@ unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
     let original:unsafe extern "C" fn(*const c_char,u32,u32)=
         std::mem::transmute(SCRIPT_LOADER);
     original(name,capacity,flags);
+    // One bounded, read-only inventory at the actual MainMenu, rather than
+    // the earlier DirectDraw setup when both windows were still hidden.
+    // Exact Windows task-switcher contents cannot be inferred from the
+    // mere count of process-owned HWNDs.
+    static TAB_WINDOWS_REPORTED:AtomicBool=AtomicBool::new(false);
+    if scene==MAIN && crate::cfg().log_enabled &&
+       !TAB_WINDOWS_REPORTED.swap(true,Ordering::AcqRel){
+        log(&format!("WIN-ALT-TAB: {}",
+            crate::win32::game_alt_tab_inventory()));
+    }
     // Nested Preferences does not necessarily replace CURRENT=MainMenu.
     // When the actual MainMenu script is requested again, allow its
     // watermark to return even if CURRENT was already MAIN before.
