@@ -739,6 +739,25 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     Err(err)=>log(&format!("WINDOWED-GAME: WindowEraseGuard unavailable: {err}")),
                 }
             }
+            // Windows native only, exact game-owned HWND already verified:
+            // repair the game's pre-borderless ClipCursor when (and only
+            // when) the OS still reports that same stale small rectangle.
+            // Separate explicit A/B from WndProc mouse remapping.
+            if crate::cfg().native_mouse_clip_repair &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                match crate::native_cursor_trace::repair_stale_game_cursor_clip(
+                    runtime.hwnd as *mut c_void
+                ){
+                    Ok(details)=>log(&format!(
+                        "NATIVE-CURSOR-CLIP-REPAIR: applied {details}"
+                    )),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-CURSOR-CLIP-REPAIR: not applied ({reason}); OS clip unchanged"
+                    )),
+                }
+            }
             // Experimental native Win11 RGB32 800x600 only: reinterpret
             // button/move client coordinates for the centered 4:3 source.
             // Arm *after* the exact HWND and its client rectangle have
