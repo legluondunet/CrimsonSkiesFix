@@ -119,6 +119,13 @@ NativeMouseClipRepair=0
 ; NativeMenuMouseRemap MUST be 0. NEVER enabled by default.
 ; Restores our own ShowCursor count on leaving menu / switching modes.
 NativeSystemCursorProbe=0
+; Native Windows / Debug ONLY: passive DirectInput mouse device trace.
+; Reports GUID_SysMouse CreateDevice, SetCooperativeLevel, Acquire,
+; SetDataFormat, GetDeviceState and GetDeviceData HRESULT and counters.
+; Exact game EXE DirectInputCreateA IAT, original calls forwarded unchanged.
+; Requires Log=1 + NativeDD4Bootstrap=1. No cursor movement or click injection.
+; OFF by default; never active on Wine/Proton.
+NativeDirectInputMouseTrace=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
