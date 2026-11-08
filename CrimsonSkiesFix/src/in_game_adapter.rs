@@ -278,9 +278,11 @@ static NATIVE_INTRO_PENDING:Mutex<Option<(usize,usize)>>=Mutex::new(None);
 // Caching None also prevents a late unsafe retry during an exclusive mode.
 static NATIVE_INTRO_LAUNCH_PHYSICAL:OnceLock<Option<(u32,u32)>>=OnceLock::new();
 fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
-    logical.0>0 && logical.1>0 && physical.0>0 && physical.1>0 &&
-    u64::from(logical.0)*u64::from(physical.1)==
-    u64::from(logical.1)*u64::from(physical.0)
+    // Match the Win32/physical raster relationship using the same
+    // one-pixel DPI rounding tolerance as the real DirectDraw presentation.
+    // The old exact cross-product rejected otherwise valid user screens
+    // such as physical 1366x768 represented by logical 1093x614.
+    crate::presentation::dpi_output_matches(physical,logical)
 }
 fn native_intro_launch_physical()->Option<(u32,u32)>{
     *NATIVE_INTRO_LAUNCH_PHYSICAL.get_or_init(||{
@@ -1112,6 +1114,9 @@ mod native_intro_exclusive_tests {
     #[test]
     fn launch_physical_aspect_is_checked_without_accepting_exclusive_modes() {
         assert!(same_aspect((1536,960),(1920,1200)));
+        assert!(same_aspect((1093,614),(1366,768)));
+        assert!(same_aspect((1536,961),(1920,1200)));
+        assert!(!same_aspect((1536,963),(1920,1200)));
         assert!(same_aspect((1920,1200),(1920,1200)));
         assert!(!same_aspect((1536,960),(1024,768)));
         assert!(!same_aspect((1536,960),(800,600)));
