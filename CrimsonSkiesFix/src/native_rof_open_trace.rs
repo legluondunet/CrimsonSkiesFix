@@ -134,15 +134,27 @@ unsafe extern "system" fn observe_a(
     if raw==0{return INVALID_HANDLE_VALUE as *mut c_void;}
     let original:CreateA=std::mem::transmute(raw);
     let matched=classify_ansi(name);
-    let result=original(name,access,share,security,disposition,flags,template);
+    let mut result=original(name,access,share,security,disposition,flags,template);
     let last=GetLastError();
     if let Some(archive)=matched {
+        let mut previous=None;
+        let mut redirected=false;
+        if result as usize!=INVALID_HANDLE_VALUE && archive=="crimptch.rof" {
+            previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            if let Some(patched)=crate::native_rof_read_trace::redirect_original_overlay_if_verified(
+                result,access,share,security,disposition,flags,template
+            ){
+                result=patched;
+                redirected=true;
+            }
+        }
         if EVENTS_A.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
             if result as usize!=INVALID_HANDLE_VALUE{
                 let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
+                let from=previous.unwrap_or(p);
                 log(&format!(
-                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity={} route={} content={} bytes={:?} installed_bytes={:?} success=true [pass-through; member selection unobserved]",
-                    p.identity,p.route,p.content,p.bytes,p.installed_bytes
+                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} original_identity={} original_route={} original_content={} identity={} route={} content={} bytes={:?} installed_bytes={:?} redirected_verified_original={redirected} access=0x{access:08x} share=0x{share:08x} disposition={disposition} success=true [script execution unobserved]",
+                    from.identity,from.route,from.content,p.identity,p.route,p.content,p.bytes,p.installed_bytes
                 ));
             }else{
                 log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileA archive={archive} identity=open-failed success=false [pass-through]"));
@@ -160,15 +172,27 @@ unsafe extern "system" fn observe_w(
     if raw==0{return INVALID_HANDLE_VALUE as *mut c_void;}
     let original:CreateW=std::mem::transmute(raw);
     let matched=classify_wide(name);
-    let result=original(name,access,share,security,disposition,flags,template);
+    let mut result=original(name,access,share,security,disposition,flags,template);
     let last=GetLastError();
     if let Some(archive)=matched {
+        let mut previous=None;
+        let mut redirected=false;
+        if result as usize!=INVALID_HANDLE_VALUE && archive=="crimptch.rof" {
+            previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            if let Some(patched)=crate::native_rof_read_trace::redirect_original_overlay_if_verified(
+                result,access,share,security,disposition,flags,template
+            ){
+                result=patched;
+                redirected=true;
+            }
+        }
         if EVENTS_W.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
             if result as usize!=INVALID_HANDLE_VALUE{
                 let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
+                let from=previous.unwrap_or(p);
                 log(&format!(
-                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity={} route={} content={} bytes={:?} installed_bytes={:?} success=true [pass-through; member selection unobserved]",
-                    p.identity,p.route,p.content,p.bytes,p.installed_bytes
+                    "GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} original_identity={} original_route={} original_content={} identity={} route={} content={} bytes={:?} installed_bytes={:?} redirected_verified_original={redirected} access=0x{access:08x} share=0x{share:08x} disposition={disposition} success=true [script execution unobserved]",
+                    from.identity,from.route,from.content,p.identity,p.route,p.content,p.bytes,p.installed_bytes
                 ));
             }else{
                 log(&format!("GOS-ROF-OPEN: caller=verified-ROFFILE.DLL api=CreateFileW archive={archive} identity=open-failed success=false [pass-through]"));
