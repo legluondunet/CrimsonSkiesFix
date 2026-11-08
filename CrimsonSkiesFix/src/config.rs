@@ -248,9 +248,116 @@ pub fn parse(content: &str) -> Config {
     settings
 }
 
+/// Return the canonical [section]/key of each INI line, preserving line
+/// indexes. Only known sections are considered; unknown/custom keys can
+/// never be removed or migrated by our deduplication step.
+fn ini_line_keys(content:&str)->Vec<Option<String>>{
+    let mut section=String::new();
+    content.split_inclusive('\n').map(|line|{
+        let clean=line.split([';', '#']).next().unwrap_or("").trim();
+        if clean.starts_with('[') && clean.ends_with(']') && clean.len()>2{
+            let candidate=clean[1..clean.len()-1].trim().to_ascii_lowercase();
+            section=if matches!(candidate.as_str(),
+                "graphics"|"debug"|"compatibility"){candidate}else{String::new()};
+            return None;
+        }
+        if section.is_empty(){return None;}
+        let (key,_)=clean.split_once('=')?;
+        let key=key.trim();
+        if key.is_empty(){return None;}
+        Some(format!("{section}/{}",key.to_ascii_lowercase()))
+    }).collect()
+}
+
+/// Normalize repeated known INI keys while preserving the EXACT effective
+/// parsed configuration, comments, unknown options and original line endings.
+/// Example: if an old valid value is followed by an invalid duplicate, the
+/// valid value wins as before. This function only returns text, never writes
+/// user files or changes any default; a separate guarded file operation
+/// backs up the original before committing any cleanup.
+pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
+    use std::collections::{BTreeMap,BTreeSet};
+    let lines:Vec<&str>=content.split_inclusive('\n').collect();
+    let keys=ini_line_keys(content);
+    if keys.len()!=lines.len(){return None;}
+    let recognized:BTreeSet<String>=ini_line_keys(DEFAULT_INI)
+        .into_iter().flatten().collect();
+    let mut groups:BTreeMap<String,Vec<usize>>=BTreeMap::new();
+    for (index,key) in keys.iter().enumerate(){
+        if let Some(key)=key{
+            if recognized.contains(key){groups.entry(key.clone()).or_default().push(index);}
+        }
+    }
+    let original=parse(content);
+    let mut keep=vec![true;lines.len()];
+    let mut removed=0usize;
+    for indexes in groups.values().filter(|v|v.len()>1){
+        let saved=keep.clone();
+        // Prefer the last VALID/effective occurrence, never blindly the
+        // last text line: invalid trailing values are ignored by parse().
+        let mut accepted=false;
+        for &candidate in indexes.iter().rev(){
+            for &i in indexes{keep[i]=i==candidate;}
+            let trial:String=lines.iter().enumerate()
+                .filter_map(|(i,line)|keep[i].then_some(*line)).collect();
+            if parse(&trial)==original{
+                removed+=indexes.len()-1;
+                accepted=true;
+                break;
+            }
+            keep.clone_from(&saved);
+        }
+        if !accepted{keep.clone_from(&saved);}
+    }
+    if removed==0{return None;}
+    let output:String=lines.iter().enumerate()
+        .filter_map(|(i,line)|keep[i].then_some(*line)).collect();
+    if parse(&output)!=original{return None;}
+    Some((output,removed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn no_duplicates_in_generated_or_shipped_ini(){
+        assert!(deduplicate_known_ini(DEFAULT_INI).is_none());
+        assert!(deduplicate_known_ini(include_str!(
+            "../CrimsonSkiesFix/CrimsonSkiesFix.ini.example")).is_none());
+    }
+    #[test]
+    fn clean_known_repeated_keys_across_duplicate_sections_without_changing_values(){
+        let ini="; keep intro\r\n[Graphics]\r\nGosVideoLock=on\r\nBorderless=0\r\n; preserve comment\r\n[Debug]\r\nNativeGosCursorBridge=0\r\n[Graphics]\r\nGosVideoLock=off\r\nBorderless=1\r\n[Debug]\r\nNativeGosCursorBridge=1\r\nUnknownPluginOption=first\r\nUnknownPluginOption=second\r\n";
+        let (output,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,3);
+        assert_eq!(parse(&output),parse(ini));
+        assert!(output.contains("GosVideoLock=off\r\n"));
+        assert!(!output.contains("GosVideoLock=on\r\n"));
+        assert!(output.contains("NativeGosCursorBridge=1\r\n"));
+        assert!(!output.contains("NativeGosCursorBridge=0\r\n"));
+        assert!(output.contains("; preserve comment\r\n"));
+        assert!(output.contains("UnknownPluginOption=first\r\nUnknownPluginOption=second\r\n"));
+    }
+    #[test]
+    fn invalid_later_value_never_overrides_previous_valid_value(){
+        let ini="[Graphics]\nFPSLimit=50\nFPSLimit=oops\n[Debug]\nNativeDD4Bootstrap=1\nNativeDD4Bootstrap=invalid\n";
+        let (cleaned,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,2);
+        assert_eq!(parse(&cleaned),parse(ini));
+        assert!(cleaned.contains("FPSLimit=50\n"));
+        assert!(!cleaned.contains("FPSLimit=oops\n"));
+        assert!(cleaned.contains("NativeDD4Bootstrap=1\n"));
+        assert!(!cleaned.contains("NativeDD4Bootstrap=invalid\n"));
+    }
+    #[test]
+    fn identical_and_mixed_case_keys_only_cleaned_inside_known_sections(){
+        let ini="[Debug]\nLog=1\nLOG=1\n[Modded]\nLOG=0\nLOG=1\n[Graphics]\nBorderless=1\nBORDERLESS=1";
+        let (cleaned,count)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(count,2);
+        assert_eq!(parse(&cleaned),parse(ini));
+        assert_eq!(cleaned.matches("LOG=1").count(),2);
+        assert!(cleaned.contains("[Modded]\nLOG=0\nLOG=1"));
+    }
     #[test]
     fn roffile_terminator_fix_is_default_on_and_compatibility_scoped() {
         assert!(Config::default().roffile_terminator_fix);
