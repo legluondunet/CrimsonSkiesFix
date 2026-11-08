@@ -59,6 +59,7 @@ extern "system"{
     fn GetInputState()->i32;
     fn GetCursorInfo(info:*mut CursorInfo)->i32;
     fn GetCursorPos(pos:*mut Point)->i32;
+    fn ScreenToClient(hwnd:Hwnd,pos:*mut Point)->i32;
     fn PeekMessageW(msg:*mut WinMessage,hwnd:Hwnd,first:u32,last:u32,remove:u32)->i32;
     fn TranslateMessage(msg:*const WinMessage)->i32;
     fn DispatchMessageW(msg:*const WinMessage)->isize;
@@ -116,6 +117,14 @@ static MENU_MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
 static MENU_SYSTEM_CURSOR_PROBE_HWND:AtomicUsize=AtomicUsize::new(0);
 static MENU_SYSTEM_CURSOR_PROBE_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MENU_SYSTEM_CURSOR_PROBE_RESTORES:AtomicUsize=AtomicUsize::new(0);
+// Independent native menu GOS mouse bridge: DirectInput's original buttons
+// remain untouched, only relative deltas are matched to actual viewport
+// coordinates by the explicitly armed 800x600 input device hook.
+static MENU_GOS_BRIDGE_HWND:AtomicUsize=AtomicUsize::new(0);
+static MENU_GOS_BRIDGE_CLIENT_W:AtomicUsize=AtomicUsize::new(0);
+static MENU_GOS_BRIDGE_CLIENT_H:AtomicUsize=AtomicUsize::new(0);
+static MENU_GOS_BRIDGE_RENDER_W:AtomicUsize=AtomicUsize::new(0);
+static MENU_GOS_BRIDGE_RENDER_H:AtomicUsize=AtomicUsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
@@ -336,6 +345,7 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         HOOK_HWND.store(0,Ordering::Release);
         PREVIOUS.store(0,Ordering::Release);
         disarm_native_menu_mouse_remap();
+        disarm_native_gos_cursor_bridge();
         if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)==hwnd as usize{
             undo_native_system_cursor_probe(); // already on HWND owner thread
         }
@@ -500,6 +510,90 @@ pub fn disarm_native_menu_mouse_remap(){
     MENU_MOUSE_HWND.store(0,Ordering::Release);
     MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
 }
+/// The original Win32 window remains full-size borderless. This opt-in
+/// bridge is allowed only for the native Windows DD4 virtual 800x600 movie
+/// epoch, AFTER its actual HWND and physical 4:3 viewport are verified.
+/// WndProc WM_* messages stay exactly as originally dispatched.
+pub fn arm_native_gos_cursor_bridge(
+    hwnd:usize,client:(u32,u32),render:(u32,u32)
+)->Result<MenuMouseGeometry,String>{
+    if hwnd==0 || snapshot(hwnd).is_none(){
+        return Err("verified game HWND/WndProc guard missing".into());
+    }
+    if crate::cfg().native_menu_mouse_remap{
+        return Err("NativeMenuMouseRemap=1; disable before native GOS cursor bridge".into());
+    }
+    let w=i32::try_from(client.0).map_err(|_|"bad client width")?;
+    let h=i32::try_from(client.1).map_err(|_|"bad client height")?;
+    let rw=i32::try_from(render.0).map_err(|_|"bad render width")?;
+    let rh=i32::try_from(render.1).map_err(|_|"bad render height")?;
+    let viewport=menu_content_rect(w,h,rw,rh)
+        .ok_or("unsupported 4:3 virtual menu viewport")?;
+    unsafe {
+        let hwnd=hwnd as Hwnd;
+        let mut pid=0u32;
+        let owner=GetWindowThreadProcessId(hwnd,&mut pid);
+        if IsWindow(hwnd)==0 || owner!=GetCurrentThreadId() ||
+           pid!=GetCurrentProcessId(){
+            return Err("game window not on current UI thread".into());
+        }
+        let mut actual=MouseRect::default();
+        if GetClientRect(hwnd,&mut actual)==0 ||
+           actual.right-actual.left!=w ||
+           actual.bottom-actual.top!=h {
+            return Err("borderless client dimensions changed".into());
+        }
+    }
+    MENU_GOS_BRIDGE_CLIENT_W.store(client.0 as usize,Ordering::Release);
+    MENU_GOS_BRIDGE_CLIENT_H.store(client.1 as usize,Ordering::Release);
+    MENU_GOS_BRIDGE_RENDER_W.store(render.0 as usize,Ordering::Release);
+    MENU_GOS_BRIDGE_RENDER_H.store(render.1 as usize,Ordering::Release);
+    MENU_GOS_BRIDGE_HWND.store(hwnd,Ordering::Release);
+    Ok(MenuMouseGeometry{
+        left:viewport.left,top:viewport.top,
+        width:viewport.width,height:viewport.height
+    })
+}
+pub fn disarm_native_gos_cursor_bridge(){
+    MENU_GOS_BRIDGE_HWND.store(0,Ordering::Release);
+}
+/// Snapshot the *actual* Windows pointer and transform through the SAME
+/// viewport as presentation. The game cursor still belongs to GOS; this
+/// function itself does not modify the game or the OS. Gated by exact
+/// MainMenu/Preferences script plus owner HWND, focus, UI thread and
+/// a verified physical movie viewport. Non-menu / gutter input is ignored.
+pub fn native_gos_cursor_bridge_target()->Option<(i32,i32)>{
+    let hwnd=MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire);
+    if hwnd==0 || MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
+       PREVIOUS.load(Ordering::Acquire)==0 ||
+       HOOK_HWND.load(Ordering::Acquire)!=hwnd{return None;}
+    let w=MENU_GOS_BRIDGE_CLIENT_W.load(Ordering::Acquire) as i32;
+    let h=MENU_GOS_BRIDGE_CLIENT_H.load(Ordering::Acquire) as i32;
+    let rw=MENU_GOS_BRIDGE_RENDER_W.load(Ordering::Acquire) as i32;
+    let rh=MENU_GOS_BRIDGE_RENDER_H.load(Ordering::Acquire) as i32;
+    unsafe {
+        let game=hwnd as Hwnd;
+        if GetForegroundWindow()!=game ||
+           GetWindowThreadProcessId(game,std::ptr::null_mut())!=GetCurrentThreadId(){
+            return None;
+        }
+        let mut pointer=Point::default();
+        if GetCursorPos(&mut pointer)==0 || ScreenToClient(game,&mut pointer)==0{
+            return None;
+        }
+        let viewport=menu_content_rect(w,h,rw,rh)?;
+        if pointer.x<viewport.left || pointer.y<viewport.top ||
+           pointer.x>=viewport.left+viewport.width ||
+           pointer.y>=viewport.top+viewport.height{return None;}
+        let target=menu_mouse_point(
+            (pointer.x,pointer.y),w,h,rw,rh
+        )?;
+        if !(0..800).contains(&target.0) || !(0..600).contains(&target.1){
+            return None;
+        }
+        Some(target)
+    }
+}
 pub fn set_native_menu_mouse_script_active(active:bool){
     MENU_MOUSE_SCENE_ACTIVE.store(usize::from(active),Ordering::Release);
     if !active && MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0{
@@ -611,6 +705,15 @@ mod tests{
         assert_eq!(input_event(WM_KILLFOCUS),(false,false,false,true));
         assert_eq!(input_event(WM_ACTIVATEAPP),(false,false,false,true));
         assert_eq!(input_event(WM_PAINT),(false,false,false,false));
+    }
+    #[test]
+    fn native_gos_bridge_target_follows_same_letterboxed_viewport(){
+        let viewport=menu_content_rect(1536,960,1920,1200).unwrap();
+        assert_eq!((viewport.left,viewport.top,viewport.width,viewport.height),
+                   (128,0,1280,960));
+        assert_eq!(menu_mouse_point((128,0),1536,960,1920,1200),Some((0,0)));
+        assert_eq!(menu_mouse_point((768,480),1536,960,1920,1200),Some((400,300)));
+        assert_eq!(menu_mouse_point((1407,959),1536,960,1920,1200),Some((799,599)));
     }
     #[test]
     fn mouse_message_and_coordinate_readout_is_passive(){
