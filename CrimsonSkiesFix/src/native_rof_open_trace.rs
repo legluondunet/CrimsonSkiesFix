@@ -1,4 +1,4 @@
-//! Native Windows-only, read-only telemetry for the game's original ROFFILE.DLL.
+//! Shared Windows/Wine verified archive routing for the original ROFFILE.DLL.
 //!
 //! Hook ONLY the named CreateFileA/W imports of the exact on-disk
 //! SHA-256-admitted ROFFILE.DLL, never KERNEL32 exports or another module.
@@ -6,7 +6,7 @@
 //! GetLastError are preserved. Never log installation directory or full paths.
 //!
 //! An archive OPEN is not proof which member script the engine selects.
-//! Exception to passive observation: on Windows native with GosVideoLock=On,
+//! Exception to passive observation: on Windows or Wine with GosVideoLock=On,
 //! the exact original overlay copy may be exchanged for a separately opened
 //! and verified managed patched overlay, but ONLY when the original bytes
 //! exactly match the retained owner backup. All other opens fail open without
@@ -17,7 +17,7 @@ use std::{
     path::PathBuf,
     sync::{Mutex,atomic::{AtomicUsize,Ordering}},
 };
-use crate::{diagnostics,exe_gate,log,win32};
+use crate::{exe_gate,log,win32};
 
 const ROFFILE_HASH:&str="1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a";
 const ROFFILE_SIZE:usize=135_168;
@@ -144,7 +144,9 @@ unsafe extern "system" fn observe_a(
         let mut previous=None;
         let mut redirected=false;
         if result as usize!=INVALID_HANDLE_VALUE && archive=="crimptch.rof" {
-            previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            if crate::cfg().log_enabled {
+                previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            }
             if let Some(patched)=crate::native_rof_read_trace::redirect_original_overlay_if_verified(
                 result,access,share,security,disposition,flags,template
             ){
@@ -152,7 +154,7 @@ unsafe extern "system" fn observe_a(
                 redirected=true;
             }
         }
-        if EVENTS_A.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
+        if crate::cfg().log_enabled && EVENTS_A.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
             if result as usize!=INVALID_HANDLE_VALUE{
                 let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
                 let from=previous.unwrap_or(p);
@@ -182,7 +184,9 @@ unsafe extern "system" fn observe_w(
         let mut previous=None;
         let mut redirected=false;
         if result as usize!=INVALID_HANDLE_VALUE && archive=="crimptch.rof" {
-            previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            if crate::cfg().log_enabled {
+                previous=Some(crate::native_rof_read_trace::opened_archive_provenance(result,archive));
+            }
             if let Some(patched)=crate::native_rof_read_trace::redirect_original_overlay_if_verified(
                 result,access,share,security,disposition,flags,template
             ){
@@ -190,7 +194,7 @@ unsafe extern "system" fn observe_w(
                 redirected=true;
             }
         }
-        if EVENTS_W.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
+        if crate::cfg().log_enabled && EVENTS_W.fetch_add(1,Ordering::Relaxed)<MAX_RECORDS{
             if result as usize!=INVALID_HANDLE_VALUE{
                 let p=crate::native_rof_read_trace::opened_archive_provenance(result,archive);
                 let from=previous.unwrap_or(p);
@@ -243,11 +247,10 @@ unsafe fn install_import(
     true
 }
 
-/// Called by the already existing ROFFILE lifecycle polling point.
-/// No filesystem or memory reads when unavailable, disabled or under Wine.
+/// Called by the shared ROFFILE lifecycle path on Windows and Wine.
+/// The routing is functional, not a debug-only observer.
 pub fn probe(){
-    if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
-       crate::cfg().directdraw_passthrough{return;}
+    if !crate::native_rof_read_trace::routing_enabled(){return;}
     let module=unsafe{GetModuleHandleA(b"roffile.dll\0".as_ptr().cast())} as usize;
     if module==0 {
         if FIRST_ABSENT.swap(1,Ordering::AcqRel)==0 {
@@ -260,6 +263,9 @@ pub fn probe(){
     if TRIED.load(Ordering::Acquire)==module{return;}
     let status=(||{
         verify_module(module as *mut c_void)?;
+        if !crate::native_rof_read_trace::references_ready(){
+            return Err("managed GOS patch not fully verified");
+        }
         let pe_head=unsafe{std::slice::from_raw_parts(module as *const u8,0x1000)};
         // Exact verified module file/PE; enforce its original image size
         // before constructing an image-wide slice.
@@ -274,9 +280,10 @@ pub fn probe(){
             observe_a as usize,&ORIGINAL_A)};
         let w=unsafe{install_import(module,imports.wide,b"CreateFileW\0",
             observe_w as usize,&ORIGINAL_W)};
-        let read=unsafe{crate::native_rof_read_trace::install(module,imports.read)};
+        let read=crate::cfg().log_enabled &&
+            unsafe{crate::native_rof_read_trace::install(module,imports.read)};
         log(&format!(
-            "GOS-ROF-OPEN: verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={} CreateFileMappingA_import={} CreateFileMappingW_import={}; observes future calls only, member execution unobserved",
+            "GOS-ROF-OPEN: shared Windows/Wine verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={} CreateFileMappingA_import={} CreateFileMappingW_import={}; logging is optional, member execution unobserved",
             imports.ansi.is_some(),a,imports.wide.is_some(),w,imports.read.is_some(),read,imports.mapping_a,imports.mapping_w
         ));
         Ok::<(),&'static str>(())
