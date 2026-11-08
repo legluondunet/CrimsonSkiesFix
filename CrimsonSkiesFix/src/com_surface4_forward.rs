@@ -1096,13 +1096,14 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 Some(input)=>{
                     let c=input.counts;
                     crate::log(&format!(
-                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={} wndproc_mouse_moves={} wndproc_mouse_buttons={} last_mouse_client={:?} os_cursor_visible={:?} os_cursor_screen={:?} primary_blt_rejected={} bltfast_rejected={} surface_getdc={} surface_releasedc={}",
+                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={} wndproc_mouse_moves={} wndproc_mouse_buttons={} last_mouse_client={:?} menu_mouse_remapped={} last_menu_mouse_logical={:?} os_cursor_visible={:?} os_cursor_screen={:?} primary_blt_rejected={} bltfast_rejected={} surface_getdc={} surface_releasedc={}",
                         input.game_is_foreground,input.window_thread,
                         input.current_thread,
                         input.window_thread==input.current_thread,
                         input.queue_has_new_input,c.keydown,c.keyup,
                         c.character,c.focus_changes,c.painted,
                         c.mouse_moves,c.mouse_buttons,input.cursor_client_last_move,
+                        c.menu_mouse_mapped,input.menu_mouse_logical_last_move,
                         input.cursor_visible,input.cursor_screen,
                         NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.load(Ordering::Relaxed),
                         NATIVE_MENU_BLTFAST_ATTEMPTS.load(Ordering::Relaxed),
