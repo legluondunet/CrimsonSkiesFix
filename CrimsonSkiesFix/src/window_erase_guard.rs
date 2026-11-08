@@ -97,6 +97,8 @@ static NATIVE_MOVIE_PUMP_MESSAGES:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_HWND:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_CLIENT_W:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_CLIENT_H:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_RENDER_W:AtomicUsize=AtomicUsize::new(0);
+static MENU_MOUSE_RENDER_H:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_SCENE_ACTIVE:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_MAPPED:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
@@ -139,21 +141,31 @@ fn client_mouse_point(lparam:isize)->(i32,i32){
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 struct MenuRect{left:i32,top:i32,width:i32,height:i32}
-fn menu_content_rect(client_w:i32,client_h:i32)->Option<MenuRect>{
-    if client_w<800 || client_h<600 || client_w>8192 || client_h>8192{
-        return None;
-    }
-    // Same centered 4:3 fit used by the native virtual primary Blt.
-    let (width,height)=if i64::from(client_w)*3>=i64::from(client_h)*4{
-        (client_h*4/3,client_h)
-    }else{
-        (client_w,client_w*3/4)
-    };
-    if width<800 || height<600{return None;}
-    Some(MenuRect{left:(client_w-width)/2,top:(client_h-height)/2,width,height})
+fn menu_content_rect(
+    client_w:i32,client_h:i32,render_w:i32,render_h:i32
+)->Option<MenuRect>{
+    if [client_w,client_h,render_w,render_h].iter()
+        .any(|&v|v<=0 || v>16384){return None;}
+    // Always use the SAME physical DD4 viewport + per-edge DPI scaling
+    // as the actual NativeWindowedBlt presentation. Independently
+    // fitting a 4:3 rectangle in Win32 coordinates can differ by a pixel
+    // at fractional DPI or odd-sized monitors.
+    let view=crate::presentation::output_viewport(
+        (800,600),(render_w as u32,render_h as u32),
+        (client_w as u32,client_h as u32)
+    )?;
+    Some(MenuRect{
+        left:i32::try_from(view.x).ok()?,
+        top:i32::try_from(view.y).ok()?,
+        width:i32::try_from(view.width).ok()?,
+        height:i32::try_from(view.height).ok()?
+    })
 }
-fn menu_mouse_point(point:(i32,i32),client_w:i32,client_h:i32)->Option<(i32,i32)>{
-    let view=menu_content_rect(client_w,client_h)?;
+fn menu_mouse_point(
+    point:(i32,i32),client_w:i32,client_h:i32,
+    render_w:i32,render_h:i32
+)->Option<(i32,i32)>{
+    let view=menu_content_rect(client_w,client_h,render_w,render_h)?;
     // Intentionally do not clamp to the viewport: negative/outside
     // coordinates tell the game that the pointer left its 4:3 canvas.
     let x=i64::from(point.0-view.left)*800/i64::from(view.width);
@@ -173,7 +185,11 @@ fn menu_mouse_lparam(hwnd:Hwnd,msg:u32,lparam:isize)->isize{
     }
     let width=MENU_MOUSE_CLIENT_W.load(Ordering::Acquire) as i32;
     let height=MENU_MOUSE_CLIENT_H.load(Ordering::Acquire) as i32;
-    let Some((x,y))=menu_mouse_point(client_mouse_point(lparam),width,height) else{
+    let render_w=MENU_MOUSE_RENDER_W.load(Ordering::Acquire) as i32;
+    let render_h=MENU_MOUSE_RENDER_H.load(Ordering::Acquire) as i32;
+    let Some((x,y))=menu_mouse_point(
+        client_mouse_point(lparam),width,height,render_w,render_h
+    ) else{
         return lparam;
     };
     MENU_MOUSE_LAST_X.store(x as isize,Ordering::Relaxed);
@@ -334,14 +350,19 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
 /// 800x600 RGB32 graph and HWND borderless geometry were accepted.
 /// The scene gate remains closed until the actual MainMenu/Preferences
 /// script loads. This has no effect on DirectInput or the OS cursor.
-pub fn arm_native_menu_mouse_remap(hwnd:usize,client:(u32,u32))->Result<MenuMouseGeometry,String>{
+pub fn arm_native_menu_mouse_remap(
+    hwnd:usize,client:(u32,u32),render:(u32,u32)
+)->Result<MenuMouseGeometry,String>{
     if hwnd==0{return Err("NULL menu HWND".into());}
     if snapshot(hwnd).is_none(){
         return Err("verified game WndProc guard is not installed".into());
     }
     let w=i32::try_from(client.0).map_err(|_|"invalid menu width")?;
     let h=i32::try_from(client.1).map_err(|_|"invalid menu height")?;
-    let view=menu_content_rect(w,h).ok_or("unsupported 4:3 menu viewport")?;
+    let render_w=i32::try_from(render.0).map_err(|_|"invalid render width")?;
+    let render_h=i32::try_from(render.1).map_err(|_|"invalid render height")?;
+    let view=menu_content_rect(w,h,render_w,render_h)
+        .ok_or("unsupported physical-to-client 4:3 menu viewport")?;
     unsafe{
         if IsWindow(hwnd as Hwnd)==0{return Err("invalid menu HWND".into());}
         let mut pid=0;
@@ -358,6 +379,8 @@ pub fn arm_native_menu_mouse_remap(hwnd:usize,client:(u32,u32))->Result<MenuMous
     MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
     MENU_MOUSE_CLIENT_W.store(client.0 as usize,Ordering::Release);
     MENU_MOUSE_CLIENT_H.store(client.1 as usize,Ordering::Release);
+    MENU_MOUSE_RENDER_W.store(render.0 as usize,Ordering::Release);
+    MENU_MOUSE_RENDER_H.store(render.1 as usize,Ordering::Release);
     MENU_MOUSE_HWND.store(hwnd,Ordering::Release);
     Ok(MenuMouseGeometry{left:view.left,top:view.top,width:view.width,height:view.height})
 }
@@ -485,18 +508,25 @@ mod tests{
     }
     #[test]
     fn native_menu_4_by_3_mouse_mapping_is_exact_and_reversible(){
-        assert_eq!(menu_content_rect(1536,960),Some(MenuRect{
+        assert_eq!(menu_content_rect(1536,960,1920,1200),Some(MenuRect{
             left:128,top:0,width:1280,height:960
         }));
-        assert_eq!(menu_mouse_point((128,0),1536,960),Some((0,0)));
-        assert_eq!(menu_mouse_point((1407,959),1536,960),Some((799,599)));
-        assert_eq!(menu_mouse_point((1408,960),1536,960),Some((800,600)));
-        assert_eq!(menu_mouse_point((636,542),1536,960),Some((317,338)));
-        assert_eq!(menu_mouse_point((64,480),1536,960),Some((-40,300)));
-        assert_eq!(menu_mouse_point((640,360),1280,720),Some((400,300)));
-        assert_eq!(menu_mouse_point((400,300),800,600),Some((400,300)));
-        assert_eq!(menu_content_rect(640,480),None);
-        assert_eq!(menu_mouse_point((0,0),0,0),None);
+        assert_eq!(menu_mouse_point((128,0),1536,960,1920,1200),Some((0,0)));
+        assert_eq!(menu_mouse_point((1407,959),1536,960,1920,1200),Some((799,599)));
+        assert_eq!(menu_mouse_point((1408,960),1536,960,1920,1200),Some((800,600)));
+        assert_eq!(menu_mouse_point((636,542),1536,960,1920,1200),Some((317,338)));
+        assert_eq!(menu_mouse_point((64,480),1536,960,1920,1200),Some((-40,300)));
+        assert_eq!(menu_mouse_point((640,360),1280,720,1280,720),Some((400,300)));
+        assert_eq!(menu_mouse_point((400,300),800,600,800,600),Some((400,300)));
+        assert_eq!(menu_content_rect(640,480,640,480),Some(MenuRect{
+            left:0,top:0,width:640,height:480
+        }));
+        let odd=menu_content_rect(1093,614,1366,768).unwrap();
+        let backend=crate::presentation::output_viewport(
+            (800,600),(1366,768),(1093,614)).unwrap();
+        assert_eq!((odd.left,odd.top,odd.width,odd.height),
+            (backend.x as i32,backend.y as i32,backend.width as i32,backend.height as i32));
+        assert_eq!(menu_mouse_point((0,0),0,0,0,0),None);
         assert!(!menu_mouse_message(WM_CHAR));
         assert!(!menu_mouse_message(WM_KEYDOWN));
         assert!(menu_mouse_message(WM_MOUSEMOVE));
