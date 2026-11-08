@@ -550,20 +550,47 @@ unsafe extern "system" fn audit_surface_get_ddinterface(this:*mut c_void,out:*mu
     record_surface_usage(this,surface_usage::Method::GetDDInterface,hr);
     hr
 }
+// Wine's DirectDraw Blt assumes its source is a native ddraw_surface COM
+// interface. Our synthetic Surface4 must always be unwrapped (v0.1.55),
+// including with default [Debug] Log=0 and ModernFPSPacing=0.
+// Keep the owner-validated native Windows Log=0 hooks unchanged.
+fn wine_blt_guard_required(native_windows:bool,adapter:bool,passthrough:bool)->bool{
+    !native_windows && adapter && !passthrough
+}
+fn surface_hook_policy(logging:bool,pacing:bool,wine_guard:bool)->(bool,bool){
+    (logging || pacing || wine_guard,logging || pacing)
+}
 pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
-    if surface.is_null() || !(cfg().log_enabled || cfg().modern_fps_pacing) {return;}
+    if surface.is_null(){return;}
+    let c=cfg();
+    let wine_guard=wine_blt_guard_required(
+        diagnostics::is_native_windows(),c.experimental_windowed_adapter,
+        c.directdraw_passthrough);
+    let (install_guard,install_diagnostics)=surface_hook_policy(
+        c.log_enabled,c.modern_fps_pacing,wine_guard);
+    if !install_guard{return;}
     // The experimental virtual Surface4 owns its own vtable. Never patch
     // its global 45-slot façade through the passive native-vtable tracer.
-    if cfg().experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
+    if c.experimental_windowed_adapter && in_game_adapter::unwrap_target(surface).is_some(){
         return;
     }
+    // QI and GetAttachedSurface discover native interface versions and
+    // backbuffers; Blt validates/unwraps synthetic sources before Wine.
     let qi=replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize);
-    let flip=replace_method(surface,SURFACE_FLIP,modern_surface_flip as *const () as usize);
     let blt=replace_method(surface,SURFACE_BLT,modern_surface_blt as *const () as usize);
-    let fast=replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as *const () as usize);
-    let unlock=replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as *const () as usize);
     let attached=replace_method(surface,SURFACE_GET_ATTACHED,modern_get_attached_surface as *const () as usize);
-    let desc=replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as *const () as usize);
+    // No Flip pacing, BltFast/Unlock or extra GetDesc hooks when both
+    // debug logging and explicit ModernFPSPacing are disabled.
+    let flip=install_diagnostics && replace_method(surface,SURFACE_FLIP,modern_surface_flip as *const () as usize);
+    let fast=install_diagnostics && replace_method(surface,SURFACE_BLT_FAST,modern_surface_blt_fast as *const () as usize);
+    let unlock=install_diagnostics && replace_method(surface,SURFACE_UNLOCK,modern_surface_unlock as *const () as usize);
+    let desc=install_diagnostics && replace_method(surface,SURFACE_GET_DESC,modern_get_surface_desc as *const () as usize);
+    if wine_guard && !install_diagnostics && blt{
+        static WINE_BLT_GUARD_ONCE:std::sync::Once=std::sync::Once::new();
+        WINE_BLT_GUARD_ONCE.call_once(||crate::log(
+            "WINE-BLT-GUARD: active with Log=0; native QI/attached/Blt safety hooks installed"
+        ));
+    }
     if surface_usage_enabled(){
         let installed=[
             replace_method(surface,SURFACE_USAGE_ADD_ATTACHED_SURFACE,audit_surface_add_attached_surface as *const () as usize),
@@ -596,6 +623,18 @@ mod tests {
         assert_eq!(IID_DDRAW_SURFACE4.d1,0x0b2b8630);
         assert_eq!(IID_DDRAW_SURFACE4.d2,0xad35);
         assert_eq!(IID_DDRAW_SURFACE4.d4,[0x8e,0xa6,0x00,0x60,0x97,0x97,0xea,0x5b]);
+    }
+
+    #[test]
+    fn wine_v0155_blt_guard_is_independent_of_logging(){
+        assert!(wine_blt_guard_required(false,true,false));
+        assert!(!wine_blt_guard_required(true,true,false));
+        assert!(!wine_blt_guard_required(false,false,false));
+        assert!(!wine_blt_guard_required(false,true,true));
+        assert_eq!(surface_hook_policy(false,false,true),(true,false));
+        assert_eq!(surface_hook_policy(false,false,false),(false,false));
+        assert_eq!(surface_hook_policy(true,false,false),(true,true));
+        assert_eq!(surface_hook_policy(false,true,false),(true,true));
     }
 
     #[test]
