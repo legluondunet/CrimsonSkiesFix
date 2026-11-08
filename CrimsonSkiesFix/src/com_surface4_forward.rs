@@ -104,6 +104,25 @@ fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
 const DDBLT_COLORFILL:u32=0x0000_0400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
+const DDBLT_ASYNC:u32=0x0000_0200;
+/// DirectDraw's simultaneous ASYNC+WAIT request was observed returning DD_OK
+/// on an 800x600 RGB565->RGB32 image copy, with the first row correct but
+/// all remaining rows black in the *immediate* destination readback.
+/// Preserve every other operation; this one full-frame format conversion
+/// must finish before the video window presents it.
+fn opening_image_blt_flags(original:u32,verified_rgb565_800x600:bool)->u32{
+    if verified_rgb565_800x600 && original==(DDBLT_ASYNC|DDBLT_WAIT){
+        DDBLT_WAIT
+    }else{original}
+}
+unsafe fn is_native_opening_image_surface(source:SurfaceThis)->bool{
+    if source.is_null(){return false;}
+    let mut desc=[0u32;31];desc[0]=124;
+    let hr=(real_vtable(source).get_surface_desc)(source,desc.as_mut_ptr().cast());
+    hr>=0 && desc[0]==124 && desc[3]==800 && desc[2]==600 &&
+        desc[19]&0x40!=0 && desc[21]==16 &&
+        (desc[22],desc[23],desc[24])==(0xf800,0x07e0,0x001f)
+}
 // The graph's front buffer is SYNTHETIC and synchronously presents by
 // completing its real windowed Blt pair. GetFlipStatus MUST describe that
 // exact virtual operation, not the non-flippable real desktop primary.
@@ -966,7 +985,24 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                 count
             }else{0};
             let movie_started=if movie_trace{Some(Instant::now())}else{None};
-            let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,p4,p5);
+            // The exact first original 800x600 image copies arrived as
+            // DDBLT_ASYNC|DDBLT_WAIT on a native XRGB32 video backbuffer.
+            // Disable only the asynchronous scheduling bit for this proven
+            // source/destination format pair, on either host if encountered.
+            // No unrelated textures, decoded RGB32 movie frames or Wine RGB565
+            // backbuffer graphs are changed.
+            let verified_opening=movie_trace &&
+                node.mode.width==800 && node.mode.height==600 &&
+                p4==(DDBLT_ASYNC|DDBLT_WAIT) &&
+                is_native_opening_image_surface(real_source);
+            let flags=opening_image_blt_flags(p4,verified_opening);
+            if verified_opening && movie_call<=2{
+                crate::log(&format!(
+                    "STARTUP-IMAGE-BLT: verified RGB565 800x600 -> native RGB32 800x600; dst_rect={} src_rect={} original_flags={p4:#010x} effective_flags={flags:#010x}; sync copy requested",
+                    rect_summary(p1),rect_summary(p3)
+                ));
+            }
+            let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,flags,p5);
             if let Some(started)=movie_started{
                 movie_com_trace("backbuffer.native_Blt",movie_call,Some(hr),
                     Some(started.elapsed().as_millis()));
@@ -1921,6 +1957,16 @@ mod tests{
         assert_eq!(at(399,599),0xf800);
         assert_eq!(at(400,0),0x07e0);
         assert_eq!(at(799,599),0x07e0);
+    }
+    #[test]
+    fn only_exact_native_splash_async_wait_is_normalized(){
+        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC|DDBLT_WAIT,true),DDBLT_WAIT);
+        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC|DDBLT_WAIT,false),
+            DDBLT_ASYNC|DDBLT_WAIT);
+        assert_eq!(opening_image_blt_flags(DDBLT_WAIT,true),DDBLT_WAIT);
+        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC,true),DDBLT_ASYNC);
+        assert_eq!(opening_image_blt_flags(DDBLT_COLORFILL|DDBLT_WAIT,true),
+            DDBLT_COLORFILL|DDBLT_WAIT);
     }
     #[test]
     fn native_blt_failure_rectangle_summary_is_bounded(){
