@@ -84,6 +84,7 @@ pub unsafe fn opened_archive_identity(handle:*mut c_void)->&'static str{
 /// Diagnostic labels only: do not reveal user directories or arbitrary
 /// file contents. The comparison uses the exact physical path returned for
 /// the same handle that ROFFILE.DLL opened.
+#[derive(Clone,Copy)]
 pub struct OpenedArchiveProvenance {
     pub identity:&'static str,
     pub route:&'static str,
