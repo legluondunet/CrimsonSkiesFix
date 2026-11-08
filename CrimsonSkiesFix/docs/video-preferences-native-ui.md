@@ -1,5 +1,40 @@
 # Crimson Skies 1.02 — Video Preferences native UI ownership
 
+## PR #23: one verified GOS archive route for Windows and Wine/Proton
+
+The original GameOS VIDEO.SCRIPT overlay contains the same native
+Graphics/Resolution disable commands on both runtimes. The verified
+ROFFILE.DLL import observer now uses the **same executable, archive
+selection and file-identity checks** under Windows and Wine, without
+branching on the operating system or requiring [Debug] Log=1.
+
+- First, install/verify the managed GOSDATA/ASSETS/crimptch.rof patch.
+- Observe the original game's LoadLibrary import, then the exactly
+  SHA-256-verified ROFFILE.DLL CreateFileA/W import slots.
+- If the returned archive handle matches the installed patched file ID,
+  preserve that handle untouched (the expected Wine route).
+- If it is a different file, consider redirecting only a read-only
+  OPEN_EXISTING original ROF archive that is byte-for-byte identical
+  to the saved original overlay. Independently verify the installed
+  modified VIDEO member and the replacement handle's file ID.
+- On any failed verification, keep the original handle and return
+  the original Win32 call's LastError; never edit original game assets.
+- The debug-only ReadFile provenance hook has no bearing on routing.
+  GosVideoLock=off/restore and DirectDrawPassThrough=1 do not route.
+
+Owner **verified Windows 11** with experimental build 488a5180:
+the game opened a separate 797-byte original overlay, which the
+authenticated handler redirected to the 2228-byte modified overlay.
+The log showed redirected_verified_original=true and reads overlapping
+the compressed VIDEO script; the user confirmed both selectors locked.
+The **newly shared Wine/Proton hook implementation still requires an
+owner Wine/Proton regression test**. Its expected behavior with the
+already-correct file is redirected_verified_original=false.
+
+The separate ROFFILE.DLL end-of-file parser fix remains Wine-specific
+because it addresses a different bug, not the GameOS selector lock.
+
+
 ## Evidence: user test of v0.1.80
 
 The owner-provided `CrimsonSkiesFix(5).log` (2 Nov 2026, Wine 11 /
