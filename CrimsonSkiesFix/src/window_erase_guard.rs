@@ -21,12 +21,27 @@ const WM_SYSKEYUP:u32=0x0105;
 const WM_SETFOCUS:u32=0x0007;
 const WM_KILLFOCUS:u32=0x0008;
 const WM_ACTIVATEAPP:u32=0x001c;
+const WM_MOUSEMOVE:u32=0x0200;
+const WM_LBUTTONDOWN:u32=0x0201;
+const WM_LBUTTONUP:u32=0x0202;
+const WM_RBUTTONDOWN:u32=0x0204;
+const WM_RBUTTONUP:u32=0x0205;
+const WM_MBUTTONDOWN:u32=0x0207;
+const WM_MBUTTONUP:u32=0x0208;
+const CURSOR_SHOWING:u32=0x1;
+#[repr(C)]
+#[derive(Default,Clone,Copy)]
+struct Point{x:i32,y:i32}
+#[repr(C)]
+struct CursorInfo{size:u32,flags:u32,hcursor:Hwnd,screen:Point}
 
 #[link(name="user32")]
 extern "system"{
     fn IsWindow(hwnd:Hwnd)->i32;
     fn GetForegroundWindow()->Hwnd;
     fn GetInputState()->i32;
+    fn GetCursorInfo(info:*mut CursorInfo)->i32;
+    fn GetCursorPos(pos:*mut Point)->i32;
     fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
     fn GetWindowLongW(hwnd:Hwnd,index:i32)->i32;
     fn SetWindowLongW(hwnd:Hwnd,index:i32,value:i32)->i32;
@@ -50,11 +65,16 @@ static KEYDOWN_COUNT:AtomicUsize=AtomicUsize::new(0);
 static KEYUP_COUNT:AtomicUsize=AtomicUsize::new(0);
 static CHAR_COUNT:AtomicUsize=AtomicUsize::new(0);
 static FOCUS_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MOUSE_MOVE_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MOUSE_BUTTON_COUNT:AtomicUsize=AtomicUsize::new(0);
+static MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
+static MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
     pub erased:usize,pub painted:usize,
     pub keydown:usize,pub keyup:usize,pub character:usize,pub focus_changes:usize,
+    pub mouse_moves:usize,pub mouse_buttons:usize,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowInputState{
@@ -64,6 +84,9 @@ pub struct WindowInputState{
     pub queue_has_new_input:bool,
     pub window_thread:u32,
     pub current_thread:u32,
+    pub cursor_visible:Option<bool>,
+    pub cursor_screen:Option<(i32,i32)>,
+    pub cursor_client_last_move:Option<(i32,i32)>,
 }
 fn input_event(msg:u32)->(bool,bool,bool,bool){
     (matches!(msg,WM_KEYDOWN|WM_SYSKEYDOWN),
@@ -72,6 +95,14 @@ fn input_event(msg:u32)->(bool,bool,bool,bool){
      matches!(msg,WM_SETFOCUS|WM_KILLFOCUS|WM_ACTIVATEAPP))
 }
 
+fn mouse_button_message(msg:u32)->bool{
+    matches!(msg,WM_LBUTTONDOWN|WM_LBUTTONUP|
+        WM_RBUTTONDOWN|WM_RBUTTONUP|WM_MBUTTONDOWN|WM_MBUTTONUP)
+}
+fn client_mouse_point(lparam:isize)->(i32,i32){
+    let packed=lparam as u32;
+    ((packed as u16 as i16) as i32,((packed>>16) as u16 as i16) as i32)
+}
 fn intercept_erase(message:u32,matching:bool)->bool{
     message==WM_ERASEBKGND && matching
 }
@@ -93,6 +124,15 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         if up{KEYUP_COUNT.fetch_add(1,Ordering::Relaxed);}
         if character{CHAR_COUNT.fetch_add(1,Ordering::Relaxed);}
         if focus{FOCUS_COUNT.fetch_add(1,Ordering::Relaxed);}
+        if msg==WM_MOUSEMOVE{
+            let (x,y)=client_mouse_point(lparam);
+            MOUSE_LAST_X.store(x as isize,Ordering::Relaxed);
+            MOUSE_LAST_Y.store(y as isize,Ordering::Relaxed);
+            MOUSE_MOVE_COUNT.fetch_add(1,Ordering::Relaxed);
+        }
+        if mouse_button_message(msg){
+            MOUSE_BUTTON_COUNT.fetch_add(1,Ordering::Relaxed);
+        }
     }
     if matching && msg==WM_NCDESTROY{
         // Keep the original chain in place for the final destroy callback.
@@ -156,6 +196,8 @@ pub fn snapshot(hwnd:usize)->Option<WindowPaintStats>{
             keyup:KEYUP_COUNT.load(Ordering::Acquire),
             character:CHAR_COUNT.load(Ordering::Acquire),
             focus_changes:FOCUS_COUNT.load(Ordering::Acquire),
+            mouse_moves:MOUSE_MOVE_COUNT.load(Ordering::Acquire),
+            mouse_buttons:MOUSE_BUTTON_COUNT.load(Ordering::Acquire),
         })
 }
 
@@ -168,12 +210,28 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
         if IsWindow(hwnd)==0{return None;}
         let window_thread=GetWindowThreadProcessId(hwnd,std::ptr::null_mut());
         if window_thread==0{return None;}
+        let mut cursor=CursorInfo{
+            size:std::mem::size_of::<CursorInfo>() as u32,flags:0,
+            hcursor:std::ptr::null_mut(),screen:Point::default()
+        };
+        let cursor_visible=if GetCursorInfo(&mut cursor)!=0 {
+            Some(cursor.flags&CURSOR_SHOWING!=0)
+        }else{None};
+        let mut pos=Point::default();
+        let cursor_screen=if GetCursorPos(&mut pos)!=0{
+            Some((pos.x,pos.y))
+        }else{None};
+        let cursor_client_last_move=(counts.mouse_moves>0).then_some((
+            MOUSE_LAST_X.load(Ordering::Acquire) as i32,
+            MOUSE_LAST_Y.load(Ordering::Acquire) as i32
+        ));
         Some(WindowInputState{
             counts,
             game_is_foreground:GetForegroundWindow()==hwnd,
             queue_has_new_input:GetInputState()!=0,
             window_thread,
             current_thread:GetCurrentThreadId(),
+            cursor_visible,cursor_screen,cursor_client_last_move,
         })
     }
 }
@@ -199,6 +257,17 @@ mod tests{
         assert_eq!(input_event(WM_KILLFOCUS),(false,false,false,true));
         assert_eq!(input_event(WM_ACTIVATEAPP),(false,false,false,true));
         assert_eq!(input_event(WM_PAINT),(false,false,false,false));
+    }
+    #[test]
+    fn mouse_message_and_coordinate_readout_is_passive(){
+        assert!(!mouse_button_message(WM_MOUSEMOVE));
+        assert!(mouse_button_message(WM_LBUTTONDOWN));
+        assert!(mouse_button_message(WM_RBUTTONUP));
+        assert!(!mouse_button_message(WM_KEYDOWN));
+        assert_eq!(client_mouse_point(0x0258_0320isize),(800,600));
+        assert_eq!(client_mouse_point(0xffff_ffffu32 as isize),(-1,-1));
+        assert_eq!(std::mem::size_of::<Point>(),8);
+        assert_eq!(std::mem::size_of::<CursorInfo>(),20); // x86 only
     }
     #[test]
     fn guarded_window_stats_require_installed_window(){
