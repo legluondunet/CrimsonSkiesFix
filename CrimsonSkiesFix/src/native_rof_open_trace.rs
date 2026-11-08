@@ -28,6 +28,7 @@ static ORIGINAL_W:AtomicUsize=AtomicUsize::new(0);
 static EVENTS_A:AtomicUsize=AtomicUsize::new(0);
 static EVENTS_W:AtomicUsize=AtomicUsize::new(0);
 static TRIED:AtomicUsize=AtomicUsize::new(0);
+static FIRST_ABSENT:AtomicUsize=AtomicUsize::new(0);
 static PROBE_LOCK:Mutex<()>=Mutex::new(());
 
 #[link(name="kernel32")]
@@ -203,7 +204,13 @@ pub fn probe(){
     if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
        crate::cfg().directdraw_passthrough{return;}
     let module=unsafe{GetModuleHandleA(b"roffile.dll\0".as_ptr().cast())} as usize;
-    if module==0 || TRIED.load(Ordering::Acquire)==module{return;}
+    if module==0 {
+        if FIRST_ABSENT.swap(1,Ordering::AcqRel)==0 {
+            log("GOS-ROF-OPEN: ROFFILE.DLL not loaded at first observed probe; will retry at existing lifecycle points");
+        }
+        return;
+    }
+    if TRIED.load(Ordering::Acquire)==module{return;}
     let Ok(_guard)=PROBE_LOCK.try_lock() else{return;};
     if TRIED.load(Ordering::Acquire)==module{return;}
     let status=(||{
