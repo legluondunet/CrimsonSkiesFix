@@ -234,14 +234,14 @@ fn native_system_cursor_probe_message(message:u32)->bool{
 /// The game receives original Win32 events first; AFTER its WndProc
 /// returns, show the Windows arrow in MainMenu/Preferences only. Never
 /// change input coordinates, fake events or paint into DirectDraw.
-fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32){
+fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32)->bool{
     if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=hwnd as usize ||
        MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
-       !native_system_cursor_probe_message(message){return;}
+       !native_system_cursor_probe_message(message){return false;}
     unsafe{
         // Win32 standard arrow, not a custom file or a global cursor change.
         let arrow=LoadCursorW(std::ptr::null_mut(),32512usize as *const u16);
-        if arrow.is_null(){return;}
+        if arrow.is_null(){return false;}
         // ShowCursor is a per-thread reference count; keep any adjustments
         // bounded, one-time and reversible. Never repeatedly increment it
         // on each mousemove; the original game remains the cursor owner.
@@ -254,12 +254,13 @@ fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32){
             }
             if !visible{
                 for _ in 0..count{ShowCursor(0);}
-                return;
+                return false;
             }
             NATIVE_CURSOR_PROBE_SHOW_INCREMENTS.with(|n|n.set(count));
         }
         SetCursor(arrow);
         MENU_SYSTEM_CURSOR_PROBE_EVENTS.fetch_add(1,Ordering::Relaxed);
+        true
     }
 }
 /// Must be called on the verified game window's UI thread after the
@@ -335,6 +336,9 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         HOOK_HWND.store(0,Ordering::Release);
         PREVIOUS.store(0,Ordering::Release);
         disarm_native_menu_mouse_remap();
+        if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)==hwnd as usize{
+            undo_native_system_cursor_probe(); // already on HWND owner thread
+        }
         disarm_native_system_cursor_probe();
     }
     if previous==0{
@@ -349,8 +353,11 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         menu_mouse_lparam(hwnd,msg,lparam)
     }else{lparam};
     let result=CallWindowProcW(previous,hwnd,msg,wparam,forwarded);
-    if matching{
-        after_game_wndproc_system_cursor_probe(hwnd,msg);
+    if matching && after_game_wndproc_system_cursor_probe(hwnd,msg) &&
+        msg==WM_SETCURSOR {
+        // Win32 cursor contract: after SetCursor, return TRUE to prevent
+        // additional default cursor processing from overriding our probe.
+        return 1;
     }
     result
 }
