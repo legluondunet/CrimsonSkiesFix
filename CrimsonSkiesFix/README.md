@@ -4,7 +4,7 @@
 
 CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes default-enabled, reversible GameOS (GOS) Video menu resource integration.
 
-**Status:** experimental. Native 1920×1080 output, camera FOV/HUD adaptation, MainMenu signature, GameOS Resolution label, and the automatic disable/restore of the Video **Graphics** and **Resolution** dropdowns have been validated on Manjaro / Wine 11.0 / GE-Proton11-12. The Windows x86 DLL compiles, passes automated tests and loads/unloads successfully in a Windows GitHub Actions runner (including DirectDraw export checks). **Real Windows 11 gameplay testing is still postponed** until a suitable Windows computer is available.
+**Status (8 November 2026): experimental PR #23.** The owner has run the 32-bit Rust `ddraw.dll` under **native Windows 11** (1920×1200 physical display with DPI scaling) and **GE-Proton11-12 / Wine 11.0** on Manjaro (1920×1080). On native Windows, the original opening image, video/menu path, GameOS Video controls, borderless window and native 3D rendering were validated with a deliberately enabled native diagnostic/compatibility INI profile. Under GE-Proton, native widescreen rendering, menu/version signature, modified GOS video archive and gameplay were validated with the Wine profile. The earlier three-export HAL failure described in [issue #22](https://github.com/legluondunet/CrimsonSkiesFix/issues/22) is historical; this PR forwards all 22 DirectDraw exports. **These runtime reports do not yet validate a fresh-install Windows default configuration or all hardware/driver combinations.**
 
 ## What it does
 
@@ -13,8 +13,20 @@ CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 e
 - Shows the project version and build commit **only** on the MainMenu, including after returning from Preferences or gameplay; hides it in Video and other submenus.
 - Displays the actual native display resolution in the Video Preferences **Resolution** label without changing the game's original graphics-device/mode tables.
 - **By default**, uses the game's native `@ctl@PM` disable message to grey out and make **Graphics** and **Resolution** unselectable. Other Video options are not deliberately modified.
-- **By default**, applies the bounded `LegacyOffscreenRGB565` correction for the game's first/legacy image when its exact 800×600 16-bit offscreen surface signature is recognized, avoiding the observed incorrect pink/magenta colors.
+- **By default**, applies the bounded `LegacyOffscreenRGB565` correction for the game's first/legacy image on exact 800×600 sources. The tested native Windows XRGB8888 movie pipeline additionally converts the complete original RGB565 opening image into a private 32-bit staging surface before same-format presentation; under Wine/Proton the regular RGB565 copy remains unchanged.
 - Preserves the player's INI file and offers optional diagnostic logging and the narrow rendering/focus recovery controls described below.
+
+## Platform-specific code after cleanup
+
+The same Win32 x86 DLL is loaded on both hosts. Windowed DirectDraw4 surface forwarding, validated surface copy/presentation, widescreen FOV/HUD, FPS pacing, GOS menu lock and authenticated ROF archive routing use common code. The actual **surface format** is verified before the shared Blt presenter receives it; there is no separate operating-system implementation of that presenter.
+
+| Runtime scope | Remaining reason for platform distinction |
+|---|---|
+| Native Windows | Early DD4 bootstrap to avoid exclusive display switching; physical-vs-DPI-logical monitor coordinates; the verified XRGB8888 800×600 movie/menu graph, 4:3 offscreen composition and RGB565 opening-image staging; native mouse/DirectInput compatibility repairs |
+| Wine / Proton | Exact-hash-guarded ROFFILE.DLL EOF parser allocation repair, only when Wine is detected; normal RGB565 movie/menu graph remains selected |
+| Both | Common native DirectDraw4 COM forwarding/Flip-to-Blt, game resource authentication, GOS script lock and menu version label |
+
+The obsolete native GDI sidebar fallback, Windows exclusive-intro handoff, and temporary ColorProbe/ColorCapture BMP debugging modules were removed after owner validation. Existing INI files are preserved; retired debug keys are ignored. Other experimental native Windows paths are still opt-in and require testing before becoming defaults.
 
 ### Supported executable
 
@@ -135,7 +147,7 @@ The original `crimson.rof`, executable and DLL are not modified. A repeat launch
 
 After restoring, change the setting back to `off` (or `on` to install it again). **Always use `restore` before removing the DLL if you want the original unmodified GOS Video screen.** The override is persistent across game exits and DLL removal.
 
-The native install, repeat-launch idempotence and native restore have been **confirmed by the owner under Wine/GE-Proton** on 4 November 2026, with installation and restoration success messages captured in logs. This is **not** a claim of runtime validation under Windows 11.
+The GOS overlay installation, idempotence and restoration were validated under Wine/GE-Proton on 4 November 2026. On 8 November, the owner also validated **disabled Video Graphics/Resolution controls on native Windows**: the verified Windows ROFFILE hook selected the installed managed patch, whereas GE-Proton directly loaded that already-patched archive without requiring redirection. Native Windows restoration was not independently retested in this PR.
 
 ## Wine ROFFILE.DLL INI parser guard (enabled by default)
 
@@ -210,7 +222,9 @@ game file because the patch never writes to disk.
 
 Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
 
-The initialization report provides privacy-filtered Windows/Wine, CPU, display, graphics and controller information. Optional `[Debug]` flags include `SurfaceUsageTrace`, `CrashBltTrace`, `ColorProbe` and `ColorCapture`, all disabled by default. Crash Blt tracing is intentionally verbose and writes a separate bounded rotating trace; disable it again after diagnosis.
+The initialization report provides privacy-filtered Windows/Wine, CPU, display, graphics and controller information. Optional `[Debug]` flags include `SurfaceUsageTrace`, `CrashBltTrace` and `FrameTimeTrace`, all disabled by default. Retired `NativeIntroExclusive`, `NativeGdiSidebars`, `ColorProbe` and `ColorCapture` INI keys are ignored by this branch; no BMP files are created. Crash Blt tracing is intentionally verbose and writes a separate bounded rotating trace; disable it again after diagnosis.
+
+For an opt-in check of frame cadence, enable **both** `[Debug] Log=1` and `[Debug] FrameTimeTrace=1`, then fly for at least one minute. Each `FRAMETIME:` record summarizes 120 successful virtual Surface4 Flip completion intervals (average, median, p95, p99, worst, >2×/>3× target, pauses and presentation-call latency). It does **not** measure when the GPU or desktop compositor physically displays a frame; use an external display-time capture to investigate perceived stutter. The GE-Proton11-12 owner test at 1920×1080 / 60 FPS found only one >33.3ms interval in 5,520 sampled gameplay intervals; menu/transition samples were more variable. This measurement alone does not justify changing the default FPS limiter. Disable `FrameTimeTrace` after diagnosis.
 
 Useful GOS log markers: `GOS-VIDEO-LOCK:`, `MENU-RESOLUTION-LABEL:`, `WINDOWED-WIDE:`, `MENU-BRANDING:`. If a new build fails, restore the previous `ddraw.dll` and relevant optional INI settings; for an already-installed GOS overlay use the explicit `restore` setting first.
 
@@ -242,6 +256,24 @@ resource was freed. A nonzero status needs interpretation.
 The exact protocol and optional Windows 11 instructions are in
 [exit validation](docs/exit-validation-2026-11-04.md). A **real GE-Proton 11-12 gameplay session** on `0.1.90-f2b2ca42` has now been observed to end with `0` in Lutris/umu, with no unhandled exception reported; this successful session did **not** run the Python observer. Native Windows 11 game exit remains untested. Automated synthetic process tests do not replace actual gameplay verification.
 
+## Local Windows x86 build without GitHub Actions
+
+**Manjaro alternative:** [build the exact Windows x86 MSVC DLL from Linux](docs/manjaro-cross-build.md)
+with `tools/build_linux_windows_x86.sh` and `cargo-xwin`. The script verifies
+all 22 native DDRAW exports and packages a source-hashed candidate without
+installing Visual Studio or modifying the native Windows 11 test machine.
+Successful cross-compilation alone is **not** Windows gameplay validation.
+
+As of 7 November 2026, the owner's **private-repository** GitHub Actions allowance is exhausted, while public SpiderMan2k1Fix still runs free standard hosted runners:
+the jobs are blocked **before any compilation step**. Do not interpret the
+failed Actions status as evidence that the proposed Rust 22-export fix failed
+to compile. Use the [local Windows build and acceptance protocol](docs/windows-local-build.md)
+on a Windows MSVC developer environment. The source includes
+`tools/build_windows_local.ps1`, which builds the 32-bit DLL, runs tests and
+both 22-export name/ordinal and loader checks, and creates a hash/provenance
+verified candidate ZIP without touching game files. The resulting DLL is
+**not Windows-gameplay-validated** until the owner tests that exact candidate.
+
 ## Build and tests
 
 ```powershell
@@ -253,13 +285,13 @@ cargo build --locked --release --target i686-pc-windows-msvc
 
 The repository commits `Cargo.lock` to pin the tested `flate2` dependency tree.
 
-The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is an internal experimental DirectDraw diagnostic; its build and tests remain part of CI, but it is no longer published as an artifact and must not be placed in the game directory.
+The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type and all 22 canonical DirectDraw names/ordinals, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is an internal experimental DirectDraw diagnostic; its build and tests remain part of CI, but it is no longer published as an artifact and must not be placed in the game directory.
 
 For original GameOS Video UI research and owner test evidence, see [Video Preferences native UI](docs/video-preferences-native-ui.md) and [GOS archive inspector](tools/inspect_gos_rof.py). Earlier experiments and detailed changelogs remain available in the repository's Git history.
 
 ## Known limitations
 
-This is an experimental, exact-executable build. The native 3D adapter, menu lock, startup chooser bypass, first-image RGB565 color fix, `FocusRepaint` and `WindowEraseGuard` are now **enabled by default**, but the combined fresh-install 0.1.90 defaults have not yet been runtime-validated as a whole. Wine/GE-Proton runtime results for 0.1.89 do not establish compatibility on other PCs. Windows 11 gameplay testing has been explicitly deferred until a Windows machine is available. The Wine-only ROFFILE.DLL guard is default-on only for an exact supported binary; it has been tested by the owner under GE-Proton but not under native Windows. FPS pacing hooks do not by themselves establish simulation speed or gameplay FPS. The GOS lock changes a user-owned archive on disk when enabled and is **not automatically undone** on exit.
+This is still an experimental, **exact-executable** build, not a validated public release. Native Windows 11 was runtime-tested with explicit opt-in settings (including `NativeDD4Bootstrap`, `NativeMovieRGB32`, `NativeFullFrameCompose`, DirectInput mouse handling and the window message pump); the combined **fresh-install defaults have not yet been validated under native Windows**. GE-Proton11-12 with Wine 11.0 has been user-tested, but a distinct Wine-staging 11.17 run and additional hardware/driver combinations remain untested in PR #23. Automatic test success does not prove correct real-game start, focus/Alt+Tab, or clean process exit. The Wine-only ROFFILE.DLL parser guard is intentionally disabled on native Windows. FPS pacing hooks alone do not establish gameplay FPS. Enabling GOS Video lock modifies the user-owned `crimptch.rof` and is **not automatically undone** when the game exits.
 
 ## License and contribution policy
 

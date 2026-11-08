@@ -364,6 +364,20 @@ fn overlay_video_matches(bytes: &[u8]) -> Result<bool, String> {
     Ok(true)
 }
 
+/// For a native Windows read-only provenance trace: return the byte
+/// interval of the verified, compressed VIDEO.SCRIPT in the *installed*
+/// patch archive. Never modify the file, never expose archive contents.
+/// A covered range only establishes a disk read, NOT GameOS execution.
+pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
+    let (_, overlay) = paths().ok()?;
+    let bytes = checked_patch(&overlay).ok()?;
+    if !overlay_video_matches(&bytes).ok()? { return None; }
+    let entries = parse(&bytes).ok()?;
+    let video = named(&entries, VIDEO_PATH)?;
+    let end = video.offset.checked_add(video.compressed)?;
+    Some((video.offset as u64, end as u64))
+}
+
 fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -479,6 +493,38 @@ fn restore(overlay: &Path) -> Result<&'static str, String> {
     Ok("restored original GOS patch overlay; backup consumed")
 }
 
+// Native Windows file search order is not established by a successful ROF
+// write. Diagnose alternate relative asset roots without changing them or
+// recording private filesystem paths. A match does NOT prove the game loaded
+// the patched VIDEO.SCRIPT; this is read-only route evidence only.
+fn overlay_identity(candidate: &Path, installed: &Path) -> &'static str {
+    if !regular_file(candidate) { return "missing-or-nonregular"; }
+    let Ok(probe) = checked_patch(candidate) else { return "unreadable"; };
+    let Ok(reference) = checked_patch(installed) else { return "reference-unreadable"; };
+    if probe == reference { "same-content" } else { "different-content" }
+}
+
+fn report_archive_route(installed: &Path) {
+    if !crate::cfg().log_enabled { return; }
+    let Some(exe_root) = installed.parent().and_then(Path::parent).and_then(Path::parent)
+        else { return; };
+    let Ok(cwd) = std::env::current_dir() else {
+        log("GOS-VIDEO-ROUTE-DIAG: current directory unknown; actual resource loading unobserved");
+        return;
+    };
+    let same_root = match (cwd.canonicalize(), exe_root.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    };
+    let cwd_assets = cwd.join("ASSETS").join("crimptch.rof");
+    let cwd_gosdata_assets = cwd.join("GOSDATA").join("ASSETS").join("crimptch.rof");
+    log(&format!(
+        "GOS-VIDEO-ROUTE-DIAG: cwd_matches_exe_root={same_root} cwd_ASSETS_overlay={} cwd_GOSDATA_ASSETS_overlay={} [read-only; NOT proof which VIDEO.SCRIPT GameOS executed]",
+        overlay_identity(&cwd_assets, installed),
+        overlay_identity(&cwd_gosdata_assets, installed)
+    ));
+}
+
 pub fn apply(mode: Mode, widescreen_ready: bool) {
     if mode == Mode::Off {return;}
     if mode == Mode::On && !widescreen_ready {
@@ -487,6 +533,7 @@ pub fn apply(mode: Mode, widescreen_ready: bool) {
     }
     let outcome = (|| {
         let (base,overlay) = paths()?;
+        report_archive_route(&overlay);
         match mode {
             Mode::On => enable(&base,&overlay),
             Mode::Restore => restore(&overlay),

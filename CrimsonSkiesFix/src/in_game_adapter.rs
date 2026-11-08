@@ -15,6 +15,14 @@ use crate::{
     com_surface4_forward,
 };
 
+// RGB32 menu branding uses an XRGB8888 scratch verified only for the
+// full-frame native compositor. Direct-Blt fallback must never receive it.
+fn select_menu_scratch_for_arm(
+    scratch:*mut c_void,movie_rgb32:bool,full_frame_composition:bool
+)->*mut c_void{
+    if movie_rgb32 && !full_frame_composition{ptr::null_mut()}else{scratch}
+}
+
 const E_FAIL:Hr=0x8000_4005u32 as i32;
 const E_NOTIMPL:Hr=0x8000_4001u32 as i32;
 const DD_CAPS_PRIMARY:u32=0x0000_0200;
@@ -28,7 +36,28 @@ const DDSD_HEIGHT:u32=0x2;
 const DDSD_WIDTH:u32=0x4;
 const DDSD_PIXELFORMAT:u32=0x1000;
 const DDSCL_NORMAL:u32=8;
+const DDSCL_EXCLUSIVE:u32=0x10;
 const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
+// Strict native Windows borderless operation must NEVER forward the
+// original game's exclusive cooperative request or real SetDisplayMode
+// after an attempted virtual DD4 setup fails.
+fn strict_nonexclusive_selection(
+    native:bool,borderless:bool,desktop:bool,adapter:bool,
+    bootstrap:bool,passthrough:bool
+)->bool{
+    native && borderless && desktop && adapter && bootstrap && !passthrough
+}
+pub fn strict_native_nonexclusive()->bool{
+    let c=crate::cfg();
+    strict_nonexclusive_selection(
+        crate::diagnostics::is_native_windows(),c.borderless,c.desktop_resolution,
+        c.experimental_windowed_adapter,c.native_dd4_bootstrap,
+        c.directdraw_passthrough
+    )
+}
+fn allow_original_exclusive_fallback()->bool{
+    !strict_native_nonexclusive()
+}
 const DDBLT_COLORFILL:u32=0x400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
@@ -80,6 +109,9 @@ fn desc(caps:u32,w:u32,h:u32,bits:Option<u32>)->[u32;31]{
         d[1]|=DDSD_PIXELFORMAT;d[18]=32;d[19]=if caps&DD_CAPS_Z!=0{0x400}else{0x40};
         d[21]=b;
         if caps&DD_CAPS_Z!=0{d[23]=0x00ff_ffff;}
+        else if b==32 {
+            d[22]=0x00ff_0000;d[23]=0x0000_ff00;d[24]=0x0000_00ff;
+        }
         else {d[22]=0xf800;d[23]=0x07e0;d[24]=0x001f;}
     }
     d
@@ -127,7 +159,14 @@ unsafe fn prove_hal(dd4:*mut c_void,back:&Com)->Result<(),String>{
     let create:Create=std::mem::transmute(
         crate::orig(d3d.ptr(),8).unwrap_or_else(||slot(d3d.ptr(),8)));
     let mut device=ptr::null_mut();
-    require(create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut()),"D3D3 HAL CreateDevice")?;
+    // Keep the exact native HRESULT visible: previous Windows traces ended
+    // inside this call, unable to distinguish a synchronous COM deadlock
+    // from an ordinary unsupported HAL surface/driver failure.
+    log("WINDOWED-DIAG: D3D3 HAL CreateDevice call ENTER (original native method)");
+    let hr=create(d3d.ptr(),&HAL,back.ptr(),&mut device,ptr::null_mut());
+    log(&format!("WINDOWED-DIAG: D3D3 HAL CreateDevice call RETURN hr={:#010x} device_returned={}",
+        hr as u32,!device.is_null()));
+    require(hr,"D3D3 HAL CreateDevice")?;
     let _device=Com::from_out(device)?;
     Ok(())
 }
@@ -138,11 +177,76 @@ unsafe fn native_desc(surface:&Com)->Result<[u32;31],String>{
     require(get(surface.ptr(),d.as_mut_ptr()),"native GetSurfaceDesc")?;
     Ok(d)
 }
-fn check_native_rgb_depth(back:&Com,depth:&Com,mode:Mode)->Result<(),String>{
+/// Allocate a full-client offscreen XRGB8888 presentation surface, matching
+/// the CURRENT verified DPI-logical Win32 game client, not a hardcoded
+/// user's desktop resolution. Primary stays clipped and non-exclusive;
+/// gameplay D3D/Z surfaces and source 800x600 movie are left untouched.
+/// Never enter this path on Wine/Proton or for widescreen 3D gameplay.
+unsafe fn allocate_full_frame_composite(
+    dd4:*mut c_void,primary:&Com,output:(u32,u32)
+)->Result<Com,String>{
+    if output.0==0 || output.1==0 || output.0>8192 || output.1>4320 ||
+        u64::from(output.0)*u64::from(output.1)>33_554_432 {
+        return Err(format!("unsupported dynamic client {output:?}"));
+    }
+    let native=native_desc(primary)?;
+    if (native[21],native[22],native[23],native[24])!=
+       (32,0x00ff_0000,0x0000_ff00,0x0000_00ff){
+        return Err(format!(
+            "primary not XRGB8888: bpp={} masks={:#x}/{:#x}/{:#x}",
+            native[21],native[22],native[23],native[24]
+        ));
+    }
+    let mut last_error=String::new();
+    // Prefer a video-memory scratch so video-memory D3D3 movie source
+    // can be stretched into it directly. Do not require CPU locking.
+    // Drivers without video offscreen allocation may use system memory;
+    // the real Blt preflight below must still validate BOTH copies.
+    for mem in [DD_CAPS_VIDEOMEM,DD_CAPS_SYSTEMMEM]{
+        let candidate=alloc(dd4,desc(DD_CAPS_OFFSCREEN|mem,
+            output.0,output.1,Some(32)));
+        match candidate {
+            Ok(surface)=>{
+                match native_desc(&surface){
+                    Ok(d) if (d[3],d[2],d[21],d[22],d[23],d[24])==
+                        (output.0,output.1,32,0x00ff_0000,0x0000_ff00,0x0000_00ff)
+                        && d[26]&DD_CAPS_OFFSCREEN!=0
+                        && d[26]&mem!=0 =>{
+                        log(&format!(
+                            "NATIVE-FULL-FRAME-COMPOSE: verified offscreen {}x{} XRGB8888 caps={:#010x}, memory={}",
+                            output.0,output.1,d[26],
+                            if mem==DD_CAPS_VIDEOMEM{"video"}else{"system"}
+                        ));
+                        return Ok(surface);
+                    },
+                    Ok(d)=>{
+                        last_error=format!(
+                            "surface mismatch {}x{} bpp={} caps={:#x}, memory={mem:#x}",
+                            d[3],d[2],d[21],d[26]
+                        );
+                    },
+                    Err(e)=>last_error=e,
+                }
+            },
+            Err(e)=>last_error=e,
+        }
+    }
+    Err(last_error)
+}
+fn check_native_rgb_depth(
+    back:&Com,depth:&Com,mode:Mode,movie_rgb32:bool
+)->Result<(),String>{
     unsafe{
         let b=native_desc(back)?;let z=native_desc(depth)?;
-        if (b[3],b[2],b[21],b[22],b[23],b[24])!=(mode.width,mode.height,16,0xf800,0x07e0,0x001f) {
-            return Err(format!("native RGB565 mismatch: {}x{} bpp={}",b[3],b[2],b[21]));
+        let required=if movie_rgb32 {
+            (mode.width,mode.height,32,0xff0000,0xff00,0xff)
+        }else{(mode.width,mode.height,16,0xf800,0x07e0,0x001f)};
+        if (b[3],b[2],b[21],b[22],b[23],b[24])!=required ||
+            (movie_rgb32 && b[19]&0x40==0){
+            return Err(format!(
+                "native {} mismatch: {}x{} bpp={} rgb_masks={:#x}/{:#x}/{:#x}",
+                if movie_rgb32{"XRGB8888 movie"}else{"RGB565"},
+                b[3],b[2],b[21],b[22],b[23],b[24]));
         }
         if (z[3],z[2],z[21])!=(mode.width,mode.height,32) ||
             z[19]&0x400==0 || z[23]==0 {
@@ -196,19 +300,48 @@ struct Epoch {
     // Dedicated offscreen menu image, never exposed to the game. The
     // strong COM reference outlives the borrowed pointer in the Flip graph.
     menu_scratch:Option<Com>,
+    movie_rgb565_scratch:Option<Com>,
+    // CPU-writable private XRGB8888 for RGB565 opening splash conversion;
+    // the wrapper owns an independent strong native COM reference.
+    opening_rgb32_scratch:Option<Com>,
+    // Retained strong COM ref; the virtual Flip borrows it only after
+    // preflight, and the epoch first retires its graph before release.
+    full_frame_composite:Option<Com>,
     clipper:Com,
+}
+/// Preserve only the original native 800x600 secondary UI after a verified
+/// widescreen gameplay epoch (or across further 800x600 submenus). Never
+/// classify the initial intro 800x600 as pause merely because startup's
+/// first real HAL mode briefly matched the desktop.
+fn post_gameplay_ui_transition(
+    mode:Mode,previous_native_gameplay:bool,
+    original_main_menu_seen:bool,existing_ui:bool
+)->bool{
+    (mode.width,mode.height,mode.bpp)==(800,600,16) &&
+    ((previous_native_gameplay && original_main_menu_seen) || existing_ui)
 }
 struct Runtime {
     dd4:usize,
     dd4_owner:Com, // strong COM parent ref for the entire experiment
     hwnd:usize,
-    monitor:win32::Rect,
+    monitor:win32::Rect, // DPI-logical HWND/Win32 coordinates
+    render_client:(u32,u32), // native physical DirectDraw pixels
     generation:u64,
     exposed:bool,
+    native_preparing:bool, // in-flight native probe; release state mutex across COM calls
     native_widescreen_ready:bool,
+    // A validated native 3D -> 800x600 transition after actual MainMenu
+    // is the game's ESC/pause UI. Keep this only across subsequent
+    // 800x600 submenus, and reset when any 3D mode begins.
+    native_post_gameplay_ui:bool,
     epoch:Option<Epoch>,
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
+
+// Shared DPI aspect tolerance: no need for an exclusive-video bootstrap.
+fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
+    crate::presentation::dpi_output_matches(physical,logical)
+}
 
 // The game can repeat its *same* DDSCL_EXCLUSIVE|DDSCL_FULLSCREEN
 // request after our windowed graph has already been exposed. That is an
@@ -228,6 +361,10 @@ fn identical_game_cooperative_request(
 /// Only accept a valid process-owned HWND and standard exclusive request.
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
+    if crate::cfg().log_enabled {
+        log(&format!("WINDOWED-DIAG: DD4 SetCooperativeLevel enter dd4={:p} hwnd={:p} flags={:#010x}",
+            dd4,hwnd,flags));
+    }
     // A second identical game-exclusive request is expected during video
     // startup, after the virtual PRIMARY and HAL device have been created.
     // Keep the native DD4 in NORMAL, and preserve the live virtual COM graph.
@@ -235,6 +372,10 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     {
         let Ok(guard)=RUNTIME.lock() else{return Some(E_FAIL)};
         if let Some(runtime)=guard.as_ref(){
+            if runtime.native_preparing {
+                log("WINDOWED-GAME: nested DD4 cooperative request during native HAL preflight rejected");
+                return Some(E_FAIL);
+            }
             if runtime.exposed {
                 let same=identical_game_cooperative_request(
                     runtime.dd4,runtime.hwnd,runtime.exposed,runtime.epoch.is_some(),
@@ -251,6 +392,10 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
     }
     if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
+        if strict_native_nonexclusive() && flags&DDSCL_EXCLUSIVE!=0 {
+            log("NATIVE-STRICT-BORDERLESS: invalid/NULL game HWND; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         // Do not allow an old active graph to silently revert to native
         // DDSCL_EXCLUSIVE or DDSCL_NORMAL through another cooperative call.
         if RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false){
@@ -260,26 +405,68 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         return None;
     }
     let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: invalid monitor/HWND; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
         return None;
     };
     let Some((monitor_w,monitor_h))=monitor.dimensions() else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: invalid monitor dimensions; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         log("WINDOWED-GAME: invalid launch monitor dimensions; original path retained");
         return None;
     };
-    log(&format!("WINDOWED-GAME: target monitor origin={},{} size={}x{}",
-        monitor.left,monitor.top,monitor_w,monitor_h));
-    let Ok(mut guard)=RUNTIME.lock() else{return None;};
+    // Native Windows 11 may show 1536x960 DPI-logical Win32 pixels while
+    // DirectDraw uses the 1920x1200 physical raster. Do not change process
+    // awareness: separate the game-owned window geometry from HAL pixel
+    // dimensions, and fail closed for ambiguous monitors/aspect ratios.
+    let render_client=if crate::diagnostics::is_native_windows(){
+        // Win32 HWND coordinates can be DPI-logical even when the DD4 HAL
+        // renders at physical monitor pixels. This selection is unchanged
+        // from the owner-validated nonexclusive native Windows path.
+        let Some(physical)=win32::physical_primary_monitor_dimensions() else{
+            if strict_native_nonexclusive(){
+                log("NATIVE-STRICT-BORDERLESS: physical monitor unknown; exclusive cooperative request REJECTED");
+                return Some(E_FAIL);
+            }
+            log("WINDOWED-GAME: native physical monitor ambiguous; original exclusive path retained");
+            return None;
+        };
+        if !same_aspect((monitor_w,monitor_h),physical) {
+            log(&format!(
+                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} physical={physical:?}; {}",
+                monitor_w,monitor_h,
+                if strict_native_nonexclusive(){"strict nonexclusive: original mode request rejected"}
+                else{"original exclusive path retained"}
+            ));
+            return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
+        }
+        physical
+    }else{(monitor_w,monitor_h)};
+    log(&format!("WINDOWED-GAME: target monitor origin={},{} logical={}x{} physical_render={}x{}",
+        monitor.left,monitor.top,monitor_w,monitor_h,render_client.0,render_client.1));
+    let Ok(mut guard)=RUNTIME.lock() else{
+        return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
+    };
     if guard.as_ref().is_some_and(|state|state.exposed){
         log("WINDOWED-GAME: repeated cooperative call while graph exposed: fail closed");
         return Some(E_FAIL);
     }
     // Prepare the actual DD4 cooperative level, but do not modify window
     // styles, suppress SetDisplayMode or expose any game surfaces yet.
+    log("WINDOWED-DIAG: DD4 native SetCooperativeLevel(DDSCL_NORMAL) begin");
     let hr=original(dd4,hwnd,DDSCL_NORMAL);
+    log(&format!("WINDOWED-DIAG: DD4 native SetCooperativeLevel(DDSCL_NORMAL) returned {:#010x}",hr as u32));
     if hr<0{
-        log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}), original exclusive path retained",hr as u32));
-        return None;
+        log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}); {}",
+            hr as u32,if strict_native_nonexclusive(){
+                "strict borderless: original exclusive fallback FORBIDDEN"
+            }else{"original exclusive path retained"}));
+        return if strict_native_nonexclusive(){Some(hr)}else{None};
     }
     // The game can Release its own DD4 interface while virtual surfaces
     // remain referenced. Hold one distinct strong DD4 COM reference.
@@ -296,18 +483,19 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
     // Geometry was checked above, including monitors with negative origins.
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
-        // Only the original unwrapped EXE, authenticated by exe_gate,
-        // can reach this path. No support for third-party widescreen EXEs.
-        let result=crate::native_widescreen::apply_or_reuse_early_patch(monitor_w,monitor_h);
+        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
+        let result=crate::native_widescreen::apply_or_reuse_early_patch(
+            render_client.0,render_client.1);
+        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
         log(&format!(
             "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
-            monitor_w,monitor_h));
+            render_client.0,render_client.1));
         matches!(result,
             crate::native_widescreen::PatchResult::Patched |
             crate::native_widescreen::PatchResult::AlreadyNative)
     }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
-        monitor,generation:0,exposed:false,native_widescreen_ready,epoch:None});
+        monitor,render_client,generation:0,exposed:false,native_preparing:false,native_widescreen_ready,native_post_gameplay_ui:false,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
 }
@@ -318,25 +506,67 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     refresh:u32,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,u32,u32,u32,u32,u32)->Hr)
     ->Option<Hr>{
+    if crate::cfg().log_enabled {
+        log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
+            dd4,w,h,bpp,refresh,flags));
+    }
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
-    let Some(runtime)=state.as_mut() else{return None};
-    if runtime.dd4!=dd4 as usize{return None;}
+    let Some(runtime)=state.as_mut() else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: DD4 SetDisplayMode without verified runtime REJECTED");
+            return Some(E_FAIL);
+        }
+        return None;
+    };
+    if runtime.dd4!=dd4 as usize{
+        return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
+    }
+    if runtime.native_preparing {
+        log("WINDOWED-GAME: nested SetDisplayMode during native HAL preflight rejected");
+        return Some(E_FAIL);
+    }
     let mode=Mode{width:w,height:h,bpp};
-    let (mon_w,mon_h)=(
-        (runtime.monitor.right-runtime.monitor.left) as u32,
-        (runtime.monitor.bottom-runtime.monitor.top) as u32);
+    let (mon_w,mon_h)=runtime.render_client;
     let native_3d=runtime.native_widescreen_ready && bpp==16 &&
         w==mon_w && h==mon_h && w>=960 && h>=600;
-    if !matches!((w,h,bpp),(640,480,16)|(800,600,16)) && !native_3d{
+    let supported=matches!((w,h,bpp),(640,480,16)|(800,600,16)) ||
+        native_3d;
+    if !supported{
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
-        // Recovery is permitted only while no virtual COM interface exists.
+        if !allow_original_exclusive_fallback(){
+            log("NATIVE-STRICT-BORDERLESS: unsupported game mode rejected without original SetDisplayMode or DDSCL_EXCLUSIVE; physical desktop unchanged");
+            return Some(E_FAIL);
+        }
+        // Legacy recovery is permitted only while no virtual COM interface exists.
         let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
             match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
         let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
         *state=None;
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
+    }
+    // A real native 3D -> 800x600 transition after the original menu
+    // was seen identifies the ESC/pause UI without depending on the
+    // MainMenu script loader, which does NOT run a second time on ESC.
+    // The opening 3D -> intro-movie 800x600 transition is excluded
+    // because the original MainMenu has not been seen then.
+    let previous_was_gameplay_3d=runtime.epoch.as_ref().is_some_and(|e|{
+        e.mode.width==mon_w && e.mode.height==mon_h && e.mode.bpp==16
+    });
+    let post_gameplay_ui=post_gameplay_ui_transition(
+        mode,previous_was_gameplay_3d,
+        crate::menu_scene::main_menu_was_seen(),
+        runtime.native_post_gameplay_ui
+    );
+    // Never leave native menu-only input or cursor experiments armed
+    // into the next DD4 mode or gameplay. Restore the ShowCursor display
+    // counter before releasing/retiring the previous graph.
+    if crate::cfg().native_dd4_bootstrap &&
+        crate::diagnostics::is_native_windows(){
+        crate::window_erase_guard::disarm_native_menu_mouse_remap();
+        crate::window_erase_guard::disarm_native_system_cursor_probe();
+        crate::window_erase_guard::disarm_native_gos_cursor_bridge();
     }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
@@ -346,18 +576,61 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
         log("WINDOWED-GAME: old virtual chain retired; stale Flip/Blt disarmed");
     }
-    let result=prepare_epoch(dd4,runtime.hwnd as Hwnd,runtime.monitor,
-        mode,runtime.generation+1,native_3d);
+    log(&format!("WINDOWED-DIAG: prepare_epoch begin mode={}x{}x{} native_3d={}",
+        w,h,bpp,native_3d));
+    // Under Windows native, CreateDevice can synchronously call our OWN
+    // hooked DirectDraw4::GetDisplayMode/CreateSurface/QueryInterface while
+    // proving the driver's HAL. They may inspect RUNTIME, so holding the
+    // non-recursive mutex here deadlocks inside the native CreateDevice call.
+    // Keep the complete Runtime alive but publish an explicit preparation
+    // guard, drop the mutex, and then revalidate ownership after the call.
+    // Preserve the already-validated Wine/Proton call order untouched.
+    let native_unlock=crate::diagnostics::is_native_windows() && crate::cfg().native_dd4_bootstrap;
+    let hwnd_for_probe=runtime.hwnd as Hwnd;
+    let client_for_probe=runtime.render_client;
+    let output_for_probe=if native_unlock {
+        let Some(logical)=runtime.monitor.dimensions() else{return Some(E_FAIL)};
+        logical
+    }else{client_for_probe};
+    let generation_for_probe=runtime.generation+1;
+    let result=if native_unlock {
+        runtime.native_preparing=true;
+        log("WINDOWED-DIAG: releasing adapter state mutex for reentrant native HAL preflight");
+        drop(state);
+        let result=prepare_epoch(dd4,hwnd_for_probe,client_for_probe,output_for_probe,mode,generation_for_probe,native_3d);
+        state=match RUNTIME.lock(){Ok(guard)=>guard,Err(_)=>return Some(E_FAIL)};
+        let Some(current)=state.as_mut() else {
+            log("WINDOWED-GAME: runtime disappeared during native HAL preflight; fail closed");
+            return Some(E_FAIL);
+        };
+        if current.dd4!=dd4 as usize || !current.native_preparing ||
+           current.generation+1!=generation_for_probe {
+            log("WINDOWED-GAME: runtime changed during native HAL preflight; fail closed");
+            current.native_preparing=false;
+            return Some(E_FAIL);
+        }
+        current.native_preparing=false;
+        log("WINDOWED-DIAG: native HAL preflight returned; adapter state mutex reacquired");
+        result
+    }else{
+        prepare_epoch(dd4,hwnd_for_probe,client_for_probe,output_for_probe,mode,generation_for_probe,native_3d)
+    };
+    log(&format!("WINDOWED-DIAG: prepare_epoch returned success={}",result.is_ok()));
+    let Some(runtime)=state.as_mut() else{return Some(E_FAIL)};
     match result {
         Ok(next)=>{
             runtime.generation+=1;
+            runtime.native_post_gameplay_ui=post_gameplay_ui;
             runtime.epoch=Some(next);
             let area=runtime.monitor;
             // Apply HWND style only after physical HAL and real Flip->Blt
             // preflight; the game now has a complete windowed COM graph.
             if let Err(err)=win32::borderless_window(runtime.hwnd as Hwnd,area){
                 log(&format!("WINDOWED-GAME: borderless HWND style failed: {err}"));
-                if runtime.exposed{return Some(E_FAIL);}
+                if runtime.exposed || !allow_original_exclusive_fallback(){
+                    log("NATIVE-STRICT-BORDERLESS: borderless HWND style failure; refusing exclusive recovery/real SetDisplayMode");
+                    return Some(E_FAIL);
+                }
                 let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
                     match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
                 let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
@@ -382,14 +655,108 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     Err(err)=>log(&format!("WINDOWED-GAME: WindowEraseGuard unavailable: {err}")),
                 }
             }
+            // Windows native only, exact game-owned HWND already verified:
+            // repair the game's pre-borderless ClipCursor when (and only
+            // when) the OS still reports that same stale small rectangle.
+            // Separate explicit A/B from WndProc mouse remapping.
+            if crate::cfg().native_mouse_clip_repair &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                match crate::native_cursor_trace::repair_stale_game_cursor_clip(
+                    runtime.hwnd as *mut c_void
+                ){
+                    Ok(details)=>log(&format!(
+                        "NATIVE-CURSOR-CLIP-REPAIR: applied {details}"
+                    )),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-CURSOR-CLIP-REPAIR: not applied ({reason}); OS clip unchanged"
+                    )),
+                }
+            }
+            // Isolate original menu pointer invisibility from mouse
+            // coordinate scaling: show system arrow only as an explicit
+            // native Windows diagnostic after the authentic MainMenu
+            // script is active. Refuse if old remap remains enabled.
+            if crate::cfg().native_system_cursor_probe &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                match crate::window_erase_guard::arm_native_system_cursor_probe(
+                    runtime.hwnd,crate::cfg().native_menu_mouse_remap
+                ){
+                    Ok(())=>log("NATIVE-SYSTEM-CURSOR-PROBE: armed for actual MainMenu/Preferences; original input untouched, game WndProc executes first; OS arrow diagnostic only"),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-SYSTEM-CURSOR-PROBE: refused ({reason}); original game cursor unchanged")),
+                }
+            }
+            // Standalone native-only GOS mouse cursor bridge. The game's
+            // actual MainMenu script must become active BEFORE any relative
+            // DirectInput delta is translated; the active virtual 800x600
+            // RGB32 graph and physical output viewport must be verified
+            // here. The original GOS cursor sprite and button state remain
+            // game-owned, no synthetic mouse clicks.
+            if crate::cfg().native_gos_cursor_bridge &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                let output=(expected.2,expected.3);
+                match crate::window_erase_guard::arm_native_gos_cursor_bridge(
+                    runtime.hwnd,output,runtime.render_client,
+                    crate::cfg().native_menu_mouse_remap,post_gameplay_ui
+                ){
+                    Ok(view)=>log(&format!(
+                        "NATIVE-GOS-CURSOR-BRIDGE: armed original GOS mouse via native DirectInput relative movement; viewport=({},{} {}x{}) logical_source=800x600; script_menu_or_post_gameplay_ui={} previous_real_3d={} main_seen={}; native windows only",
+                        view.left,view.top,view.width,view.height,post_gameplay_ui,
+                        previous_was_gameplay_3d,crate::menu_scene::main_menu_was_seen())),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-GOS-CURSOR-BRIDGE: refused ({reason}); original mouse unchanged")),
+                }
+            }
+            // Experimental native Win11 RGB32 800x600 only: reinterpret
+            // button/move client coordinates for the centered 4:3 source.
+            // Arm *after* the exact HWND and its client rectangle have
+            // been checked. MainMenu/Preferences script callback is a
+            // separate required scene gate; no effect before that.
+            if crate::cfg().native_menu_mouse_remap &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                let output=(expected.2,expected.3);
+                match crate::window_erase_guard::arm_native_menu_mouse_remap(
+                    runtime.hwnd,output,runtime.render_client
+                ){
+                    Ok(view)=>log(&format!(
+                        "NATIVE-MENU-MOUSE: opt-in armed for MainMenu/Preferences 800x600; verified HWND client={}x{} render_physical={}x{} content=({},{} {}x{}) via shared DD4 output geometry; WM_MOUSEMOVE/buttons only; script gate initially off",
+                        output.0,output.1,runtime.render_client.0,runtime.render_client.1,
+                        view.left,view.top,view.width,view.height)),
+                    Err(error)=>log(&format!(
+                        "NATIVE-MENU-MOUSE: opt-in refused: {error}; original mouse messages preserved")),
+                }
+            }
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
+            // Check the actual Windows physical display state after every
+            // native virtual mode transition. A successful virtual Blt is
+            // not proof that another module did not switch the OS display.
+            if crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows() {
+                let observed=win32::physical_primary_monitor_dimensions();
+                log(&format!(
+                    "NATIVE-DESKTOP-VERIFY: virtual_mode={}x{}x{} physical_screen={observed:?} expected_screen={:?} retained={} (read-only)",
+                    w,h,bpp,runtime.render_client,observed==Some(runtime.render_client)
+                ));
+                log(&format!(
+                    "NATIVE-MOUSE-GEOMETRY: mode={}x{} Win32 HWND logical={:?} native_snapshot={} (read-only; no input remapping)",
+                    w,h,win32::game_client_geometry(runtime.hwnd as Hwnd),
+                    win32::native_presentation_snapshot()
+                ));
+            }
             Some(0)
         }
         Err(err)=>{
             log(&format!("WINDOWED-GAME: native preflight failed before exposure: {err}"));
-            if runtime.exposed{
-                // Strictly no mid-frame switch back to exclusive.
+            if runtime.exposed || !allow_original_exclusive_fallback(){
+                log("NATIVE-STRICT-BORDERLESS: native graph preflight failed; no exclusive recovery or physical mode switch");
                 return Some(E_FAIL);
             }
             let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
@@ -402,50 +769,184 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
     }
 }
-unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
-    mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
-    let client=monitor.dimensions().ok_or("invalid target monitor geometry")?;
+fn native_movie_rgb32_mode(mode:Mode)->bool{
+    (mode.width,mode.height,mode.bpp)==(800,600,16)
+}
+fn native_movie_rgb32_enabled(mode:Mode)->bool{
+    let c=crate::cfg();
+    native_movie_rgb32_mode(mode) && c.native_movie_rgb32 &&
+        c.native_dd4_bootstrap && c.experimental_windowed_adapter &&
+        c.native_3d_widescreen &&
+        !c.directdraw_passthrough &&
+        crate::diagnostics::is_native_windows()
+}
+unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
+    output_client:(u32,u32),mode:Mode,generation:u64,native_3d:bool)->Result<Epoch,String>{
+    if client.0==0 || client.1==0 || output_client.0==0 || output_client.1==0{
+        return Err("invalid render or logical output raster".into());
+    }
+    log(&format!("WINDOWED-DIAG: physical_render={}x{} logical_blt_output={}x{} (DPI-safe presentation)",
+        client.0,client.1,output_client.0,output_client.1));
+    let movie_rgb32=native_movie_rgb32_enabled(mode) && !native_3d;
+    if movie_rgb32 {
+        log("NATIVE-MOVIE-RGB32: opt-in physical XRGB8888 backbuffer requested for 800x600 movie; virtual primary remains RGB565 CPU staging, desktop unchanged");
+    }
+    log("WINDOWED-DIAG: native primary CreateSurface begin");
     let real_primary=alloc(dd4,desc(DD_CAPS_PRIMARY,0,0,None))?;
+    log("WINDOWED-DIAG: native primary CreateSurface OK");
+    log("WINDOWED-DIAG: native clipper.CreateClipper/SetHWnd/SetClipper begin");
     let clipper=new_clipper(dd4,hwnd,&real_primary)?;
+    log("WINDOWED-DIAG: native clipper setup OK");
+    log(if movie_rgb32{
+        "NATIVE-MOVIE-RGB32: native XRGB8888 video-memory D3D backbuffer CreateSurface begin"
+    }else{"WINDOWED-DIAG: native RGB565 video-memory D3D backbuffer CreateSurface begin"});
     let real_back=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,
-        mode.width,mode.height,Some(16)))?;
+        mode.width,mode.height,Some(if movie_rgb32{32}else{16})))?;
+    log(if movie_rgb32{
+        "NATIVE-MOVIE-RGB32: native XRGB8888 D3D backbuffer CreateSurface OK"
+    }else{"WINDOWED-DIAG: native RGB565 D3D backbuffer CreateSurface OK"});
     // The real owner Wine HAL advertises pure 32-bit depth with 24 bits
     // of active Z (0x00ffffff); a native failure is never masked.
+    log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface begin");
     let real_depth=alloc(dd4,desc(DD_CAPS_Z|DD_CAPS_VIDEOMEM,
         mode.width,mode.height,Some(32)))
         .or_else(|_|alloc(dd4,desc(DD_CAPS_Z,mode.width,mode.height,Some(32))))?;
-    check_native_rgb_depth(&real_back,&real_depth,mode)?;
+    log("WINDOWED-DIAG: native Z32 depth buffer CreateSurface OK");
+    log("WINDOWED-DIAG: validate native RGB565 or movie XRGB8888 + Z32 formats begin");
+    check_native_rgb_depth(&real_back,&real_depth,mode,movie_rgb32)?;
+    log("WINDOWED-DIAG: native color/Z32 formats OK; attach Z32 begin");
     attach_depth(&real_back,&real_depth)?;
+    log("WINDOWED-DIAG: attach Z32 OK; depth-fill begin");
     native_fill(&real_depth,true)?;
+    log("WINDOWED-DIAG: depth-fill OK; color-fill begin");
     native_fill(&real_back,false)?;
+    log("WINDOWED-DIAG: color-fill OK; native D3D3 HAL CreateDevice probe begin");
     prove_hal(dd4,&real_back)?;
+    log("WINDOWED-DIAG: native D3D3 HAL CreateDevice probe OK");
+    log("WINDOWED-DIAG: native RGB565 system-memory primary Lock staging CreateSurface begin");
     let primary_lock=alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
         mode.width,mode.height,Some(16)))?;
-    // Menu logo is composited on a PRIVATE RGB565 surface and then copied
-    // to the physical primary in the same frame. The game's D3D backbuffer
-    // remains untouched, even during a playing animated menu background.
-    // If unavailable, graphics/gameplay continue without the version label.
-    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)){
+    log("WINDOWED-DIAG: native primary Lock staging CreateSurface OK");
+    // The original MainMenu label is already verified under Wine on a
+    // private RGB565 offscreen surface. Native Windows movie/menu uses
+    // XRGB8888 instead, so it needs its OWN matching 32-bit scratch,
+    // never an RGB565->RGB32 implicit driver conversion or GDI on HWND.
+    // This scratch is independent of the full-window black compositor;
+    // the game's animated backbuffer stays completely unmodified.
+    let menu_scratch=if matches!((mode.width,mode.height),(640,480)|(800,600)) &&
+       (!movie_rgb32 || crate::cfg().native_full_frame_compose) {
+        let bits=if movie_rgb32{32}else{16};
         match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
-            mode.width,mode.height,Some(16))) {
-            Ok(surface)=>Some(surface),
+            mode.width,mode.height,Some(bits))) {
+            Ok(surface) if !movie_rgb32=>Some(surface),
+            Ok(surface)=>{
+                match native_desc(&surface) {
+                    Ok(d) if d[3]==mode.width && d[2]==mode.height &&
+                      (d[21],d[22],d[23],d[24])==
+                        (32,0x00ff_0000,0x0000_ff00,0x0000_00ff)=>{
+                        log("MENU-BRANDING: native 800x600 XRGB8888 private system-memory GDI scratch verified; original full-window compositor retained");
+                        Some(surface)
+                    },
+                    Ok(d)=>{
+                        log(&format!(
+                            "MENU-BRANDING: native 32-bit scratch format mismatch bpp={} masks={:#x}/{:#x}/{:#x}; signature skipped without affecting game",
+                            d[21],d[22],d[23],d[24]
+                        ));
+                        None
+                    },
+                    Err(error)=>{
+                        log(&format!(
+                            "MENU-BRANDING: native GetSurfaceDesc failed ({error}); no label"
+                        ));
+                        None
+                    }
+                }
+            },
             Err(error)=>{
-                log(&format!("MENU-BRANDING: offscreen scratch unavailable: {error}"));
+                log(&format!("MENU-BRANDING: private {bits}-bit menu scratch unavailable: {error}; game presentation unaffected"));
                 None
             }
         }
     }else{None};
+    // Windows native DD4 returns E_NOTIMPL for XRGB8888 320x240 ->
+    // RGB565 800x600 scaled video copies. Allocate a dedicated SYSTEM
+    // memory RGB565 scratch so no CPU lock touches the active D3D3 target.
+    // The existing Wine/probe and default nonbootstrap paths stay untouched.
+    let movie_rgb565_scratch=if !movie_rgb32 &&
+        mode.width==800 && mode.height==600 &&
+        crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows(){
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,800,600,Some(16))){
+            Ok(surface)=>{
+                log("NATIVE-MOVIE-BLT: optional RGB565 800x600 system-memory scratch created");
+                Some(surface)
+            },
+            Err(err)=>{
+                log(&format!("NATIVE-MOVIE-BLT: optional scratch creation failed: {err}"));
+                None
+            }
+        }
+    }else{None};
+    // The native 16-bit opening image has complete pixels, but the native
+    // 16->32 video backbuffer Blt reports DD_OK while copying only scanline 0.
+    // Prepare a dedicated SYSTEMMEM XRGB8888 scratch so the shared COM
+    // forwarder can widen RGB565 itself, then use a working 32->32 Blt.
+    // This is feature/format-gated, not an OS-specific presentation path.
+    let opening_rgb32_scratch=if movie_rgb32{
+        match alloc(dd4,desc(DD_CAPS_OFFSCREEN|DD_CAPS_SYSTEMMEM,
+            800,600,Some(32))){
+            Ok(surface)=>match native_desc(&surface){
+                Ok(d) if (d[3],d[2],d[21],d[22],d[23],d[24])==
+                    (800,600,32,0xff0000,0xff00,0xff) &&
+                    d[26]&DD_CAPS_SYSTEMMEM!=0 && d[26]&DD_CAPS_OFFSCREEN!=0=>{
+                    log("STARTUP-IMAGE: private XRGB8888 system-memory staging verified");
+                    Some(surface)
+                },
+                Ok(_)=>{
+                    log("STARTUP-IMAGE: staging pixel format/caps unexpected; original Blt retained");
+                    None
+                },
+                Err(err)=>{
+                    log(&format!("STARTUP-IMAGE: staging descriptor unavailable: {err}"));
+                    None
+                }
+            },
+            Err(err)=>{
+                log(&format!("STARTUP-IMAGE: staging creation failed: {err}; original Blt retained"));
+                None
+            }
+        }
+    }else{None};
+    log("WINDOWED-DIAG: primary Lock/Unlock staging probe begin");
     verify_primary_lock_staging(&primary_lock,mode)?;
+    log("WINDOWED-DIAG: primary Lock/Unlock staging probe OK");
     log(&format!("WINDOWED-GAME: verified logical primary {}x{} RGB565 system-memory Lock/Unlock staging (desktop primary never exposed)",
         mode.width,mode.height));
+    log("WINDOWED-DIAG: native→virtual Surface4 graph construction begin");
     let primary=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_primary.ptr(),SurfaceRole::Primary,mode,native_3d)
         .map_err(|hr|format!("virtual primary: {:#010x}",hr as u32))?)?;
-    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d)
+    let back=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in_movie_rgb32(
+        real_back.ptr(),SurfaceRole::Backbuffer,mode,native_3d,movie_rgb32)
         .map_err(|hr|format!("virtual backbuffer: {:#010x}",hr as u32))?)?;
     let depth=Com::from_out(com_surface4_forward::new_graph_surface4_opt_in(real_depth.ptr(),SurfaceRole::Depth,mode,native_3d)
         .map_err(|hr|format!("virtual depth: {:#010x}",hr as u32))?)?;
     com_surface4_forward::arm_graph_primary_lock_surface(primary.ptr(),primary_lock.ptr())
         .map_err(|hr|format!("arm primary Lock staging: {:#010x}",hr as u32))?;
+    if let Some(scratch)=movie_rgb565_scratch.as_ref(){
+        match com_surface4_forward::arm_graph_movie_conversion_staging(back.ptr(),scratch.ptr()){
+            Ok(())=>log("NATIVE-MOVIE-BLT: scratch validated and bound to virtual RGB565 backbuffer"),
+            Err(hr)=>log(&format!("NATIVE-MOVIE-BLT: scratch validation failed hr={:#010x}; original Blt failures preserved",hr as u32))
+        }
+    }
+    if let Some(scratch)=opening_rgb32_scratch.as_ref(){
+        match com_surface4_forward::arm_graph_opening_rgb32_staging(
+            back.ptr(),scratch.ptr()){
+            Ok(())=>log("STARTUP-IMAGE: dedicated 800x600 XRGB8888 staging bound for original splash"),
+            Err(hr)=>log(&format!(
+                "STARTUP-IMAGE: staging arm unavailable hr={:#010x}; original native Blt retained",
+                hr as u32
+            ))
+        }
+    }
     com_surface4_forward::attach_graph_surface4(primary.ptr(),back.ptr())
         .map_err(|hr|format!("attach virtual BB {:#010x}",hr as u32))?;
     com_surface4_forward::attach_graph_surface4(back.ptr(),depth.ptr())
@@ -463,28 +964,155 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,monitor:win32::Rect,
     }
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
+    log("WINDOWED-DIAG: physical windowed Blt backend preparation begin");
+    // Shared presentation backend; format choice and validation occur
+    // above before the actual COM graph is exposed, on both platforms.
     let mut backend=NativeWindowedBlt::from_borrowed_com(
         real_primary.ptr(),real_back.ptr(),(0,0),client,mode
     ).map_err(|hr|format!("native Blt backend: {:#010x}",hr as u32))?;
+    backend.set_output_client(output_client)
+        .map_err(|hr|format!("logical output coordinates: {:#010x}",hr as u32))?;
+    // Explicit native RGB32 800x600 A/B only. The offscreen surface is
+    // EXACTLY the HWND's current DPI-logical client size and pixel format.
+    // A failure is nonfatal: keep the known-good direct DD4 Blt backend.
+    // movie_rgb32 already includes native host gating and real DD4 format.
+    let mut full_frame_composite=if movie_rgb32 &&
+        crate::cfg().native_full_frame_compose {
+        match allocate_full_frame_composite(dd4,&real_primary,output_client){
+            Ok(surface)=>{
+                match backend.enable_full_frame_composition(surface.ptr()){
+                    Ok(())=>{
+                        log("NATIVE-FULL-FRAME-COMPOSE: enabled for native 800x600 movie/menu; offscreen black and 4:3 image, one full-window primary Blt; no GDI");
+                        Some(surface)
+                    },
+                    Err(hr)=>{
+                        log(&format!(
+                            "NATIVE-FULL-FRAME-COMPOSE: rejected backend hr={:#010x}; validated direct Blt retained",
+                            hr as u32
+                        ));
+                        None
+                    }
+                }
+            },
+            Err(e)=>{
+                log(&format!(
+                    "NATIVE-FULL-FRAME-COMPOSE: allocation/format refused ({e}); original DirectDraw Blt retained"
+                ));
+                None
+            }
+        }
+    }else{None};
     let plan=contract.plan.viewport;
-    borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
-        .map_err(|e|format!("native two-Blt preflight: {e:?}"))?;
-    contract.expose(BackendEvidence{
+    log(if full_frame_composite.is_some(){
+        "WINDOWED-DIAG: native offscreen full-frame 4:3 composition preflight begin"
+    }else{
+        "WINDOWED-DIAG: physical windowed two-Blt preflight begin"
+    });
+    match borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan){
+        Ok(())=>{},
+        Err(e) if full_frame_composite.is_some()=>{
+            log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: preflight failed ({e:?}), recovering with prior known-good direct 4:3 presentation"
+            ));
+            backend.disable_full_frame_composition();
+            full_frame_composite=None;
+            borderless_flip::execute_windowed_blt_pair(&mut backend,mode,client,plan)
+                .map_err(|e|format!("native original direct Blt preflight: {e:?}"))?;
+        },
+        Err(e)=>return Err(format!("native Blt preflight: {e:?}")),
+    }
+    // A driver can fail offscreen Blt yet succeed on the known-good
+    // native primary. The backend has already disabled itself and
+    // completed that fallback without faking a COM present.
+    if full_frame_composite.is_some() && !backend.full_frame_composition_enabled(){
+        log("NATIVE-FULL-FRAME-COMPOSE: driver rejected scratch preflight; using original native DirectDraw presenter");
+        full_frame_composite=None;
+    }
+    log("WINDOWED-DIAG: physical preflight OK; validate virtual graph evidence begin");
+    let evidence=BackendEvidence{
         process_owned_window:true,normal_directdraw:true,
         render_target:RenderTarget::RealDirectDrawSurface4,
-        render_target_caps:DD_CAPS_3D,render_target_is_rgb565:true,
+        render_target_caps:DD_CAPS_3D,render_target_is_rgb565:!movie_rgb32,
         real_zbuffer_32:true,primary_with_clipper:true,
         working_blt:true,complete_surface_com:true
-    }).map_err(|e|format!("graph evidence: {e:?}"))?;
-    com_surface4_forward::arm_graph_primary_flip(
-        primary.ptr(),&contract,generation,(0,0),client,Some(crate::cfg().fps_limit),
+    };
+    if movie_rgb32 {
+        // check_native_rgb_depth() above has already validated the
+        // *exact* real XRGB8888 masks. This separate diagnostic gate does
+        // not relax the standard Wine/Proton RGB565 contract.
+        contract.expose_native_movie_rgb32(evidence)
+    }else{contract.expose(evidence)}
+        .map_err(|e|format!("graph evidence: {e:?}"))?;
+    log("WINDOWED-DIAG: evidence OK; arm virtual primary Flip begin");
+    // Both branches retain the original native movie/3D graph shape.
+    // The extra pointer is the private full-client surface, borrowed
+    // until the same virtual-primary Flip mutex is retired at mode switch.
+    // A native XRGB8888 signature scratch belongs only to that compositor;
+    // the legacy direct presenter must never inherit it on fallback.
+    let menu_scratch_for_arm=select_menu_scratch_for_arm(
+        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+        movie_rgb32,full_frame_composite.is_some()
+    );
+    let arm_result=com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32_composed(
+        primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
-        menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
-    ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
+        menu_scratch_for_arm,
+        movie_rgb32,
+        full_frame_composite.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
+    );
+    match arm_result{
+        Ok(())=>{},
+        Err(hr) if full_frame_composite.is_some()=>{
+            log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: arm rejected hr={:#010x}; retrying previously validated native direct Blt",
+                hr as u32
+            ));
+            full_frame_composite=None;
+            com_surface4_forward::arm_graph_primary_flip_with_output_movie_rgb32(
+                primary.ptr(),&contract,generation,(0,0),client,output_client,
+                Some(crate::cfg().fps_limit),hwnd as usize,crate::cfg().focus_repaint,
+                select_menu_scratch_for_arm(
+                    menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
+                    movie_rgb32,false
+                ),
+                movie_rgb32
+            ).map_err(|hr|format!("arm original native graph: {:#010x}",hr as u32))?;
+        },
+        Err(hr)=>return Err(format!("arm graph: {:#010x}",hr as u32)),
+    }
+    if movie_rgb32 {
+        log("NATIVE-MOVIE-RGB32: preflight passed; virtual 800x600 movie graph uses real XRGB8888 direct Blt; no RGB565 movie-conversion scratch");
+        if crate::cfg().native_movie_message_pump {
+            crate::window_erase_guard::arm_native_movie_pump(hwnd as usize)
+                .map_err(|reason|format!("native movie message pump arm refused: {reason}"))?;
+            log("NATIVE-MOVIE-PUMP: opt-in armed for exact verified game HWND; max 4 queued messages per virtual Flip, outside presentation lock; no Wine/Proton use");
+        }
+    }
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
-        physical_depth:real_depth,menu_scratch,clipper})
+        physical_depth:real_depth,menu_scratch,movie_rgb565_scratch,
+        opening_rgb32_scratch,full_frame_composite,clipper})
 }
+#[cfg(test)]
+mod shared_graph_presentation_tests{
+    use super::*;
+    #[test]
+    fn menu_scratch_requires_verified_full_frame_composition_for_xrgb32(){
+        let scratch=1usize as *mut c_void;
+        assert_eq!(select_menu_scratch_for_arm(scratch,true,true),scratch);
+        assert!(select_menu_scratch_for_arm(scratch,true,false).is_null());
+        assert_eq!(select_menu_scratch_for_arm(scratch,false,false),scratch);
+    }
+    #[test]
+    fn dpi_logical_physical_aspect_tolerance_is_retained(){
+        assert!(same_aspect((1536,960),(1920,1200)));
+        assert!(same_aspect((1093,614),(1366,768)));
+        assert!(same_aspect((1536,961),(1920,1200)));
+        assert!(!same_aspect((1536,963),(1920,1200)));
+        assert!(!same_aspect((1536,960),(800,600)));
+    }
+}
+
 // Give the game its *logical* DD4 mode, not the desktop's physical mode.
 // Crimson Skies requests 640x480x16 (or 800x600x16), while our real
 // fullscreen-sized HWND is windowed at the monitor's native resolution.
@@ -659,6 +1287,11 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL)};
     let Some(runtime)=state.as_mut() else{return None};
     if runtime.dd4!=dd4 as usize{return None;}
+    // Native HAL validation may internally create PRIMARY or Z surfaces.
+    // These are driver-owned requests, not the game's post-negotiation
+    // request for a virtual surface. Forward them unchanged while the
+    // adapter's real HAL graph is still being constructed.
+    if runtime.native_preparing && !runtime.exposed{return None;}
     // COM output ownership is transferred only on S_OK. On any refusal,
     // never accidentally return the caller's previous surface pointer.
     *out=ptr::null_mut();
@@ -701,6 +1334,14 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
 /// Other DD2/DD7 SetDisplayMode and cooperative calls cannot silently switch
 /// this live graph back to exclusive after the game has seen virtual objects.
 pub fn must_block_other_mode_interface()->bool{
+    strict_native_nonexclusive() ||
+        RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
+}
+pub fn must_block_other_cooperative_interface(flags:u32)->bool{
+    // Normal cooperation remains allowed before the virtual graph; any
+    // *exclusive* request from another DirectDraw interface is forbidden.
+    (strict_native_nonexclusive() &&
+     flags&DDSCL_EXCLUSIVE!=0) ||
     RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
 }
 /// Only valid while the game holds a live virtual backbuffer reference.
@@ -720,6 +1361,21 @@ pub unsafe fn remap_render_target(native:*mut c_void)->Option<*mut c_void>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn strict_native_borderless_never_allows_original_exclusive_fallback(){
+        assert!(strict_nonexclusive_selection(true,true,true,true,true,false));
+        for case in [
+            (false,true,true,true,true,false),
+            (true,false,true,true,true,false),
+            (true,true,false,true,true,false),
+            (true,true,true,false,true,false),
+            (true,true,true,true,false,false),
+            (true,true,true,true,true,true)
+        ]{
+            assert!(!strict_nonexclusive_selection(case.0,case.1,case.2,
+                case.3,case.4,case.5));
+        }
+    }
     #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){
         let original_dd4=0x1234usize;
         let hwnd=0x4321usize;
@@ -736,6 +1392,28 @@ mod tests{
         assert!(!accept(original_dd4,hwnd,0x33,true,true));
         assert!(!accept(original_dd4,hwnd,0,true,true));
     }
+    #[test]
+    fn native_post_gameplay_ui_is_never_initial_intro_or_real_3d(){
+        let movie=Mode{width:800,height:600,bpp:16};
+        let game=Mode{width:1920,height:1200,bpp:16};
+        assert!(!post_gameplay_ui_transition(movie,true,false,false));
+        assert!(!post_gameplay_ui_transition(movie,false,true,false));
+        assert!(post_gameplay_ui_transition(movie,true,true,false));
+        assert!(post_gameplay_ui_transition(movie,false,true,true));
+        assert!(!post_gameplay_ui_transition(game,true,true,true));
+        assert!(!post_gameplay_ui_transition(
+            Mode{width:640,height:480,bpp:16},true,true,false));
+    }
+    #[test]
+    fn native_movie_rgb32_mode_is_strictly_800x600x16(){
+        for (w,h,bpp,accepted) in [
+            (800,600,16,true), (640,480,16,false),
+            (1024,768,16,false), (1920,1200,16,false),
+            (800,600,32,false)
+        ]{
+            assert_eq!(native_movie_rgb32_mode(Mode{width:w,height:h,bpp}),accepted);
+        }
+    }
     #[test] fn descriptors_remain_native_124_byte_surface4(){
         let p=desc(DD_CAPS_PRIMARY,0,0,None);
         assert_eq!((p[0],p[1],p[26]),(124,1,0x200));
@@ -743,6 +1421,9 @@ mod tests{
         assert_eq!((z[0],z[2],z[3],z[19],z[21],z[23]),(124,480,640,0x400,32,0x00ff_ffff));
         let b=desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,800,600,Some(16));
         assert_eq!((b[2],b[3],b[21],b[22],b[23],b[24]),(600,800,16,0xf800,0x07e0,0x001f));
+        let movie=desc(DD_CAPS_OFFSCREEN|DD_CAPS_3D|DD_CAPS_VIDEOMEM,800,600,Some(32));
+        assert_eq!((movie[2],movie[3],movie[19],movie[21],movie[22],movie[23],movie[24]),
+            (600,800,0x40,32,0xff0000,0xff00,0xff));
     }
 }
 #[cfg(test)]

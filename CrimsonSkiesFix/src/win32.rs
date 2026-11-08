@@ -34,6 +34,75 @@ pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
 }
 
 #[repr(C)]
+struct DevModeW {
+    device_name:[u16;32],
+    spec_version:u16,
+    driver_version:u16,
+    size:u16,
+    driver_extra:u16,
+    fields:u32,
+    printer_or_display:[u8;16],
+    color:u16,
+    duplex:u16,
+    y_resolution:u16,
+    tt_option:u16,
+    collate:u16,
+    form_name:[u16;32],
+    log_pixels:u16,
+    bits_per_pel:u32,
+    pels_width:u32,
+    pels_height:u32,
+    display_flags:u32,
+    display_frequency:u32,
+    icm_method:u32,
+    icm_intent:u32,
+    media_type:u32,
+    dither_type:u32,
+    reserved1:u32,
+    reserved2:u32,
+    panning_width:u32,
+    panning_height:u32,
+}
+
+#[link(name="user32")]
+extern "system" {
+    fn EnumDisplaySettingsW(device_name:*const u16,mode_number:u32,mode:*mut DevModeW)->i32;
+}
+
+/// Read current PHYSICAL pixels of the sole primary display without changing
+/// process DPI awareness or the system display mode. Some native Windows 11
+/// hosts virtualize GetMonitorInfoW/GetSystemMetrics to 1536x960 even though
+/// their actual display and DirectDraw native surfaces are 1920x1200.
+/// EnumDisplaySettingsW reports physical pixels even for DPI-unaware games.
+/// Refuse multi-monitor setups rather than silently patching the wrong output.
+pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
+    if unsafe{GetSystemMetrics(80)}!=1 {return None;}
+    let mut mode:DevModeW=unsafe{std::mem::zeroed()};
+    mode.size=std::mem::size_of::<DevModeW>() as u16;
+    const ENUM_CURRENT_SETTINGS:u32=0xffff_ffff;
+    if unsafe{EnumDisplaySettingsW(std::ptr::null(),ENUM_CURRENT_SETTINGS,&mut mode)}==0 {
+        return None;
+    }
+    let size=(mode.pels_width,mode.pels_height);
+    if size.0==0 || size.1==0 {return None;}
+    Some(size)
+}
+
+/// The Windows-native early FOV/HUD patch must use a physical, validated
+/// display mode. If it cannot be retrieved, defer instead of applying a
+/// potentially DPI-virtualized resolution that breaks video initialization.
+/// Keep Wine/Proton's established logical-monitor behavior unchanged.
+/// A debug override lets us A/B test the physical path on Wine if needed.
+pub fn early_patch_dimensions(
+    logical:Option<(u32,u32)>,
+    physical:Option<(u32,u32)>,
+    native_windows:bool,
+    debug_force_physical:bool
+)->Option<(u32,u32)> {
+    if native_windows || debug_force_physical { physical } else { logical }
+}
+
+#[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Point { pub x:i32, pub y:i32 }
 #[repr(C)]
@@ -80,6 +149,7 @@ extern "system" {
     pub fn LoadLibraryW(path:*const u16)->*mut c_void;
     pub fn GetProcAddress(module:*mut c_void,name:*const c_char)->*const c_void;
     pub fn GetModuleFileNameW(module:*mut c_void,buffer:*mut u16,len:u32)->u32;
+    pub fn GetModuleHandleExW(flags:u32,name_or_address:*const u16,module:*mut *mut c_void)->i32;
     pub fn VirtualProtect(address:*mut c_void,size:usize,new_protect:u32,old_protect:*mut u32)->i32;
     pub fn QueryPerformanceCounter(value:*mut i64)->i32;
     pub fn QueryPerformanceFrequency(value:*mut i64)->i32;
@@ -106,7 +176,66 @@ extern "system" {
     fn GetWindow(hwnd:Hwnd,command:u32)->Hwnd;
     fn GetWindowRect(hwnd:Hwnd,rect:*mut Rect)->i32;
     fn GetClientRect(hwnd:Hwnd,rect:*mut Rect)->i32;
+    fn GetClipCursor(rect:*mut Rect)->i32;
     fn ClientToScreen(hwnd:Hwnd,point:*mut Point)->i32;
+}
+
+
+#[link(name="user32")]
+extern "system" {
+    fn SetProcessDPIAware()->i32;
+    fn IsProcessDPIAware()->i32;
+}
+
+fn dpi_experiment_eligible(native:bool,monitor_count:i32,has_window:Option<bool>)->bool{
+    native && monitor_count==1 && has_window==Some(false)
+}
+unsafe extern "system" fn find_any_owned_window(hwnd:Hwnd,context:isize)->i32 {
+    let found=&mut *(context as *mut bool);
+    let mut pid=0u32;
+    if GetWindowThreadProcessId(hwnd,&mut pid)!=0 && pid==GetCurrentProcessId(){
+        *found=true;
+    }
+    1
+}
+fn has_any_owned_top_level_window()->Option<bool>{
+    let mut found=false;
+    let enumerated=unsafe{EnumWindows(find_any_owned_window,&mut found as *mut _ as isize)};
+    (enumerated!=0).then_some(found)
+}
+
+/// One controlled native Windows A/B only; never default enabled.
+/// Call at first game DirectDraw export, before window creation. The native
+/// Windows 11 125% scale experiment isolates whether 1920x1200 framebuffer
+/// pixels are being clipped/zoomed by legacy DPI-virtualized HWND geometry.
+/// This changes PROCESS DPI awareness until exit. Do not run on Wine/Proton;
+/// do not attempt if any process top-level HWND already exists; no HWND,
+/// resolution or game file is changed by this helper.
+pub fn enable_native_system_dpi_experiment()->String {
+    let native=crate::diagnostics::is_native_windows();
+    let monitors=unsafe{GetSystemMetrics(80)};
+    let windows=has_any_owned_top_level_window();
+    if !dpi_experiment_eligible(native,monitors,windows){
+        return format!(
+            "DPI-EXPERIMENT: refused native_windows={native} monitors={monitors} already_has_window={windows:?}; no changes"
+        );
+    }
+    if unsafe{IsProcessDPIAware()}!=0 {
+        return "DPI-EXPERIMENT: process already DPI-aware (manifest or earlier setup); no change attempted".into();
+    }
+    unsafe{SetLastError(0);}
+    let result=unsafe{SetProcessDPIAware()};
+    let error=if result==0{unsafe{GetLastError()}}else{0};
+    let now_aware=unsafe{IsProcessDPIAware()}!=0;
+    let client_pixels=(
+        unsafe{GetSystemMetrics(0)},
+        unsafe{GetSystemMetrics(1)}
+    );
+    let physical=physical_primary_monitor_dimensions();
+    format!(
+        "DPI-EXPERIMENT: opt-in SetProcessDPIAware result={} win32_error={} aware_after={} system_metrics={:?} physical_mode={physical:?} (no display mode changes)",
+        result!=0,error,now_aware,client_pixels
+    )
 }
 
 // Equivalent to SpiderMan2k1Fix's organized-install path policy:
@@ -181,11 +310,104 @@ pub fn ini_path()->Option<PathBuf> {
     regular_file(&modern).then_some(modern)
 }
 
+/// Commit a pure INI duplicate-key cleanup ONLY after writing an
+/// exclusively-created, durable copy of the player's original. Never
+/// overwrite a previous backup, never rewrite symlinks, and never change
+/// any setting (the caller has compared parse(before)==parse(after)).
+/// MoveFileExW replaces the existing INI atomically in its own directory.
+/// If anything fails, the original INI is retained. The backup remains
+/// available for user rollback.
+pub fn commit_deduplicated_ini(
+    path:&Path,previous:&str,cleaned:&str
+)->Result<PathBuf,String>{
+    if previous==cleaned || !regular_file(path){
+        return Err("unchanged or unsafe INI path; no rewrite".into());
+    }
+    let current=fs::read_to_string(path)
+        .map_err(|e|format!("read original INI: {e}"))?;
+    if current!=previous{
+        return Err("INI changed while preparing cleanup; no rewrite".into());
+    }
+    let dir=path.parent().ok_or("INI has no parent directory")?;
+    if !safe_directory(dir,false){
+        return Err("INI parent directory is not a regular directory".into());
+    }
+    let name=path.file_name().and_then(|s|s.to_str())
+        .ok_or("INI filename unavailable")?;
+    let mut backup_path=None;
+    for n in 0..=99{
+        let candidate=dir.join(format!("{name}.duplicates.{n}.bak"));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&candidate){
+            Ok(mut file)=>{
+                let saved=file.write_all(previous.as_bytes())
+                    .and_then(|_|file.sync_all());
+                drop(file);
+                if let Err(error)=saved{
+                    let _=fs::remove_file(&candidate);
+                    return Err(format!("original backup failed: {error}"));
+                }
+                backup_path=Some(candidate);
+                break;
+            },
+            Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue,
+            Err(e)=>return Err(format!("cannot create INI backup: {e}")),
+        }
+    }
+    let backup=backup_path.ok_or("all 100 distinct INI backup slots occupied")?;
+    let ticks=SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|e|format!("clock for cleanup: {e}"))?.as_nanos();
+    let tmp=dir.join(format!(".CrimsonSkiesFix-ini-clean-{}-{ticks}.tmp",
+        std::process::id()));
+    let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&tmp)
+        .map_err(|e|format!("cannot create cleanup temp: {e}"))?;
+    let written=file.write_all(cleaned.as_bytes())
+        .and_then(|_|file.sync_all());
+    drop(file);
+    if let Err(error)=written{
+        let _=fs::remove_file(&tmp);
+        return Err(format!("cannot safely write clean INI: {error}"));
+    }
+    // Refuse to race another writer. This does not protect against
+    // every external file-system race, but ensures no observed changes
+    // between initial read and our atomic rename are overwritten.
+    if !regular_file(path) ||
+       fs::read_to_string(path).map_or(true,|latest|latest!=previous){
+        let _=fs::remove_file(&tmp);
+        return Err("INI changed during cleanup; original kept".into());
+    }
+    let src:Vec<u16>=tmp.as_os_str().encode_wide()
+        .chain(std::iter::once(0)).collect();
+    let dst:Vec<u16>=path.as_os_str().encode_wide()
+        .chain(std::iter::once(0)).collect();
+    let done=unsafe{MoveFileExW(src.as_ptr(),dst.as_ptr(),
+        0x1 /* MOVEFILE_REPLACE_EXISTING */ |
+        0x8 /* MOVEFILE_WRITE_THROUGH */ )};
+    if done==0{
+        let error=std::io::Error::last_os_error();
+        let _=fs::remove_file(&tmp);
+        return Err(format!("atomic INI cleanup rename failed: {error}; original kept"));
+    }
+    Ok(backup)
+}
+
+// Obtain the *actual* DLL HMODULE from an address inside this image.
+// This avoids needing a user-exported DllMain (which would become an
+// unwanted 23rd PE export). Do not change the module reference count.
+pub fn own_module()->Option<*mut c_void> {
+    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT:u32=0x0000_0002;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS:u32=0x0000_0004;
+    let mut module:*mut c_void=std::ptr::null_mut();
+    let address=crate::DirectDrawCreate as *const () as *const u16;
+    let flags=GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+        |GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    let ok=unsafe {GetModuleHandleExW(flags,address,&mut module)};
+    (ok!=0&&!module.is_null()).then_some(module)
+}
+
 // Obtain the actual loaded DLL directory rather than assuming that the
 // process working directory or executable directory always matches.
 fn dll_directory()->Option<PathBuf> {
-    let handle=crate::MODULE.load(std::sync::atomic::Ordering::Relaxed) as *mut c_void;
-    if handle.is_null(){return None;}
+    let handle=own_module()?;
     let mut buffer=[0u16;32768];
     let n=unsafe{GetModuleFileNameW(handle,buffer.as_mut_ptr(),buffer.len() as u32)} as usize;
     if n==0 || n>=buffer.len(){return None;}
@@ -204,17 +426,6 @@ pub fn crash_blt_trace_path()->Option<PathBuf> {
     // Do not overwrite or follow arbitrary preexisting symlinks.
     let path=dll_directory()?.join("CrimsonSkiesFix-BltTrace.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
-    Some(path)
-}
-
-/// Strictly allowlisted capture names, next to the actual loaded proxy.
-pub fn color_capture_path(label:&str)->Option<PathBuf>{
-    if !matches!(label,"Copy1-Source32"|"Copy3-Source32"|"Copy3-Dest565"){
-        return None;
-    }
-    let path=dll_directory()?.join(format!(
-        "CrimsonSkiesFix-Color-{}-{label}.bmp",unsafe{GetCurrentProcessId()}));
-    if fs::symlink_metadata(&path).is_ok(){return None;}
     Some(path)
 }
 
@@ -349,6 +560,94 @@ pub fn game_windows_snapshot()->String {
         probe.all,probe.visible,probe.top_level_visible,probe.geometry.join(","))
 }
 
+// Read-only Alt+Tab diagnostics on the process-owned HWNDs. Never log
+// window titles, class names, exact handles or user paths. The shell can
+// apply additional eligibility rules; "candidate" is not a claim that
+// the Windows task switcher actually displays this entry.
+#[derive(Default)]
+struct AltTabInventory{total:u32,items:Vec<String>}
+unsafe extern "system" fn alt_tab_inventory_callback(hwnd:Hwnd,context:isize)->i32{
+    let state=&mut *(context as *mut AltTabInventory);
+    let mut pid=0;
+    if GetWindowThreadProcessId(hwnd,&mut pid)==0 ||
+       pid!=GetCurrentProcessId(){return 1;}
+    state.total+=1;
+    if state.items.len()<8{
+        let visible=IsWindowVisible(hwnd)!=0;
+        let has_owner=!GetWindow(hwnd,4 /* GW_OWNER */).is_null();
+        let exstyle=GetWindowLongW(hwnd,-20 /* GWL_EXSTYLE */) as u32;
+        let toolwindow=exstyle&0x00000080!=0;
+        let appwindow=exstyle&0x00040000!=0;
+        let candidate=visible && !toolwindow && (!has_owner || appwindow);
+        state.items.push(format!(
+            "win#{} visible={visible} owner={has_owner} toolwindow={toolwindow} appwindow={appwindow} candidate={candidate}",
+            state.total
+        ));
+    }
+    1
+}
+pub fn game_alt_tab_inventory()->String{
+    let mut info=AltTabInventory::default();
+    if unsafe{EnumWindows(alt_tab_inventory_callback,&mut info as *mut _ as isize)}==0{
+        return "EnumWindows failed".to_string();
+    }
+    format!("windows={} [{}] [read-only, no titles or HWND, eligibility approximate]",
+        info.total,info.items.join("; "))
+}
+
+#[derive(Default)]
+struct UniqueVisibleGameWindow {
+    count:u32,
+    pointer:usize,
+}
+unsafe extern "system" fn unique_visible_game_window_callback(hwnd:Hwnd,context:isize)->i32{
+    let state=&mut *(context as *mut UniqueVisibleGameWindow);
+    let mut owner=0u32;
+    if GetWindowThreadProcessId(hwnd,&mut owner)==0 ||
+       owner!=GetCurrentProcessId() ||
+       IsWindowVisible(hwnd)==0 ||
+       !GetWindow(hwnd,4 /* GW_OWNER */).is_null(){
+        return 1;
+    }
+    state.count+=1;
+    state.pointer=hwnd as usize;
+    1
+}
+
+/// Read-only physical/current Windows mode, game HWND, client geometry and
+/// cursor confinement. Useful to distinguish a 1920x1200 native texture
+/// from an ACTUAL borderless 1920x1200 window during 800x600 menus/videos.
+/// No HWND retained, no SetWindowPos/ClipCursor/DPI/DirectDraw mutations.
+pub fn native_presentation_snapshot()->String{
+    let physical=physical_primary_monitor_dimensions();
+    let desktop=(unsafe{GetSystemMetrics(0)},unsafe{GetSystemMetrics(1)});
+    let mut clip=Rect::default();
+    let clipping=if unsafe{GetClipCursor(&mut clip)}!=0 {
+        format!("origin={},{} size={:?}",
+            clip.left,clip.top,clip.dimensions())
+    }else{"Unavailable".into()};
+    let mut candidate=UniqueVisibleGameWindow::default();
+    let result=unsafe{EnumWindows(unique_visible_game_window_callback,
+        &mut candidate as *mut _ as isize)};
+    if result==0 {
+        return format!("physical={physical:?} desktop={desktop:?} cursor_clip={clipping} game_window=EnumWindows-failed");
+    }
+    if candidate.count!=1 {
+        return format!("physical={physical:?} desktop={desktop:?} cursor_clip={clipping} game_window_count={} (ambiguous; no HWND selected)",candidate.count);
+    }
+    let hwnd=candidate.pointer as Hwnd;
+    let snapshot=game_window_snapshot(hwnd);
+    let client=game_client_geometry(hwnd);
+    // WS_POPUP/WS_CAPTION describe window decorations, NOT whether
+    // DirectDraw has genuinely left exclusive fullscreen mode.
+    let style=unsafe{GetWindowLongW(hwnd,GWL_STYLE)} as u32;
+    let popup=style&WS_POPUP!=0;
+    let caption=style&0x00c0_0000!=0;
+    format!(
+        "physical={physical:?} desktop={desktop:?} cursor_clip={clipping} {snapshot} client_screen={client:?} popup={popup} caption={caption} (read-only; popup alone does not prove DDRAW windowed mode)"
+    )
+}
+
 // The early Crimson Skies SetCooperativeLevel calls may use a NULL HWND.
 // Report *why* we cannot adjust the window; never manipulate another
 // process's HWND, and never invent a guessed main window at startup.
@@ -397,6 +696,24 @@ pub unsafe fn patch_vtable_slot(slot:*mut usize,new:usize)->bool {
 }
 
 #[cfg(test)]
+mod native_dpi_experiment_tests {
+    use super::*;
+    #[test]
+    fn only_native_one_monitor_with_no_existing_windows_is_eligible(){
+        assert!(dpi_experiment_eligible(true,1,Some(false)));
+        for case in [
+            (false,1,Some(false)),
+            (true,0,Some(false)),
+            (true,2,Some(false)),
+            (true,1,Some(true)),
+            (true,1,None)
+        ] {
+            assert!(!dpi_experiment_eligible(case.0,case.1,case.2));
+        }
+    }
+}
+
+#[cfg(test)]
 mod monitor_geometry_tests {
     use super::*;
     #[test]
@@ -409,6 +726,36 @@ mod monitor_geometry_tests {
         assert_eq!(Rect{left:400,top:300,right:100,bottom:200}.dimensions(),None);
     }
 }
+#[cfg(test)]
+mod early_geometry_policy_tests {
+    use super::*;
+    #[test]
+    fn physical_pixels_are_required_for_native_windows_but_not_for_wine(){
+        let logical=Some((1536,960));
+        let physical=Some((1920,1200));
+        assert_eq!(early_patch_dimensions(logical,physical,true,false),physical);
+        assert_eq!(early_patch_dimensions(logical,physical,false,false),logical);
+        assert_eq!(early_patch_dimensions(logical,physical,false,true),physical);
+        // No accidental patch to virtualized pixels if native physical mode
+        // cannot be determined; let game initialize without early widescreen.
+        assert_eq!(early_patch_dimensions(logical,None,true,false),None);
+        assert_eq!(early_patch_dimensions(logical,None,false,false),logical);
+        assert_eq!(early_patch_dimensions(logical,None,false,true),None);
+    }
+}
+
+#[cfg(test)]
+mod physical_current_mode_layout_tests {
+    use super::*;
+    #[test]
+    fn windows_devmodew_has_the_official_i686_layout(){
+        assert_eq!(std::mem::size_of::<DevModeW>(),220);
+        assert_eq!(std::mem::offset_of!(DevModeW,size),68);
+        assert_eq!(std::mem::offset_of!(DevModeW,pels_width),172);
+        assert_eq!(std::mem::offset_of!(DevModeW,pels_height),176);
+    }
+}
+
 #[cfg(test)]
 mod early_monitor_tests{
     use super::*;

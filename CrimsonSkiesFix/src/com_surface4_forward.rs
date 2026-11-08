@@ -1,22 +1,23 @@
-//! Stage B4e: complete *forwarding* IDirectDrawSurface4 COM identity.
+//! x86 IDirectDrawSurface4 COM forwarding and verified virtual game graph.
 //!
-//! Inactive in gameplay. Provides 45 ABI-exact Surface4 functions over
-//! ONE real DirectDraw4 surface, with independent IUnknown identity,
-//! thread-safe COM references and exactly one owned real COM reference.
-//! Every non-IUnknown method forwards to the real Surface4 vtable.
-//! This is NOT yet the game's virtual primary: GetAttachedSurface, Flip,
-//! caps and descriptors still describe the ORIGINAL real surface. A later
-//! verified topology adapter must selectively replace those semantics.
+//! Ordinary surfaces retain ABI-exact native forwarding and independent
+//! COM reference ownership. For an authenticated game-owned DD4 graph,
+//! a strictly scoped virtual primary/backbuffer/depth topology intercepts
+//! selected mode, attachment, Flip and Blt operations for windowed
+//! presentation on native Windows and Wine/Proton. Unrecognized operations
+//! and stale epochs fail closed; the original native surface stays owned
+//! for the life of each wrapper.
 //!
-//! SAFETY: the caller must pass a live real Surface4 pointer, retaining
-//! one reference when constructing the façade. The source interface
-//! must be the exact Win32/x86 IDirectDrawSurface4 ABI.
+//! SAFETY: constructors require a live Win32/x86 IDirectDrawSurface4
+//! pointer with a caller-owned reference, then acquire an independent
+//! native COM reference. The in-game graph requires separate preflight
+//! of the real HAL, Z32, surface formats and screen geometry.
 
 #![allow(dead_code)]
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
+    sync::{Mutex,OnceLock,TryLockError,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
     time::{Duration,Instant},
 };
 use crate::{
@@ -41,7 +42,61 @@ const E_INVALIDARG:i32=0x8007_0057u32 as i32;
 // A flood of per-frame errors must not hide the failure that prevented init.
 static VIRTUAL_DIAG_COUNT:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_COPY_COUNT:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_COPY_FAILURE_DETAILS:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_MOVIE_CONVERT_SUCCESS:AtomicUsize=AtomicUsize::new(0);
+static GRAPH_MOVIE_CONVERT_FAILED:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
+// Native-only, opt-in RGB32 video diagnostics: enter/leave trace on the
+// real DirectDraw4 surface calls. No COM/DirectShow return values altered.
+// The prior samples ended after successful 120+ Flips, but sampling every
+// 120 calls cannot distinguish a blocked in-flight Blt from missing input.
+static NATIVE_MOVIE_RGB32_BLT_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_RGB32_FLIP_CALLS:AtomicUsize=AtomicUsize::new(0);
+// Diagnostic-only: elapsed duration from the first physically presented
+// 800x600 opening image to the first decoded 320x240 movie copy.
+// A successful Blt alone does not prove the owner saw a static image.
+static OPENING_FIRST_PRESENT:OnceLock<Instant>=OnceLock::new();
+static NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
+// UI/soft-cursor investigation: the graph intentionally rejects certain
+// 2D methods. Count actual attempts so that unsupported cursor drawing
+// can be distinguished from coordinate / OS cursor visibility problems.
+static NATIVE_MENU_PRIMARY_BLT_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_BLTFAST_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_GETDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_RELEASEDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+// Infer opt-in from the actual verified virtual graph, never from global
+// configuration. This file is also compiled by the standalone x86 test
+// probe binary, which intentionally has no crate::cfg/diagnostics functions.
+fn native_menu_cursor_probe_enabled(this:SurfaceThis)->bool{
+    unsafe {
+        let Some(node)=graph_node(this) else{return false;};
+        match node.role {
+            SurfaceRole::Backbuffer=>node.native_movie_rgb32,
+            SurfaceRole::Primary=>{
+                let back=(*this.cast::<Surface4Forwarder>())
+                    .attached.load(Ordering::Acquire);
+                graph_node(back).is_some_and(|b|b.role==SurfaceRole::Backbuffer &&
+                    b.native_movie_rgb32)
+            },
+            SurfaceRole::Depth=>false
+        }
+    }
+}
+fn native_menu_trace_count(count:usize)->bool{count<=12 || count%120==0}
+
+fn movie_com_trace_selected(count:usize)->bool{
+    count<=256 || count%64==0
+}
+fn movie_com_trace(event:&str,count:usize,result:Option<i32>,elapsed_ms:Option<u128>){
+    if !movie_com_trace_selected(count){return;}
+    crate::log(&format!(
+        "NATIVE-MOVIE-COM: {event} count={count} thread={:?} result={} elapsed_ms={}",
+        std::thread::current().id(),
+        result.map(|hr|format!("{:#010x}",hr as u32)).unwrap_or_else(||"ENTER".into()),
+        elapsed_ms.map(|ms|ms.to_string()).unwrap_or_else(||"pending".into())
+    ));
+}
 fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
     if VIRTUAL_DIAG_COUNT.fetch_add(1,Ordering::Relaxed)<40 {
         crate::log(&format!("WINDOWED-GAME: virtual Surface4 {method} role={role:?} result={:#010x}",hr as u32));
@@ -50,6 +105,25 @@ fn virtual_issue(role:SurfaceRole,method:&str,hr:i32){
 const DDBLT_COLORFILL:u32=0x0000_0400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
+const DDBLT_ASYNC:u32=0x0000_0200;
+// The exact original static image's RGB565->XRGB8888 native DD4 Blt returns
+// DD_OK while copying only row zero, even with ASYNC removed. The verified
+// fallback converts into a private XRGB8888 system-memory surface, then
+// performs a same-format native Blt. No sleep, global patch or host OS test.
+unsafe fn is_native_opening_image_surface(source:SurfaceThis)->bool{
+    if source.is_null(){return false;}
+    let mut desc=[0u32;31];desc[0]=124;
+    let hr=(real_vtable(source).get_surface_desc)(source,desc.as_mut_ptr().cast());
+    hr>=0 && desc[0]==124 && desc[3]==800 && desc[2]==600 &&
+        desc[19]&0x40!=0 && desc[21]==16 &&
+        (desc[22],desc[23],desc[24])==(0xf800,0x07e0,0x001f)
+}
+// The graph's front buffer is SYNTHETIC and synchronously presents by
+// completing its real windowed Blt pair. GetFlipStatus MUST describe that
+// exact virtual operation, not the non-flippable real desktop primary.
+const DDGFS_CANFLIP:u32=0x1;
+const DDGFS_ISFLIPDONE:u32=0x2;
+const DDERR_WASSTILLDRAWING:i32=0x8876_021cu32 as i32;
 const IID_IUNKNOWN:Guid=Guid{
     d1:0,d2:0,d3:0,d4:[0xc0,0,0,0,0,0,0,0x46]
 };
@@ -61,14 +135,24 @@ fn same_guid(a:&Guid,b:&Guid)->bool{
     a.d1==b.d1&&a.d2==b.d2&&a.d3==b.d3&&a.d4==b.d4
 }
 #[derive(Clone,Copy)]
-struct VirtualGraphNode {role:SurfaceRole, mode:Mode}
+struct VirtualGraphNode {
+    role:SurfaceRole, mode:Mode,
+    // Exact native Windows 800x600 movie A/B only. Other graph formats
+    // and Wine/Proton remain RGB565; depth remains Z32 as before.
+    native_movie_rgb32:bool,
+}
 impl VirtualGraphNode {
     fn caps(self)->u32{match self.role{
         SurfaceRole::Primary=>0x1000_e238,
         SurfaceRole::Backbuffer=>0x1000_601c,
         SurfaceRole::Depth=>0x1002_4000,
     }}
-    fn bpp(self)->u32{if self.role==SurfaceRole::Depth{32}else{16}}
+    fn bpp(self)->u32{
+        if self.role==SurfaceRole::Depth ||
+           (self.role==SurfaceRole::Backbuffer && self.native_movie_rgb32) {
+            32
+        }else{16}
+    }
     fn count(self)->u32{if self.role==SurfaceRole::Primary{1}else{0}}
 }
 /// Probe-only eligible native presentation session. The wrapper's
@@ -97,6 +181,72 @@ impl ExposureState {
         restore
     }
 }
+// Passive bounded diagnostic of intervals between *successful game-facing
+// virtual Surface4::Flip completions*. This measures the CPU submission
+// cadence, NOT the moment a frame reaches the physical display or compositor.
+// Leave completely unallocated/disabled by default. No per-frame file writes.
+const FRAME_TIME_WINDOW:usize=120;
+struct FrameTimeWindow{
+    previous:Option<Instant>,
+    intervals_us:[u32;FRAME_TIME_WINDOW],
+    present_call_us:[u32;FRAME_TIME_WINDOW],
+    filled:usize,
+    pauses:u32,
+}
+impl Default for FrameTimeWindow{
+    fn default()->Self{
+        Self{previous:None,intervals_us:[0;FRAME_TIME_WINDOW],
+            present_call_us:[0;FRAME_TIME_WINDOW],filled:0,pauses:0}
+    }
+}
+impl FrameTimeWindow{
+    fn observe(&mut self,done_at:Instant,presentation_duration:Duration,
+        mode:Mode,fps:Option<u32>)->Option<String>{
+        let Some(previous)=self.previous.replace(done_at) else{return None;};
+        let elapsed=done_at.saturating_duration_since(previous);
+        // Focus loss, loading screens and actual pauses are reported
+        // separately rather than mislabeled as ordinary frame jitter.
+        if elapsed>=Duration::from_millis(500){
+            self.pauses=self.pauses.saturating_add(1);
+            return None;
+        }
+        let us=elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
+        if us==0{return None;}
+        self.intervals_us[self.filled]=us;
+        self.present_call_us[self.filled]=
+            presentation_duration.as_micros().min(u128::from(u32::MAX)) as u32;
+        self.filled+=1;
+        if self.filled<FRAME_TIME_WINDOW{return None;}
+        let mut sorted=self.intervals_us;
+        sorted.sort_unstable();
+        let mut native_sorted=self.present_call_us;
+        native_sorted.sort_unstable();
+        let p50=sorted[FRAME_TIME_WINDOW/2-1];
+        let p95=sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let p99=sorted[(FRAME_TIME_WINDOW*99+99)/100-1];
+        let worst=sorted[FRAME_TIME_WINDOW-1];
+        let present95=native_sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let presentmax=native_sorted[FRAME_TIME_WINDOW-1];
+        let target_us=1_000_000/fps.unwrap_or(60).max(1);
+        let slow2=self.intervals_us.iter()
+            .filter(|&&v|v>target_us.saturating_mul(2)).count();
+        let slow3=self.intervals_us.iter()
+            .filter(|&&v|v>target_us.saturating_mul(3)).count();
+        let sum:u64=self.intervals_us.iter().map(|&v|u64::from(v)).sum();
+        let avg_us=sum/FRAME_TIME_WINDOW as u64;
+        let pauses=self.pauses;
+        self.filled=0;
+        self.pauses=0;
+        Some(format!(
+            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} [successful virtual Flip completion spacing, NOT display/present timestamps]",
+            mode.width,mode.height,mode.bpp,FRAME_TIME_WINDOW,
+            fps.unwrap_or(60),avg_us as f64/1000.0,p50 as f64/1000.0,
+            p95 as f64/1000.0,p99 as f64/1000.0,worst as f64/1000.0,
+            slow2,slow3,pauses,present95 as f64/1000.0,
+            presentmax as f64/1000.0
+        ))
+    }
+}
 struct GraphFlipSession{
     bridge:FlipToBltBridge,
     backend:NativeWindowedBlt,
@@ -104,6 +254,7 @@ struct GraphFlipSession{
     mode:Mode,
     fps_limit:Option<u32>, // None in standalone probe and COM unit tests
     last_present:Option<Instant>, // reset whenever the mode epoch changes
+    frame_time_window:Option<FrameTimeWindow>, // optional steady-state telemetry, no per-frame logging
     window:usize,
     focus_repaint:bool,
     exposure:ExposureState,
@@ -136,6 +287,8 @@ struct Surface4Forwarder{
     // A 640x480/800x600 RGB565 native staging surface for Primary::Lock.
     // Never return the real 1920x1080 desktop primary's lock pointer to the game.
     primary_lock_surface:AtomicPtr<c_void>, // one owned COM ref if armed
+    movie_rgb565_staging:AtomicPtr<c_void>, // native 800x600 system-memory RGB565, one owned COM ref
+    opening_rgb32_staging:AtomicPtr<c_void>, // 800x600 system XRGB8888, only exact opening image
     retired:AtomicBool, // permanent tombstone after a resolution epoch ends
 }
 
@@ -156,6 +309,8 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         real,refs:AtomicU32::new(1),
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
         virtual_flip:Mutex::new(None),primary_lock_surface:AtomicPtr::new(ptr::null_mut()),
+        movie_rgb565_staging:AtomicPtr::new(ptr::null_mut()),
+        opening_rgb32_staging:AtomicPtr::new(ptr::null_mut()),
         retired:AtomicBool::new(false),
     });
     Ok(Box::into_raw(obj).cast())
@@ -181,6 +336,21 @@ pub unsafe fn new_graph_surface4(
 pub unsafe fn new_graph_surface4_opt_in(
     real:SurfaceThis,role:SurfaceRole,mode:Mode,native_3d:bool
 )->Result<SurfaceThis,i32>{
+    new_graph_surface4_opt_in_movie_rgb32(real,role,mode,native_3d,false)
+}
+/// Native-only, strict movie surface format A/B. The *physical* RGB32
+/// backbuffer remains format-correct for a direct native XRGB source Blt.
+/// Game-facing logical mode stays 800x600x16; only this backbuffer reports
+/// the actual 32-bit real pixel format to clients of its COM interface.
+pub unsafe fn new_graph_surface4_opt_in_movie_rgb32(
+    real:SurfaceThis,role:SurfaceRole,mode:Mode,native_3d:bool,
+    native_movie_rgb32:bool
+)->Result<SurfaceThis,i32>{
+    if native_movie_rgb32 &&
+       (role!=SurfaceRole::Backbuffer ||
+        (mode.width,mode.height,mode.bpp)!=(800,600,16) || native_3d){
+        return Err(E_INVALIDARG);
+    }
     let legacy=matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16));
     let allow_native=native_3d && mode.bpp==16 &&
         mode.width>=960 && mode.height>=600 &&
@@ -190,7 +360,9 @@ pub unsafe fn new_graph_surface4_opt_in(
         (mode.width as u64)<=(mode.height as u64)*4;
     if !legacy && !allow_native{return Err(E_INVALIDARG);}
     let wrapped=new_forwarding_surface4(real)?;
-    (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{role,mode});
+    (*wrapped.cast::<Surface4Forwarder>()).graph=Some(VirtualGraphNode{
+        role,mode,native_movie_rgb32
+    });
     Ok(wrapped)
 }
 
@@ -212,6 +384,68 @@ pub unsafe fn arm_graph_primary_lock_surface(
     let vt=real_vtable(staging);
     if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
     if p.primary_lock_surface.compare_exchange(
+        ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (vt.release)(staging);
+        return Err(E_FAIL);
+    }
+    Ok(())
+}
+
+/// Optional native-only 320x240 XRGB8888 movie -> RGB565 staging buffer.
+/// Registered BEFORE exposing the synthetic game graph, on the *backbuffer*.
+/// The caller owns the original native reference; the wrapper acquires one
+/// independent COM AddRef. Missing staging only means native Blt errors are
+/// passed through as before. Never install on the Wine/probe path.
+pub unsafe fn arm_graph_movie_conversion_staging(
+    back:SurfaceThis,staging:SurfaceThis
+)->Result<(),i32>{
+    if !is_our_forwarder(back) || staging.is_null(){return Err(E_INVALIDARG);}
+    let p=&*back.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG)};
+    if node.role!=SurfaceRole::Backbuffer ||
+       (node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+       p.real==staging || p.retired.load(Ordering::Acquire){
+        return Err(E_INVALIDARG);
+    }
+    let vt=real_vtable(staging);
+    let mut d=[0u32;31];d[0]=124;
+    if (vt.get_surface_desc)(staging,d.as_mut_ptr().cast())<0 ||
+       (d[3],d[2],d[21],d[22],d[23],d[24])!=(800,600,16,0xf800,0x07e0,0x001f) ||
+       d[26]&0x800==0{
+        return Err(E_INVALIDARG);
+    }
+    if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
+    if p.movie_rgb565_staging.compare_exchange(
+        ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (vt.release)(staging);
+        return Err(E_FAIL);
+    }
+    Ok(())
+}
+
+/// Arm the private XRGB8888 system-memory scratch for only the observed
+/// RGB565 opening still image on an actual native XRGB8888 movie backbuffer.
+/// This is format- and mode-gated, never keyed to Windows vs Wine.
+pub unsafe fn arm_graph_opening_rgb32_staging(
+    back:SurfaceThis,staging:SurfaceThis
+)->Result<(),i32>{
+    if !is_our_forwarder(back) || staging.is_null(){return Err(E_INVALIDARG);}
+    let p=&*back.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG);};
+    if node.role!=SurfaceRole::Backbuffer || !node.native_movie_rgb32 ||
+       (node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+       p.real==staging || p.retired.load(Ordering::Acquire){
+        return Err(E_INVALIDARG);
+    }
+    let vt=real_vtable(staging);
+    let mut d=[0u32;31];d[0]=124;
+    if (vt.get_surface_desc)(staging,d.as_mut_ptr().cast())<0 ||
+       (d[3],d[2],d[21],d[22],d[23],d[24])!=(800,600,32,0xff0000,0xff00,0xff) ||
+       d[26]&0x800==0 || d[26]&0x40==0 {
+        return Err(E_INVALIDARG);
+    }
+    if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
+    if p.opening_rgb32_staging.compare_exchange(
         ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
         (vt.release)(staging);
         return Err(E_FAIL);
@@ -263,6 +497,10 @@ unsafe fn virtual_pixel_format(node:VirtualGraphNode,d:*mut u32){
     *d.add(3)=node.bpp();
     if node.role==SurfaceRole::Depth{
         *d.add(5)=0x00ff_ffff;
+    }else if node.native_movie_rgb32 && node.role==SurfaceRole::Backbuffer{
+        *d.add(4)=0x00ff_0000;
+        *d.add(5)=0x0000_ff00;
+        *d.add(6)=0x0000_00ff;
     }else{
         *d.add(4)=0xf800;
         *d.add(5)=0x07e0;
@@ -292,6 +530,62 @@ pub unsafe fn arm_graph_primary_flip(
     origin:(i32,i32),client:(u32,u32),fps_limit:Option<u32>,
     window:usize,focus_repaint:bool,menu_scratch:*mut c_void
 )->Result<(),i32>{
+    arm_graph_primary_flip_with_output(
+        primary,contract,generation,origin,client,client,fps_limit,
+        window,focus_repaint,menu_scratch)
+}
+/// The native Windows game can render at physical resolution while the
+/// windowed DirectDraw primary accepts DPI-logical rectangle coordinates.
+/// This explicit variant changes ONLY output Blt rectangles; the virtual
+/// graph, mode, COM ownership and frame semantics stay physical. The
+/// original helper above retains existing Wine/probe behavior.
+pub unsafe fn arm_graph_primary_flip_with_output(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void
+)->Result<(),i32>{
+    arm_graph_primary_flip_with_output_movie_rgb32(
+        primary,contract,generation,origin,client,output_client,
+        fps_limit,window,focus_repaint,menu_scratch,false)
+}
+/// Only for the explicit native Windows 800x600 RGB32 movie A/B.
+pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void,native_movie_rgb32:bool
+)->Result<(),i32>{
+    arm_graph_primary_flip_with_output_movie_rgb32_composed(
+        primary,contract,generation,origin,client,output_client,
+        fps_limit,window,focus_repaint,menu_scratch,
+        native_movie_rgb32,ptr::null_mut()
+    )
+}
+// The native 800x600 menu scratch is validated as XRGB8888 by the epoch
+// builder. It must be paired with the full-frame compositor; a scratch on
+// the legacy direct presenter remains forbidden (RGB565-only history).
+fn native_movie_menu_scratch_allowed(
+    menu_scratch:*mut c_void,full_frame_composite:*mut c_void
+)->bool{
+    menu_scratch.is_null() || !full_frame_composite.is_null()
+}
+
+/// Experimental native RGB32 800x600 movie/menu path. The final surface
+/// is an independently owned, full-window logical-size 32-bit offscreen
+/// surface that has passed actual DD4 preflight. The epoch holds its COM
+/// reference until the virtual Flip session has been retired.
+/// All other entrypoints preserve their existing behavior.
+pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
+    primary:SurfaceThis,contract:&AdapterContract,generation:u64,
+    origin:(i32,i32),client:(u32,u32),output_client:(u32,u32),
+    fps_limit:Option<u32>,window:usize,focus_repaint:bool,
+    menu_scratch:*mut c_void,native_movie_rgb32:bool,
+    full_frame_composite:*mut c_void
+)->Result<(),i32>{
+    if !full_frame_composite.is_null() && !native_movie_rgb32{
+        return Err(E_INVALIDARG);
+    }
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
     let p=&*primary.cast::<Surface4Forwarder>();
     let Some(node)=p.graph else{return Err(E_INVALIDARG);};
@@ -306,6 +600,18 @@ pub unsafe fn arm_graph_primary_flip(
     if b_node.role!=SurfaceRole::Backbuffer||b_node.mode!=node.mode{
         return Err(E_INVALIDARG);
     }
+    // A native 32-bit menu signature scratch is safe only with the verified
+    // full-frame XRGB8888 composition path. The original RGB565-only
+    // restriction must not reject this newly validated pair of surfaces.
+    if native_movie_rgb32 &&
+       ((node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+        !b_node.native_movie_rgb32 ||
+        !native_movie_menu_scratch_allowed(menu_scratch,full_frame_composite)){
+        return Err(E_INVALIDARG);
+    }
+    if !native_movie_rgb32 && b_node.native_movie_rgb32{
+        return Err(E_INVALIDARG);
+    }
     let depth=b.attached.load(Ordering::Acquire);
     if !is_our_forwarder(depth){return Err(E_INVALIDARG);}
     let z=&*depth.cast::<Surface4Forwarder>();
@@ -316,14 +622,23 @@ pub unsafe fn arm_graph_primary_flip(
     // This fail-closed bridge rejects Phase!=Exposed and bad geometry.
     let bridge=FlipToBltBridge::from_exposed(contract,generation)
         .map_err(|_|E_FAIL)?;
+    // Common Blt backend; the DD4 epoch has already verified its real
+    // RGB565 or XRGB8888 surface format and graph invariants.
     let mut backend=NativeWindowedBlt::from_borrowed_com(
         p.real,b.real,origin,client,node.mode
     ).map_err(|_|E_INVALIDARG)?;
+    backend.set_output_client(output_client).map_err(|_|E_INVALIDARG)?;
+    if !full_frame_composite.is_null(){
+        backend.enable_full_frame_composition(full_frame_composite)
+            .map_err(|_|E_INVALIDARG)?;
+    }
     backend.set_menu_scratch(menu_scratch);
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
     if state.is_some()||p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
-        fps_limit,last_present:None,window,focus_repaint,exposure:ExposureState::default(),
+        fps_limit,last_present:None,
+        frame_time_window:crate::frame_time_trace_enabled().then(FrameTimeWindow::default),
+        window,focus_repaint,exposure:ExposureState::default(),
         erase_count_seen:0,paint_count_seen:0});
     Ok(())
 }
@@ -462,6 +777,10 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
                     }
                     let staging=obj.primary_lock_surface.swap(ptr::null_mut(),Ordering::AcqRel);
                     if !staging.is_null(){(real_vtable(staging).release)(staging);}
+                    let movie=obj.movie_rgb565_staging.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !movie.is_null(){(real_vtable(movie).release)(movie);}
+                    let opening=obj.opening_rgb32_staging.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !opening.is_null(){(real_vtable(opening).release)(opening);}
                     let real=borrowed_real(this);
                     (real_vtable(real).release)(real);
                     drop(Box::from_raw(this.cast::<Surface4Forwarder>()));
@@ -569,6 +888,228 @@ unsafe fn trace_native_copy_format(source:SurfaceThis,flags:u32){
         words[3],words[2],words[21],words[19],words[22],words[23],words[24],words[26],flags));
 }
 
+fn rect_summary(r:*mut Rect)->String {
+    if r.is_null(){return "full".into();}
+    let r=unsafe{&*r};
+    format!("({},{})-({},{})",r.left,r.top,r.right,r.bottom)
+}
+/// On an actual Windows native RGB565 Blt failure, capture the operation
+/// metadata once per few samples, without touching any pixels or inventing
+/// success. Some legacy Blt options can be unsupported by native drivers.
+unsafe fn report_native_copy_failure(
+    dest:SurfaceThis,source:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,hr:i32,
+    source_is_facade:bool,
+){
+    // The shared module is also compiled in the standalone probe binary,
+    // which deliberately has no game Config. crate::log handles per-host
+    // logging enablement, and a strict sample cap limits read-only probes.
+    let count=GRAPH_COPY_FAILURE_DETAILS.fetch_add(1,Ordering::Relaxed)+1;
+    if count>8 && count!=32 && count!=128{return;}
+    let desc=|surface:SurfaceThis|->String{
+        if surface.is_null(){return "NULL".into();}
+        let mut words=[0u32;31];
+        words[0]=124;
+        let method=real_vtable(surface).get_surface_desc;
+        let result=method(surface,words.as_mut_ptr().cast());
+        if result<0 || words[0]!=124 {
+            return format!("GetSurfaceDesc hr={:#010x}",result as u32);
+        }
+        format!("{}x{} bits={} flags={:#x} masks={:#x}/{:#x}/{:#x} caps={:#x}",
+            words[3],words[2],words[21],words[19],
+            words[22],words[23],words[24],words[26])
+    };
+    crate::log(&format!(
+        "NATIVE-BLT-FAIL: count={count} HRESULT={:#010x} flags={:#010x}          source_virtual={} source_same_as_target={} dst_rect={} src_rect={}          source=[{}] dest=[{}] (original HRESULT unchanged)",
+         hr as u32,flags,source_is_facade,source==dest,
+         rect_summary(dst_rect),rect_summary(src_rect),
+         desc(source),desc(dest)
+    ));
+}
+
+// Strictly bounded native 32-bit movie/video conversion. The Windows HAL
+// cannot stretch+convert 320x240 XRGB8888 -> 800x600 RGB565 itself and
+// returns E_NOTIMPL. The same-format system RGB565 -> video RGB565 Blt
+// already succeeded in the owner's log. Do NOT touch the real destination
+// by CPU Lock while a D3D3 HAL device is bound to it: convert into the
+// preallocated system-memory scratch and present via ordinary native Blt.
+fn xrgb_to_565(pixel:u32)->u16{
+    let r=((pixel>>16)&255)*31;
+    let g=((pixel>>8)&255)*63;
+    let b=(pixel&255)*31;
+    (((r+127)/255)<<11 | ((g+127)/255)<<5 | ((b+127)/255)) as u16
+}
+unsafe fn scale_xrgb320_to_rgb565800(
+    src:*const u8,src_pitch:usize,dst:*mut u8,dst_pitch:usize
+){
+    // Exact integer nearest-neighbour scaling 320x240 -> 800x600
+    // (ratio 2.5). Use rational mapping to avoid 16.16 truncation
+    // incorrectly selecting pixel 159 rather than 160 at dest x=400,
+    // which creates an artificial seam in the image.
+    for y in 0usize..600 {
+        let sy=y*240/600;
+        let sr=src.add(sy*src_pitch);
+        let dr=dst.add(y*dst_pitch);
+        for x in 0usize..800 {
+            let sx=x*320/800;
+            let color=ptr::read_unaligned(sr.add(sx*4).cast::<u32>());
+            ptr::write_unaligned(dr.add(x*2).cast::<u16>(),xrgb_to_565(color));
+        }
+    }
+}
+/// The same native 320x240 XRGB8888 movie Blt is called with WAIT in
+/// startup, but flags=0 after MainMenu initialization. Accept both normal
+/// copy modes; reject effects/async/keys. The final native scratch copy
+/// always uses WAIT so success only follows completed pixels.
+fn native_movie_blt_flags_supported(flags:u32)->bool{
+    flags==0 || flags==DDBLT_WAIT
+}
+unsafe fn convert_known_native_movie_blt(
+    native_dest:SurfaceThis,native_source:SurfaceThis,scratch:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,fx:*mut c_void
+)->Result<i32,&'static str>{
+    if native_dest.is_null() || native_source.is_null() || scratch.is_null() ||
+       dst_rect.is_null() || !src_rect.is_null() ||
+       !native_movie_blt_flags_supported(flags) || !fx.is_null(){
+        return Err("not an exact supported movie Blt");
+    }
+    let area=*dst_rect;
+    if area!=(Rect{left:0,top:0,right:800,bottom:600}){
+        return Err("movie Blt rectangle differs");
+    }
+    let src_vt=real_vtable(native_source);
+    let dst_vt=real_vtable(native_dest);
+    let scratch_vt=real_vtable(scratch);
+    let mut sd=[0u32;31];sd[0]=124;
+    let mut dd=[0u32;31];dd[0]=124;
+    if (src_vt.get_surface_desc)(native_source,sd.as_mut_ptr().cast())<0 ||
+       (dst_vt.get_surface_desc)(native_dest,dd.as_mut_ptr().cast())<0{
+        return Err("native video surface GetSurfaceDesc failed");
+    }
+    if (sd[3],sd[2],sd[21],sd[22],sd[23],sd[24])!=(320,240,32,0xff0000,0xff00,0xff) ||
+       sd[26]&0x800==0 ||
+       (dd[3],dd[2],dd[21],dd[22],dd[23],dd[24])!=(800,600,16,0xf800,0x07e0,0x001f){
+        return Err("video format/caps mismatch");
+    }
+    let mut src_lock=[0u32;31];src_lock[0]=124;
+    let hr=(src_vt.lock)(native_source,ptr::null_mut(),src_lock.as_mut_ptr().cast(),
+        0x11,ptr::null_mut()); // DDLOCK_WAIT|DDLOCK_READONLY
+    if hr<0{return Err("video source Lock failed");}
+    let mut dst_lock=[0u32;31];dst_lock[0]=124;
+    let hr=(scratch_vt.lock)(scratch,ptr::null_mut(),dst_lock.as_mut_ptr().cast(),
+        0x1,ptr::null_mut()); // DDLOCK_WAIT
+    if hr<0{
+        let _=(src_vt.unlock)(native_source,ptr::null_mut());
+        return Err("movie RGB565 staging Lock failed");
+    }
+    let valid=(src_lock[0],src_lock[3],src_lock[2],src_lock[21])==(124,320,240,32) &&
+        (dst_lock[0],dst_lock[3],dst_lock[2],dst_lock[21])==(124,800,600,16) &&
+        src_lock[4]>=1280 && dst_lock[4]>=1600 &&
+        src_lock[4]<=65536 && dst_lock[4]<=65536 &&
+        src_lock[9]!=0 && dst_lock[9]!=0;
+    if valid{
+        scale_xrgb320_to_rgb565800(
+            (src_lock[9] as usize) as *const u8,src_lock[4] as usize,
+            (dst_lock[9] as usize) as *mut u8,dst_lock[4] as usize
+        );
+    }
+    // Unlock both regardless of the outcome. Never pass locked video
+    // memory to native Blt, or leave a failed frame half-converted.
+    let dst_unlock=(scratch_vt.unlock)(scratch,ptr::null_mut());
+    let src_unlock=(src_vt.unlock)(native_source,ptr::null_mut());
+    if !valid || dst_unlock<0 || src_unlock<0{
+        return Err("movie lock geometry/unlock failed");
+    }
+    let hr=(dst_vt.blt)(native_dest,dst_rect,scratch,ptr::null_mut(),
+        DDBLT_WAIT,ptr::null_mut());
+    if hr<0{return Err("RGB565 staging -> backbuffer native Blt failed");}
+    Ok(hr)
+}
+
+/// Widen 16-bit RGB565 to native XRGB8888, keeping the original image's
+/// exact pixels and dimensions. Both surfaces have been locked and pitch
+/// bounds verified by the caller. Never CPU-lock the active D3D3 backbuffer.
+fn rgb565_to_xrgb8888(px:u16)->u32{
+    let r=((px>>11)&31) as u32;
+    let g=((px>>5)&63) as u32;
+    let b=(px&31) as u32;
+    ((r<<3|r>>2)<<16)|((g<<2|g>>4)<<8)|(b<<3|b>>2)
+}
+unsafe fn convert_opening_rgb565_pixels(
+    src:*const u8,src_pitch:usize,dst:*mut u8,dst_pitch:usize
+){
+    for y in 0..600usize{
+        let src_row=src.add(y*src_pitch);
+        let dst_row=dst.add(y*dst_pitch);
+        for x in 0..800usize{
+            let pixel=ptr::read_unaligned(src_row.add(x*2).cast::<u16>());
+            ptr::write_unaligned(dst_row.add(x*4).cast::<u32>(),
+                rgb565_to_xrgb8888(pixel));
+        }
+    }
+}
+unsafe fn present_converted_opening_image(
+    native_dest:SurfaceThis,native_source:SurfaceThis,scratch:SurfaceThis,
+    dst_rect:*mut Rect,src_rect:*mut Rect,flags:u32,fx:*mut c_void
+)->Result<i32,&'static str>{
+    let full=Rect{left:0,top:0,right:800,bottom:600};
+    if native_dest.is_null() || native_source.is_null() || scratch.is_null() ||
+       dst_rect.is_null() || src_rect.is_null() ||
+       *dst_rect!=full || *src_rect!=full ||
+       flags!=(DDBLT_ASYNC|DDBLT_WAIT) || !fx.is_null(){
+        return Err("unexpected opening Blt geometry/flags/effects");
+    }
+    let src_vt=real_vtable(native_source);
+    let dst_vt=real_vtable(native_dest);
+    let stage_vt=real_vtable(scratch);
+    let mut src_d=[0u32;31];src_d[0]=124;
+    let mut dst_d=[0u32;31];dst_d[0]=124;
+    if (src_vt.get_surface_desc)(native_source,src_d.as_mut_ptr().cast())<0 ||
+       (dst_vt.get_surface_desc)(native_dest,dst_d.as_mut_ptr().cast())<0 {
+        return Err("opening native surface descriptor failed");
+    }
+    if (src_d[3],src_d[2],src_d[21],src_d[22],src_d[23],src_d[24])!=
+         (800,600,16,0xf800,0x07e0,0x001f) ||
+       src_d[26]&0x800==0 ||
+       (dst_d[3],dst_d[2],dst_d[21],dst_d[22],dst_d[23],dst_d[24])!=
+         (800,600,32,0xff0000,0xff00,0xff) {
+        return Err("opening native source/backbuffer format mismatch");
+    }
+    let mut src_l=[0u32;31];src_l[0]=124;
+    if (src_vt.lock)(native_source,ptr::null_mut(),src_l.as_mut_ptr().cast(),
+        0x11,ptr::null_mut())<0{
+        return Err("opening RGB565 source Lock failed");
+    }
+    let mut stage_l=[0u32;31];stage_l[0]=124;
+    if (stage_vt.lock)(scratch,ptr::null_mut(),stage_l.as_mut_ptr().cast(),
+        0x1,ptr::null_mut())<0{
+        let _=(src_vt.unlock)(native_source,ptr::null_mut());
+        return Err("opening XRGB8888 scratch Lock failed");
+    }
+    let valid=(src_l[0],src_l[3],src_l[2],src_l[21])==(124,800,600,16) &&
+        (stage_l[0],stage_l[3],stage_l[2],stage_l[21])==(124,800,600,32) &&
+        src_l[4]>=1600 && src_l[4]<=65536 &&
+        stage_l[4]>=3200 && stage_l[4]<=65536 &&
+        src_l[9]!=0 && stage_l[9]!=0;
+    if valid{
+        convert_opening_rgb565_pixels(
+            (src_l[9] as usize) as *const u8,src_l[4] as usize,
+            (stage_l[9] as usize) as *mut u8,stage_l[4] as usize
+        );
+    }
+    let stage_unlock=(stage_vt.unlock)(scratch,ptr::null_mut());
+    let src_unlock=(src_vt.unlock)(native_source,ptr::null_mut());
+    if !valid || stage_unlock<0 || src_unlock<0{
+        return Err("opening conversion pitch/geometry/unlock failed");
+    }
+    // Same-format native Blt, already exercised by 320x240 XRGB8888 movies.
+    // Never report a successful frame without a successful physical copy.
+    let hr=(dst_vt.blt)(native_dest,dst_rect,scratch,src_rect,
+        DDBLT_WAIT,ptr::null_mut());
+    if hr<0{return Err("opening same-format XRGB8888 Blt failed");}
+    Ok(hr)
+}
+
 /// The virtual RGB565 Backbuffer is backed by a genuine same-sized native
 /// Surface4. Native texture/offscreen source copies can be forwarded safely
 /// when the source is unwrapped to a real COM pointer. Depth Blt remains
@@ -576,6 +1117,15 @@ unsafe fn trace_native_copy_format(source:SurfaceThis,flags:u32){
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
     if let Some(node)=graph_node(this){
         if node.role==SurfaceRole::Primary{
+            if native_menu_cursor_probe_enabled(this){
+                let n=NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+                if native_menu_trace_count(n){
+                    crate::log(&format!(
+                        "NATIVE-MENU-SURFACE: virtual primary Blt attempted count={n} source_null={} flags={p4:#x} result=E_NOTIMPL (unchanged)",
+                        p2.is_null()
+                    ));
+                }
+            }
             virtual_issue(node.role,"Blt primary (unsupported)",E_NOTIMPL);
             return E_NOTIMPL;
         }
@@ -602,28 +1152,95 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
                 virtual_issue(node.role,"Blt source is retired/foreign graph",E_NOTIMPL);
                 return E_NOTIMPL;
             };
-            let hr=(real_vtable(current.real).blt)(current.real,p1,real_source,p3,p4,p5);
+            let movie_trace=node.native_movie_rgb32 && node.role==SurfaceRole::Backbuffer;
+            let movie_call=if movie_trace{
+                let count=NATIVE_MOVIE_RGB32_BLT_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+                movie_com_trace("backbuffer.native_Blt",count,None,None);
+                count
+            }else{0};
+            let movie_started=if movie_trace{Some(Instant::now())}else{None};
+            // The original RGB565 800x600 image is complete in the source,
+            // yet the driver's 16->32 native Blt (including WAIT-only) copies
+            // only row zero while returning DD_OK. Convert into a separately
+            // owned XRGB8888 SYSTEMMEM surface, then perform a SAME-FORMAT
+            // native GPU Blt. This path requires the exact verified graph,
+            // original full rectangles and original flags; never a host OS
+            // identity. Other video and gameplay Blts remain untouched.
+            let verified_opening=movie_trace && node.mode.width==800 &&
+                node.mode.height==600 && p4==(DDBLT_ASYNC|DDBLT_WAIT) &&
+                is_native_opening_image_surface(real_source) &&
+                !is_our_forwarder(p2);
+            let scratch=current.opening_rgb32_staging.load(Ordering::Acquire);
+            let hr=if verified_opening && !scratch.is_null(){
+                match present_converted_opening_image(
+                    current.real,real_source,scratch,p1,p3,p4,p5
+                ){
+                    Ok(result)=>{
+                        if movie_call<=2 {
+                            crate::log(&format!(
+                                "STARTUP-IMAGE-BLT: complete RGB565 800x600 converted to private XRGB8888, same-format native Blt succeeded; dst_rect={} src_rect={} original_flags={p4:#010x} final_flags={DDBLT_WAIT:#010x}",
+                                rect_summary(p1),rect_summary(p3)
+                            ));
+                        }
+                        result
+                    },
+                    Err(reason)=>{
+                        if movie_call<=2 {
+                            crate::log(&format!(
+                                "STARTUP-IMAGE-BLT: conversion unavailable ({reason}); original native Blt preserved"
+                            ));
+                        }
+                        (real_vtable(current.real).blt)(
+                            current.real,p1,real_source,p3,p4,p5)
+                    }
+                }
+            }else{
+                (real_vtable(current.real).blt)(
+                    current.real,p1,real_source,p3,p4,p5)
+            };
+            if let Some(started)=movie_started{
+                movie_com_trace("backbuffer.native_Blt",movie_call,Some(hr),
+                    Some(started.elapsed().as_millis()));
+                if movie_call==3 {
+                    crate::log(&format!(
+                        "STARTUP-IMAGE: source_transition=RGB565-800x600-to-RGB32-320x240 preceding_800x600_copies=2 ms_since_first_present={:?} [observation only, not proof of visible pixels]",
+                        OPENING_FIRST_PRESENT.get().map(|at|at.elapsed().as_millis())
+                    ));
+                }
+            }
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if count<=4 {trace_native_copy_format(real_source,p4);}
-                if crate::color_probe_enabled() &&
-                    crate::color_probe::should_probe(count) {
-                    // Read-only, bounded sampled Lock/Unlock of the same
-                    // native RGB32 source and RGB565 destination. This runs
-                    // AFTER Wine completed its Blt, never replaces it.
-                    crate::color_probe::probe_native_blt(real_source,current.real,p1,p3,p4,count);
-                }
-                if crate::color_capture_enabled() &&
-                    crate::color_capture::capture_slot(count){
-                    // First-copy source and first scaled movie frame only.
-                    // The native Blt has already succeeded; capture is
-                    // read-only, opt-in, and does not modify its HRESULT.
-                    crate::color_capture::capture_after_blt(real_source,current.real,count);
-                }
                 if count==1 || count%120==0{
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
                 }
             }else{
+                // Activate ONLY for the EXACT observed native Windows
+                // unsupported XRGB8888 movie stretch and an already-owned,
+                // format-checked staging surface. Wine and other modes
+                // never provision this scratch and keep the old native Blt.
+                let scratch=current.movie_rgb565_staging.load(Ordering::Acquire);
+                if hr==E_NOTIMPL && !scratch.is_null() && !is_our_forwarder(p2) {
+                    match convert_known_native_movie_blt(
+                        current.real,real_source,scratch,p1,p3,p4,p5
+                    ){
+                        Ok(converted)=>{
+                            let count=GRAPH_MOVIE_CONVERT_SUCCESS.fetch_add(1,Ordering::Relaxed)+1;
+                            if count<=5 || count%120==0{
+                                crate::log(&format!("NATIVE-MOVIE-BLT: converted XRGB8888 320x240 -> RGB565 800x600 via system-memory staging; original native E_NOTIMPL recovered count={count} result={converted:#x}"));
+                            }
+                            return converted;
+                        },
+                        Err(reason)=>{
+                            let count=GRAPH_MOVIE_CONVERT_FAILED.fetch_add(1,Ordering::Relaxed)+1;
+                            if count<=8 || count%120==0{
+                                crate::log(&format!("NATIVE-MOVIE-BLT: bounded safe fallback unavailable: {reason}; original HRESULT preserved count={count}"));
+                            }
+                        }
+                    }
+                }
+                report_native_copy_failure(current.real,real_source,p1,p3,p4,hr,
+                    is_our_forwarder(p2));
                 virtual_issue(node.role,"native backbuffer source Blt failed",hr);
             }
             return hr;
@@ -651,7 +1268,18 @@ unsafe extern "system" fn forward_blt_batch(this:SurfaceThis,p1:*mut c_void,p2:u
 }
 
 unsafe extern "system" fn forward_blt_fast(this:SurfaceThis,p1:u32,p2:u32,p3:SurfaceThis,p4:*mut Rect,p5:u32)->i32{
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        if native_menu_cursor_probe_enabled(this){
+            let n=NATIVE_MENU_BLTFAST_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: virtual BltFast role={:?} count={n} dest=({p1},{p2}) src_null={} flags={p5:#x} result=E_NOTIMPL (unchanged)",
+                    node.role,p3.is_null()
+                ));
+            }
+        }
+        return E_NOTIMPL;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).blt_fast)(real,p1,p2,p3,p4,p5)
@@ -684,6 +1312,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Accept only a NULL target or this primary's own virtual backbuffer.
         if back.is_null(){return E_NOTIMPL;} // incomplete graph is unarmed
         if !p1.is_null()&&p1!=back{return E_INVALIDARG;}
+        let movie=graph_node(back).is_some_and(|n|n.native_movie_rgb32);
+        let movie_call=if movie{
+            let count=NATIVE_MOVIE_RGB32_FLIP_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+            movie_com_trace("primary.virtual_Flip",count,None,None);
+            count
+        }else{0};
+        let movie_started=if movie{Some(Instant::now())}else{None};
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
         // A successful windowed Flip is the sole frame-present boundary.
@@ -718,10 +1353,42 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             session.exposure.sample(
                 window_exposure::sample_game_window(session.window))
         }else{false};
+        // Native Windows RGB32 movie A/B only: did the game window's
+        // WndProc actually receive keyboard messages during the videos?
+        // Do not consume/dispatch input here: doing so under the virtual
+        // Flip lock risks COM/UI reentrancy and changes sample scheduling.
+        if movie && (movie_call==1 || movie_call%120==0){
+            match window_erase_guard::sample_input_state(session.window){
+                Some(input)=>{
+                    let c=input.counts;
+                    crate::log(&format!(
+                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={} wndproc_mouse_moves={} wndproc_mouse_buttons={} last_mouse_client={:?} menu_mouse_remapped={} last_menu_mouse_logical={:?} system_cursor_probe_events={} system_cursor_probe_restores={} os_cursor_visible={:?} os_cursor_screen={:?} primary_blt_rejected={} bltfast_rejected={} surface_getdc={} surface_releasedc={}",
+                        input.game_is_foreground,input.window_thread,
+                        input.current_thread,
+                        input.window_thread==input.current_thread,
+                        input.queue_has_new_input,c.keydown,c.keyup,
+                        c.character,c.focus_changes,c.painted,
+                        c.mouse_moves,c.mouse_buttons,input.cursor_client_last_move,
+                        c.menu_mouse_mapped,input.menu_mouse_logical_last_move,
+                        c.system_cursor_probe_events,c.system_cursor_probe_restores,
+                        input.cursor_visible,input.cursor_screen,
+                        NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_BLTFAST_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_GETDC_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_RELEASEDC_ATTEMPTS.load(Ordering::Relaxed)
+                    ));
+                },
+                None=>crate::log(&format!(
+                    "NATIVE-MOVIE-INPUT: movie_flip={movie_call} window_probe=unavailable"
+                ))
+            }
+        }
         pace_graph_flip(session);
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
+        let pump_window=session.window;
+        let timing_enabled=session.frame_time_window.is_some();
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         // The original script dispatcher reports only four CALL sites.
         // Returning from gameplay can restore the genuine MainMenu
@@ -736,8 +1403,25 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             crate::menu_brand::mark_not_drawn();
         }
         let composed=backend.menu_frame_prepared();
-        return match bridge.present_with_refresh(*epoch,*mode,backend,repaint){
+        let timing_started=timing_enabled.then(Instant::now);
+        let presentation=bridge.present_with_refresh(*epoch,*mode,backend,repaint);
+        let timing_finished=timing_started.map(|_|Instant::now());
+        if let Some(started)=movie_started{
+            let hr=match &presentation{
+                Ok(_)=>S_OK,
+                Err(FlipBridgeError::ClearBlackFailed(hr)|
+                    FlipBridgeError::StretchFailed(hr))=>*hr,
+                Err(_)=>E_FAIL,
+            };
+            movie_com_trace("primary.virtual_Flip",movie_call,Some(hr),
+                Some(started.elapsed().as_millis()));
+        }
+        let flip_result=match presentation{
             Ok(frame)=>{
+                if movie && movie_call==1 {
+                    let _=OPENING_FIRST_PRESENT.set(Instant::now());
+                    crate::log("STARTUP-IMAGE: first 800x600 movie/menu frame submitted to real primary [pixel content unverified]");
+                }
                 if composed{
                     crate::menu_brand::note_branded_presented();
                 }
@@ -761,6 +1445,38 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 E_FAIL // includes latched failure; never exclusive
             },
         };
+        let frame_timing=if flip_result==S_OK {
+            match (timing_started,timing_finished,session.frame_time_window.as_mut()){
+                (Some(start),Some(end),Some(window))=>
+                    window.observe(end,end.saturating_duration_since(start),
+                        node.mode,session.fps_limit),
+                _=>None,
+            }
+        }else{None};
+        // The OS window procedure can re-enter game code and COM.
+        // ABSOLUTELY release the entire virtual Flip mutex before attempting
+        // to dispatch even one queued Win32 message. Without the explicit
+        // native-only, off-by-default arm this does nothing (including Wine).
+        drop(state);
+        // Emit at most one summary per 120 successful Flips and outside
+        // the graph mutex. No synchronous logging in each sampled frame.
+        if let Some(summary)=frame_timing{crate::log(&summary);}
+        if movie {
+            if let Some((n,calls,total))=
+                window_erase_guard::pump_native_movie_window(
+                    // Read the verified HWND from the session before
+                    // releasing state: no borrowed session references here.
+                    pump_window
+                )
+            {
+                if calls==1 || calls%120==0 || (n>0 && total<=12){
+                    crate::log(&format!(
+                        "NATIVE-MOVIE-PUMP: after Flip count={calls} dispatched_this_flip={n} total_dispatched={total} hwnd=verified owner_thread=true max_per_flip=4"
+                    ));
+                }
+            }
+        }
+        return flip_result;
     }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
@@ -798,7 +1514,19 @@ unsafe extern "system" fn forward_get_attached_surface(this:SurfaceThis,p1:*mut 
 unsafe extern "system" fn forward_get_blt_status(this:SurfaceThis,p1:u32)->i32{
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_blt_status)(real,p1)
+    let movie=graph_node(this).is_some_and(|n|n.native_movie_rgb32);
+    let count=if movie{
+        let n=NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        movie_com_trace("backbuffer.GetBltStatus",n,None,None);
+        n
+    }else{0};
+    let start=if movie{Some(Instant::now())}else{None};
+    let hr=(real_vtable(real).get_blt_status)(real,p1);
+    if let Some(start)=start{
+        movie_com_trace("backbuffer.GetBltStatus",count,Some(hr),
+            Some(start.elapsed().as_millis()));
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_get_caps(this:SurfaceThis,p1:*mut c_void)->i32{
@@ -827,15 +1555,68 @@ unsafe extern "system" fn forward_get_color_key(this:SurfaceThis,p1:u32,p2:*mut 
 }
 
 unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->i32{
+    let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_dc)(real,p1)
+    let hr=(real_vtable(real).get_dc)(real,p1);
+    if let Some(node)=node{
+        if native_menu_cursor_probe_enabled(this){
+            let n=NATIVE_MENU_GETDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: GetDC forwarded to physical surface role={:?} count={n} result={:#010x} (unchanged)",
+                    node.role,hr as u32
+                ));
+            }
+        }
+    }
+    hr
 }
 
+/// The native primary lives in DDSCL_NORMAL and does NOT have a physical
+/// flipping chain. The game's advertised virtual PRIMARY does: Flip returns
+/// only after both native Blts complete. Query only the virtual session,
+/// never the unrelated real primary, so status cannot misreport NOTFLIPPABLE.
+fn virtual_primary_flip_status(
+    p:&Surface4Forwarder,flags:u32
+)->i32{
+    if flags!=DDGFS_CANFLIP && flags!=DDGFS_ISFLIPDONE{
+        return E_INVALIDARG;
+    }
+    if p.retired.load(Ordering::Acquire){return E_FAIL;}
+    // Never block in GetFlipStatus while an in-flight Flip holds this
+    // same mutex. The busy HRESULT reflects a genuine incomplete
+    // synchronous Blt pair, never a fabricated DirectShow completion.
+    match p.virtual_flip.try_lock(){
+        Ok(state)=>match state.as_ref(){
+            Some(session) if session.bridge.stats().fault.is_none()=>S_OK,
+            _=>E_FAIL,
+        },
+        Err(TryLockError::WouldBlock)=>DDERR_WASSTILLDRAWING,
+        Err(TryLockError::Poisoned(_))=>E_FAIL,
+    }
+}
 unsafe extern "system" fn forward_get_flip_status(this:SurfaceThis,p1:u32)->i32{
+    if let Some(node)=graph_node(this){
+        if node.role==SurfaceRole::Primary{
+            return virtual_primary_flip_status(&*this.cast::<Surface4Forwarder>(),p1);
+        }
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_flip_status)(real,p1)
+    let movie=graph_node(this).is_some_and(|n|n.native_movie_rgb32);
+    let count=if movie{
+        let n=NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        movie_com_trace("backbuffer.GetFlipStatus",n,None,None);
+        n
+    }else{0};
+    let start=if movie{Some(Instant::now())}else{None};
+    let hr=(real_vtable(real).get_flip_status)(real,p1);
+    if let Some(start)=start{
+        movie_com_trace("backbuffer.GetFlipStatus",count,Some(hr),
+            Some(start.elapsed().as_millis()));
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_get_overlay_position(this:SurfaceThis,p1:*mut i32,p2:*mut i32)->i32{
@@ -930,9 +1711,22 @@ unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_v
 }
 
 unsafe extern "system" fn forward_release_dc(this:SurfaceThis,p1:*mut c_void)->i32{
+    let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).release_dc)(real,p1)
+    let hr=(real_vtable(real).release_dc)(real,p1);
+    if let Some(node)=node{
+        if native_menu_cursor_probe_enabled(this){
+            let n=NATIVE_MENU_RELEASEDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: ReleaseDC forwarded to physical surface role={:?} count={n} result={:#010x} (unchanged)",
+                    node.role,hr as u32
+                ));
+            }
+        }
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_restore(this:SurfaceThis)->i32{
@@ -1101,6 +1895,47 @@ static SURFACE4_FORWARD_VTABLE:Surface4VTable=Surface4VTable{
 mod tests{
     use super::*;
     use std::sync::atomic::{AtomicU32,Ordering};
+
+    #[test]
+    fn native_movie_com_trace_is_bounded_but_preserves_progress_checkpoints(){
+        assert!(movie_com_trace_selected(1));
+        assert!(movie_com_trace_selected(120));
+        assert!(movie_com_trace_selected(256));
+        assert!(!movie_com_trace_selected(257));
+        assert!(movie_com_trace_selected(320));
+        assert!(!movie_com_trace_selected(321));
+    }
+
+    #[test]
+    fn native_rgb32_menu_scratch_requires_full_frame_composition(){
+        let scratch=std::ptr::dangling_mut::<c_void>();
+        let composite=2usize as *mut c_void;
+        assert!(native_movie_menu_scratch_allowed(ptr::null_mut(),ptr::null_mut()));
+        assert!(native_movie_menu_scratch_allowed(ptr::null_mut(),composite));
+        assert!(native_movie_menu_scratch_allowed(scratch,composite));
+        assert!(!native_movie_menu_scratch_allowed(scratch,ptr::null_mut()));
+    }
+
+    #[test]
+    fn native_movie_rgb32_format_is_real_xrgb_on_backbuffer_only(){
+        let mode=Mode{width:800,height:600,bpp:16};
+        for role in [SurfaceRole::Primary,SurfaceRole::Backbuffer,SurfaceRole::Depth]{
+            let node=VirtualGraphNode{
+                role,mode,native_movie_rgb32:role==SurfaceRole::Backbuffer
+            };
+            let mut fmt=[0u32;8];
+            unsafe{virtual_pixel_format(node,fmt.as_mut_ptr())};
+            assert_eq!(fmt[0],32);
+            assert_eq!(fmt[3],if role==SurfaceRole::Primary{16}else{32});
+            if role==SurfaceRole::Backbuffer{
+                assert_eq!((fmt[4],fmt[5],fmt[6]),(0xff0000,0xff00,0xff));
+            }else if role==SurfaceRole::Primary{
+                assert_eq!((fmt[4],fmt[5],fmt[6]),(0xf800,0x07e0,0x001f));
+            }else{
+                assert_eq!(fmt[1],0x400);
+            }
+        }
+    }
 
     #[repr(C)]
     struct RealMock{
@@ -1285,6 +2120,75 @@ mod tests{
         }
         assert_eq!(desktop.refs.load(Ordering::SeqCst),1);
         assert_eq!(staging.refs.load(Ordering::SeqCst),1);
+    }
+
+    #[test]
+    fn native_movie_fallback_accepts_both_observed_wait_variants(){
+        assert!(native_movie_blt_flags_supported(0));
+        assert!(native_movie_blt_flags_supported(DDBLT_WAIT));
+        for flags in [1,2,0x200,0x400,0x0100_0200] {
+            assert!(!native_movie_blt_flags_supported(flags));
+        }
+    }
+    #[test]
+    fn xrgb8888_to_rgb565_native_fallback_color_and_nearest_scaling(){
+        assert_eq!(xrgb_to_565(0x00ff0000),0xf800);
+        assert_eq!(xrgb_to_565(0x0000ff00),0x07e0);
+        assert_eq!(xrgb_to_565(0x000000ff),0x001f);
+        assert_eq!(xrgb_to_565(0x00ffffff),0xffff);
+        let mut source=vec![0u8;320*240*4];
+        for y in 0..240usize{
+            for x in 0..320usize{
+                let pixel=if x<160{0x00ff0000u32}else{0x0000ff00u32};
+                source[(y*320+x)*4..(y*320+x+1)*4].copy_from_slice(&pixel.to_le_bytes());
+            }
+        }
+        let mut out=vec![0u8;800*600*2];
+        unsafe{scale_xrgb320_to_rgb565800(source.as_ptr(),1280,out.as_mut_ptr(),1600);}
+        let at=|x:usize,y:usize|{
+            u16::from_le_bytes(out[(y*800+x)*2..(y*800+x+1)*2].try_into().unwrap())
+        };
+        assert_eq!(at(0,0),0xf800);
+        assert_eq!(at(399,599),0xf800);
+        assert_eq!(at(400,0),0x07e0);
+        assert_eq!(at(799,599),0x07e0);
+    }
+    #[test]
+    fn opening_rgb565_to_xrgb8888_is_exact_and_pitch_safe(){
+        assert_eq!(rgb565_to_xrgb8888(0xf800),0x00ff0000);
+        assert_eq!(rgb565_to_xrgb8888(0x07e0),0x0000ff00);
+        assert_eq!(rgb565_to_xrgb8888(0x001f),0x000000ff);
+        assert_eq!(rgb565_to_xrgb8888(0xffff),0x00ffffff);
+        let mut src=vec![0u8;600*1604];
+        let mut dst=vec![0x5au8;600*3208];
+        for y in 0..600usize{
+            for x in 0..800usize{
+                let px=if (x+y)%3==0{0xf800u16}else if (x+y)%3==1{
+                    0x07e0
+                }else{0x001f};
+                let at=y*1604+x*2;
+                src[at..at+2].copy_from_slice(&px.to_le_bytes());
+            }
+        }
+        unsafe{convert_opening_rgb565_pixels(
+            src.as_ptr(),1604,dst.as_mut_ptr(),3208
+        );}
+        for (x,y,color) in [(0usize,0usize,0xff0000u32),
+             (1,0,0x00ff00),(2,0,0x0000ff),
+             (0,599,0x0000ff),(799,599,0xff0000)] {
+            let at=y*3208+x*4;
+            assert_eq!(u32::from_le_bytes(dst[at..at+4].try_into().unwrap()),
+                color,"pixel {x},{y}");
+        }
+        // No writes into row padding.
+        assert!(dst.chunks_exact(3208).all(|row|
+            row[3200..].iter().all(|b|*b==0x5a)));
+    }
+    #[test]
+    fn native_blt_failure_rectangle_summary_is_bounded(){
+        let mut rect=Rect{left:2,top:3,right:11,bottom:13};
+        assert_eq!(rect_summary(ptr::null_mut()),"full");
+        assert_eq!(rect_summary(&mut rect),"(2,3)-(11,13)");
     }
 
     #[test]
@@ -1513,20 +2417,29 @@ mod tests{
             attach_graph_surface4(b,z).unwrap();
             let vt=&**p.cast::<*const Surface4VTable>();
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),E_FAIL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),E_FAIL);
             assert_eq!(graph_primary_completed_flips(p),None);
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(960,540),None,0,false,ptr::null_mut()),Err(E_INVALIDARG));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Ok(()));
             assert_eq!(arm_graph_primary_flip(p,&contract,17,(0,0),(1920,1080),None,0,false,ptr::null_mut()),Err(E_FAIL));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),S_OK);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),S_OK);
+            assert_eq!((vt.get_flip_status)(p,0),E_INVALIDARG);
+            assert_eq!((vt.get_flip_status)(p,3),E_INVALIDARG);
             assert_eq!((vt.flip)(p,z,0),E_INVALIDARG);
             assert_eq!((vt.flip)(p,b,1),E_INVALIDARG);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),0);
             assert_eq!((vt.flip)(p,b,0),S_OK);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),S_OK);
             assert_eq!(graph_primary_completed_flips(p),Some(2));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),S_OK);
             assert_eq!(phys[0].blts.load(Ordering::SeqCst),3);
             assert_eq!(phys[0].flips.load(Ordering::SeqCst),0);
             assert_eq!(phys[1].flips.load(Ordering::SeqCst),0);
             assert_eq!(retire_graph_primary_flip(p),Ok(2));
+            assert_eq!((vt.get_flip_status)(p,DDGFS_CANFLIP),E_FAIL);
+            assert_eq!((vt.get_flip_status)(p,DDGFS_ISFLIPDONE),E_FAIL);
             assert_eq!(graph_primary_completed_flips(p),None);
             assert_eq!((vt.flip)(p,b,0),E_NOTIMPL);
             assert_eq!((vt.flip)(p,ptr::null_mut(),0),E_NOTIMPL);
@@ -1622,6 +2535,13 @@ mod tests{
                 let _=worker.join();
                 panic!("synthetic native Flip did not reach its first Blt");
             }
+            // The virtual flip is in the real Blt callback: ISFLIPDONE
+            // must describe it as pending, without taking the held mutex
+            // or trusting the unrelated native primary GetFlipStatus.
+            assert_eq!((vt.get_flip_status)(primary,DDGFS_ISFLIPDONE),
+                DDERR_WASSTILLDRAWING);
+            assert_eq!((vt.get_flip_status)(primary,DDGFS_CANFLIP),
+                DDERR_WASSTILLDRAWING);
             let retirement_started=Arc::new(AtomicBool::new(false));
             let retirement_finished=Arc::new(AtomicBool::new(false));
             let started=Arc::clone(&retirement_started);
@@ -1733,5 +2653,62 @@ mod tests{
             assert_eq!((vt.release)(facade),0);
         }
         assert_eq!(real.refs.load(Ordering::SeqCst),1);
+    }
+}
+
+#[cfg(test)]
+mod frame_time_telemetry_tests{
+    use super::*;
+    #[test]
+    fn regular_60fps_virtual_flips_show_no_hitch(){
+        let mut t=FrameTimeWindow::default();
+        let base=Instant::now();
+        assert!(t.observe(base,Duration::from_millis(1),
+            Mode{width:1920,height:1080,bpp:16},Some(60)).is_none());
+        let mut result=None;
+        for n in 1..=120u64{
+            result=t.observe(base+Duration::from_micros(n*16_667),
+                Duration::from_millis(1),
+                Mode{width:1920,height:1080,bpp:16},Some(60));
+        }
+        let report=result.unwrap();
+        assert!(report.contains("samples=120"));
+        assert!(report.contains("slow_2x=0 slow_3x=0"));
+        assert!(report.contains("mode=1920x1080x16"));
+        assert!(report.contains("p95_ms=16.667"));
+    }
+    #[test]
+    fn one_50ms_hitch_counts_only_at_window_summary(){
+        let mut t=FrameTimeWindow::default();
+        let mode=Mode{width:1920,height:1080,bpp:16};
+        let mut timestamp=Instant::now();
+        assert!(t.observe(timestamp,Duration::from_millis(1),mode,Some(60)).is_none());
+        let mut report=None;
+        for n in 1..=120{
+            timestamp+=if n==45{Duration::from_millis(50)}
+                else{Duration::from_micros(16_667)};
+            report=t.observe(timestamp,Duration::from_millis(1),mode,Some(60));
+        }
+        let report=report.unwrap();
+        assert!(report.contains("slow_2x=1 slow_3x=1"));
+        assert!(report.contains("max_ms=50.000"));
+    }
+    #[test]
+    fn focus_pause_is_not_counted_as_frame_stutter(){
+        let mut t=FrameTimeWindow::default();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let base=Instant::now();
+        t.observe(base,Duration::ZERO,mode,Some(60));
+        assert!(t.observe(base+Duration::from_secs(5),
+            Duration::ZERO,mode,Some(60)).is_none());
+        let mut r=None;
+        for n in 1..=120{
+            r=t.observe(base+Duration::from_secs(5)+
+                Duration::from_micros(n*16_667),
+                Duration::ZERO,mode,Some(60));
+        }
+        let r=r.unwrap();
+        assert!(r.contains("ignored_pauses=1"));
+        assert!(r.contains("slow_2x=0 slow_3x=0"));
     }
 }

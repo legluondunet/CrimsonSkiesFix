@@ -1,6 +1,6 @@
 //! A genuine DirectDraw4 surface Blt backend for the Flip-to-Blt plan.
-//! Imported by the standalone probe and by the DLL, but NEVER activated
-//! by any in-game hook yet. Not a COM surface facade or virtual primary.
+//! Shared DirectDraw native Blt presenter for the verified virtual game graph.
+//! The real primary and formats are validated by the caller.
 
 #![allow(dead_code)]
 use std::{ffi::c_void,ptr};
@@ -9,7 +9,6 @@ type Ptr=*mut c_void;
 const BAD:i32=0x80070057u32 as i32;
 const WAIT:u32=0x01000000;
 const FILL:u32=0x00000400;
-
 #[repr(C)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Rect{pub left:i32,pub top:i32,pub right:i32,pub bottom:i32}
@@ -19,12 +18,19 @@ pub struct NativeWindowedBlt {
     primary:Ptr,
     source_surface:Ptr,
     origin:(i32,i32),
-    client:(u32,u32),
+    client:(u32,u32), // contract/render pixel extent
+    output_client:(u32,u32), // Win32 DPI-logical HWND coordinates
     source:Mode,
     // Borrowed DD4 offscreen RGB565 scratch owned by the current game epoch.
     // Never use it outside the matching native Surface4 graph lifetime.
     menu_scratch:Ptr,
     menu_prepared:bool,
+    // Borrowed full-client RGB32 offscreen surface; the verified DD4
+    // epoch retains its strong COM reference through Flip retirement.
+    // BLACK background pixels live in this surface, not in drawn bars.
+    full_frame_composite:Ptr,
+    composite_black_ready:bool,
+    composed_frames:u64,
 }
 impl NativeWindowedBlt {
     /// SAFETY: caller retains live IDirectDrawSurface4 COM references to
@@ -40,7 +46,112 @@ impl NativeWindowedBlt {
            !(matches!((source.width,source.height),(640,480)|(800,600)) ||
              (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
-        Ok(Self{primary,source_surface,origin,client,source,menu_scratch:ptr::null_mut(),menu_prepared:false})
+        Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false,
+            full_frame_composite:ptr::null_mut(),composite_black_ready:false,
+            composed_frames:0})
+    }
+    /// Windowed DirectDraw primary coordinates on native Windows are the
+    /// DPI-logical Win32 client size, while the 3D render graph must remain
+    /// the physical monitor raster (1920x1200 at 125% scaling). Convert
+    /// only final presentation rectangles, NOT source modes/FOV/HUD/Z.
+    /// The independent probe and Wine/Proton use output_client==client.
+    pub fn set_output_client(&mut self,output:(u32,u32))->Result<(),i32>{
+        // Shared with the WndProc's 4:3 input mapping. Win32 DPI
+        // virtualization can round either dimension by one output pixel;
+        // never reject an otherwise correct native monitor on that basis.
+        if !crate::presentation::dpi_output_matches(self.client,output){
+            return Err(BAD);
+        }
+        self.output_client=output;
+        Ok(())
+    }
+    /// Exact native XRGB8888 800x600 UI only. Surface pixel dimensions
+    /// must equal the DPI-logical game HWND client, and be verified by
+    /// DD4 GetSurfaceDesc before enabling. No COM refs are acquired here.
+    /// The caller owns the surface throughout the active Flip session.
+    pub fn enable_full_frame_composition(&mut self,surface:Ptr)->Result<(),i32>{
+        if surface.is_null() || surface==self.primary ||
+           surface==self.source_surface || self.origin!=(0,0) ||
+           (self.source.width,self.source.height,self.source.bpp)!=(800,600,16) ||
+           self.output_client.0==0 || self.output_client.1==0{
+            return Err(BAD);
+        }
+        self.full_frame_composite=surface;
+        self.composite_black_ready=false;
+        self.composed_frames=0;
+        Ok(())
+    }
+    pub fn disable_full_frame_composition(&mut self){
+        self.full_frame_composite=ptr::null_mut();
+        self.composite_black_ready=false;
+        self.composed_frames=0;
+    }
+    pub fn full_frame_composition_enabled(&self)->bool{
+        !self.full_frame_composite.is_null()
+    }
+    fn composite_full_rect(&self)->Result<Rect,i32>{
+        let right=i32::try_from(self.output_client.0).map_err(|_|BAD)?;
+        let bottom=i32::try_from(self.output_client.1).map_err(|_|BAD)?;
+        Ok(Rect{left:0,top:0,right,bottom})
+    }
+    fn composite_content_rect(&self,view:Viewport)->Result<Rect,i32>{
+        if crate::presentation::fit_viewport(
+            self.source.width,self.source.height,self.client.0,self.client.1
+        )!=Some(view){return Err(BAD);}
+        // SAME floor-per-edge DPI mapping as physical primary presentation.
+        let content=crate::presentation::output_viewport(
+            (self.source.width,self.source.height),self.client,self.output_client
+        ).ok_or(BAD)?;
+        let left=i32::try_from(content.x).map_err(|_|BAD)?;
+        let top=i32::try_from(content.y).map_err(|_|BAD)?;
+        let right=i32::try_from(content.x+content.width).map_err(|_|BAD)?;
+        let bottom=i32::try_from(content.y+content.height).map_err(|_|BAD)?;
+        Ok(Rect{left,top,right,bottom})
+    }
+    fn fill_composite_black(&mut self)->Result<(),i32>{
+        let full=self.composite_full_rect()?;
+        let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
+        // ColorFill acts only on the ENTIRE offscreen surface. The pixels
+        // not overwritten by the centered 4:3 source remain permanently
+        // black until the next focus refresh; no sidebar rectangles.
+        unsafe{Self::blt_to(
+            self.full_frame_composite,&full,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr()
+        )?;}
+        self.composite_black_ready=true;
+        Ok(())
+    }
+    fn present_composite(&mut self,view:Viewport)->Result<(),i32>{
+        if !self.composite_black_ready{self.fill_composite_black()?;}
+        let dest=self.composite_content_rect(view)?;
+        let full=self.screen_rect(Viewport{
+            x:0,y:0,width:self.client.0,height:self.client.1
+        })?;
+        let source=self.source_for_present();
+        let surface=self.full_frame_composite;
+        // Offscreen 4:3 stretch and ONE complete real-primary Blt, with
+        // black pixels carried by that same source. No primary gutter
+        // color fills or GDI after the full-frame presentation.
+        unsafe{
+            Self::blt_to(surface,&dest,source,WAIT,ptr::null_mut())?;
+            self.blt(&full,surface,WAIT,ptr::null_mut())?;
+        }
+        self.composed_frames=self.composed_frames.saturating_add(1);
+        if self.composed_frames==1 || self.composed_frames%120==0{
+            crate::log(&format!(
+                "NATIVE-FULL-FRAME-COMPOSE: presented frame={} offscreen={}x{} viewport=({},{}..{},{}), single full primary Blt, background=0x000000",
+                self.composed_frames,self.output_client.0,self.output_client.1,
+                dest.left,dest.top,dest.right,dest.bottom
+            ));
+        }
+        Ok(())
+    }
+    fn logical_edge(&self,edge:u32,horizontal:bool)->Result<i32,i32>{
+        let (logical,physical)=if horizontal{
+            (self.output_client.0,self.client.0)
+        }else{(self.output_client.1,self.client.1)};
+        if edge>physical{return Err(BAD);}
+        let scaled=u64::from(edge)*u64::from(logical)/u64::from(physical);
+        i32::try_from(scaled).map_err(|_|BAD)
     }
     /// Called during graph initialization; the caller retains the strong
     /// COM ownership until the entire epoch is retired.
@@ -107,35 +218,97 @@ impl NativeWindowedBlt {
            view.y.checked_add(view.height).is_none_or(|y|y>self.client.1){
             return Err(BAD);
         }
-        let left=i32::try_from(i64::from(self.origin.0)+i64::from(view.x))
-            .map_err(|_|BAD)?;
-        let top=i32::try_from(i64::from(self.origin.1)+i64::from(view.y))
-            .map_err(|_|BAD)?;
-        let right=i32::try_from(i64::from(self.origin.0)+i64::from(view.x)+i64::from(view.width))
-            .map_err(|_|BAD)?;
-        let bottom=i32::try_from(i64::from(self.origin.1)+i64::from(view.y)+i64::from(view.height))
-            .map_err(|_|BAD)?;
+        // Both left and right edges must be mapped, not just the width,
+        // so 4:3 menus stay centered after DPI virtualization and we never
+        // crop the right/bottom of a physical screenshot.
+        let left=self.origin.0.checked_add(self.logical_edge(view.x,true)?).ok_or(BAD)?;
+        let top=self.origin.1.checked_add(self.logical_edge(view.y,false)?).ok_or(BAD)?;
+        let right=self.origin.0.checked_add(
+            self.logical_edge(view.x+view.width,true)?).ok_or(BAD)?;
+        let bottom=self.origin.1.checked_add(
+            self.logical_edge(view.y+view.height,false)?).ok_or(BAD)?;
         Ok(Rect{left,top,right,bottom})
     }
-    unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
-        let vtable=*(self.primary.cast::<*const usize>());
+    /// Native Windows 11 may repaint the sidebars white AFTER the first
+    /// full-window black clear, e.g. WM_PAINT/DPI compositor updates.
+    /// Refresh ONLY the pillarbox regions, never the moving 4:3 image,
+    /// before each frame when the render raster differs from HWND logical
+    /// coordinates. This avoids the legacy full-screen clear flicker.
+    /// Wine/probe (output_client==client) remains unchanged.
+    fn maintain_native_black_sidebars(&mut self,view:Viewport)->Result<(),i32>{
+        if self.output_client==self.client || view.x==0 ||
+           view.x.checked_add(view.width).is_none_or(|x|x>=self.client.0){
+            return Ok(());
+        }
+        if view.y!=0 || view.height!=self.client.1{return Err(BAD);}
+        let content=self.screen_rect(view)?;
+        let left=self.screen_rect(Viewport{x:0,y:0,width:self.client.0,height:self.client.1})?;
+        let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
+        for bar in [
+            Rect{left:left.left,top:left.top,right:content.left,bottom:left.bottom},
+            Rect{left:content.right,top:left.top,right:left.right,bottom:left.bottom}
+        ] {
+            if bar.right>bar.left {
+                unsafe{self.blt(&bar,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr())?;}
+            }
+        }
+        Ok(())
+    }
+    unsafe fn blt_to(target:Ptr,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
+        if target.is_null(){return Err(BAD);}
+        let vtable=*(target.cast::<*const usize>());
+        if vtable.is_null(){return Err(BAD);}
         let call:Blt=std::mem::transmute(*vtable.add(5));
-        let hr=call(self.primary,rect,source,ptr::null(),flags,fx);
+        let hr=call(target,rect,source,ptr::null(),flags,fx);
         if hr<0{Err(hr)}else{Ok(())}
+    }
+    unsafe fn blt(&self,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
+        Self::blt_to(self.primary,rect,source,flags,fx)
     }
 }
 impl WindowedBlt for NativeWindowedBlt {
     fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),i32>{
         if (w,h)!=self.client{return Err(BAD);}
+        if self.full_frame_composition_enabled(){
+            match self.fill_composite_black(){
+                Ok(())=>return Ok(()),
+                Err(hr)=>{
+                    crate::log(&format!(
+                        "NATIVE-FULL-FRAME-COMPOSE: offscreen black clear failed hr={:#010x}; reverting to validated primary clear/Blt",
+                        hr as u32
+                    ));
+                    self.disable_full_frame_composition();
+                }
+            }
+        }
         let dest=self.screen_rect(Viewport{x:0,y:0,width:w,height:h})?;
         let mut fx=[0u32;25];fx[0]=100;fx[20]=0;
         unsafe{self.blt(&dest,ptr::null_mut(),FILL|WAIT,fx.as_mut_ptr())}
     }
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
+        if self.full_frame_composition_enabled(){
+            match self.present_composite(view){
+                Ok(())=>return Ok(()),
+                Err(hr)=>{
+                    crate::log(&format!(
+                        "NATIVE-FULL-FRAME-COMPOSE: composition/presentation failed hr={:#010x}; reverting to validated 4:3 direct Blt",
+                        hr as u32
+                    ));
+                    self.disable_full_frame_composition();
+                    // The last successful black clear may have affected
+                    // only the private offscreen surface. Clear the REAL
+                    // primary once before reverting so even a 100%-DPI
+                    // output cannot display an uninitialized white gutter.
+                    self.clear_full_window_black(self.client.0,self.client.1)?;
+                }
+            }
+        }
         let dest=self.screen_rect(view)?;
+        self.maintain_native_black_sidebars(view)?;
         let source=self.source_for_present();
-        unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())}
+        unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())?;}
+        Ok(())
     }
 }
 
@@ -169,6 +342,27 @@ mod tests{
         let p=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at};
         let s=FakeSurface{vtable:ptr::null(),calls:Mutex::new(Vec::new()),fail_at:0};
         (vt,p,s)
+    }
+    #[test]
+    fn shared_windowed_backend_accepts_both_verified_pixel_graph_modes(){
+        // The DD4 epoch validates the real pixel format before presentation.
+        // This common presenter does not branch on Windows vs Wine.
+        let primary=1usize as Ptr;
+        let back=2usize as Ptr;
+        for (w,h,bpp,client,accepted) in [
+            (800,600,16,(1920,1200),true),
+            (640,480,16,(1920,1200),true),
+            (1920,1200,16,(1920,1200),true),
+            (800,600,32,(1920,1200),false)
+        ]{
+            let mode=Mode{width:w,height:h,bpp};
+            let result=unsafe{NativeWindowedBlt::from_borrowed_com(
+                primary,back,(0,0),client,mode)};
+            assert_eq!(result.is_ok(),accepted);
+        }
+        assert!(unsafe{NativeWindowedBlt::from_borrowed_com(
+            ptr::null_mut(),back,(0,0),(1920,1200),
+            Mode{width:800,height:600,bpp:16})}.is_err());
     }
     #[test]
     fn original_frame_is_presented_unless_menu_composition_succeeded(){
@@ -209,6 +403,152 @@ mod tests{
             Call{rect:Rect{left:240,top:0,right:1680,bottom:1080},
                  source:true,flags:WAIT,fx_size:0,fill:0}
         ]);
+    }
+    #[test]
+    fn native_dpi_menu_maintains_black_bars_without_clearing_content(){
+        let (vt,mut p,mut source)=objects(0);
+        p.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut p as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),mode
+        ).unwrap()};
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        let view=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,view),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,view),Ok(()));
+        let calls=p.calls.lock().unwrap();
+        assert_eq!(calls.len(),6);
+        for i in [0usize,3]{
+            assert_eq!(calls[i].rect,Rect{left:0,top:0,right:128,bottom:960});
+            assert_eq!(calls[i+1].rect,Rect{left:1408,top:0,right:1536,bottom:960});
+            assert_eq!(calls[i+2].rect,Rect{left:128,top:0,right:1408,bottom:960});
+            assert_eq!(calls[i].flags,FILL|WAIT);
+            assert_eq!(calls[i+1].flags,FILL|WAIT);
+            assert_eq!(calls[i+2].flags,WAIT);
+            assert_eq!(calls[i].source,false);
+            assert_eq!(calls[i+1].source,false);
+            assert_eq!(calls[i+2].source,true);
+        }
+    }
+    #[test]
+    fn full_frame_movie_composition_blits_black_and_video_offscreen_then_one_full_primary(){
+        let (vt,mut primary,mut source)=objects(0);
+        primary.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mut offscreen=FakeSurface{
+            vtable:vt.as_ptr(),calls:Mutex::new(Vec::new()),fail_at:0
+        };
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{
+            NativeWindowedBlt::from_borrowed_com(
+                (&mut primary as *mut FakeSurface).cast(),
+                (&mut source as *mut FakeSurface).cast(),
+                (0,0),(1920,1200),mode
+            ).unwrap()
+        };
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        assert!(backend.enable_full_frame_composition(
+            (&mut offscreen as *mut FakeSurface).cast()
+        ).is_ok());
+        assert!(backend.full_frame_composition_enabled());
+        let vp=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.clear_full_window_black(1920,1200),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        let scratch=offscreen.calls.lock().unwrap();
+        assert_eq!(scratch.len(),3);
+        assert_eq!(scratch[0],Call{
+            rect:Rect{left:0,top:0,right:1536,bottom:960},
+            source:false,flags:FILL|WAIT,fx_size:100,fill:0
+        });
+        for call in &scratch[1..]{
+            assert_eq!(call.rect,Rect{left:128,top:0,right:1408,bottom:960});
+            assert_eq!(call.flags,WAIT);
+            assert!(call.source);
+        }
+        let physical=primary.calls.lock().unwrap();
+        assert_eq!(physical.len(),2); // exactly ONE complete Blt per frame
+        for call in physical.iter(){
+            assert_eq!(call.rect,Rect{left:0,top:0,right:1536,bottom:960});
+            assert_eq!(call.flags,WAIT);
+            assert!(call.source);
+        }
+    }
+    #[test]
+    fn full_frame_composition_failure_reverts_to_prior_direct_draw_frame(){
+        let (vt,mut primary,mut source)=objects(0);
+        primary.vtable=vt.as_ptr();source.vtable=vt.as_ptr();
+        let mut offscreen=FakeSurface{
+            vtable:vt.as_ptr(),calls:Mutex::new(Vec::new()),fail_at:2
+        };
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{
+            NativeWindowedBlt::from_borrowed_com(
+                (&mut primary as *mut FakeSurface).cast(),
+                (&mut source as *mut FakeSurface).cast(),
+                (0,0),(1920,1200),mode
+            ).unwrap()
+        };
+        backend.set_output_client((1536,960)).unwrap();
+        backend.enable_full_frame_composition(
+            (&mut offscreen as *mut FakeSurface).cast()
+        ).unwrap();
+        let vp=Viewport{x:160,y:0,width:1600,height:1200};
+        assert_eq!(backend.clear_full_window_black(1920,1200),Ok(()));
+        // Scratch's source copy fails, so no partial offscreen frame is
+        // sent to the HWND. Existing sidebar + direct viewport Blts run.
+        assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
+        assert!(!backend.full_frame_composition_enabled());
+        let calls=primary.calls.lock().unwrap();
+        assert_eq!(calls.len(),4);
+        assert_eq!(calls[0].rect,Rect{left:0,top:0,right:1536,bottom:960});
+        assert_eq!(calls[0].flags,FILL|WAIT);
+        assert_eq!(calls[1].rect,Rect{left:0,top:0,right:128,bottom:960});
+        assert_eq!(calls[2].rect,Rect{left:1408,top:0,right:1536,bottom:960});
+        assert_eq!(calls[3].rect,Rect{left:128,top:0,right:1408,bottom:960});
+    }
+    #[test]
+    fn full_frame_composition_is_refused_for_gameplay_or_unverified_surfaces(){
+        let (_vt,mut primary,mut source)=objects(0);
+        let game=Mode{width:1920,height:1200,bpp:16};
+        let mut native=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut primary as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),game
+        ).unwrap()};
+        assert!(native.enable_full_frame_composition(
+            4usize as Ptr
+        ).is_err());
+        let mut movie=unsafe{NativeWindowedBlt::from_borrowed_com(
+            (&mut primary as *mut FakeSurface).cast(),
+            (&mut source as *mut FakeSurface).cast(),
+            (0,0),(1920,1200),Mode{width:800,height:600,bpp:16}
+        ).unwrap()};
+        assert!(movie.enable_full_frame_composition(ptr::null_mut()).is_err());
+        assert!(movie.enable_full_frame_composition(
+            (&mut primary as *mut FakeSurface).cast()
+        ).is_err());
+    }
+    #[test]
+    fn physical_render_rects_are_mapped_to_dpi_logical_client(){
+        let (_vt,mut primary,mut source)=objects(0);
+        let real_primary=(&mut primary as *mut FakeSurface).cast();
+        let real_source=(&mut source as *mut FakeSurface).cast();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
+            real_primary,real_source,(0,0),(1920,1200),mode
+        ).unwrap()};
+        assert_eq!(backend.set_output_client((1536,960)),Ok(()));
+        let menu=backend.screen_rect(Viewport{x:160,y:0,width:1600,height:1200}).unwrap();
+        assert_eq!(menu,Rect{left:128,top:0,right:1408,bottom:960});
+        let whole=backend.screen_rect(Viewport{x:0,y:0,width:1920,height:1200}).unwrap();
+        assert_eq!(whole,Rect{left:0,top:0,right:1536,bottom:960});
+        assert_eq!(backend.set_output_client((1536,950)),Err(BAD));
+        // Windows may round one logical client dimension at fractional DPI.
+        assert_eq!(backend.set_output_client((1536,961)),Ok(()));
+        // But a real aspect mismatch remains invalid.
+        assert_eq!(backend.set_output_client((1536,864)),Err(BAD));
     }
     #[test]
     fn origin_translation_and_hresult_failure(){

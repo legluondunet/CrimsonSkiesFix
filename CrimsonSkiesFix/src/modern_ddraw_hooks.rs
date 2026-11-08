@@ -3,7 +3,7 @@
 //! mode selection and GOS/launcher behavior through unchanged callbacks.
 use super::*;
 
-unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
+pub(super) unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flags:u32)->Hr {
     let Some(addr)=orig(this,DD_SET_COOPERATIVE) else{return DDERR_GENERIC};
     let call:CooperativeFn=std::mem::transmute(addr);
     if !hwnd.is_null() && cfg().log_enabled && PRE_EXCLUSIVE_DESKTOP.get().is_none(){
@@ -22,8 +22,9 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
         GAME_DD4_VTABLE.load(Ordering::Relaxed)==*(this.cast::<usize>()) {
         in_game_adapter::cooperative(this,hwnd,flags,call)
             .unwrap_or_else(||call(this,hwnd,flags))
-    }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
-        log("WINDOWED-GAME: non-DD4 SetCooperativeLevel blocked after virtual graph exposure");
+    }else if cfg().experimental_windowed_adapter &&
+        in_game_adapter::must_block_other_cooperative_interface(flags){
+        log("NATIVE-STRICT-BORDERLESS: non-DD4 exclusive SetCooperativeLevel blocked (or virtual graph already exposed)");
         0x8000_4001u32 as i32
     }else{call(this,hwnd,flags)};
     if !hwnd.is_null() && cfg().log_enabled {
@@ -41,7 +42,7 @@ unsafe extern "system" fn modern_set_cooperative(this:*mut c_void,hwnd:Hwnd,flag
     hr
 }
 
-unsafe extern "system" fn modern_set_display_mode(
+pub(super) unsafe extern "system" fn modern_set_display_mode(
     this:*mut c_void,w:u32,h:u32,bpp:u32,refresh:u32,flags:u32
 )->Hr {
     let Some(addr)=orig(this,DD_SET_DISPLAY_MODE) else{return DDERR_GENERIC};
@@ -51,7 +52,7 @@ unsafe extern "system" fn modern_set_display_mode(
         in_game_adapter::display_mode(this,w,h,bpp,refresh,flags,call)
             .unwrap_or_else(||call(this,w,h,bpp,refresh,flags))
     }else if cfg().experimental_windowed_adapter && in_game_adapter::must_block_other_mode_interface(){
-        log("WINDOWED-GAME: non-DD4 SetDisplayMode blocked after virtual graph exposure");
+        log("NATIVE-STRICT-BORDERLESS: non-DD4 physical SetDisplayMode blocked (or virtual graph already exposed)");
         0x8000_4001u32 as i32
     }else{call(this,w,h,bpp,refresh,flags)}; // 5 arguments since IDirectDraw2
     if hr>=0 {
@@ -180,13 +181,18 @@ pub(super) unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
     let qi=replace_method(object,COM_QUERY_INTERFACE,ddraw_query_interface as *const () as usize);
     let cooperative=replace_method(object,DD_SET_COOPERATIVE,modern_set_cooperative as *const () as usize);
     let mode=replace_method(object,DD_SET_DISPLAY_MODE,modern_set_display_mode as *const () as usize);
+    // Read-only 19th-slot mode-restore diagnostic. Leave Wine and standard
+    // (Log=0) native operation bit-for-bit unchanged.
+    let restore=if cfg().log_enabled && diagnostics::is_native_windows(){
+        replace_method(object,DD_RESTORE_DISPLAY_MODE,restore_display_mode as *const () as usize)
+    }else{false};
     let surface=replace_method(object,DD_CREATE_SURFACE,modern_create_surface as *const () as usize);
     if name=="IDirectDraw4" && cfg().experimental_windowed_adapter {
         let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as *const () as usize);
         if cfg().log_enabled {log(&format!("WINDOWED-GAME: DD4 GetDisplayMode hook_installed={get_mode}"));}
     }
     if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
-        log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} surface={surface} (observation only)"));
+        log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} restore_mode={restore} surface={surface} (observation only)"));
     }
 }
 
@@ -222,5 +228,6 @@ mod tests {
         assert_eq!(DD_GET_DISPLAY_MODE,12);
         assert_eq!(DD_SET_COOPERATIVE,20);
         assert_eq!(DD_SET_DISPLAY_MODE,21);
+        assert_eq!(DD_RESTORE_DISPLAY_MODE,19);
     }
 }

@@ -3,6 +3,7 @@
 //! borderless, FPS and read-only tracing checks. Functions were moved without
 //! changing call order, callback signatures, or COM ownership.
 use super::*;
+static NATIVE_RESTORE_TRACE_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 // Read-only interface discovery: the original COM QueryInterface is called
 // without changing IID, return value or output. This identifies whether the
@@ -79,9 +80,49 @@ pub(super) unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,
             } else if trace {log("Borderless deferred: could not resolve a monitor");}
             return hr;
         }
+        if in_game_adapter::strict_native_nonexclusive(){
+            log(&format!(
+                "NATIVE-STRICT-BORDERLESS: legacy DDSCL_NORMAL failed hr={hr:#x}; refusing original DDSCL_EXCLUSIVE fallback"
+            ));
+            return hr;
+        }
         if trace {log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back")); }
     }
+    // In the strict native experiment, never forward an exclusive request
+    // directly after the cooperative shim is bypassed/declined.
+    if in_game_adapter::strict_native_nonexclusive() && flags&0x10!=0 {
+        log("NATIVE-STRICT-BORDERLESS: legacy exclusive cooperative request rejected");
+        return DDERR_GENERIC;
+    }
     call(this,hwnd,flags)
+}
+
+/// Passive diagnosis of a still-unattributed 1920x1200 -> 800x600
+/// physical Windows mode switch. DirectDraw RestoreDisplayMode has the
+/// same no-argument x86 COM ABI in IDirectDraw 1/2/4/7 (vtable slot 19).
+/// It cannot repair the missing virtual windowed bridge by itself.
+pub(super) unsafe extern "system" fn restore_display_mode(this:*mut c_void)->Hr {
+    // The game's logical RestoreDisplayMode cannot reconfigure the user's
+    // real monitor in a strictly non-exclusive native session. No native
+    // display mode has been changed, so acknowledge it without forwarding.
+    if in_game_adapter::strict_native_nonexclusive(){
+        log("NATIVE-STRICT-BORDERLESS: RestoreDisplayMode acknowledged virtually; desktop unchanged");
+        return S_OK;
+    }
+    let Some(addr)=orig(this,DD_RESTORE_DISPLAY_MODE) else{return DDERR_GENERIC};
+    let call:RestoreModeFn=std::mem::transmute(addr);
+    let trace=cfg().log_enabled && diagnostics::is_native_windows() &&
+        NATIVE_RESTORE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16;
+    if trace {
+        log(&format!("NATIVE-MODE-TRACE: COM RestoreDisplayMode ENTER current_physical={:?}",
+            win32::physical_primary_monitor_dimensions()));
+    }
+    let hr=call(this);
+    if trace {
+        log(&format!("NATIVE-MODE-TRACE: COM RestoreDisplayMode EXIT hr={:#010x} current_physical={:?}",
+            hr as u32,win32::physical_primary_monitor_dimensions()));
+    }
+    hr
 }
 
 pub(super) unsafe extern "system" fn set_display_mode(this:*mut c_void,w:u32,h:u32,bpp:u32)->Hr {
@@ -114,9 +155,20 @@ unsafe extern "system" fn surface_blt(this:*mut c_void,dst:*const c_void,source:
 }
 
 pub(super) unsafe extern "system" fn create_surface(this:*mut c_void,desc:*mut c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
-    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {return DDERR_GENERIC};
+    let Some(addr)=orig(this,DD_CREATE_SURFACE) else {
+        if cfg().log_enabled {log("STARTUP-DDRAW: IDirectDraw::CreateSurface original callback unavailable");}
+        return DDERR_GENERIC;
+    };
     let call:SurfaceFn=std::mem::transmute(addr);
     let hr=call(this,desc,out,outer);
+    if cfg().log_enabled &&
+        STARTUP_LEGACY_SURFACE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32 {
+        log(&format!(
+            "STARTUP-DDRAW: IDirectDraw::CreateSurface desc={} outer={} hr={:#010x} object_returned={}",
+            if desc.is_null(){"NULL"}else{"provided"},
+            if outer.is_null(){"NULL"}else{"provided"},
+            hr as u32,hr>=0 && !out.is_null() && !(*out).is_null()));
+    }
     if hr>=0 && !out.is_null() && !(*out).is_null() {
         let surface=*out;
         if replace_method(surface,COM_QUERY_INTERFACE,surface_query_interface as *const () as usize) {
@@ -157,6 +209,7 @@ mod tests {
         let _:QueryInterfaceFn=surface_query_interface;
         let _:CooperativeFn=set_cooperative;
         let _:DisplayModeFn=set_display_mode;
+        let _:RestoreModeFn=restore_display_mode;
         let _:SurfaceFn=create_surface;
         let _:FlipFn=surface_flip;
         let _:BltFn=surface_blt;
@@ -172,6 +225,7 @@ mod tests {
             assert_eq!(surface_query_interface(null,std::ptr::null(),std::ptr::null_mut()),DDERR_GENERIC);
             assert_eq!(set_cooperative(null,null,0),DDERR_GENERIC);
             assert_eq!(set_display_mode(null,800,600,16),DDERR_GENERIC);
+            assert_eq!(restore_display_mode(null),DDERR_GENERIC);
             assert_eq!(create_surface(null,null,std::ptr::null_mut(),null),DDERR_GENERIC);
             assert_eq!(surface_flip(null,null,0),DDERR_GENERIC);
             assert_eq!(surface_blt(null,std::ptr::null(),null,std::ptr::null(),0,null),DDERR_GENERIC);
@@ -186,6 +240,7 @@ mod tests {
         assert_eq!(DD_CREATE_SURFACE,6);
         assert_eq!(DD_SET_COOPERATIVE,20);
         assert_eq!(DD_SET_DISPLAY_MODE,21);
+        assert_eq!(DD_RESTORE_DISPLAY_MODE,19);
         assert_eq!(SURFACE_BLT,5);
         assert_eq!(SURFACE_BLT_FAST,7);
         assert_eq!(SURFACE_FLIP,11);

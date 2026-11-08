@@ -121,6 +121,15 @@ unsafe fn api(module:*mut c_void,name:&[u8])->*const c_void {
     if module.is_null(){ptr::null()}else{GetProcAddress(module,name.as_ptr().cast())}
 }
 
+/// Reuse the same native-versus-Wine detection as SYS-OS. Fail closed if
+/// ntdll cannot be resolved; the caller must not guess physical geometry.
+pub fn is_native_windows()->bool {
+    unsafe{
+        let ntdll=GetModuleHandleA(b"ntdll.dll\0".as_ptr().cast());
+        !ntdll.is_null() && api(ntdll,b"wine_get_version\0").is_null()
+    }
+}
+
 fn log_os(emit:&mut dyn FnMut(&str)) {
     unsafe {
         let ntdll=GetModuleHandleA(b"ntdll.dll\0".as_ptr().cast());

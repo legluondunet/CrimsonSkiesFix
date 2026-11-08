@@ -87,6 +87,124 @@ fn log_render_chain_preflight(request:u32,parent:u32,child:u32) {
     }
 }
 
+// Windows-native read-only presentation observations. No COM vtable,
+// surface pixels, HWND styles, system modes or cursor state are modified.
+// Log only real primary->backbuffer mode transitions and a bounded sample
+// of successful primary Flip events, never every Flip.
+static NATIVE_BACKBUFFER_MODE:Mutex<Option<(u32,u32)>>=Mutex::new(None);
+static NATIVE_PRIMARY_FLIP_SAMPLE:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_PRIMARY_OWNER_SAMPLES:AtomicUsize=AtomicUsize::new(0);
+const IID_DDRAW_SURFACE4:Guid=Guid{
+    d1:0x0b2b8630,d2:0xad35,d3:0x11d0,d4:[0x8e,0xa6,0x00,0x60,0x97,0x97,0xea,0x5b]
+};
+const SURFACE4_GET_DDINTERFACE:usize=36;
+
+/// Read-only provenance of the COM DirectDraw owner of a PRESENTED primary.
+/// QueryInterface and GetDDInterface increment COM references, which are
+/// released immediately. Never patch the returned owner or caller vtables.
+/// Do not guess that the game is using the DD4 interface observed at startup:
+/// the Windows native game can create surfaces through a different owner.
+unsafe fn trace_native_primary_ddraw_owner(primary:*mut c_void){
+    if !cfg().log_enabled || !diagnostics::is_native_windows(){return;}
+    let count=NATIVE_PRIMARY_OWNER_SAMPLES.fetch_add(1,Ordering::Relaxed);
+    if count>=6{return;}
+    type QI=QueryInterfaceFn;
+    type GetOwner=unsafe extern "system" fn(*mut c_void,*mut *mut c_void)->Hr;
+    type Release=unsafe extern "system" fn(*mut c_void)->u32;
+    let qi=orig(primary,COM_QUERY_INTERFACE).or_else(||{
+        let candidate=method(primary,COM_QUERY_INTERFACE);
+        (candidate!=0 && candidate!=surface_query_interface as usize).then_some(candidate)
+    });
+    let Some(qi)=qi else{
+        log("NATIVE-OWNER: primary QueryInterface original unavailable (read-only)");
+        return;
+    };
+    let query:QI=std::mem::transmute(qi);
+    let mut surface4: *mut c_void=std::ptr::null_mut();
+    let hr=query(primary,&IID_DDRAW_SURFACE4,&mut surface4);
+    if hr<0 || surface4.is_null(){
+        log(&format!("NATIVE-OWNER: primary IDirectDrawSurface4 QI unsupported hr={:#010x}",hr as u32));
+        return;
+    }
+    let release4=method(surface4,2);
+    let get_owner=method(surface4,SURFACE4_GET_DDINTERFACE);
+    if get_owner!=0{
+        let call:GetOwner=std::mem::transmute(get_owner);
+        let mut owner:*mut c_void=std::ptr::null_mut();
+        let owner_hr=call(surface4,&mut owner);
+        if owner_hr>=0 && !owner.is_null(){
+            let coop=method(owner,DD_SET_COOPERATIVE);
+            let mode=method(owner,DD_SET_DISPLAY_MODE);
+            let restore=method(owner,DD_RESTORE_DISPLAY_MODE);
+            let dd4_table=GAME_DD4_VTABLE.load(Ordering::Relaxed);
+            let table=*(owner.cast::<usize>());
+            log(&format!(
+                "NATIVE-OWNER: primary->Surface4->GetDDInterface success; parent_slot20_coop_hooked={} parent_slot21_mode_hooked={} parent_slot19_restore_hooked={} parent_is_known_game_DD4={} parent_qi_hooked={} (COM refs released; no mode or vtable modifications)",
+                coop==modern_ddraw_hooks::modern_set_cooperative as usize || coop==set_cooperative as usize,
+                mode==modern_ddraw_hooks::modern_set_display_mode as usize || mode==set_display_mode as usize,
+                restore==restore_display_mode as usize,
+                dd4_table!=0 && table==dd4_table,
+                method(owner,COM_QUERY_INTERFACE)==ddraw_query_interface as usize
+            ));
+            // GetDDInterface returns the interface version that CREATED the
+            // surface, not necessarily IDirectDraw4. Match that exact COM
+            // pointer against the results of version-specific QueryInterface
+            // before hooking mode calls: v1 has a 3-argument SetDisplayMode
+            // whereas v2/4/7 use 5. Do not guess the x86 call ABI.
+            if coop==modern_ddraw_hooks::modern_set_cooperative as usize &&
+               mode==modern_ddraw_hooks::modern_set_display_mode as usize {
+                log("NATIVE-OWNER-HOOK: actual primary owner already uses full windowed DD4 hooks; passive native tracer not installed");
+            }else if let Some(version)=crate::native_owner_mode_trace::classify(owner){
+                crate::native_owner_mode_trace::instrument(owner,version);
+            }else{
+                log("NATIVE-OWNER-HOOK: returned COM owner version unrecognized; no interception installed");
+            }
+            let release_owner=method(owner,2);
+            if release_owner!=0{
+                let release:Release=std::mem::transmute(release_owner);
+                release(owner);
+            }
+        }else{
+            log(&format!("NATIVE-OWNER: primary Surface4 GetDDInterface hr={:#010x} returned={}",owner_hr as u32,!owner.is_null()));
+            if !owner.is_null(){
+                let release=method(owner,2);
+                if release!=0{
+                    let call:Release=std::mem::transmute(release);
+                    call(owner);
+                }
+            }
+        }
+    }else{
+        log("NATIVE-OWNER: native Surface4 GetDDInterface slot unavailable");
+    }
+    if release4!=0{
+        let release:Release=std::mem::transmute(release4);
+        release(surface4);
+    }
+}
+unsafe fn native_backbuffer_dimensions(surface:*mut c_void)->Option<(u32,u32)>{
+    let addr=orig(surface,SURFACE_GET_DESC).or_else(||{
+        let candidate=method(surface,SURFACE_GET_DESC);
+        (candidate!=0 &&
+         candidate!=modern_get_surface_desc as *const () as usize).then_some(candidate)
+    })?;
+    let call:GetSurfaceDescFn=std::mem::transmute(addr);
+    // DirectDrawSurface4 returns DDSURFACEDESC2 (124 bytes); older
+    // Surface2/3 implementations can require DDSURFACEDESC (108 bytes).
+    // Both start with dwSize, dwFlags, dwHeight, dwWidth.
+    for size in [124u32,108u32]{
+        let mut desc=[0u32;31];
+        desc[0]=size;
+        if call(surface,desc.as_mut_ptr().cast())>=0 && desc[0]==size{
+            let dims=(desc[3],desc[2]);
+            if dims.0>=320 && dims.1>=200 && dims.0<=8192 && dims.1<=4320{
+                return Some(dims);
+            }
+        }
+    }
+    None
+}
+
 // The GetAttachedSurface ABI is the same for Surface2/3/4/7.
 // Call through with the original DDSCAPS or DDSCAPS2 pointer unchanged.
 // Do not Release the returned COM interface: ownership belongs to the game.
@@ -119,6 +237,21 @@ unsafe extern "system" fn modern_get_attached_surface(
                 if a&DDSCAPS_PRIMARYSURFACE!=0 && b&DDSCAPS_BACKBUFFER!=0 {
                     SURFACE_FIRST_PRIMARY_ATTACH.call_once(||log(
                         "SURFACE-CHAIN: confirmed primary front buffer -> attached backbuffer (game-provided; no modification)"));
+                    if diagnostics::is_native_windows(){
+                        if let Some(dims)=native_backbuffer_dimensions(*out) {
+                            if let Ok(mut last)=NATIVE_BACKBUFFER_MODE.lock(){
+                                if last.as_ref()!=Some(&dims) {
+                                    *last=Some(dims);
+                                    drop(last);
+                                    log(&format!(
+                                        "NATIVE-VIDEO: primary->backbuffer geometry switched to {}x{}; {}",
+                                        dims.0,dims.1,win32::native_presentation_snapshot()
+                                    ));
+                                    trace_native_primary_ddraw_owner(this);
+                                }
+                            }
+                        }
+                    }
                 }
                 // The requested caps pointer is game-owned, not modified.
                 if !caps.is_null(){log_render_chain_preflight(*caps,a,b);}
@@ -181,6 +314,16 @@ unsafe extern "system" fn modern_surface_flip(this:*mut c_void,target:*mut c_voi
     }
     let call:FlipFn=std::mem::transmute(addr);
     let result=call(this,target,flags);
+    if result>=0 && cfg().log_enabled && diagnostics::is_native_windows() &&
+        modern_surface_primary(this)==Some(true) {
+        let frames=NATIVE_PRIMARY_FLIP_SAMPLE.fetch_add(1,Ordering::Relaxed)+1;
+        // A 120-Flip period is only an API sampling interval, not 2 seconds
+        // or a guaranteed displayed frame rate. Stop after ten samples.
+        if frames==1 || (frames%120==0 && frames<=1200) {
+            log(&format!("NATIVE-VIDEO: successful_primary_flip={frames}; {}",
+                win32::native_presentation_snapshot()));
+        }
+    }
     // This code runs AFTER the original Flip and only counts successful
     // calls on the real primary surface. It never modifies the HRESULT.
     if result>=0 && cfg().log_enabled && modern_surface_primary(this)==Some(true) {
@@ -446,6 +589,14 @@ pub(super) unsafe fn observe_modern_surface(surface:*mut c_void,source:&str){
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_probe_reuses_the_verified_surface4_com_slots_and_guid(){
+        assert_eq!(SURFACE4_GET_DDINTERFACE,36);
+        assert_eq!(IID_DDRAW_SURFACE4.d1,0x0b2b8630);
+        assert_eq!(IID_DDRAW_SURFACE4.d2,0xad35);
+        assert_eq!(IID_DDRAW_SURFACE4.d4,[0x8e,0xa6,0x00,0x60,0x97,0x97,0xea,0x5b]);
+    }
 
     #[test]
     fn modern_surface_callback_types_preserve_win32_abi(){

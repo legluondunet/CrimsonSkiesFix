@@ -51,7 +51,7 @@ pub struct BackendEvidence {
 }
 
 impl BackendEvidence {
-    fn first_missing(self)->Option<Requirement>{
+    fn first_missing(self,allow_native_movie_rgb32:bool)->Option<Requirement>{
         if !self.process_owned_window {return Some(Requirement::ProcessOwnedWindow);}
         if !self.normal_directdraw {return Some(Requirement::NormalDirectDrawCooperativeMode);}
         if self.render_target!=RenderTarget::RealDirectDrawSurface4 {
@@ -60,7 +60,10 @@ impl BackendEvidence {
         if self.render_target_caps&DDSCAPS_3DDEVICE==0 {
             return Some(Requirement::Direct3dDeviceSurfaceCapability);
         }
-        if !self.render_target_is_rgb565 {
+        // The regular 16-bit virtual graph must still prove RGB565.
+        // A separate, explicit native-only movie A/B may admit XRGB8888
+        // after the caller checks the exact real DDSURFACEDESC2 masks.
+        if !self.render_target_is_rgb565 && !allow_native_movie_rgb32 {
             return Some(Requirement::Rgb565PixelFormat);
         }
         if !self.real_zbuffer_32 {return Some(Requirement::Real32BitZBuffer);}
@@ -121,8 +124,29 @@ impl AdapterContract {
     // this method. The model does not itself create or validate real handles.
     pub fn expose(&mut self,evidence:BackendEvidence)->Result<(),ContractError>{
         if self.phase!=Phase::Preparing {return Err(ContractError::InvalidPhase);}
-        if let Some(missing)=evidence.first_missing(){
+        if let Some(missing)=evidence.first_missing(false){
             self.phase=Phase::Aborted; // original exclusive path still untouched
+            return Err(ContractError::Missing(missing));
+        }
+        self.phase=Phase::Exposed;
+        Ok(())
+    }
+
+    /// Diagnostic native Windows movie-only exception to the RGB565
+    /// backend. Caller MUST have confirmed the physical HAL backbuffer
+    /// has exact 800x600 XRGB8888 masks (not merely a successful allocation).
+    /// This does not alter the regular Wine/Proton contract or its evidence.
+    pub fn expose_native_movie_rgb32(
+        &mut self,evidence:BackendEvidence
+    )->Result<(),ContractError>{
+        let m=self.plan.internal;
+        if (m.width,m.height,m.bpp)!=(800,600,16) ||
+           evidence.render_target_is_rgb565 {
+            return Err(ContractError::UnsupportedModeOrChain);
+        }
+        if self.phase!=Phase::Preparing{return Err(ContractError::InvalidPhase);}
+        if let Some(missing)=evidence.first_missing(true){
+            self.phase=Phase::Aborted;
             return Err(ContractError::Missing(missing));
         }
         self.phase=Phase::Exposed;
@@ -470,6 +494,22 @@ mod tests {
         assert_eq!(c.expose(e),Err(ContractError::Missing(
             Requirement::Rgb565PixelFormat)));
         assert_ne!(0x1000_601c&DDSCAPS_3DDEVICE,0);
+    }
+    #[test]
+    fn native_movie_rgb32_contract_cannot_undermine_regular_rgb565_proof(){
+        let movie=Mode{width:800,height:600,bpp:16};
+        let mut strict=AdapterContract::prepare(movie,(1920,1200),chain()).unwrap();
+        let mut e=evidence();
+        e.render_target_is_rgb565=false;
+        assert_eq!(strict.expose(e),Err(ContractError::Missing(Requirement::Rgb565PixelFormat)));
+        let mut diagnostic=AdapterContract::prepare(movie,(1920,1200),chain()).unwrap();
+        assert!(diagnostic.expose_native_movie_rgb32(e).is_ok());
+        let mut wrong=AdapterContract::prepare(
+            Mode{width:640,height:480,bpp:16},(1920,1200),chain()).unwrap();
+        assert_eq!(wrong.expose_native_movie_rgb32(e),Err(ContractError::UnsupportedModeOrChain));
+        let mut wrong_format=AdapterContract::prepare(movie,(1920,1200),chain()).unwrap();
+        assert_eq!(wrong_format.expose_native_movie_rgb32(evidence()),
+            Err(ContractError::UnsupportedModeOrChain));
     }
     #[test]
     fn overflowing_combined_client_and_attachment_refs_is_rejected(){
