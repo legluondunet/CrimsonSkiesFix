@@ -118,28 +118,18 @@ jobs:
           $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
           $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
           if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
-          $roffileOff = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=0' })
-          $roffileOn = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=1' })
-          if ($roffileOff.Count -ne 0 -or $roffileOn.Count -ne 1) {
-            throw 'Verified Wine-only ROFFILE parser guard must be enabled by default on first run'
+          # Rust configuration tests verify all required automatic repairs
+          # are enabled even though those compatibility keys are hidden.
+          # Keep the distribution limited to true user preferences.
+          $iniKeys = @($template | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^[A-Za-z][A-Za-z0-9]*\s*=' } | Sort-Object)
+          $expectedKeys = @('FPSLimit=60', 'Log=0')
+          if (@(Compare-Object -ReferenceObject $expectedKeys -DifferenceObject $iniKeys).Count -gt 0) {
+            throw 'Default INI must contain only FPSLimit=60 and Log=0'
           }
-          # Explicit project policy: native Video Graphics/Resolution
-          # lock and AskForVDev dialog bypass are enabled on first run.
-          $gosOn = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=on' })
-          $adapterOn = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=1' })
-          $wideOn = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=1' })
-          $desktopOn = @($template | Where-Object { $_.Trim() -eq 'DesktopResolution=1' })
-          $imageFixOn = @($template | Where-Object { $_.Trim() -eq 'LegacyOffscreenRGB565=1' })
-          $focusOn = @($template | Where-Object { $_.Trim() -eq 'FocusRepaint=1' })
-          $eraseOn = @($template | Where-Object { $_.Trim() -eq 'WindowEraseGuard=1' })
-          if ($gosOn.Count -ne 1 -or $adapterOn.Count -ne 1 -or
-              $wideOn.Count -ne 1 -or $desktopOn.Count -ne 1 -or
-              $imageFixOn.Count -ne 1 -or $focusOn.Count -ne 1 -or $eraseOn.Count -ne 1) {
-            throw 'Default native graphics / first-image fix / focus recovery / erase guard are incomplete'
-          }
-          foreach ($invalid in @('GosVideoLock=off','ExperimentalWindowedAdapter=0','Native3DWidescreen=0','LegacyOffscreenRGB565=0','FocusRepaint=0','WindowEraseGuard=0')) {
-            if (@($template | Where-Object { $_.Trim() -eq $invalid }).Count -gt 0) {
-              throw "Conflicting disabled first-run option: $invalid"
+          foreach ($section in @('[Graphics]', '[Debug]')) {
+            if (@($template | Where-Object { $_.Trim() -eq $section }).Count -ne 1) {
+              throw "Missing/duplicate section in minimal INI: $section"
             }
           }
           $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
