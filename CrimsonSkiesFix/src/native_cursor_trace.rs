@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(stale_clip_target(old,full,(0,0,1536,960)),None);
         assert_eq!(stale_clip_target(full,full,(0,0,1536,960)),None);
         assert_eq!(stale_clip_target(old,old,(0,0,640,480)),None);
-        assert_eq!(stale_clip_target(old,old,(100,0,1536,960)),None);
+        assert_eq!(stale_clip_target(old,old,(500,0,1536,960)),None);
         assert_eq!(stale_clip_target(old,old,(0,0,1536,600)),None);
         assert_eq!(stale_clip_target(Rect{left:0,top:0,right:0,bottom:0},
             Rect{left:0,top:0,right:0,bottom:0},(0,0,1536,960)),None);
