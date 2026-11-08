@@ -80,7 +80,19 @@ pub(super) unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,
             } else if trace {log("Borderless deferred: could not resolve a monitor");}
             return hr;
         }
+        if in_game_adapter::strict_native_nonexclusive(){
+            log(&format!(
+                "NATIVE-STRICT-BORDERLESS: legacy DDSCL_NORMAL failed hr={hr:#x}; refusing original DDSCL_EXCLUSIVE fallback"
+            ));
+            return hr;
+        }
         if trace {log(&format!("WARNING: DDSCL_NORMAL rejected ({hr:#x}); falling back")); }
+    }
+    // In the strict native experiment, never forward an exclusive request
+    // directly after the cooperative shim is bypassed/declined.
+    if in_game_adapter::strict_native_nonexclusive() && flags&0x11==0x11 {
+        log("NATIVE-STRICT-BORDERLESS: legacy exclusive cooperative request rejected");
+        return DDERR_GENERIC;
     }
     call(this,hwnd,flags)
 }
@@ -90,6 +102,13 @@ pub(super) unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,
 /// same no-argument x86 COM ABI in IDirectDraw 1/2/4/7 (vtable slot 19).
 /// It cannot repair the missing virtual windowed bridge by itself.
 pub(super) unsafe extern "system" fn restore_display_mode(this:*mut c_void)->Hr {
+    // The game's logical RestoreDisplayMode cannot reconfigure the user's
+    // real monitor in a strictly non-exclusive native session. No native
+    // display mode has been changed, so acknowledge it without forwarding.
+    if in_game_adapter::strict_native_nonexclusive(){
+        log("NATIVE-STRICT-BORDERLESS: RestoreDisplayMode acknowledged virtually; desktop unchanged");
+        return S_OK;
+    }
     let Some(addr)=orig(this,DD_RESTORE_DISPLAY_MODE) else{return DDERR_GENERIC};
     let call:RestoreModeFn=std::mem::transmute(addr);
     let trace=cfg().log_enabled && diagnostics::is_native_windows() &&
