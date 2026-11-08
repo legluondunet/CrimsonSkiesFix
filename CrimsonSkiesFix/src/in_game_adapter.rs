@@ -631,8 +631,16 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     // Never advance this state on Wine or without explicit opt-in.
     observe_native_intro_mode(requested);
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
-    let Some(runtime)=state.as_mut() else{return None};
-    if runtime.dd4!=dd4 as usize{return None;}
+    let Some(runtime)=state.as_mut() else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: DD4 SetDisplayMode without verified runtime REJECTED");
+            return Some(E_FAIL);
+        }
+        return None;
+    };
+    if runtime.dd4!=dd4 as usize{
+        return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
+    }
     if runtime.native_preparing {
         log("WINDOWED-GAME: nested SetDisplayMode during native HAL preflight rejected");
         return Some(E_FAIL);
@@ -662,7 +670,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
-        // Recovery is permitted only while no virtual COM interface exists.
+        if !allow_original_exclusive_fallback(){
+            log("NATIVE-STRICT-BORDERLESS: unsupported game mode rejected without original SetDisplayMode or DDSCL_EXCLUSIVE; physical desktop unchanged");
+            return Some(E_FAIL);
+        }
+        // Legacy recovery is permitted only while no virtual COM interface exists.
         let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
             match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
         let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
@@ -736,7 +748,10 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             // preflight; the game now has a complete windowed COM graph.
             if let Err(err)=win32::borderless_window(runtime.hwnd as Hwnd,area){
                 log(&format!("WINDOWED-GAME: borderless HWND style failed: {err}"));
-                if runtime.exposed{return Some(E_FAIL);}
+                if runtime.exposed || !allow_original_exclusive_fallback(){
+                    log("NATIVE-STRICT-BORDERLESS: borderless HWND style failure; refusing exclusive recovery/real SetDisplayMode");
+                    return Some(E_FAIL);
+                }
                 let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
                     match crate::orig(dd4,20){Some(addr)=>std::mem::transmute(addr),None=>return Some(E_FAIL)};
                 let hr=coop(dd4,runtime.hwnd as Hwnd,DDSCL_EXCLUSIVE_FULLSCREEN);
@@ -842,8 +857,8 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         }
         Err(err)=>{
             log(&format!("WINDOWED-GAME: native preflight failed before exposure: {err}"));
-            if runtime.exposed{
-                // Strictly no mid-frame switch back to exclusive.
+            if runtime.exposed || !allow_original_exclusive_fallback(){
+                log("NATIVE-STRICT-BORDERLESS: native graph preflight failed; no exclusive recovery or physical mode switch");
                 return Some(E_FAIL);
             }
             let coop:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr=
@@ -1345,6 +1360,14 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
 /// Other DD2/DD7 SetDisplayMode and cooperative calls cannot silently switch
 /// this live graph back to exclusive after the game has seen virtual objects.
 pub fn must_block_other_mode_interface()->bool{
+    strict_native_nonexclusive() ||
+        RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
+}
+pub fn must_block_other_cooperative_interface(flags:u32)->bool{
+    // Normal cooperation remains allowed before the virtual graph; any
+    // *exclusive* request from another DirectDraw interface is forbidden.
+    (strict_native_nonexclusive() &&
+     flags&DDSCL_EXCLUSIVE_FULLSCREEN==DDSCL_EXCLUSIVE_FULLSCREEN) ||
     RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false)
 }
 /// Only valid while the game holds a live virtual backbuffer reference.
@@ -1364,6 +1387,22 @@ pub unsafe fn remap_render_target(native:*mut c_void)->Option<*mut c_void>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn strict_native_borderless_never_allows_original_exclusive_fallback(){
+        assert!(strict_nonexclusive_selection(true,true,true,true,true,false,false));
+        for case in [
+            (false,true,true,true,true,false,false),
+            (true,false,true,true,true,false,false),
+            (true,true,false,true,true,false,false),
+            (true,true,true,false,true,false,false),
+            (true,true,true,true,false,false,false),
+            (true,true,true,true,true,true,false),
+            (true,true,true,true,true,false,true)
+        ]{
+            assert!(!strict_nonexclusive_selection(case.0,case.1,case.2,
+                case.3,case.4,case.5,case.6));
+        }
+    }
     #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){
         let original_dd4=0x1234usize;
         let hwnd=0x4321usize;
