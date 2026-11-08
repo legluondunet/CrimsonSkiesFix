@@ -240,6 +240,17 @@ struct Epoch {
     movie_rgb565_scratch:Option<Com>,
     clipper:Com,
 }
+/// Preserve only the original native 800x600 secondary UI after a verified
+/// widescreen gameplay epoch (or across further 800x600 submenus). Never
+/// classify the initial intro 800x600 as pause merely because startup's
+/// first real HAL mode briefly matched the desktop.
+fn post_gameplay_ui_transition(
+    mode:Mode,previous_native_gameplay:bool,
+    original_main_menu_seen:bool,existing_ui:bool
+)->bool{
+    (mode.width,mode.height,mode.bpp)==(800,600,16) &&
+    ((previous_native_gameplay && original_main_menu_seen) || existing_ui)
+}
 struct Runtime {
     dd4:usize,
     dd4_owner:Com, // strong COM parent ref for the entire experiment
@@ -250,6 +261,10 @@ struct Runtime {
     exposed:bool,
     native_preparing:bool, // in-flight native probe; release state mutex across COM calls
     native_widescreen_ready:bool,
+    // A validated native 3D -> 800x600 transition after actual MainMenu
+    // is the game's ESC/pause UI. Keep this only across subsequent
+    // 800x600 submenus, and reset when any 3D mode begins.
+    native_post_gameplay_ui:bool,
     epoch:Option<Epoch>,
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
@@ -578,7 +593,7 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
             crate::native_widescreen::PatchResult::AlreadyNative)
     }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
-        monitor,render_client,generation:0,exposed:false,native_preparing:false,native_widescreen_ready,epoch:None});
+        monitor,render_client,generation:0,exposed:false,native_preparing:false,native_widescreen_ready,native_post_gameplay_ui:false,epoch:None});
     log("WINDOWED-GAME: DDSCL_NORMAL accepted on game DD4; awaiting mode and native HAL resource preflight");
     Some(hr)
 }
@@ -684,6 +699,19 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
     }
+    // A real native 3D -> 800x600 transition after the original menu
+    // was seen identifies the ESC/pause UI without depending on the
+    // MainMenu script loader, which does NOT run a second time on ESC.
+    // The opening 3D -> intro-movie 800x600 transition is excluded
+    // because the original MainMenu has not been seen then.
+    let previous_was_gameplay_3d=runtime.epoch.as_ref().is_some_and(|e|{
+        e.mode.width==mon_w && e.mode.height==mon_h && e.mode.bpp==16
+    });
+    let post_gameplay_ui=post_gameplay_ui_transition(
+        mode,previous_was_gameplay_3d,
+        crate::menu_scene::main_menu_was_seen(),
+        runtime.native_post_gameplay_ui
+    );
     // Never leave native menu-only input or cursor experiments armed
     // into the next DD4 mode or gameplay. Restore the ShowCursor display
     // counter before releasing/retiring the previous graph.
@@ -745,6 +773,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     match result {
         Ok(next)=>{
             runtime.generation+=1;
+            runtime.native_post_gameplay_ui=post_gameplay_ui;
             runtime.epoch=Some(next);
             let area=runtime.monitor;
             // Apply HWND style only after physical HAL and real Flip->Blt
@@ -850,11 +879,12 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 let output=(expected.2,expected.3);
                 match crate::window_erase_guard::arm_native_gos_cursor_bridge(
                     runtime.hwnd,output,runtime.render_client,
-                    crate::cfg().native_menu_mouse_remap
+                    crate::cfg().native_menu_mouse_remap,post_gameplay_ui
                 ){
                     Ok(view)=>log(&format!(
-                        "NATIVE-GOS-CURSOR-BRIDGE: armed original GOS mouse via native DirectInput relative movement; viewport=({},{} {}x{}) logical_source=800x600; only MainMenu/Preferences script; native windows only",
-                        view.left,view.top,view.width,view.height)),
+                        "NATIVE-GOS-CURSOR-BRIDGE: armed original GOS mouse via native DirectInput relative movement; viewport=({},{} {}x{}) logical_source=800x600; script_menu_or_post_gameplay_ui={} previous_real_3d={} main_seen={}; native windows only",
+                        view.left,view.top,view.width,view.height,post_gameplay_ui,
+                        previous_was_gameplay_3d,crate::menu_scene::main_menu_was_seen())),
                     Err(reason)=>log(&format!(
                         "NATIVE-GOS-CURSOR-BRIDGE: refused ({reason}); original mouse unchanged")),
                 }
@@ -1465,6 +1495,18 @@ mod tests{
         assert!(!accept(original_dd4,hwnd,0x8,true,true));
         assert!(!accept(original_dd4,hwnd,0x33,true,true));
         assert!(!accept(original_dd4,hwnd,0,true,true));
+    }
+    #[test]
+    fn native_post_gameplay_ui_is_never_initial_intro_or_real_3d(){
+        let movie=Mode{width:800,height:600,bpp:16};
+        let game=Mode{width:1920,height:1200,bpp:16};
+        assert!(!post_gameplay_ui_transition(movie,true,false,false));
+        assert!(!post_gameplay_ui_transition(movie,false,true,false));
+        assert!(post_gameplay_ui_transition(movie,true,true,false));
+        assert!(post_gameplay_ui_transition(movie,false,true,true));
+        assert!(!post_gameplay_ui_transition(game,true,true,true));
+        assert!(!post_gameplay_ui_transition(
+            Mode{width:640,height:480,bpp:16},true,true,false));
     }
     #[test]
     fn native_movie_rgb32_mode_is_strictly_800x600x16(){
