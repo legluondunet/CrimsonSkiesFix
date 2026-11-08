@@ -793,10 +793,16 @@ mod persistent_ini_tests {
         let file=dir.join("CrimsonFix.ini");
         assert_eq!(create_ini_once(&file).unwrap(),true);
         let generated=fs::read_to_string(&file).unwrap();
-        assert!(generated.contains("[Debug]\nLog=0"));
+        // The new first-run INI keeps explanatory comments between the
+        // section and keys; assert parsed behavior, not line adjacency.
+        assert!(generated.lines().any(|line|line.trim()=="FPSLimit=60"));
+        assert!(generated.lines().any(|line|line.trim()=="Log=0"));
+        assert_eq!(crate::config::parse(&generated),crate::config::Config::default());
         fs::write(&file,generated.replace("Log=0","Log=1")).unwrap();
         assert_eq!(create_ini_once(&file).unwrap(),false);
-        assert!(fs::read_to_string(&file).unwrap().contains("[Debug]\nLog=1"));
+        let preserved=fs::read_to_string(&file).unwrap();
+        assert!(preserved.lines().any(|line|line.trim()=="Log=1"));
+        assert!(crate::config::parse(&preserved).log_enabled);
         fs::remove_dir_all(dir).unwrap();
     }
 }
