@@ -67,6 +67,12 @@ unsafe extern "C" fn on_game_mode_setup()->u32{
     original()
 }
 
+/// A requested bootstrap does not imply an installed code hook. Native
+/// strict-borderless behavior must only engage after the authenticated
+/// trampoline was actually committed; otherwise preserve the original path.
+pub fn installed()->bool{
+    TRAMPOLINE.load(Ordering::Acquire)!=0
+}
 pub fn install()->bool {
     if !crate::cfg().native_dd4_bootstrap ||
        !crate::cfg().experimental_windowed_adapter ||

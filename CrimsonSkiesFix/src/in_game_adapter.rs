@@ -43,16 +43,17 @@ const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
 // after an attempted virtual DD4 setup fails.
 fn strict_nonexclusive_selection(
     native:bool,borderless:bool,desktop:bool,adapter:bool,
-    bootstrap:bool,passthrough:bool
+    bootstrap:bool,hook_installed:bool,passthrough:bool
 )->bool{
-    native && borderless && desktop && adapter && bootstrap && !passthrough
+    native && borderless && desktop && adapter && bootstrap &&
+        hook_installed && !passthrough
 }
 pub fn strict_native_nonexclusive()->bool{
     let c=crate::cfg();
     strict_nonexclusive_selection(
         crate::diagnostics::is_native_windows(),c.borderless,c.desktop_resolution,
         c.experimental_windowed_adapter,c.native_dd4_bootstrap,
-        c.directdraw_passthrough
+        crate::native_dd4_bootstrap::installed(),c.directdraw_passthrough
     )
 }
 fn allow_original_exclusive_fallback()->bool{
@@ -1363,17 +1364,18 @@ mod tests{
     use super::*;
     #[test]
     fn strict_native_borderless_never_allows_original_exclusive_fallback(){
-        assert!(strict_nonexclusive_selection(true,true,true,true,true,false));
+        assert!(strict_nonexclusive_selection(true,true,true,true,true,true,false));
         for case in [
-            (false,true,true,true,true,false),
-            (true,false,true,true,true,false),
-            (true,true,false,true,true,false),
-            (true,true,true,false,true,false),
-            (true,true,true,true,false,false),
-            (true,true,true,true,true,true)
+            (false,true,true,true,true,true,false), // Wine/Proton
+            (true,false,true,true,true,true,false),
+            (true,true,false,true,true,true,false),
+            (true,true,true,false,true,true,false),
+            (true,true,true,true,false,true,false),
+            (true,true,true,true,true,false,false), // unsupported bootstrap
+            (true,true,true,true,true,true,true) // explicit pass-through
         ]{
             assert!(!strict_nonexclusive_selection(case.0,case.1,case.2,
-                case.3,case.4,case.5));
+                case.3,case.4,case.5,case.6));
         }
     }
     #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){
