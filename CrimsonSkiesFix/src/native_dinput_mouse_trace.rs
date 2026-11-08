@@ -64,6 +64,7 @@ static MOUSE_STATE_PRESSED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_STATE_FAILED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_BUFFERED_CALLS:AtomicUsize=AtomicUsize::new(0);
 static GOS_CURSOR_BRIDGE_CALLS:AtomicUsize=AtomicUsize::new(0);
+static GOS_CURSOR_POST_GAMEPLAY_PROBE:AtomicBool=AtomicBool::new(false);
 // From the exact supported game PE32 image, proven in both native DMPs.
 // 0x5382b0 reads DIMOUSESTATE lX/lY from GetDeviceState and adds
 // rounded scaled deltas to the native GOS mouse cursor, clamping it to
@@ -94,12 +95,28 @@ fn gos_relative_delta(current:i32,target:i32,speed:f32)->Option<i32>{
 unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
     if !crate::cfg().native_gos_cursor_bridge ||
        !crate::diagnostics::is_native_windows() || size!=16 || data.is_null() ||
-       !(crate::menu_scene::main_menu_active() || crate::menu_scene::preferences_active()){
+       !(crate::menu_scene::main_menu_active() ||
+         crate::menu_scene::preferences_active() ||
+         crate::window_erase_guard::native_gos_cursor_bridge_post_gameplay_ui()){
         return None;
     }
     let target=crate::window_erase_guard::native_gos_cursor_bridge_target()?;
-    if ptr::read_volatile(GOS_WIDTH as *const i32)!=800 ||
-       ptr::read_volatile(GOS_HEIGHT as *const i32)!=600{return None;}
+    let mouse_dimensions=(
+        ptr::read_volatile(GOS_WIDTH as *const i32),
+        ptr::read_volatile(GOS_HEIGHT as *const i32)
+    );
+    // The ESC menu is not announced through the original MainMenu script
+    // dispatcher. Sample dimensions ONCE when this independently verified
+    // post-gameplay epoch first receives a real DirectInput mouse state.
+    if crate::window_erase_guard::native_gos_cursor_bridge_post_gameplay_ui() &&
+       !GOS_CURSOR_POST_GAMEPLAY_PROBE.swap(true,Ordering::Relaxed) &&
+       crate::cfg().log_enabled {
+        log(&format!(
+            "NATIVE-GOS-CURSOR-BRIDGE: post-gameplay UI input observed; native GOS mouse dimensions={}x{} target_800x600={target:?} (read-only geometry proof)",
+            mouse_dimensions.0,mouse_dimensions.1
+        ));
+    }
+    if mouse_dimensions!=(800,600){return None;}
     let before=(
         ptr::read_volatile(GOS_CURSOR_X as *const i32),
         ptr::read_volatile(GOS_CURSOR_Y as *const i32)
