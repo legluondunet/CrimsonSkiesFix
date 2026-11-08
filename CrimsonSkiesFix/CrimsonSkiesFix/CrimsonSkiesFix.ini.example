@@ -126,6 +126,14 @@ NativeSystemCursorProbe=0
 ; Requires Log=1 + NativeDD4Bootstrap=1. No cursor movement or click injection.
 ; OFF by default; never active on Wine/Proton.
 NativeDirectInputMouseTrace=0
+; Native Windows ONLY: opt-in DirectInput system mouse cooperative repair.
+; The admitted game requests DISCL_EXCLUSIVE | DISCL_BACKGROUND (0x9),
+; which DirectInput rejects on system mouse with E_NOTIMPL (0x80004001).
+; Replace precisely that call with DISCL_NONEXCLUSIVE | DISCL_FOREGROUND
+; (0x6), forward native COM result; no virtual mouse, emulation or DPI
+; changes. Requires Log=1 + NativeDD4Bootstrap=1. OFF by default.
+; Does not apply to Wine/Proton, keyboard, controllers or gameplay remap.
+NativeDirectInputMouseCoopRepair=0
 ; Experimental Windows-only black gutters drawn via HWND GDI, never Wine/Proton. Enable only with NativeDD4Bootstrap=1.
 NativeGdiSidebars=0
 SurfaceUsageTrace=0
