@@ -27,10 +27,6 @@ mod com_surface4_abi;
 mod window_exposure;
 #[path="../window_erase_guard.rs"]
 mod window_erase_guard;
-#[path="../color_capture.rs"]
-mod color_capture;
-#[path="../color_probe.rs"]
-mod color_probe;
 #[path="../com_surface4_forward.rs"]
 mod com_surface4_forward;
 #[path="../com_surface4_roundtrip.rs"]
@@ -110,9 +106,6 @@ mod menu_brand {
 }
 
 // The standalone surface probe never locks RGB32 movie surfaces.
-fn color_probe_enabled()->bool{false}
-fn color_capture_enabled()->bool{false}
-fn color_capture_path(_label:&str)->Option<std::path::PathBuf>{None}
 
 
 type Ptr=*mut c_void;
