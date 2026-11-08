@@ -306,10 +306,20 @@ pub fn pump_native_movie_window(hwnd:usize)->Option<(usize,usize,usize)>{
         for _ in 0..NATIVE_MOVIE_PUMP_MAX_PER_FLIP{
             if IsWindow(hwnd as Hwnd)==0{break;}
             let mut msg:WinMessage=std::mem::zeroed();
+            // Inspect without removing first: preserve WM_QUIT and
+            // unexpected foreign messages intact even if filtering is
+            // changed by a future Windows/runtime implementation.
+            if PeekMessageW(&mut msg,hwnd as Hwnd,0,0,0)==0{break;}
+            let allowed=msg.hwnd==hwnd as Hwnd ||
+                (!msg.hwnd.is_null() &&
+                    IsWindow(msg.hwnd)!=0 &&
+                    GetWindowThreadProcessId(msg.hwnd,std::ptr::null_mut())==
+                        GetCurrentThreadId());
+            if !allowed{break;}
             if PeekMessageW(&mut msg,hwnd as Hwnd,0,0,PM_REMOVE)==0{break;}
-            // HWND filter should never return a NULL or foreign window;
-            // do not dispatch unexpected messages into a different owner.
-            if msg.hwnd!=hwnd as Hwnd{break;}
+            // The window filter only returns game HWND and descendant
+            // messages. Never silently discard an unrelated message.
+            if msg.hwnd.is_null(){break;}
             let _=TranslateMessage(&msg);
             let _=DispatchMessageW(&msg);
             dispatched+=1;
