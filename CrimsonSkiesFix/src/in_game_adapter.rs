@@ -946,6 +946,11 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     ).map_err(|hr|format!("arm graph: {:#010x}",hr as u32))?;
     if movie_rgb32 {
         log("NATIVE-MOVIE-RGB32: preflight passed; virtual 800x600 movie graph uses real XRGB8888 direct Blt; no RGB565 movie-conversion scratch");
+        if crate::cfg().native_movie_message_pump {
+            crate::window_erase_guard::arm_native_movie_pump(hwnd as usize)
+                .map_err(|reason|format!("native movie message pump arm refused: {reason}"))?;
+            log("NATIVE-MOVIE-PUMP: opt-in armed for exact verified game HWND; max 4 queued messages per virtual Flip, outside presentation lock; no Wine/Proton use");
+        }
     }
     Ok(Epoch{mode,primary,back,depth,physical_primary:real_primary,
         physical_lock_primary:primary_lock,physical_back:real_back,
