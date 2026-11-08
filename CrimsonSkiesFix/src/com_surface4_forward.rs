@@ -1119,6 +1119,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
+        let pump_window=session.window;
         let GraphFlipSession{bridge,backend,epoch,mode,..}=session;
         // The original script dispatcher reports only four CALL sites.
         // Returning from gameplay can restore the genuine MainMenu
@@ -1144,7 +1145,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             movie_com_trace("primary.virtual_Flip",movie_call,Some(hr),
                 Some(started.elapsed().as_millis()));
         }
-        return match presentation{
+        let flip_result=match presentation{
             Ok(frame)=>{
                 if composed{
                     crate::menu_brand::note_branded_presented();
@@ -1169,6 +1170,27 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 E_FAIL // includes latched failure; never exclusive
             },
         };
+        // The OS window procedure can re-enter game code and COM.
+        // ABSOLUTELY release the entire virtual Flip mutex before attempting
+        // to dispatch even one queued Win32 message. Without the explicit
+        // native-only, off-by-default arm this does nothing (including Wine).
+        drop(state);
+        if movie {
+            if let Some((n,calls,total))=
+                window_erase_guard::pump_native_movie_window(
+                    // Read the verified HWND from the session before
+                    // releasing state: no borrowed session references here.
+                    pump_window
+                )
+            {
+                if calls==1 || calls%120==0 || (n>0 && total<=12){
+                    crate::log(&format!(
+                        "NATIVE-MOVIE-PUMP: after Flip count={calls} dispatched_this_flip={n} total_dispatched={total} hwnd=verified owner_thread=true max_per_flip=4"
+                    ));
+                }
+            }
+        }
+        return flip_result;
     }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
