@@ -62,7 +62,7 @@ Crimson Skies/
 
 **Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
 the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
-(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The shipped `.ini.example` lists only player preferences; the automatic repairs are compiled defaults. Existing user INIs always take precedence and are never overwritten.
 
 The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
@@ -92,42 +92,36 @@ Older experimental archives may not contain these two files.
 
 ## Settings
 
-All settings live in `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Important graphics options:
-
-| `[Graphics]` key | Default | Purpose |
-|---|---|---|
-| `Borderless` | `1` | Legacy DirectDraw window handling; by itself does not activate the modern windowed 3D adapter |
-| `DesktopResolution` | `1` | Preserve the desktop mode and use monitor geometry |
-| `FPSLimit` | `60` | Bounded frame-pacing target (1–60); API call counts are not a measured gameplay FPS |
-| `ExperimentalWindowedAdapter` | `1` | Native DirectDraw4 3D adapter; enabled by default to support the locked Video settings and native display handling |
-| `Native3DWidescreen` | `1` | Native monitor-sized FOV/HUD corrections **and suppression of startup driver/resolution chooser** |
-| `FocusRepaint` | `1` | One-shot full repaint after focus return or exposed-window transition; set `0` to opt out |
-| `WindowEraseGuard` | `1` | Prevent white background erasure over DirectDraw pixels on the verified game HWND; set `0` to opt out |
-| `LegacyOffscreenRGB565` | `1` | First-image and legacy artwork RGB565 color correction; exact matching offscreen surfaces only; set `0` to disable |
-| `ModernFPSPacing` | `0` | Optional modern Flip pacing experiment |
-| `GosVideoLock` | `on` | **Default-on** native Graphics/Resolution lock; writes a verified, backed-up GOS patch overlay |
-
-The Wine-validated native widescreen + GOS dropdown configuration is:
+On first launch, CrimsonSkiesFix creates a **minimal**
+`CrimsonSkiesFix/CrimsonSkiesFix.ini` containing only two user settings:
 
 ```ini
 [Graphics]
-Borderless=1
-DesktopResolution=1
-ExperimentalWindowedAdapter=1
-Native3DWidescreen=1
-FocusRepaint=1
-WindowEraseGuard=1
-LegacyOffscreenRGB565=1
-GosVideoLock=on
+FPSLimit=60
 
 [Debug]
-Log=1
+Log=0
 ```
 
-This is the **owner's previously validated configuration**. `LegacyOffscreenRGB565=1` is now enabled on a fresh install alongside `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on`. `FocusRepaint=1` and `WindowEraseGuard=1` are now enabled on fresh installs; only `Log=0` remains the default for ordinary diagnostics. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
+`FPSLimit` accepts 1–60 FPS. `Log=1` enables optional diagnostics; it
+**does not enable or disable compatibility fixes**.
 
+All required game corrections are enabled **internally**, without an INI
+switch: borderless/desktop-size graphics, widescreen FOV and HUD, original
+GameOS Video menu lock, first-image RGB565, focus/white-screen fixes,
+Wine ROFFILE parser protection, safe Wine native DirectDraw Blts, and the
+native Windows movie/mouse/rendering corrections. They still enforce
+their exact game/runtime/asset checks. They do not require `Log=1`.
 
-**Window visibility fixes:** `FocusRepaint=1` requests a bounded one-shot full redraw when returning to the game or exposing a previously obscured window. `WindowEraseGuard=1` suppresses `WM_ERASEBKGND` only on the authenticated game window, preventing white background erasure of DirectDraw contents. The owner previously validated the guard's white-window improvement under Wine. Neither switch is a general crash handler or proven fix for the separately reported 0.1.90 gameplay crash.
+Existing INI files are **never overwritten or reset**. All previously
+supported advanced keys remain accepted, including explicit `=0`
+overrides and diagnostics, but are deliberately omitted from newly
+generated INIs and the shipped example. For troubleshooting only, one
+can manually add e.g. `[Compatibility] RoffileTerminatorFix=0` or
+`[Graphics] ExperimentalWindowedAdapter=0` to temporarily disable a
+specific subsystem. `[Graphics] GosVideoLock=off` prevents a future
+archive update, while `GosVideoLock=restore` restores its original
+backup (see the next section).
 
 ### GOS Video dropdown lock, backup and restoration
 
@@ -225,7 +219,7 @@ game file because the patch never writes to disk.
 ## Native Windows automatic compatibility
 
 For a **new installation**, seven previously validated native-Windows-only
-compatibility switches are now enabled in the generated INI: `NativeDD4Bootstrap`,
+compatibility switches are enabled internally, **not listed in the generated INI**: `NativeDD4Bootstrap`,
 `NativeMovieRGB32`, `NativeMovieMessagePump`, `NativeFullFrameCompose`,
 `NativeMouseClipRepair`, `NativeDirectInputMouseCoopRepair` and
 `NativeGosCursorBridge`. These keep their strict exact-game and runtime
@@ -237,8 +231,8 @@ Existing user INI files are **not overwritten or silently migrated**; previous
 explicit `=0` values remain respected. Under native Windows, these settings
 can still be disabled individually in `[Debug]` to isolate hardware/driver
 regressions. The initial Windows owner validation used an explicit test
-configuration; a **new default-install Windows 11 runtime smoke test** is still
-needed before a public stable release. The Wine/GE-Proton path continues to use RGB565 game presentation.
+configuration. The owner validated the Windows 11 default-enabled profile
+before merging PR #24. The Wine/GE-Proton path continues to use RGB565 game presentation.
 **Wine-only native Blt safety** from v0.1.55 now installs its minimal
 Surface4 QueryInterface/GetAttachedSurface/Blt guards whenever the verified
 virtual windowed adapter is enabled, even with `[Debug] Log=0` and
@@ -249,8 +243,9 @@ this guard was accidentally tied to the logging/pacing switches, so the
 default INI could leave it inactive. A native Windows run with `Log=0`
 retains its previously validated hooks. `ExperimentalWindowedAdapter=0`
 intentionally disables the virtual graph and therefore does not exercise
-this specific source-unwrapping protection. This change requires owner
-runtime verification at the original reproducible Wine crash location.
+this specific source-unwrapping protection. The owner successfully retested
+the previously crashing Wine gameplay location with PR #24, although that
+run retained `Log=1`; an independent `Log=0` runtime run is still useful.
 
 ## Logging and diagnostics
 
@@ -325,7 +320,7 @@ For original GameOS Video UI research and owner test evidence, see [Video Prefer
 
 ## Known limitations
 
-This is still an experimental, **exact-executable** build, not a validated public release. Native Windows 11 was runtime-tested with explicit opt-in settings (including `NativeDD4Bootstrap`, `NativeMovieRGB32`, `NativeFullFrameCompose`, DirectInput mouse handling and the window message pump); the combined **fresh-install defaults have not yet been validated under native Windows**. GE-Proton11-12 with Wine 11.0 has been user-tested, but a distinct Wine-staging 11.17 run and additional hardware/driver combinations remain untested in PR #23. Automatic test success does not prove correct real-game start, focus/Alt+Tab, or clean process exit. The Wine-only ROFFILE.DLL parser guard is intentionally disabled on native Windows. FPS pacing hooks alone do not establish gameplay FPS. Enabling GOS Video lock modifies the user-owned `crimptch.rof` and is **not automatically undone** when the game exits.
+This remains an experimental, **exact-executable** build rather than a validated public release. The owner tested the combined default-enabled native Windows 11 compatibility profile and retested the previous reproducible gameplay crash point on GE-Proton11-12 with PR #24. The latter run used `Log=1`; separate `Log=0` runtime evidence and a Wine-staging 11.17 run, as well as additional hardware/driver combinations, remain desirable. Automated tests alone do not prove clean process exit or universal compatibility. The Wine-only ROFFILE.DLL parser guard is intentionally disabled on native Windows. FPS pacing hooks alone do not establish gameplay FPS. Enabling GOS Video lock modifies the user-owned `crimptch.rof` and is **not automatically undone** when the game exits.
 
 ## License and contribution policy
 
