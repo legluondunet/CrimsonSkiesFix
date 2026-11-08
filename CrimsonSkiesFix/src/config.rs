@@ -72,8 +72,6 @@ pub const DEFAULT_INI: &str = concat!(
     "; with mouse position on centered 4:3 menu (DirectInput deltas only).\n",
     "; Original buttons and game renderer preserved. Experimental / OFF.\n",
     "NativeGosCursorBridge=0\n",
-    "; Experimental native Windows fallback: paint only 4:3 sidebars through Win32 GDI. Off by default.\n",
-    "NativeGdiSidebars=0\n",
     "; Windows-native RGB32 800x600 videos/menus: compose full window offscreen\n",
     "; (black background + aspect-correct 4:3 frame), then one primary Blt.\n",
     "; No separate sidebar rectangles/GDI; fallback if unsupported by driver.\n",
@@ -128,8 +126,6 @@ pub struct Config {
     pub native_direct_input_mouse_trace: bool,
     pub native_direct_input_mouse_coop_repair: bool,
     pub native_gos_cursor_bridge: bool,
-    // Diagnostic only: Win32 GDI black gutters after native windowed Blt (not Wine).
-    pub native_gdi_sidebars: bool,
     // Native-only exact XRGB8888 800x600 UI: offscreen background and
     // video compose, single complete window Blt to avoid white gutters.
     pub native_full_frame_compose: bool,
@@ -143,7 +139,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_gdi_sidebars: false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
     }
 }
 
@@ -230,8 +226,6 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.native_direct_input_mouse_coop_repair = v; },
             ("debug", "nativegoscursorbridge") =>
                 if let Some(v) = enabled(value) { settings.native_gos_cursor_bridge = v; },
-            ("debug", "nativegdisidebars") =>
-                if let Some(v) = enabled(value) { settings.native_gdi_sidebars = v; },
             ("debug", "nativefullframecompose") =>
                 if let Some(v) = enabled(value) { settings.native_full_frame_compose = v; },
             ("debug", "nativedpiaware") =>
@@ -375,7 +369,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_gdi_sidebars:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -407,13 +401,6 @@ mod tests {
         assert!(!parse("[Debug]\nNativeFullFrameCompose=0").native_full_frame_compose);
         assert!(!parse("[Graphics]\nNativeFullFrameCompose=1").native_full_frame_compose);
         assert!(!parse("[Compatibility]\nNativeFullFrameCompose=1").native_full_frame_compose);
-    }
-    #[test]
-    fn native_gdi_sidebars_is_debug_only_opt_in(){
-        assert!(!Config::default().native_gdi_sidebars);
-        assert!(parse("[Debug]\nNativeGdiSidebars=1").native_gdi_sidebars);
-        assert!(!parse("[Graphics]\nNativeGdiSidebars=1").native_gdi_sidebars);
-        assert!(!parse("[Debug]\nNativeGdiSidebars=0").native_gdi_sidebars);
     }
     #[test]
     fn native_gos_cursor_bridge_is_debug_opt_in_only(){

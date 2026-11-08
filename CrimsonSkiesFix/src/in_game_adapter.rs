@@ -1308,10 +1308,6 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         primary.ptr(),&contract,generation,(0,0),client,output_client,Some(crate::cfg().fps_limit),
         hwnd as usize,crate::cfg().focus_repaint,
         menu_scratch_for_arm,
-        crate::cfg().native_gdi_sidebars &&
-            crate::cfg().native_dd4_bootstrap &&
-            crate::diagnostics::is_native_windows() &&
-            full_frame_composite.is_none(),
         movie_rgb32,
         full_frame_composite.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut())
     );
@@ -1330,9 +1326,6 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
                     menu_scratch.as_ref().map(|s|s.ptr()).unwrap_or(ptr::null_mut()),
                     movie_rgb32,false
                 ),
-                crate::cfg().native_gdi_sidebars &&
-                    crate::cfg().native_dd4_bootstrap &&
-                    crate::diagnostics::is_native_windows(),
                 movie_rgb32
             ).map_err(|hr|format!("arm original native graph: {:#010x}",hr as u32))?;
         },

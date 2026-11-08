@@ -1,6 +1,6 @@
 //! A genuine DirectDraw4 surface Blt backend for the Flip-to-Blt plan.
-//! Imported by the standalone probe and by the DLL, but NEVER activated
-//! by any in-game hook yet. Not a COM surface facade or virtual primary.
+//! Shared DirectDraw native Blt presenter for the verified virtual game graph.
+//! The real primary and formats are validated by the caller.
 
 #![allow(dead_code)]
 use std::{ffi::c_void,ptr};
@@ -9,17 +9,6 @@ type Ptr=*mut c_void;
 const BAD:i32=0x80070057u32 as i32;
 const WAIT:u32=0x01000000;
 const FILL:u32=0x00000400;
-const BLACKNESS:u32=0x00000042; // Win32 GDI PatBlt raster op
-#[link(name="user32")]
-extern "system" {
-    fn GetDC(hwnd:Ptr)->Ptr;
-    fn ReleaseDC(hwnd:Ptr,dc:Ptr)->i32;
-}
-#[link(name="gdi32")]
-extern "system" {
-    fn PatBlt(dc:Ptr,x:i32,y:i32,width:i32,height:i32,rop:u32)->i32;
-}
-
 #[repr(C)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Rect{pub left:i32,pub top:i32,pub right:i32,pub bottom:i32}
@@ -36,12 +25,6 @@ pub struct NativeWindowedBlt {
     // Never use it outside the matching native Surface4 graph lifetime.
     menu_scratch:Ptr,
     menu_prepared:bool,
-    // Optional *native Windows only* diagnostic. DDraw primary may report
-    // successful sidebar fills while HWND compositor gutters stay white.
-    // Try GDI only OUTSIDE the video viewport, after the completed RGB565
-    // DDraw Blt. Never an input/focus hook, never active on Wine by default.
-    gdi_sidebar_hwnd:usize,
-    gdi_sidebar_reported:bool,
     // Borrowed full-client RGB32 offscreen surface; the verified DD4
     // epoch retains its strong COM reference through Flip retirement.
     // BLACK background pixels live in this surface, not in drawn bars.
@@ -64,7 +47,6 @@ impl NativeWindowedBlt {
              (source.width,source.height)==client)||
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false,
-            gdi_sidebar_hwnd:0,gdi_sidebar_reported:false,
             full_frame_composite:ptr::null_mut(),composite_black_ready:false,
             composed_frames:0})
     }
@@ -99,13 +81,6 @@ impl NativeWindowedBlt {
         self.output_client=output;
         Ok(())
     }
-    /// Only the verified game HWND may be passed. The caller gates this
-    /// explicitly behind the debug option + native Windows bootstrap.
-    /// A zero HWND disables it without changing the real DirectDraw path.
-    pub fn enable_native_gdi_sidebars(&mut self,hwnd:usize){
-        self.gdi_sidebar_hwnd=hwnd;
-        self.gdi_sidebar_reported=false;
-    }
     /// Exact native XRGB8888 800x600 UI only. Surface pixel dimensions
     /// must equal the DPI-logical game HWND client, and be verified by
     /// DD4 GetSurfaceDesc before enabling. No COM refs are acquired here.
@@ -120,8 +95,6 @@ impl NativeWindowedBlt {
         self.full_frame_composite=surface;
         self.composite_black_ready=false;
         self.composed_frames=0;
-        // When composing, never paint GDI or isolated primary gutters.
-        self.gdi_sidebar_hwnd=0;
         Ok(())
     }
     pub fn disable_full_frame_composition(&mut self){
@@ -297,44 +270,6 @@ impl NativeWindowedBlt {
         }
         Ok(())
     }
-    /// Experimental nonfatal GDI draw after native DDraw color presentation.
-    /// The existing DirectDraw black bars already reported S_OK in owner
-    /// tests but stayed white on Windows 11 at 125% DPI. Use an HWND client
-    /// DC (logical pixels), never the physical primary DC or a screen DC.
-    /// Do not touch the central 4:3 image; GDI failure never fakes Blt S_OK.
-    fn try_native_gdi_sidebars(&mut self,view:Viewport){
-        if self.gdi_sidebar_hwnd==0 || self.output_client==self.client ||
-           view.y!=0 || view.height!=self.client.1 || view.x==0 {
-            return;
-        }
-        let Ok(content)=self.screen_rect(view) else{return;};
-        let Ok(client_w)=i32::try_from(self.output_client.0) else{return;};
-        let Ok(client_h)=i32::try_from(self.output_client.1) else{return;};
-        let Some(left)=content.left.checked_sub(self.origin.0) else{return;};
-        let Some(right)=content.right.checked_sub(self.origin.0) else{return;};
-        if left<=0 || right<=left || right>=client_w || client_h<=0{return;}
-        // Avoid acquiring a GDI DC for inactive/minimized windows during
-        // Alt+Tab; only the existing DD4 Blt runs while focus is away.
-        if !crate::window_exposure::sample_game_window(self.gdi_sidebar_hwnd)
-            .is_some_and(|state|state.foreground) {return;}
-        let (mut ok_left,mut ok_right,mut released)=(false,false,false);
-        unsafe{
-            let hwnd=self.gdi_sidebar_hwnd as Ptr;
-            let dc=GetDC(hwnd);
-            if !dc.is_null(){
-                ok_left=PatBlt(dc,0,0,left,client_h,BLACKNESS)!=0;
-                ok_right=PatBlt(dc,right,0,client_w-right,client_h,BLACKNESS)!=0;
-                released=ReleaseDC(hwnd,dc)!=0;
-            }
-        }
-        if !self.gdi_sidebar_reported {
-            self.gdi_sidebar_reported=true;
-            crate::log(&format!(
-                "NATIVE-GDI-SIDEBARS: HWND client={}x{} logical bars=0..{} and {}..{} left={} right={} dc_released={} (diagnostic only)",
-                client_w,client_h,left,right,client_w,ok_left,ok_right,released
-            ));
-        }
-    }
     unsafe fn blt_to(target:Ptr,rect:&Rect,source:Ptr,flags:u32,fx:*mut u32)->Result<(),i32>{
         if target.is_null(){return Err(BAD);}
         let vtable=*(target.cast::<*const usize>());
@@ -389,9 +324,6 @@ impl WindowedBlt for NativeWindowedBlt {
         self.maintain_native_black_sidebars(view)?;
         let source=self.source_for_present();
         unsafe{self.blt(&dest,source,WAIT,ptr::null_mut())?;}
-        // Only after a successful native presentation. Do not change the
-        // game's Flip result if the optional GDI experiment fails.
-        self.try_native_gdi_sidebars(view);
         Ok(())
     }
 }
@@ -536,12 +468,6 @@ mod tests{
             (&mut offscreen as *mut FakeSurface).cast()
         ).is_ok());
         assert!(backend.full_frame_composition_enabled());
-        backend.enable_native_gdi_sidebars(0x1234); // explicitly incompatible
-        // Re-arm the composition surface to clear the optional GDI HWND.
-        backend.enable_full_frame_composition(
-            (&mut offscreen as *mut FakeSurface).cast()
-        ).unwrap();
-        assert_eq!(backend.gdi_sidebar_hwnd,0);
         let vp=Viewport{x:160,y:0,width:1600,height:1200};
         assert_eq!(backend.clear_full_window_black(1920,1200),Ok(()));
         assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
@@ -619,20 +545,6 @@ mod tests{
         assert!(movie.enable_full_frame_composition(
             (&mut primary as *mut FakeSurface).cast()
         ).is_err());
-    }
-    #[test]
-    fn native_gdi_sidebars_are_explicitly_opt_in(){
-        let (_vt,mut p,mut source)=objects(0);
-        let mut backend=unsafe{NativeWindowedBlt::from_borrowed_com(
-            (&mut p as *mut FakeSurface).cast(),
-            (&mut source as *mut FakeSurface).cast(),
-            (0,0),(1920,1200),Mode{width:800,height:600,bpp:16}
-        ).unwrap()};
-        assert_eq!(backend.gdi_sidebar_hwnd,0);
-        backend.enable_native_gdi_sidebars(0x5678);
-        assert_eq!(backend.gdi_sidebar_hwnd,0x5678);
-        backend.enable_native_gdi_sidebars(0);
-        assert_eq!(backend.gdi_sidebar_hwnd,0);
     }
     #[test]
     fn physical_render_rects_are_mapped_to_dpi_logical_client(){
