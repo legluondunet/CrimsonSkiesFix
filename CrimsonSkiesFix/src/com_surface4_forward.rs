@@ -16,7 +16,7 @@
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex,TryLockError,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
+    sync::{Mutex,OnceLock,TryLockError,atomic::{AtomicBool,AtomicPtr,AtomicU32,AtomicUsize,Ordering}},
     time::{Duration,Instant},
 };
 use crate::{
@@ -51,6 +51,10 @@ static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
 // 120 calls cannot distinguish a blocked in-flight Blt from missing input.
 static NATIVE_MOVIE_RGB32_BLT_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_RGB32_FLIP_CALLS:AtomicUsize=AtomicUsize::new(0);
+// Diagnostic-only: elapsed duration from the first physically presented
+// 800x600 opening image to the first decoded 320x240 movie copy.
+// A successful Blt alone does not prove the owner saw a static image.
+static OPENING_FIRST_PRESENT:OnceLock<Instant>=OnceLock::new();
 static NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
 // UI/soft-cursor investigation: the graph intentionally rejects certain
@@ -966,6 +970,12 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
             if let Some(started)=movie_started{
                 movie_com_trace("backbuffer.native_Blt",movie_call,Some(hr),
                     Some(started.elapsed().as_millis()));
+                if movie_call==3 {
+                    crate::log(&format!(
+                        "STARTUP-IMAGE: source_transition=RGB565-800x600-to-RGB32-320x240 preceding_800x600_copies=2 ms_since_first_present={:?} [observation only, not proof of visible pixels]",
+                        OPENING_FIRST_PRESENT.get().map(|at|at.elapsed().as_millis())
+                    ));
+                }
             }
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
@@ -1188,6 +1198,10 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         }
         let flip_result=match presentation{
             Ok(frame)=>{
+                if movie && movie_call==1 {
+                    let _=OPENING_FIRST_PRESENT.set(Instant::now());
+                    crate::log("STARTUP-IMAGE: first 800x600 movie/menu frame submitted to real primary [pixel content unverified]");
+                }
                 if composed{
                     crate::menu_brand::note_branded_presented();
                 }
