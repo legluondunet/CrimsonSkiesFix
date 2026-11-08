@@ -240,6 +240,9 @@ unsafe fn install(module: usize) -> Result<(), String> {
 /// Invoked after the authorized EXE's DirectDraw hooks are running.
 /// Polling is active by default, unless disabled in the user INI.
 pub fn probe() {
+    // Native Windows observes only original ROFFILE.DLL archive opens;
+    // the existing EOF workaround remains exclusive to Wine.
+    crate::native_rof_open_trace::probe();
     if !crate::cfg().roffile_terminator_fix {
         return;
     }
