@@ -5,7 +5,7 @@
 //!
 //! This is intentionally an early in-game integration build. The game may use
 //! unsupported COM methods, QI versions or window transitions. Default-on for the accepted EXE.
-use std::{ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicU8,AtomicUsize,Ordering}}};
+use std::{ffi::c_void,ptr,sync::Mutex};
 use crate::{
     Hr,Guid,Hwnd,log,win32,
     borderless_contract::{AdapterContract,BackendEvidence,RenderTarget,SurfaceRole},
@@ -43,17 +43,16 @@ const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
 // after an attempted virtual DD4 setup fails.
 fn strict_nonexclusive_selection(
     native:bool,borderless:bool,desktop:bool,adapter:bool,
-    bootstrap:bool,intro_exclusive:bool,passthrough:bool
+    bootstrap:bool,passthrough:bool
 )->bool{
-    native && borderless && desktop && adapter && bootstrap &&
-        !intro_exclusive && !passthrough
+    native && borderless && desktop && adapter && bootstrap && !passthrough
 }
 pub fn strict_native_nonexclusive()->bool{
     let c=crate::cfg();
     strict_nonexclusive_selection(
         crate::diagnostics::is_native_windows(),c.borderless,c.desktop_resolution,
         c.experimental_windowed_adapter,c.native_dd4_bootstrap,
-        c.native_intro_exclusive,c.directdraw_passthrough
+        c.directdraw_passthrough
     )
 }
 fn allow_original_exclusive_fallback()->bool{
@@ -339,101 +338,9 @@ struct Runtime {
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 
-// Windows-native-only startup A/B: avoid exposing synthetic RGB565/virtual
-// primary surfaces to the DirectShow MPEG introduction. Do not switch a
-// running virtual graph back into exclusive mode: that was previously
-// demonstrated unsafe. Keep the ORIGINAL exclusive DD4 path until the
-// 800x600 introduction has presented MainMenu. The first following DD4
-// cooperative request is our ONE opportunity to switch before the game
-// negotiates its next display mode. Once SetDisplayMode leaves 800x600,
-// never switch a running native game back into a virtual graph: on native
-// Win11 this late switch happened on ESC -> MainMenu and yielded a white
-// screen with sound continuing. Wine/Proton and defaults are unaffected.
-const INTRO_BEFORE_MOVIE:u8=0;
-const INTRO_IN_MOVIE_MODE:u8=1;
-const INTRO_LEFT_MOVIE_MODE:u8=2;
-static NATIVE_INTRO_PHASE:AtomicU8=AtomicU8::new(INTRO_BEFORE_MOVIE);
-static NATIVE_INTRO_SKIPPED:AtomicUsize=AtomicUsize::new(0);
-// One-shot owner / HWND captured while the original DD4 stays EXCLUSIVE.
-// Its next SetDisplayMode decides whether virtual rendering is admissible.
-// We must not prematurely enter NORMAL merely because MainMenu is active.
-static NATIVE_INTRO_PENDING:Mutex<Option<(usize,usize)>>=Mutex::new(None);
-// Sample once BEFORE the game's first native exclusive DD4 request.
-// EnumDisplaySettingsW subsequently returns the temporary 1024/800 game
-// mode, which must never be confused with the initial monitor raster.
-// Caching None also prevents a late unsafe retry during an exclusive mode.
-static NATIVE_INTRO_LAUNCH_PHYSICAL:OnceLock<Option<(u32,u32)>>=OnceLock::new();
+// Shared DPI aspect tolerance: no need for an exclusive-video bootstrap.
 fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
-    // Match the Win32/physical raster relationship using the same
-    // one-pixel DPI rounding tolerance as the real DirectDraw presentation.
-    // The old exact cross-product rejected otherwise valid user screens
-    // such as physical 1366x768 represented by logical 1093x614.
     crate::presentation::dpi_output_matches(physical,logical)
-}
-fn native_intro_launch_physical()->Option<(u32,u32)>{
-    *NATIVE_INTRO_LAUNCH_PHYSICAL.get_or_init(||{
-        let logical=win32::capture_launch_monitor().and_then(|r|r.dimensions());
-        let physical=win32::physical_primary_monitor_dimensions();
-        let accepted=match (logical,physical) {
-            (Some(l),Some(p)) if same_aspect(l,p)=>Some(p),
-            _=>None,
-        };
-        log(&format!(
-            "NATIVE-INTRO: pre-exclusive monitor capture logical={logical:?} physical={physical:?} accepted={accepted:?} (frozen for this process, no display changes)"
-        ));
-        accepted
-    })
-}
-fn native_intro_exclusive_enabled()->bool{
-    let cfg=crate::cfg();
-    cfg.native_intro_exclusive && cfg.native_dd4_bootstrap &&
-    cfg.experimental_windowed_adapter && cfg.native_3d_widescreen &&
-    crate::diagnostics::is_native_windows()
-}
-fn next_intro_phase(current:u8,mode:Mode)->u8{
-    match (current,(mode.width,mode.height,mode.bpp)) {
-        (INTRO_BEFORE_MOVIE,(800,600,16))=>INTRO_IN_MOVIE_MODE,
-        (INTRO_IN_MOVIE_MODE,(800,600,16))=>INTRO_IN_MOVIE_MODE,
-        (INTRO_IN_MOVIE_MODE,_)=>INTRO_LEFT_MOVIE_MODE,
-        _=>current,
-    }
-}
-// MainMenu is loaded *while still in* the original 800x600 mode.
-// Coop is called BEFORE the subsequent SetDisplayMode. Waiting until
-// SetDisplayMode leaves 800x600 was too late: the next eligible coop
-// occurred during ESC -> MainMenu, after native 3D gameplay, causing an
-// unsafe mid-session switch to synthetic surfaces.
-fn native_intro_ready(phase:u8,main_active:bool)->bool{
-    phase==INTRO_IN_MOVIE_MODE && main_active
-}
-// A native-only intro handoff must not commit the 1920x1200 FOV/HUD
-// patch when the next game-requested mode is actually 1024x768.
-// Never enter a virtual graph in that case. The old unconditional patch
-// at SetCooperativeLevel survived the fallback and corrupted native 3D.
-fn native_intro_requested_3d(mode:Mode,target:(u32,u32))->bool{
-    mode.bpp==16 && mode.width==target.0 && mode.height==target.1 &&
-    mode.width>=960 && mode.height>=600
-}
-fn native_intro_can_prepare(mode:Mode,target:(u32,u32),graph_exposed:bool,wide_ready:bool)->bool{
-    let native_3d=native_intro_requested_3d(mode,target);
-    if !graph_exposed {native_3d}
-    else{matches!((mode.width,mode.height,mode.bpp),(640,480,16)|(800,600,16)) ||
-         (native_3d && wide_ready)}
-}
-fn observe_native_intro_mode(mode:Mode){
-    if !native_intro_exclusive_enabled(){return;}
-    let before=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
-    let after=next_intro_phase(before,mode);
-    if after!=before && NATIVE_INTRO_PHASE.compare_exchange(
-        before,after,Ordering::AcqRel,Ordering::Acquire).is_ok() {
-        log(match after {
-            INTRO_IN_MOVIE_MODE=>
-                "NATIVE-INTRO: original 800x600 exclusive movie mode observed; virtual graph remains disabled",
-            INTRO_LEFT_MOVIE_MODE=>
-                "NATIVE-INTRO: game left original 800x600 mode; late virtual activation permanently disarmed for this launch",
-            _=>"NATIVE-INTRO: unexpected phase transition",
-        });
-    }
 }
 
 // The game can repeat its *same* DDSCL_EXCLUSIVE|DDSCL_FULLSCREEN
@@ -454,59 +361,9 @@ fn identical_game_cooperative_request(
 /// Only accept a valid process-owned HWND and standard exclusive request.
 pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr)->Option<Hr>{
-    cooperative_with_intent(dd4,hwnd,flags,original,false)
-}
-// commit_pending=true is used only by display_mode after a one-shot
-// (DD4,HWND) match plus the game's exact requested native raster.
-unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
-    original:unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr,
-    commit_pending:bool)->Option<Hr>{
     if crate::cfg().log_enabled {
         log(&format!("WINDOWED-DIAG: DD4 SetCooperativeLevel enter dd4={:p} hwnd={:p} flags={:#010x}",
             dd4,hwnd,flags));
-    }
-    // Do not expose any virtual surfaces while native DirectShow owns the
-    // introduction. This branch is reached before any windowed runtime has
-    // been created; after exposure, existing strict graph checks win.
-    let native_intro=native_intro_exclusive_enabled();
-    // This must happen BEFORE forwarding the very first exclusive coop call,
-    // even though virtual-mode activation is intentionally still forbidden.
-    if native_intro {
-        let _=native_intro_launch_physical();
-    }
-    if native_intro && !commit_pending {
-        let phase=NATIVE_INTRO_PHASE.load(Ordering::Acquire);
-        let main_active=crate::menu_scene::main_menu_was_seen() &&
-                        crate::menu_scene::main_menu_active();
-        let no_windowed_runtime=RUNTIME.lock().ok().is_some_and(|r|r.is_none());
-        if no_windowed_runtime && native_intro_ready(phase,main_active) {
-            // The game's next SetDisplayMode is not known yet. Original
-            // Windows 11 actually requests 1024x768, so do not briefly
-            // flip native DirectDraw to DDSCL_NORMAL in anticipation.
-            if flags!=DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null() ||
-               win32::launch_monitor_or_game_window(hwnd).is_none() {
-                log("NATIVE-INTRO: cannot stage DD4 handoff; original cooperative request retained");
-                return None;
-            }
-            let hr=original(dd4,hwnd,flags);
-            if hr>=0 {
-                let Ok(mut pending)=NATIVE_INTRO_PENDING.lock() else{return Some(E_FAIL)};
-                *pending=Some((dd4 as usize,hwnd as usize));
-                log("NATIVE-INTRO: MainMenu eligible, original exclusive DD4 preserved; waiting for NEXT requested SetDisplayMode before changing cooperative level");
-            }
-            return Some(hr);
-        }
-        if no_windowed_runtime {
-            let count=NATIVE_INTRO_SKIPPED.fetch_add(1,Ordering::Relaxed);
-            if phase==INTRO_LEFT_MOVIE_MODE {
-                if count<8{
-                    log("NATIVE-INTRO: reject LATE virtual DD4 activation after native 3D mode; original exclusive path preserved (ESC/menu white-screen guard)");
-                }
-            }else if count<8{
-                log("NATIVE-INTRO: forwarding original exclusive DD4 cooperative request; awaiting 800x600 MainMenu transition");
-            }
-            return None;
-        }
     }
     // A second identical game-exclusive request is expected during video
     // startup, after the virtual PRIMARY and HAL device have been created.
@@ -568,39 +425,25 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // awareness: separate the game-owned window geometry from HAL pixel
     // dimensions, and fail closed for ambiguous monitors/aspect ratios.
     let render_client=if crate::diagnostics::is_native_windows(){
-        // During the original native intro, the physical *current display
-        // mode* becomes 1024x768/800x600. The verified launch raster,
-        // not that transient exclusive mode, is the intended output.
-        // Other configurations keep their established live-mode behavior.
-        let current=if native_intro {
-            win32::physical_primary_monitor_dimensions()
-        }else{None};
-        let physical=if native_intro {
-            native_intro_launch_physical()
-        }else{
-            win32::physical_primary_monitor_dimensions()
-        };
-        let Some(physical)=physical else{
+        // Win32 HWND coordinates can be DPI-logical even when the DD4 HAL
+        // renders at physical monitor pixels. This selection is unchanged
+        // from the owner-validated nonexclusive native Windows path.
+        let Some(physical)=win32::physical_primary_monitor_dimensions() else{
             if strict_native_nonexclusive(){
                 log("NATIVE-STRICT-BORDERLESS: physical monitor unknown; exclusive cooperative request REJECTED");
                 return Some(E_FAIL);
             }
-            log("WINDOWED-GAME: native physical monitor ambiguous or uncaptured; original exclusive path retained");
+            log("WINDOWED-GAME: native physical monitor ambiguous; original exclusive path retained");
             return None;
         };
         if !same_aspect((monitor_w,monitor_h),physical) {
             log(&format!(
-                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} initial_physical={physical:?} current_exclusive={current:?}; {}",
+                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} physical={physical:?}; {}",
                 monitor_w,monitor_h,
                 if strict_native_nonexclusive(){"strict nonexclusive: original mode request rejected"}
                 else{"original exclusive path retained"}
             ));
             return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
-        }
-        if native_intro{
-            log(&format!(
-                "NATIVE-INTRO: using verified pre-exclusive physical raster={physical:?} instead of current exclusive display mode={current:?}; native windowed transition eligible"
-            ));
         }
         physical
     }else{(monitor_w,monitor_h)};
@@ -639,21 +482,10 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // 4:3 menus/videos still request 640x480 or 800x600 unchanged.
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
     // Geometry was checked above, including monitors with negative origins.
-    let native_widescreen_ready=if native_intro {
-        // At SetCooperativeLevel the game has not yet supplied the new
-        // mode. The observed Win11 sequence requests 1024x768 AFTER
-        // this call: patching 1920x1200 here and then falling back to
-        // exclusive native 1024x768 corrupts geometry, sky and HUD.
-        // Defer the actual in-memory patch until a matching mode AND the
-        // native graph preflight both succeed. If the game requests its
-        // legacy 1024x768, do not patch at all.
-        log("NATIVE-INTRO: widescreen FOV/HUD patch STAGED, not applied before requested display mode is verified");
-        false
-    }else if crate::cfg().native_3d_widescreen{
-        // Only the original unwrapped EXE, authenticated by exe_gate,
-        // can reach this path. No support for third-party widescreen EXEs.
+    let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
         log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
-        let result=crate::native_widescreen::apply_or_reuse_early_patch(render_client.0,render_client.1);
+        let result=crate::native_widescreen::apply_or_reuse_early_patch(
+            render_client.0,render_client.1);
         log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
         log(&format!(
             "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
@@ -678,45 +510,6 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
             dd4,w,h,bpp,refresh,flags));
     }
-    // Consume the one-shot pending owner before changing the video phase.
-    // This ensures a legacy 1024x768 request sees exactly the original
-    // exclusive behavior and never visits DDSCL_NORMAL even briefly.
-    let requested=Mode{width:w,height:h,bpp};
-    if native_intro_exclusive_enabled() {
-        let pending=match NATIVE_INTRO_PENDING.lock(){
-            Ok(mut guard)=>guard.take(),
-            Err(_)=>return Some(E_FAIL),
-        };
-        if let Some((owner,game_hwnd))=pending{
-            let physical=native_intro_launch_physical();
-            let eligible=owner==dd4 as usize &&
-                NATIVE_INTRO_PHASE.load(Ordering::Acquire)==INTRO_IN_MOVIE_MODE &&
-                physical.is_some_and(|target|native_intro_requested_3d(requested,target));
-            if eligible {
-                type CooperativeFn=unsafe extern "system" fn(*mut c_void,Hwnd,u32)->Hr;
-                let Some(addr)=crate::orig(dd4,20) else{return Some(E_FAIL)};
-                let native_coop:CooperativeFn=std::mem::transmute(addr);
-                log("NATIVE-INTRO: exact native target mode requested; changing exclusive DD4 to NORMAL only now");
-                match cooperative_with_intent(dd4,game_hwnd as Hwnd,
-                        DDSCL_EXCLUSIVE_FULLSCREEN,native_coop,true) {
-                    Some(hr) if hr>=0 =>{},
-                    Some(hr)=>{
-                        log(&format!("NATIVE-INTRO: deferred DDSCL_NORMAL failed {:#010x}; requested mode not modified",hr as u32));
-                        return Some(hr);
-                    },
-                    None=>log("NATIVE-INTRO: deferred DD4 handoff rejected; retaining original exclusive mode"),
-                }
-            }else{
-                log(&format!(
-                    "NATIVE-INTRO: next requested {}x{}x{} differs from native target {physical:?}; NO intermediate DDSCL_NORMAL and NO FOV/HUD patch",
-                    w,h,bpp
-                ));
-            }
-        }
-    }
-    // Observation only while the original native movie graph owns DD4.
-    // Never advance this state on Wine or without explicit opt-in.
-    observe_native_intro_mode(requested);
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{
         if strict_native_nonexclusive(){
@@ -734,27 +527,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     }
     let mode=Mode{width:w,height:h,bpp};
     let (mon_w,mon_h)=runtime.render_client;
-    let intro_pending=native_intro_exclusive_enabled();
-    let native_3d=if intro_pending {
-        native_intro_requested_3d(mode,runtime.render_client) &&
-            (!runtime.exposed || runtime.native_widescreen_ready)
-    }else{
-        runtime.native_widescreen_ready && bpp==16 &&
-            w==mon_w && h==mon_h && w>=960 && h>=600
-    };
-    let supported=if intro_pending{
-        native_intro_can_prepare(mode,runtime.render_client,
-                                 runtime.exposed,runtime.native_widescreen_ready)
-    }else{
-        matches!((w,h,bpp),(640,480,16)|(800,600,16)) || native_3d
-    };
+    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
+        w==mon_w && h==mon_h && w>=960 && h>=600;
+    let supported=matches!((w,h,bpp),(640,480,16)|(800,600,16)) ||
+        native_3d;
     if !supported{
-        if intro_pending && !runtime.exposed {
-            log(&format!(
-                "NATIVE-INTRO: game requested original {}x{}x{} instead of verified native {}x{}; NO widescreen patch applied; restoring original exclusive DirectDraw",
-                w,h,bpp,mon_w,mon_h
-            ));
-        }
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
         if !allow_original_exclusive_fallback(){
@@ -867,29 +644,6 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             if win32::game_client_geometry(runtime.hwnd as Hwnd)!=Some(expected){
                 log(&format!("WINDOWED-GAME: HWND client geometry mismatch after borderless; expected={expected:?}; refusing to expose virtual surfaces"));
                 return Some(E_FAIL);
-            }
-            if intro_pending && native_3d && !runtime.native_widescreen_ready {
-                // Commit the native-only FOV/HUD transform strictly AFTER
-                // native HAL graph preflight AND verified HWND geometry.
-                // No original exclusive fallback is possible past this
-                // point: the game is about to receive virtual surfaces.
-                // full_patch::apply is byte-exact and rolls back failures.
-                log("NATIVE-INTRO: native target mode and virtual graph verified; committing deferred FOV/HUD patch");
-                let patch=crate::native_widescreen::apply_or_reuse_early_patch(
-                    runtime.render_client.0,runtime.render_client.1);
-                if !matches!(patch,
-                    crate::native_widescreen::PatchResult::Patched |
-                    crate::native_widescreen::PatchResult::AlreadyNative) {
-                    log(&format!(
-                        "NATIVE-INTRO: FOV/HUD commit refused result={patch:?}; virtual graph not exposed, native fallback forbidden"
-                    ));
-                    return Some(E_FAIL);
-                }
-                runtime.native_widescreen_ready=true;
-                log(&format!(
-                    "NATIVE-INTRO: FOV/HUD committed after verified native graph; dimensions={}x{} result={patch:?}",
-                    runtime.render_client.0,runtime.render_client.1
-                ));
             }
             if crate::cfg().window_erase_guard {
                 // This experiment is only installed AFTER validating the
@@ -1022,7 +776,7 @@ fn native_movie_rgb32_enabled(mode:Mode)->bool{
     let c=crate::cfg();
     native_movie_rgb32_mode(mode) && c.native_movie_rgb32 &&
         c.native_dd4_bootstrap && c.experimental_windowed_adapter &&
-        c.native_3d_widescreen && !c.native_intro_exclusive &&
+        c.native_3d_widescreen &&
         !c.directdraw_passthrough &&
         crate::diagnostics::is_native_windows()
 }
@@ -1340,91 +1094,22 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         opening_rgb32_scratch,full_frame_composite,clipper})
 }
 #[cfg(test)]
-mod native_intro_exclusive_tests {
+mod shared_graph_presentation_tests{
     use super::*;
-
     #[test]
-    fn native_rgb32_direct_blt_fallback_never_uses_compositor_scratch(){
+    fn menu_scratch_requires_verified_full_frame_composition_for_xrgb32(){
         let scratch=1usize as *mut c_void;
         assert_eq!(select_menu_scratch_for_arm(scratch,true,true),scratch);
         assert!(select_menu_scratch_for_arm(scratch,true,false).is_null());
         assert_eq!(select_menu_scratch_for_arm(scratch,false,false),scratch);
     }
-
     #[test]
-    fn requires_800x600_then_a_distinct_mode_before_arming() {
-        let video=Mode{width:800,height:600,bpp:16};
-        let game=Mode{width:1920,height:1200,bpp:16};
-        let boot=Mode{width:1024,height:768,bpp:16};
-        assert_eq!(next_intro_phase(INTRO_BEFORE_MOVIE,boot),INTRO_BEFORE_MOVIE);
-        assert_eq!(next_intro_phase(INTRO_BEFORE_MOVIE,video),INTRO_IN_MOVIE_MODE);
-        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,video),INTRO_IN_MOVIE_MODE);
-        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,boot),INTRO_LEFT_MOVIE_MODE);
-        assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,video),INTRO_LEFT_MOVIE_MODE);
-        assert_eq!(next_intro_phase(INTRO_LEFT_MOVIE_MODE,game),INTRO_LEFT_MOVIE_MODE);
-    }
-
-    #[test]
-    fn legacy_mode_must_not_trigger_pending_native_widescreen_handoff() {
-        let target=(1920,1200);
-        let legacy=Mode{width:1024,height:768,bpp:16};
-        let menu=Mode{width:800,height:600,bpp:16};
-        let native=Mode{width:1920,height:1200,bpp:16};
-        assert!(!native_intro_requested_3d(legacy,target));
-        assert!(!native_intro_requested_3d(menu,target));
-        assert!(native_intro_requested_3d(native,target));
-        assert_eq!(next_intro_phase(INTRO_IN_MOVIE_MODE,legacy),INTRO_LEFT_MOVIE_MODE);
-        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,true));
-    }
-    #[test]
-    fn unpatched_native_intro_must_never_fall_back_with_widescreen_bytes() {
-        let target=(1920,1200);
-        let game=Mode{width:1920,height:1200,bpp:16};
-        let legacy=Mode{width:1024,height:768,bpp:16};
-        let menu=Mode{width:800,height:600,bpp:16};
-        assert!(native_intro_requested_3d(game,target));
-        assert!(!native_intro_requested_3d(legacy,target));
-        assert!(!native_intro_requested_3d(menu,target));
-        assert!(!native_intro_can_prepare(legacy,target,false,false));
-        assert!(!native_intro_can_prepare(menu,target,false,false));
-        assert!(native_intro_can_prepare(game,target,false,false));
-        // Once a virtual graph is exposed, original 4:3 menu modes
-        // remain legal and full native mode needs a committed wide patch.
-        assert!(native_intro_can_prepare(menu,target,true,true));
-        assert!(!native_intro_can_prepare(game,target,true,false));
-        assert!(native_intro_can_prepare(game,target,true,true));
-    }
-
-    #[test]
-    fn launch_physical_aspect_is_checked_without_accepting_exclusive_modes() {
+    fn dpi_logical_physical_aspect_tolerance_is_retained(){
         assert!(same_aspect((1536,960),(1920,1200)));
         assert!(same_aspect((1093,614),(1366,768)));
         assert!(same_aspect((1536,961),(1920,1200)));
         assert!(!same_aspect((1536,963),(1920,1200)));
-        assert!(same_aspect((1920,1200),(1920,1200)));
-        assert!(!same_aspect((1536,960),(1024,768)));
         assert!(!same_aspect((1536,960),(800,600)));
-        assert!(!same_aspect((0,960),(1920,1200)));
-        assert!(!same_aspect((1536,960),(0,1200)));
-        assert!(!same_aspect((1,0),(1,0)));
-    }
-
-    #[test]
-    fn only_arms_before_first_postintro_mode_transition_when_main_menu_is_active() {
-        assert!(!native_intro_ready(INTRO_BEFORE_MOVIE,false));
-        assert!(!native_intro_ready(INTRO_BEFORE_MOVIE,true)); // early boot cannot switch
-        assert!(!native_intro_ready(INTRO_IN_MOVIE_MODE,false)); // movie still active
-        assert!(native_intro_ready(INTRO_IN_MOVIE_MODE,true));  // first next coop, menu seen
-        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,false));
-        assert!(!native_intro_ready(INTRO_LEFT_MOVIE_MODE,true)); // ESC -> menu is too late
-        // Conservative mode sequence from owner logs: early 1024,
-        // introduction/menu 800, gameplay 1024, ESC returns to 800.
-        let intro=next_intro_phase(INTRO_BEFORE_MOVIE,Mode{width:800,height:600,bpp:16});
-        assert_eq!(intro,INTRO_IN_MOVIE_MODE);
-        assert!(native_intro_ready(intro,true));
-        let gameplay=next_intro_phase(intro,Mode{width:1024,height:768,bpp:16});
-        assert_eq!(gameplay,INTRO_LEFT_MOVIE_MODE);
-        assert!(!native_intro_ready(gameplay,true)); // cannot arm on ESC
     }
 }
 
@@ -1678,18 +1363,17 @@ mod tests{
     use super::*;
     #[test]
     fn strict_native_borderless_never_allows_original_exclusive_fallback(){
-        assert!(strict_nonexclusive_selection(true,true,true,true,true,false,false));
+        assert!(strict_nonexclusive_selection(true,true,true,true,true,false));
         for case in [
-            (false,true,true,true,true,false,false),
-            (true,false,true,true,true,false,false),
-            (true,true,false,true,true,false,false),
-            (true,true,true,false,true,false,false),
-            (true,true,true,true,false,false,false),
-            (true,true,true,true,true,true,false),
-            (true,true,true,true,true,false,true)
+            (false,true,true,true,true,false),
+            (true,false,true,true,true,false),
+            (true,true,false,true,true,false),
+            (true,true,true,false,true,false),
+            (true,true,true,true,false,false),
+            (true,true,true,true,true,true)
         ]{
             assert!(!strict_nonexclusive_selection(case.0,case.1,case.2,
-                case.3,case.4,case.5,case.6));
+                case.3,case.4,case.5));
         }
     }
     #[test] fn only_identical_exposed_game_cooperative_request_is_idempotent(){

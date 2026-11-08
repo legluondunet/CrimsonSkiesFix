@@ -38,14 +38,9 @@ pub const DEFAULT_INI: &str = concat!(
     "NativeDpiAware=0\n",
     "; Experimental native Windows A/B: hook verified game's DD4 mode setup BEFORE first exclusive request; off by default.\n",
     "NativeDD4Bootstrap=0\n",
-    "; Native Windows A/B: original exclusive DirectDraw through intro/menu;\n",
-    "; at the next mode setup, consider virtual surfaces ONLY when the game\n",
-    "; explicitly requests the verified native desktop raster. Never enter\n",
-    "; NORMAL for original 1024x768/800x600. Wine/Proton unchanged.\n",
-    "NativeIntroExclusive=0\n",
     "; Native Win11/DirectShow A/B: match the original 32-bit XRGB movie\n",
     "; backbuffer at 800x600 instead of the RGB565 conversion path.\n",
-    "; Requires NativeDD4Bootstrap=1 and NativeIntroExclusive=0.\n",
+    "; Requires NativeDD4Bootstrap=1.\n",
     "; Experimental; disabled by default and never used on Wine/Proton.\n",
     "NativeMovieRGB32=0\n",
     "; Windows-only: bounded post-Flip game-window message dispatch, experimental; off by default.\n",
@@ -106,7 +101,6 @@ pub struct Config {
     // Native Windows A/B: exact-game in-memory entrypoint bootstrap for DD4.
     pub native_dd4_bootstrap: bool,
     // Native Windows A/B: defer cooperative/windowed handoff until the game requests physical native pixels.
-    pub native_intro_exclusive: bool,
     // Native Windows movie-only A/B: physical 32-bit XRGB backbuffer and 16-bit logical mode.
     pub native_movie_rgb32: bool,
     // Windows-only optional bounded, post-Flip WndProc pump to diagnose stalled UI.
@@ -133,7 +127,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, }
     }
 }
 
@@ -198,8 +192,6 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
             ("debug", "nativedd4bootstrap") =>
                 if let Some(v) = enabled(value) { settings.native_dd4_bootstrap = v; },
-            ("debug", "nativeintroexclusive") =>
-                if let Some(v) = enabled(value) { settings.native_intro_exclusive = v; },
             ("debug", "nativemoviergb32") =>
                 if let Some(v) = enabled(value) { settings.native_movie_rgb32 = v; },
             ("debug", "nativemoviemessagepump") =>
@@ -359,7 +351,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -448,14 +440,6 @@ mod tests {
         assert!(!parse("[Debug]\nNativeMovieRGB32=0").native_movie_rgb32);
         assert!(!parse("[Graphics]\nNativeMovieRGB32=1").native_movie_rgb32);
         assert!(!parse("[Compatibility]\nNativeMovieRGB32=1").native_movie_rgb32);
-    }
-    #[test]
-    fn native_intro_exclusive_is_debug_only_and_off_by_default(){
-        assert!(!Config::default().native_intro_exclusive);
-        assert!(parse("[Debug]\nNativeIntroExclusive=1").native_intro_exclusive);
-        assert!(!parse("[Graphics]\nNativeIntroExclusive=1").native_intro_exclusive);
-        assert!(!parse("[Compatibility]\nNativeIntroExclusive=1").native_intro_exclusive);
-        assert!(!parse("[Debug]\nNativeIntroExclusive=0").native_intro_exclusive);
     }
     #[test]
     fn native_dd4_bootstrap_is_debug_only_opt_in(){
