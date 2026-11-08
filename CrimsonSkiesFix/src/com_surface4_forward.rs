@@ -1040,6 +1040,28 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             session.exposure.sample(
                 window_exposure::sample_game_window(session.window))
         }else{false};
+        // Native Windows RGB32 movie A/B only: did the game window's
+        // WndProc actually receive keyboard messages during the videos?
+        // Do not consume/dispatch input here: doing so under the virtual
+        // Flip lock risks COM/UI reentrancy and changes sample scheduling.
+        if movie && (movie_call==1 || movie_call%120==0){
+            match window_erase_guard::sample_input_state(session.window){
+                Some(input)=>{
+                    let c=input.counts;
+                    crate::log(&format!(
+                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={}",
+                        input.game_is_foreground,input.window_thread,
+                        input.current_thread,
+                        input.window_thread==input.current_thread,
+                        input.queue_has_new_input,c.keydown,c.keyup,
+                        c.character,c.focus_changes,c.painted
+                    ));
+                },
+                None=>crate::log(&format!(
+                    "NATIVE-MOVIE-INPUT: movie_flip={movie_call} window_probe=unavailable"
+                ))
+            }
+        }
         pace_graph_flip(session);
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
