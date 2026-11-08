@@ -49,6 +49,7 @@ mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adap
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
 mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
 mod native_rof_open_trace; // native-only exact ROFFILE archive-open diagnostic; no GameOS data changes
+mod native_rof_load_trace; // trace exact game LoadLibrary imports to observe late ROFFILE load
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
@@ -328,12 +329,15 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
-    // Native GOS archives can be opened during very early engine startup.
-    // Install the strict verified ROFFILE.DLL IAT observer on the FIRST
-    // DirectDraw export, rather than only when later render polling begins.
-    // The observer is diagnostic-only and may still detect late module loads
-    // from its existing lifecycle polling point.
-    native_rof_open_trace::probe();
+    // Observe the original game's LoadLibrary import and inspect ROFFILE
+    // immediately AFTER its eventual load. A one-shot early ROFFILE check
+    // and the existing lifecycle fallback cover other load patterns.
+    // Both probes are native-only, diagnostic, verified-EXE gated.
+    static NATIVE_ROF_EARLY_ONCE:Once=Once::new();
+    NATIVE_ROF_EARLY_ONCE.call_once(|| {
+        native_rof_load_trace::install();
+        native_rof_open_trace::probe();
+    });
     if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
         NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
             native_video_imports::report();
