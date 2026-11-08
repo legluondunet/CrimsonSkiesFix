@@ -193,11 +193,12 @@ pub unsafe fn redirect_original_overlay_if_verified(
     if opened_archive_identity(original_handle)!="different-file-id"{return None;}
     let root=std::env::current_exe().ok()
         .and_then(|exe|exe.parent().map(Path::to_path_buf))?;
+    // Windows may resolve a legitimate, byte-for-byte original patch
+    // archive outside the EXE's directory. The owner observed precisely
+    // this case: route=outside-game-root, content=original-overlay-backup.
+    // Do not use location as an admission gate: the entire opened file
+    // MUST still match the preserved exact original bytes below.
     let actual_path=final_path_for_handle(original_handle)?;
-    if !matches!(route_of(&actual_path,&root),
-        "game-root/GOSDATA/ASSETS"|"game-root/ASSETS"|"Windows-VirtualStore"){
-        return None;
-    }
     let installed=root.join("GOSDATA").join("ASSETS").join("crimptch.rof");
     if gos_video_lock::installed_video_compressed_span().is_none(){return None;}
     if classify_content(&actual_path,&installed)!="original-overlay-backup"{
