@@ -310,6 +310,86 @@ pub fn ini_path()->Option<PathBuf> {
     regular_file(&modern).then_some(modern)
 }
 
+/// Commit a pure INI duplicate-key cleanup ONLY after writing an
+/// exclusively-created, durable copy of the player's original. Never
+/// overwrite a previous backup, never rewrite symlinks, and never change
+/// any setting (the caller has compared parse(before)==parse(after)).
+/// MoveFileExW replaces the existing INI atomically in its own directory.
+/// If anything fails, the original INI is retained. The backup remains
+/// available for user rollback.
+pub fn commit_deduplicated_ini(
+    path:&Path,previous:&str,cleaned:&str
+)->Result<PathBuf,String>{
+    if previous==cleaned || !regular_file(path){
+        return Err("unchanged or unsafe INI path; no rewrite".into());
+    }
+    let current=fs::read_to_string(path)
+        .map_err(|e|format!("read original INI: {e}"))?;
+    if current!=previous{
+        return Err("INI changed while preparing cleanup; no rewrite".into());
+    }
+    let dir=path.parent().ok_or("INI has no parent directory")?;
+    if !safe_directory(dir,false){
+        return Err("INI parent directory is not a regular directory".into());
+    }
+    let name=path.file_name().and_then(|s|s.to_str())
+        .ok_or("INI filename unavailable")?;
+    let mut backup_path=None;
+    for n in 0..=99{
+        let candidate=dir.join(format!("{name}.duplicates.{n}.bak"));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&candidate){
+            Ok(mut file)=>{
+                let saved=file.write_all(previous.as_bytes())
+                    .and_then(|_|file.sync_all());
+                drop(file);
+                if let Err(error)=saved{
+                    let _=fs::remove_file(&candidate);
+                    return Err(format!("original backup failed: {error}"));
+                }
+                backup_path=Some(candidate);
+                break;
+            },
+            Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue,
+            Err(e)=>return Err(format!("cannot create INI backup: {e}")),
+        }
+    }
+    let backup=backup_path.ok_or("all 100 distinct INI backup slots occupied")?;
+    let ticks=SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|e|format!("clock for cleanup: {e}"))?.as_nanos();
+    let tmp=dir.join(format!(".CrimsonSkiesFix-ini-clean-{}-{ticks}.tmp",
+        std::process::id()));
+    let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&tmp)
+        .map_err(|e|format!("cannot create cleanup temp: {e}"))?;
+    let written=file.write_all(cleaned.as_bytes())
+        .and_then(|_|file.sync_all());
+    drop(file);
+    if let Err(error)=written{
+        let _=fs::remove_file(&tmp);
+        return Err(format!("cannot safely write clean INI: {error}"));
+    }
+    // Refuse to race another writer. This does not protect against
+    // every external file-system race, but ensures no observed changes
+    // between initial read and our atomic rename are overwritten.
+    if !regular_file(path) ||
+       fs::read_to_string(path).is_err_or(|latest|latest!=previous){
+        let _=fs::remove_file(&tmp);
+        return Err("INI changed during cleanup; original kept".into());
+    }
+    let src:Vec<u16>=tmp.as_os_str().encode_wide()
+        .chain(std::iter::once(0)).collect();
+    let dst:Vec<u16>=path.as_os_str().encode_wide()
+        .chain(std::iter::once(0)).collect();
+    let done=unsafe{MoveFileExW(src.as_ptr(),dst.as_ptr(),
+        0x1 /* MOVEFILE_REPLACE_EXISTING */ |
+        0x8 /* MOVEFILE_WRITE_THROUGH */ )};
+    if done==0{
+        let error=std::io::Error::last_os_error();
+        let _=fs::remove_file(&tmp);
+        return Err(format!("atomic INI cleanup rename failed: {error}; original kept"));
+    }
+    Ok(backup)
+}
+
 // Obtain the *actual* DLL HMODULE from an address inside this image.
 // This avoids needing a user-exported DllMain (which would become an
 // unwanted 23rd PE export). Do not change the module reference count.
