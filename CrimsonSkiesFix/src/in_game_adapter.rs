@@ -830,10 +830,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 crate::diagnostics::is_native_windows() &&
                 native_movie_rgb32_enabled(mode) {
                 let output=(expected.2,expected.3);
-                match crate::window_erase_guard::arm_native_menu_mouse_remap(runtime.hwnd,output){
+                match crate::window_erase_guard::arm_native_menu_mouse_remap(
+                    runtime.hwnd,output,runtime.render_client
+                ){
                     Ok(view)=>log(&format!(
-                        "NATIVE-MENU-MOUSE: opt-in armed for MainMenu/Preferences 800x600; verified HWND client={}x{} content=({},{} {}x{}), WM_MOUSEMOVE/buttons only; script gate initially off",
-                        output.0,output.1,view.left,view.top,view.width,view.height)),
+                        "NATIVE-MENU-MOUSE: opt-in armed for MainMenu/Preferences 800x600; verified HWND client={}x{} render_physical={}x{} content=({},{} {}x{}) via shared DD4 output geometry; WM_MOUSEMOVE/buttons only; script gate initially off",
+                        output.0,output.1,runtime.render_client.0,runtime.render_client.1,
+                        view.left,view.top,view.width,view.height)),
                     Err(error)=>log(&format!(
                         "NATIVE-MENU-MOUSE: opt-in refused: {error}; original mouse messages preserved")),
                 }
