@@ -125,7 +125,7 @@ fn classify_content(opened:&Path,installed:&Path)->&'static str{
     const LIMIT:u64=4*1024*1024;
     let Ok(m)=fs::metadata(opened) else{return "unavailable";};
     if !m.is_file() || m.len()>LIMIT{return "unavailable-or-oversized";}
-    let Ok(raw)=fs::read(opened) else{return "unavailable";}
+    let Ok(raw)=fs::read(opened) else{return "unavailable";};
     if let Ok(current)=fs::read(installed){
         if raw==current{return "installed-managed-patch";}
     }
