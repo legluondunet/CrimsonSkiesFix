@@ -29,6 +29,27 @@ const DDSD_WIDTH:u32=0x4;
 const DDSD_PIXELFORMAT:u32=0x1000;
 const DDSCL_NORMAL:u32=8;
 const DDSCL_EXCLUSIVE_FULLSCREEN:u32=0x13;
+// Strict native Windows borderless operation must NEVER forward the
+// original game's exclusive cooperative request or real SetDisplayMode
+// after an attempted virtual DD4 setup fails.
+fn strict_nonexclusive_selection(
+    native:bool,borderless:bool,desktop:bool,adapter:bool,
+    bootstrap:bool,intro_exclusive:bool,passthrough:bool
+)->bool{
+    native && borderless && desktop && adapter && bootstrap &&
+        !intro_exclusive && !passthrough
+}
+pub fn strict_native_nonexclusive()->bool{
+    let c=crate::cfg();
+    strict_nonexclusive_selection(
+        crate::diagnostics::is_native_windows(),c.borderless,c.desktop_resolution,
+        c.experimental_windowed_adapter,c.native_dd4_bootstrap,
+        c.native_intro_exclusive,c.directdraw_passthrough
+    )
+}
+fn allow_original_exclusive_fallback()->bool{
+    !strict_native_nonexclusive()
+}
 const DDBLT_COLORFILL:u32=0x400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
@@ -426,6 +447,11 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
     }
     if flags&DDSCL_EXCLUSIVE_FULLSCREEN != DDSCL_EXCLUSIVE_FULLSCREEN || hwnd.is_null(){
+        if strict_native_nonexclusive() &&
+           flags&DDSCL_EXCLUSIVE_FULLSCREEN == DDSCL_EXCLUSIVE_FULLSCREEN {
+            log("NATIVE-STRICT-BORDERLESS: invalid/NULL game HWND; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         // Do not allow an old active graph to silently revert to native
         // DDSCL_EXCLUSIVE or DDSCL_NORMAL through another cooperative call.
         if RUNTIME.lock().ok().and_then(|r|r.as_ref().map(|x|x.exposed)).unwrap_or(false){
@@ -435,10 +461,18 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         return None;
     }
     let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: invalid monitor/HWND; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
         return None;
     };
     let Some((monitor_w,monitor_h))=monitor.dimensions() else{
+        if strict_native_nonexclusive(){
+            log("NATIVE-STRICT-BORDERLESS: invalid monitor dimensions; exclusive cooperative request REJECTED");
+            return Some(E_FAIL);
+        }
         log("WINDOWED-GAME: invalid launch monitor dimensions; original path retained");
         return None;
     };
@@ -460,15 +494,21 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
             win32::physical_primary_monitor_dimensions()
         };
         let Some(physical)=physical else{
+            if strict_native_nonexclusive(){
+                log("NATIVE-STRICT-BORDERLESS: physical monitor unknown; exclusive cooperative request REJECTED");
+                return Some(E_FAIL);
+            }
             log("WINDOWED-GAME: native physical monitor ambiguous or uncaptured; original exclusive path retained");
             return None;
         };
         if !same_aspect((monitor_w,monitor_h),physical) {
             log(&format!(
-                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} initial_physical={physical:?} current_exclusive={current:?}; original exclusive path retained",
-                monitor_w,monitor_h
+                "WINDOWED-GAME: native logical/physical aspect mismatch logical={}x{} initial_physical={physical:?} current_exclusive={current:?}; {}",
+                monitor_w,monitor_h,
+                if strict_native_nonexclusive(){"strict nonexclusive: original mode request rejected"}
+                else{"original exclusive path retained"}
             ));
-            return None;
+            return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
         }
         if native_intro{
             log(&format!(
@@ -479,7 +519,9 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     }else{(monitor_w,monitor_h)};
     log(&format!("WINDOWED-GAME: target monitor origin={},{} logical={}x{} physical_render={}x{}",
         monitor.left,monitor.top,monitor_w,monitor_h,render_client.0,render_client.1));
-    let Ok(mut guard)=RUNTIME.lock() else{return None;};
+    let Ok(mut guard)=RUNTIME.lock() else{
+        return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
+    };
     if guard.as_ref().is_some_and(|state|state.exposed){
         log("WINDOWED-GAME: repeated cooperative call while graph exposed: fail closed");
         return Some(E_FAIL);
@@ -490,8 +532,11 @@ unsafe fn cooperative_with_intent(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     let hr=original(dd4,hwnd,DDSCL_NORMAL);
     log(&format!("WINDOWED-DIAG: DD4 native SetCooperativeLevel(DDSCL_NORMAL) returned {:#010x}",hr as u32));
     if hr<0{
-        log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}), original exclusive path retained",hr as u32));
-        return None;
+        log(&format!("WINDOWED-GAME: DDSCL_NORMAL rejected ({:#010x}); {}",
+            hr as u32,if strict_native_nonexclusive(){
+                "strict borderless: original exclusive fallback FORBIDDEN"
+            }else{"original exclusive path retained"}));
+        return if strict_native_nonexclusive(){Some(hr)}else{None};
     }
     // The game can Release its own DD4 interface while virtual surfaces
     // remain referenced. Hold one distinct strong DD4 COM reference.
