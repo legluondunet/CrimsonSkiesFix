@@ -48,6 +48,7 @@ mod com_surface4_forward; // inactive wrapper prototype; native source unwrappin
 mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adapter
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
 mod roffile_terminator_fix; // default-on Wine-only, exact-hash-guarded ROFFILE EOF fix
+mod native_rof_open_trace; // native-only exact ROFFILE archive-open diagnostic; no GameOS data changes
 mod native_widescreen; // runtime widescreen/FOV adaptation of the verified unwrapped game EXE
 mod surface_usage; // opt-in passive COM surface audit for borderless prerequisite
 mod blt_signature; // opt-in exact Blt flags + source-presence audit
