@@ -237,8 +237,28 @@ fn cfg()->Config {
     *CONFIG.get_or_init(|| {
         // No filesystem operations occur until a game DirectDraw import is called.
         let ini=win32::ini_path();
-        let parsed=ini.as_ref().and_then(|p|fs::read_to_string(p).ok())
-            .map(|s|config::parse(&s)).unwrap_or_default();
+        // Existing user INIs may contain repeated [Debug] keys from
+        // several Windows A/B rounds. Clean ONLY recognized duplicate
+        // section/key entries, never change any effective parsed value.
+        // Back up the exact old INI before a guarded atomic rewrite.
+        // Leave the file entirely untouched if no duplicates are found.
+        let (parsed,ini_dedup_status)=if let Some((path,source))=ini.as_ref()
+            .and_then(|path|fs::read_to_string(path).ok().map(|s|(path,s))){
+            let parsed=config::parse(&source);
+            let status=config::deduplicate_known_ini(&source)
+                .map(|(cleaned,removed)|{
+                    match win32::commit_deduplicated_ini(path,&source,&cleaned){
+                        Ok(backup)=>format!(
+                            "CONFIG: {removed} repeated known INI keys removed without changing settings; original saved to {}",
+                            backup.display()
+                        ),
+                        Err(err)=>format!(
+                            "CONFIG: {removed} repeated known INI keys found; cleanup safely skipped: {err}"
+                        )
+                    }
+                });
+            (parsed,status)
+        }else{(Config::default(),None)};
         // One debug-only A/B test for 125%-scaled native Windows: request
         // SYSTEM DPI awareness before *any* game HWND is created and before
         // the passive Win32 display inventory. Never enable by default,
@@ -254,6 +274,12 @@ fn cfg()->Config {
             }
             if LOG.get().is_some() {
                 log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
+                if let Some(ref status)=ini_dedup_status{log(status);}
+                if parsed.gos_video_lock==gos_video_lock::Mode::Off &&
+                   parsed.experimental_windowed_adapter &&
+                   parsed.desktop_resolution && parsed.native_3d_widescreen {
+                    log("GOS-VIDEO-LOCK: GosVideoLock=off explicitly in existing INI; Graphics/Resolution dropdowns are NOT greyed; use [Graphics] GosVideoLock=on to enable verified read-only GOS controls");
+                }
                 if let Some(ref result)=dpi_diagnostic {log(result);}
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
