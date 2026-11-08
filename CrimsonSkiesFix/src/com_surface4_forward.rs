@@ -2113,7 +2113,7 @@ mod tests{
         );}
         for (x,y,color) in [(0usize,0usize,0xff0000u32),
              (1,0,0x00ff00),(2,0,0x0000ff),
-             (0,599,0x0000ff),(799,599,0x00ff00)] {
+             (0,599,0x0000ff),(799,599,0xff0000)] {
             let at=y*3208+x*4;
             assert_eq!(u32::from_le_bytes(dst[at..at+4].try_into().unwrap()),
                 color,"pixel {x},{y}");
