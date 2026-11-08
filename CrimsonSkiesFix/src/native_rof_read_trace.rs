@@ -234,7 +234,7 @@ fn routing_policy(c:&crate::config::Config)->bool{
         c.desktop_resolution && !c.directdraw_passthrough
 }
 pub fn routing_enabled()->bool{
-    routing_policy(crate::cfg())
+    routing_policy(&crate::cfg())
 }
 
 /// Initialize the authenticated file IDs separately from optional ReadFile
