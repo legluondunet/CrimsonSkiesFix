@@ -377,6 +377,11 @@ impl WindowedBlt for NativeWindowedBlt {
                         hr as u32
                     ));
                     self.disable_full_frame_composition();
+                    // The last successful black clear may have affected
+                    // only the private offscreen surface. Clear the REAL
+                    // primary once before reverting so even a 100%-DPI
+                    // output cannot display an uninitialized white gutter.
+                    self.clear_full_window_black(self.client.0,self.client.1)?;
                 }
             }
         }
@@ -586,10 +591,12 @@ mod tests{
         assert_eq!(backend.stretch_rgb565_into_viewport(mode,vp),Ok(()));
         assert!(!backend.full_frame_composition_enabled());
         let calls=primary.calls.lock().unwrap();
-        assert_eq!(calls.len(),3);
-        assert_eq!(calls[0].rect,Rect{left:0,top:0,right:128,bottom:960});
-        assert_eq!(calls[1].rect,Rect{left:1408,top:0,right:1536,bottom:960});
-        assert_eq!(calls[2].rect,Rect{left:128,top:0,right:1408,bottom:960});
+        assert_eq!(calls.len(),4);
+        assert_eq!(calls[0].rect,Rect{left:0,top:0,right:1536,bottom:960});
+        assert_eq!(calls[0].flags,FILL|WAIT);
+        assert_eq!(calls[1].rect,Rect{left:0,top:0,right:128,bottom:960});
+        assert_eq!(calls[2].rect,Rect{left:1408,top:0,right:1536,bottom:960});
+        assert_eq!(calls[3].rect,Rect{left:128,top:0,right:1408,bottom:960});
     }
     #[test]
     fn full_frame_composition_is_refused_for_gameplay_or_unverified_surfaces(){
