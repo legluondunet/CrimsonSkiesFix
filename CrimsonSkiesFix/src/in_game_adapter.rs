@@ -684,13 +684,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         if hr<0{return Some(hr);}
         return Some(original(dd4,w,h,bpp,refresh,flags));
     }
-    // The old 800x600 menu input transform must never survive into
-    // native 3D or a new mode. Re-arm only after new HAL/COM, HWND and
-    // exact client geometry have all been verified.
-    if crate::cfg().native_menu_mouse_remap &&
-        crate::cfg().native_dd4_bootstrap &&
+    // Never leave native menu-only input or cursor experiments armed
+    // into the next DD4 mode or gameplay. Restore the ShowCursor display
+    // counter before releasing/retiring the previous graph.
+    if crate::cfg().native_dd4_bootstrap &&
         crate::diagnostics::is_native_windows(){
         crate::window_erase_guard::disarm_native_menu_mouse_remap();
+        crate::window_erase_guard::disarm_native_system_cursor_probe();
     }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
@@ -818,6 +818,22 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     Err(reason)=>log(&format!(
                         "NATIVE-CURSOR-CLIP-REPAIR: not applied ({reason}); OS clip unchanged"
                     )),
+                }
+            }
+            // Isolate original menu pointer invisibility from mouse
+            // coordinate scaling: show system arrow only as an explicit
+            // native Windows diagnostic after the authentic MainMenu
+            // script is active. Refuse if old remap remains enabled.
+            if crate::cfg().native_system_cursor_probe &&
+                crate::cfg().native_dd4_bootstrap &&
+                crate::diagnostics::is_native_windows() &&
+                native_movie_rgb32_enabled(mode) {
+                match crate::window_erase_guard::arm_native_system_cursor_probe(
+                    runtime.hwnd
+                ){
+                    Ok(())=>log("NATIVE-SYSTEM-CURSOR-PROBE: armed for actual MainMenu/Preferences; original input untouched, game WndProc executes first; OS arrow diagnostic only"),
+                    Err(reason)=>log(&format!(
+                        "NATIVE-SYSTEM-CURSOR-PROBE: refused ({reason}); original game cursor unchanged")),
                 }
             }
             // Experimental native Win11 RGB32 800x600 only: reinterpret
