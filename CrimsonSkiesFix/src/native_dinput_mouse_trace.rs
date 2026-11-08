@@ -63,6 +63,67 @@ static MOUSE_STATE_MOVED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_STATE_PRESSED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_STATE_FAILED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_BUFFERED_CALLS:AtomicUsize=AtomicUsize::new(0);
+static GOS_CURSOR_BRIDGE_CALLS:AtomicUsize=AtomicUsize::new(0);
+// From the exact supported game PE32 image, proven in both native DMPs.
+// 0x5382b0 reads DIMOUSESTATE lX/lY from GetDeviceState and adds
+// rounded scaled deltas to the native GOS mouse cursor, clamping it to
+// (0..width-1,0..height-1). Both original DMPs were stuck at (799,599).
+// The correct fix is to deliver virtual-menu-relative *movement* to this
+// original routine, preserving its cursor renderer and original buttons.
+const GOS_CURSOR_X:usize=0x0075_ccc0;
+const GOS_CURSOR_Y:usize=0x0075_ccc4;
+const GOS_WIDTH:usize=0x0075_ccb8;
+const GOS_HEIGHT:usize=0x0075_ccbc;
+const GOS_MOUSE_SPEED_X:usize=0x0063_57f4;
+const GOS_MOUSE_SPEED_Y:usize=0x0063_57f8;
+fn gos_relative_delta(current:i32,target:i32,speed:f32)->Option<i32>{
+    if !speed.is_finite() || !(0.25..=8.0).contains(&speed) ||
+       !(0..800).contains(&target) || !(-1024..1824).contains(&current){
+        return None;
+    }
+    let difference=(target-current) as f32 / speed;
+    let delta=difference.round() as i32;
+    Some(if difference>0.0 && delta==0 {1}
+         else if difference<0.0 && delta==0 {-1}
+         else {delta})
+}
+/// Match physical borderless pointer to original virtual 800x600 cursor
+/// coordinates via the verified native DD4 viewport. Only the returned
+/// DIMOUSESTATE.relative X/Y fields are corrected, before ORIGINAL
+/// GOS 0x5382b0 integrates them; buttons/Z/HRESULT untouched.
+unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
+    if !crate::cfg().native_gos_cursor_bridge ||
+       !crate::diagnostics::is_native_windows() || size!=16 || data.is_null() ||
+       !(crate::menu_scene::main_menu_active() || crate::menu_scene::preferences_active()){
+        return None;
+    }
+    let target=crate::window_erase_guard::native_gos_cursor_bridge_target()?;
+    if ptr::read_volatile(GOS_WIDTH as *const i32)!=800 ||
+       ptr::read_volatile(GOS_HEIGHT as *const i32)!=600{return None;}
+    let before=(
+        ptr::read_volatile(GOS_CURSOR_X as *const i32),
+        ptr::read_volatile(GOS_CURSOR_Y as *const i32)
+    );
+    let speed=(
+        ptr::read_volatile(GOS_MOUSE_SPEED_X as *const f32),
+        ptr::read_volatile(GOS_MOUSE_SPEED_Y as *const f32)
+    );
+    let delta=(
+        gos_relative_delta(before.0,target.0,speed.0)?,
+        gos_relative_delta(before.1,target.1,speed.1)?
+    );
+    let bytes=data as *mut u8;
+    let original=(
+        ptr::read_unaligned(bytes.cast::<i32>()),
+        ptr::read_unaligned(bytes.add(4).cast::<i32>())
+    );
+    ptr::write_unaligned(bytes.cast::<i32>(),delta.0);
+    ptr::write_unaligned(bytes.add(4).cast::<i32>(),delta.1);
+    let n=GOS_CURSOR_BRIDGE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+    (sampled(n) || n==1).then(||format!(
+        "NATIVE-GOS-CURSOR-BRIDGE: sample={n} target_800x600={target:?} gos_before={before:?} speed={speed:?} physical_dinput_delta={original:?} logical_dinput_delta={delta:?}; buttons and Z unchanged, native GOS cursor renderer retained"
+    ))
+}
 
 #[link(name="kernel32")]
 extern "system"{
@@ -211,6 +272,11 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
     let call:State=std::mem::transmute(p);
     let hr=call(this,size,data);
     if !tracked(this){return hr;}
+    if hr>=0{
+        if let Some(note)=bridge_original_gos_cursor_delta(size,data){
+            log(&note);
+        }
+    }
     let n=MOUSE_STATE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     let mut xyz=None;
     let mut buttons=None;
@@ -275,7 +341,8 @@ pub fn install(){
     if !diagnostics::is_native_windows() || !crate::cfg().log_enabled ||
        !crate::cfg().native_dd4_bootstrap ||
        !(crate::cfg().native_direct_input_mouse_trace ||
-         crate::cfg().native_direct_input_mouse_coop_repair) ||
+         crate::cfg().native_direct_input_mouse_coop_repair ||
+         crate::cfg().native_gos_cursor_bridge) ||
        crate::cfg().directdraw_passthrough {return;}
     unsafe{
         let exe=GetModuleHandleA(ptr::null());
@@ -323,6 +390,19 @@ mod tests{
         assert!(sampled(1));assert!(!sampled(9));assert!(!sampled(120));
         assert!(sampled(128));assert!(sampled(16_777_216));
         assert!(!sampled(23_622_120));
+    }
+    #[test]
+    fn original_gos_mouse_delta_matches_800x600_center_and_edges(){
+        assert_eq!(gos_relative_delta(799,400,1.3),Some(-307));
+        assert_eq!(gos_relative_delta(599,300,1.3),Some(-230));
+        assert_eq!(gos_relative_delta(0,799,1.0),Some(799));
+        assert_eq!(gos_relative_delta(400,400,1.3),Some(0));
+        assert_eq!(gos_relative_delta(400,401,4.0),Some(1));
+        assert_eq!(gos_relative_delta(400,399,4.0),Some(-1));
+        assert_eq!(gos_relative_delta(799,800,1.0),None);
+        assert_eq!(gos_relative_delta(799,-1,1.0),None);
+        assert_eq!(gos_relative_delta(799,400,0.0),None);
+        assert_eq!(gos_relative_delta(799,400,f32::NAN),None);
     }
     #[test]
     fn mouse_cooperative_policy_is_exact_and_never_acts_on_other_devices(){
