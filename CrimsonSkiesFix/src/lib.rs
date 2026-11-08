@@ -436,10 +436,11 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         // This changes no Windows DPI awareness, system mode or game asset.
         log("WINDOWED-DIAG: early FOV/HUD patch intentionally deferred to DD4 (debug-only)");
     }
-    // Experimental native Windows bridge: intercept the EXACT authenticated
-    // game's DD4 mode-setup function BEFORE its first exclusive request.
-    // Default OFF. This is distinct from read-only owner diagnostics.
-    if config.native_dd4_bootstrap {
+    // Verified native Windows bridge: intercept the authenticated game's
+    // DD4 mode setup before its first exclusive request. Runtime fingerprint
+    // and physical-monitor gates still apply; Wine must not attempt to
+    // install, or even report, a disabled native-only bootstrap.
+    if config.native_dd4_bootstrap && diagnostics::is_native_windows() {
         static DD4_BOOTSTRAP_ONCE:Once=Once::new();
         DD4_BOOTSTRAP_ONCE.call_once(||{
             let ok=native_dd4_bootstrap::install();
