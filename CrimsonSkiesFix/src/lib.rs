@@ -328,6 +328,12 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    // Native GOS archives can be opened during very early engine startup.
+    // Install the strict verified ROFFILE.DLL IAT observer on the FIRST
+    // DirectDraw export, rather than only when later render polling begins.
+    // The observer is diagnostic-only and may still detect late module loads
+    // from its existing lifecycle polling point.
+    native_rof_open_trace::probe();
     if config.log_enabled && diagnostics::is_native_windows() && !config.directdraw_passthrough {
         NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
             native_video_imports::report();
