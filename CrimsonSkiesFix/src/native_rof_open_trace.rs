@@ -6,7 +6,11 @@
 //! GetLastError are preserved. Never log installation directory or full paths.
 //!
 //! An archive OPEN is not proof which member script the engine selects.
-//! This probe is diagnostic only and makes no GOS UI changes.
+//! Exception to passive observation: on Windows native with GosVideoLock=On,
+//! the exact original overlay copy may be exchanged for a separately opened
+//! and verified managed patched overlay, but ONLY when the original bytes
+//! exactly match the retained owner backup. All other opens fail open without
+//! alteration. This never changes the underlying game-owned ROF files.
 use std::{
     ffi::{c_char,c_void,OsString},
     fs,os::windows::ffi::OsStringExt,
