@@ -64,6 +64,18 @@ fn archive_for(id:FileId,refs:References)->Option<Archive>{
     else if id==refs.base{Some(Archive::Base)}
     else{None}
 }
+/// Classify the exact handle returned by ROFFILE.DLL CreateFileA.
+/// A matching basename alone is NOT evidence that this is the managed
+/// patch in the installed GOSDATA/ASSETS directory.
+pub unsafe fn opened_archive_identity(handle:*mut c_void)->&'static str{
+    let Some(refs)=REFERENCES.get().copied().flatten() else{return "references-unavailable";};
+    let Some(id)=id_for_handle(handle) else{return "handle-id-unavailable";};
+    match archive_for(id,refs){
+        Some(Archive::Overlay)=>"installed-crimptch.rof",
+        Some(Archive::Base)=>"installed-crimson.rof",
+        None=>"different-file-id",
+    }
+}
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
     count>0 && start<span.1 && start.saturating_add(count as u64)>span.0
 }
