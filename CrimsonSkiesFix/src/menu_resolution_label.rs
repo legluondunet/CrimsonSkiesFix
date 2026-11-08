@@ -56,6 +56,30 @@ fn supported_dimensions(w: u32, h: u32) -> bool {
     (320..=16384).contains(&w) && (240..=16384).contains(&h)
 }
 
+// The game runs DPI-unaware on native Windows. GetMonitorInfoW returns
+// e.g. 1536x960 logical units at 125% scaling, but the verified DD4 game
+// graph and physical display are both 1920x1200. The menu must show real
+// monitor pixels rather than the HWND's DPI-virtualized client size.
+//
+// Physical monitor discovery is deliberately single-display-only. If the
+// measurements disagree in aspect ratio or one is absent, leave the game's
+// original label alone instead of presenting a plausible but wrong value.
+// Wine/Proton retains the previously validated logical-monitor label path.
+fn monitor_pixels_for_label(
+    native_windows:bool,
+    logical:Option<(u32,u32)>,
+    physical:Option<(u32,u32)>,
+)->Option<(u32,u32)>{
+    if !native_windows{return logical.filter(|&(w,h)|supported_dimensions(w,h));}
+    let (logical,physical)=(logical?,physical?);
+    if !supported_dimensions(logical.0,logical.1) ||
+       !supported_dimensions(physical.0,physical.1) ||
+       !crate::presentation::dpi_output_matches(physical,logical) {
+        return None;
+    }
+    Some(physical)
+}
+
 fn replacement(
     context_valid: bool,
     format_id: u32,
@@ -104,12 +128,18 @@ unsafe extern "C" fn format_resolution(
     // current DirectDraw modes here would merely return 800x600.
     let page_active = active_video_page();
     let monitor = if page_active {
-        crate::win32::capture_launch_monitor()
-            .and_then(|rect| rect.dimensions())
-            .or_else(crate::win32::sole_primary_monitor_dimensions)
-    } else {
-        None
-    };
+        let logical=crate::win32::capture_launch_monitor()
+            .and_then(|rect|rect.dimensions())
+            .or_else(crate::win32::sole_primary_monitor_dimensions);
+        let native=crate::diagnostics::is_native_windows();
+        // The same read-only EnumDisplaySettingsW physical monitor path is
+        // used by the validated native FOV/HUD patch. Do not set DPI
+        // awareness, change the desktop or guess a secondary monitor.
+        let physical=if native{
+            crate::win32::physical_primary_monitor_dimensions()
+        }else{None};
+        monitor_pixels_for_label(native,logical,physical)
+    }else{None};
     let override_size = replacement(
         page_active,
         format_id,
@@ -226,6 +256,31 @@ mod tests {
                 flags.0,flags.1,flags.2,flags.3,flags.4,flags.5
             ));
         }
+    }
+    #[test]
+    fn native_windows_dpi_virtualization_uses_real_screen_pixels(){
+        // Owner's real Windows 11 native 125%-DPI log.
+        assert_eq!(monitor_pixels_for_label(true,
+            Some((1536,960)),Some((1920,1200))),Some((1920,1200)));
+        assert_eq!(monitor_pixels_for_label(true,
+            Some((1920,1200)),Some((1920,1200))),Some((1920,1200)));
+        // Fractional scaling rounding: same tolerance as windowed Blt.
+        assert_eq!(monitor_pixels_for_label(true,
+            Some((1093,614)),Some((1366,768))),Some((1366,768)));
+        // No guessed monitor when physical pixels are not verified.
+        assert_eq!(monitor_pixels_for_label(true,
+            Some((1536,960)),None),None);
+        assert_eq!(monitor_pixels_for_label(true,
+            None,Some((1920,1200))),None);
+        assert_eq!(monitor_pixels_for_label(true,
+            Some((1536,960)),Some((1920,1080))),None);
+    }
+    #[test]
+    fn wine_proton_label_keeps_original_logical_monitor_selection(){
+        assert_eq!(monitor_pixels_for_label(false,
+            Some((1920,1080)),Some((2560,1440))),Some((1920,1080)));
+        assert_eq!(monitor_pixels_for_label(false,Some((1920,1080)),None),
+            Some((1920,1080)));
     }
     #[test]
     fn native_dimensions_only_when_video_page_and_resource_match() {
