@@ -105,16 +105,10 @@ const DDBLT_COLORFILL:u32=0x0000_0400;
 const DDBLT_DEPTHFILL:u32=0x0200_0000;
 const DDBLT_WAIT:u32=0x0100_0000;
 const DDBLT_ASYNC:u32=0x0000_0200;
-/// DirectDraw's simultaneous ASYNC+WAIT request was observed returning DD_OK
-/// on an 800x600 RGB565->RGB32 image copy, with the first row correct but
-/// all remaining rows black in the *immediate* destination readback.
-/// Preserve every other operation; this one full-frame format conversion
-/// must finish before the video window presents it.
-fn opening_image_blt_flags(original:u32,verified_rgb565_800x600:bool)->u32{
-    if verified_rgb565_800x600 && original==(DDBLT_ASYNC|DDBLT_WAIT){
-        DDBLT_WAIT
-    }else{original}
-}
+// The exact original static image's RGB565->XRGB8888 native DD4 Blt returns
+// DD_OK while copying only row zero, even with ASYNC removed. The verified
+// fallback converts into a private XRGB8888 system-memory surface, then
+// performs a same-format native Blt. No sleep, global patch or host OS test.
 unsafe fn is_native_opening_image_surface(source:SurfaceThis)->bool{
     if source.is_null(){return false;}
     let mut desc=[0u32;31];desc[0]=124;
@@ -226,6 +220,7 @@ struct Surface4Forwarder{
     // Never return the real 1920x1080 desktop primary's lock pointer to the game.
     primary_lock_surface:AtomicPtr<c_void>, // one owned COM ref if armed
     movie_rgb565_staging:AtomicPtr<c_void>, // native 800x600 system-memory RGB565, one owned COM ref
+    opening_rgb32_staging:AtomicPtr<c_void>, // 800x600 system XRGB8888, only exact opening image
     retired:AtomicBool, // permanent tombstone after a resolution epoch ends
 }
 
@@ -247,6 +242,7 @@ pub unsafe fn new_forwarding_surface4(real:SurfaceThis)->Result<SurfaceThis,i32>
         graph:None,attached:AtomicPtr::new(ptr::null_mut()),
         virtual_flip:Mutex::new(None),primary_lock_surface:AtomicPtr::new(ptr::null_mut()),
         movie_rgb565_staging:AtomicPtr::new(ptr::null_mut()),
+        opening_rgb32_staging:AtomicPtr::new(ptr::null_mut()),
         retired:AtomicBool::new(false),
     });
     Ok(Box::into_raw(obj).cast())
@@ -352,6 +348,36 @@ pub unsafe fn arm_graph_movie_conversion_staging(
     }
     if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
     if p.movie_rgb565_staging.compare_exchange(
+        ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        (vt.release)(staging);
+        return Err(E_FAIL);
+    }
+    Ok(())
+}
+
+/// Arm the private XRGB8888 system-memory scratch for only the observed
+/// RGB565 opening still image on an actual native XRGB8888 movie backbuffer.
+/// This is format- and mode-gated, never keyed to Windows vs Wine.
+pub unsafe fn arm_graph_opening_rgb32_staging(
+    back:SurfaceThis,staging:SurfaceThis
+)->Result<(),i32>{
+    if !is_our_forwarder(back) || staging.is_null(){return Err(E_INVALIDARG);}
+    let p=&*back.cast::<Surface4Forwarder>();
+    let Some(node)=p.graph else{return Err(E_INVALIDARG);};
+    if node.role!=SurfaceRole::Backbuffer || !node.native_movie_rgb32 ||
+       (node.mode.width,node.mode.height,node.mode.bpp)!=(800,600,16) ||
+       p.real==staging || p.retired.load(Ordering::Acquire){
+        return Err(E_INVALIDARG);
+    }
+    let vt=real_vtable(staging);
+    let mut d=[0u32;31];d[0]=124;
+    if (vt.get_surface_desc)(staging,d.as_mut_ptr().cast())<0 ||
+       (d[3],d[2],d[21],d[22],d[23],d[24])!=(800,600,32,0xff0000,0xff00,0xff) ||
+       d[26]&0x800==0 || d[26]&0x40==0 {
+        return Err(E_INVALIDARG);
+    }
+    if (vt.add_ref)(staging)==0{return Err(E_FAIL);}
+    if p.opening_rgb32_staging.compare_exchange(
         ptr::null_mut(),staging,Ordering::AcqRel,Ordering::Acquire).is_err(){
         (vt.release)(staging);
         return Err(E_FAIL);
@@ -691,6 +717,8 @@ unsafe extern "system" fn facade_release(this:SurfaceThis)->u32{
                     if !staging.is_null(){(real_vtable(staging).release)(staging);}
                     let movie=obj.movie_rgb565_staging.swap(ptr::null_mut(),Ordering::AcqRel);
                     if !movie.is_null(){(real_vtable(movie).release)(movie);}
+                    let opening=obj.opening_rgb32_staging.swap(ptr::null_mut(),Ordering::AcqRel);
+                    if !opening.is_null(){(real_vtable(opening).release)(opening);}
                     let real=borrowed_real(this);
                     (real_vtable(real).release)(real);
                     drop(Box::from_raw(this.cast::<Surface4Forwarder>()));
@@ -1957,16 +1985,6 @@ mod tests{
         assert_eq!(at(399,599),0xf800);
         assert_eq!(at(400,0),0x07e0);
         assert_eq!(at(799,599),0x07e0);
-    }
-    #[test]
-    fn only_exact_native_splash_async_wait_is_normalized(){
-        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC|DDBLT_WAIT,true),DDBLT_WAIT);
-        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC|DDBLT_WAIT,false),
-            DDBLT_ASYNC|DDBLT_WAIT);
-        assert_eq!(opening_image_blt_flags(DDBLT_WAIT,true),DDBLT_WAIT);
-        assert_eq!(opening_image_blt_flags(DDBLT_ASYNC,true),DDBLT_ASYNC);
-        assert_eq!(opening_image_blt_flags(DDBLT_COLORFILL|DDBLT_WAIT,true),
-            DDBLT_COLORFILL|DDBLT_WAIT);
     }
     #[test]
     fn native_blt_failure_rectangle_summary_is_bounded(){
