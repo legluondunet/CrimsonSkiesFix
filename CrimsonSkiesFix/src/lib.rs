@@ -42,8 +42,6 @@ mod borderless_contract;
 mod borderless_flip; // shared Flip-to-Blt contract, exercised by standalone probe
 mod borderless_native_blt; // shared native Blt backend and MainMenu RGB565 helper
 mod com_surface4_abi;
-mod color_probe;
-mod color_capture; // opt-in native XRGB/RGB565 comparison capture
 mod com_surface4_forward; // inactive wrapper prototype; native source unwrapping helper remains used
 mod in_game_adapter; // default-on native HAL/Surface4 virtualized windowed adapter
 mod exe_gate; // only our exact unwrapped v1.02 game EXE is permitted
@@ -67,18 +65,6 @@ use render_sampling::sample_render_calls;
 use blt_crash_trace::{CRASH_BLT_LOG,NATIVE_BLT_CRASH_TRACE_ID,crash_blt_line};
 #[cfg(test)]
 use blt_crash_trace::{CRASH_BLT_ROTATE_CALLS,crash_blt_rotation_needed};
-fn color_probe_enabled()->bool{
-    // The virtual game graph can only be created AFTER cfg() initializes.
-    // Never initialize configuration/filesystem while a COM Blt is in
-    // progress (or from ABI mock/unit tests).
-    CONFIG.get().is_some_and(|c|c.log_enabled && c.color_probe)
-}
-fn color_capture_enabled()->bool{
-    CONFIG.get().is_some_and(|c|c.log_enabled && c.color_capture)
-}
-fn color_capture_path(label:&str)->Option<std::path::PathBuf>{
-    win32::color_capture_path(label)
-}
 use std::{ffi::c_void, fs::{self,File,OpenOptions}, io::Write,
           ptr, sync::{atomic::{AtomicUsize,Ordering}, Mutex,OnceLock,Once}, time::Instant};
 use win32::Hwnd;

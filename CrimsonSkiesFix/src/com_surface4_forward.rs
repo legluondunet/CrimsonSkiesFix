@@ -1145,20 +1145,6 @@ unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceTh
             if hr>=0 {
                 let count=GRAPH_COPY_COUNT.fetch_add(1,Ordering::Relaxed)+1;
                 if count<=4 {trace_native_copy_format(real_source,p4);}
-                if crate::color_probe_enabled() &&
-                    crate::color_probe::should_probe(count) {
-                    // Read-only, bounded sampled Lock/Unlock of the same
-                    // native RGB32 source and RGB565 destination. This runs
-                    // AFTER Wine completed its Blt, never replaces it.
-                    crate::color_probe::probe_native_blt(real_source,current.real,p1,p3,p4,count);
-                }
-                if crate::color_capture_enabled() &&
-                    crate::color_capture::capture_slot(count){
-                    // First-copy source and first scaled movie frame only.
-                    // The native Blt has already succeeded; capture is
-                    // read-only, opt-in, and does not modify its HRESULT.
-                    crate::color_capture::capture_after_blt(real_source,current.real,count);
-                }
                 if count==1 || count%120==0{
                     crate::log(&format!("WINDOWED-GAME: native RGB565 backbuffer source Blt succeeded copies={count} flags={p4:#x}"));
                 }

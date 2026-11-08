@@ -81,10 +81,6 @@ pub const DEFAULT_INI: &str = concat!(
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
     "CrashBltTrace=0\n",
-    "; Optional diagnostic: read 9 RGB32/RGB565 pixel pairs after selected native Blts.\n",
-    "ColorProbe=0\n",
-    "; One-shot BMP captures of native RGB32 source and RGB565 output; off by default.\n",
-    "ColorCapture=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,13 +129,11 @@ pub struct Config {
     pub directdraw_passthrough: bool,
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
-    pub color_probe: bool,
-    pub color_capture: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, color_probe: false, color_capture: false }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_intro_exclusive: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, }
     }
 }
 
@@ -196,10 +190,6 @@ pub fn parse(content: &str) -> Config {
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
             ("compatibility", "roffileterminatorfix") =>
                 if let Some(v) = enabled(value) { settings.roffile_terminator_fix = v; },
-            ("debug", "colorcapture") =>
-                if let Some(v) = enabled(value) { settings.color_capture = v; },
-            ("debug", "colorprobe") =>
-                if let Some(v) = enabled(value) { settings.color_probe = v; },
             ("debug", "crashblttrace") =>
                 if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
             ("debug", "surfaceusagetrace") =>
@@ -369,7 +359,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, color_probe:false, color_capture:false });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_intro_exclusive:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -522,18 +512,13 @@ mod tests {
         assert!(!parse("[Graphics]\nFocusRepaint=1\nFocusRepaint=0").focus_repaint);
     }
     #[test]
-    fn color_capture_is_debug_only_and_default_off(){
-        assert!(!Config::default().color_capture);
-        assert!(!parse("[Graphics]\nColorCapture=1").color_capture);
-        assert!(parse("[Debug]\nColorCapture=1\nLog=1").color_capture);
-        assert!(!parse("[Debug]\nColorCapture=1\nColorCapture=0").color_capture);
-    }
-    #[test]
-    fn color_probe_is_debug_only_default_off(){
-        assert!(!Config::default().color_probe);
-        assert!(!parse("[Graphics]\nColorProbe=1").color_probe);
-        assert!(parse("[Debug]\nColorProbe=1\nLog=1").color_probe);
-        assert!(!parse("[Debug]\nColorProbe=1\nColorProbe=0").color_probe);
+    fn retired_pixel_diagnostics_are_ignored_without_changing_defaults(){
+        // Old user INIs are not rewritten on upgrade. Ignoring these two
+        // retired debug keys must never enable a side effect.
+        assert_eq!(
+            parse("[Debug]\nColorCapture=1\nColorProbe=1"),
+            Config::default()
+        );
     }
     #[test]
     fn crash_blt_trace_is_debug_only_and_off_by_default(){

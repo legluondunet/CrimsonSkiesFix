@@ -210,7 +210,7 @@ game file because the patch never writes to disk.
 
 Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
 
-The initialization report provides privacy-filtered Windows/Wine, CPU, display, graphics and controller information. Optional `[Debug]` flags include `SurfaceUsageTrace`, `CrashBltTrace`, `ColorProbe` and `ColorCapture`, all disabled by default. Crash Blt tracing is intentionally verbose and writes a separate bounded rotating trace; disable it again after diagnosis.
+The initialization report provides privacy-filtered Windows/Wine, CPU, display, graphics and controller information. Optional `[Debug]` flags include `SurfaceUsageTrace` and `CrashBltTrace`, both disabled by default. Retired `ColorProbe` and `ColorCapture` INI keys are ignored by this branch; no BMP files are created. Crash Blt tracing is intentionally verbose and writes a separate bounded rotating trace; disable it again after diagnosis.
 
 Useful GOS log markers: `GOS-VIDEO-LOCK:`, `MENU-RESOLUTION-LABEL:`, `WINDOWED-WIDE:`, `MENU-BRANDING:`. If a new build fails, restore the previous `ddraw.dll` and relevant optional INI settings; for an already-installed GOS overlay use the explicit `restore` setting first.
 
