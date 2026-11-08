@@ -53,6 +53,19 @@ static NATIVE_MOVIE_RGB32_BLT_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_RGB32_FLIP_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_RGB32_BLT_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MOVIE_RGB32_FLIP_STATUS_CALLS:AtomicUsize=AtomicUsize::new(0);
+// UI/soft-cursor investigation: the graph intentionally rejects certain
+// 2D methods. Count actual attempts so that unsupported cursor drawing
+// can be distinguished from coordinate / OS cursor visibility problems.
+static NATIVE_MENU_PRIMARY_BLT_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_BLTFAST_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_GETDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MENU_RELEASEDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
+fn native_menu_cursor_probe_enabled()->bool{
+    crate::cfg().native_movie_rgb32 && crate::cfg().native_dd4_bootstrap &&
+        crate::diagnostics::is_native_windows()
+}
+fn native_menu_trace_count(count:usize)->bool{count<=12 || count%120==0}
+
 fn movie_com_trace_selected(count:usize)->bool{
     count<=256 || count%64==0
 }
@@ -854,6 +867,15 @@ unsafe fn convert_known_native_movie_blt(
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
     if let Some(node)=graph_node(this){
         if node.role==SurfaceRole::Primary{
+            if native_menu_cursor_probe_enabled(){
+                let n=NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+                if native_menu_trace_count(n){
+                    crate::log(&format!(
+                        "NATIVE-MENU-SURFACE: virtual primary Blt attempted count={n} source_null={} flags={p4:#x} result=E_NOTIMPL (unchanged)",
+                        p2.is_null()
+                    ));
+                }
+            }
             virtual_issue(node.role,"Blt primary (unsupported)",E_NOTIMPL);
             return E_NOTIMPL;
         }
@@ -966,7 +988,18 @@ unsafe extern "system" fn forward_blt_batch(this:SurfaceThis,p1:*mut c_void,p2:u
 }
 
 unsafe extern "system" fn forward_blt_fast(this:SurfaceThis,p1:u32,p2:u32,p3:SurfaceThis,p4:*mut Rect,p5:u32)->i32{
-    if graph_node(this).is_some(){return E_NOTIMPL;}
+    if let Some(node)=graph_node(this){
+        if native_menu_cursor_probe_enabled(){
+            let n=NATIVE_MENU_BLTFAST_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: virtual BltFast role={:?} count={n} dest=({p1},{p2}) src_null={} flags={p5:#x} result=E_NOTIMPL (unchanged)",
+                    node.role,p3.is_null()
+                ));
+            }
+        }
+        return E_NOTIMPL;
+    }
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
     (real_vtable(real).blt_fast)(real,p1,p2,p3,p4,p5)
@@ -1049,12 +1082,18 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 Some(input)=>{
                     let c=input.counts;
                     crate::log(&format!(
-                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={}",
+                        "NATIVE-MOVIE-INPUT: movie_flip={movie_call} foreground={} window_thread={} flip_thread={} same_thread={} new_key_or_mouse_input={} wndproc_keydown={} wndproc_keyup={} wndproc_char={} wndproc_focus_changes={} wndproc_paint={} wndproc_mouse_moves={} wndproc_mouse_buttons={} last_mouse_client={:?} os_cursor_visible={:?} os_cursor_screen={:?} primary_blt_rejected={} bltfast_rejected={} surface_getdc={} surface_releasedc={}",
                         input.game_is_foreground,input.window_thread,
                         input.current_thread,
                         input.window_thread==input.current_thread,
                         input.queue_has_new_input,c.keydown,c.keyup,
-                        c.character,c.focus_changes,c.painted
+                        c.character,c.focus_changes,c.painted,
+                        c.mouse_moves,c.mouse_buttons,input.cursor_client_last_move,
+                        input.cursor_visible,input.cursor_screen,
+                        NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_BLTFAST_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_GETDC_ATTEMPTS.load(Ordering::Relaxed),
+                        NATIVE_MENU_RELEASEDC_ATTEMPTS.load(Ordering::Relaxed)
                     ));
                 },
                 None=>crate::log(&format!(
@@ -1194,9 +1233,22 @@ unsafe extern "system" fn forward_get_color_key(this:SurfaceThis,p1:u32,p2:*mut 
 }
 
 unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->i32{
+    let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).get_dc)(real,p1)
+    let hr=(real_vtable(real).get_dc)(real,p1);
+    if let Some(node)=node{
+        if native_menu_cursor_probe_enabled(){
+            let n=NATIVE_MENU_GETDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: GetDC forwarded to physical surface role={:?} count={n} result={:#010x} (unchanged)",
+                    node.role,hr as u32
+                ));
+            }
+        }
+    }
+    hr
 }
 
 /// The native primary lives in DDSCL_NORMAL and does NOT have a physical
@@ -1337,9 +1389,22 @@ unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_v
 }
 
 unsafe extern "system" fn forward_release_dc(this:SurfaceThis,p1:*mut c_void)->i32{
+    let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
-    (real_vtable(real).release_dc)(real,p1)
+    let hr=(real_vtable(real).release_dc)(real,p1);
+    if let Some(node)=node{
+        if native_menu_cursor_probe_enabled(){
+            let n=NATIVE_MENU_RELEASEDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if native_menu_trace_count(n){
+                crate::log(&format!(
+                    "NATIVE-MENU-SURFACE: ReleaseDC forwarded to physical surface role={:?} count={n} result={:#010x} (unchanged)",
+                    node.role,hr as u32
+                ));
+            }
+        }
+    }
+    hr
 }
 
 unsafe extern "system" fn forward_restore(this:SurfaceThis)->i32{
