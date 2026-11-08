@@ -6,7 +6,7 @@
 //! to the original procedure. It is unhooked during WM_NCDESTROY.
 //! This does not guarantee that WM_PAINT never paints white itself.
 #![allow(dead_code)]
-use std::{ffi::c_void,sync::atomic::{AtomicIsize,AtomicUsize,Ordering}};
+use std::{cell::Cell,ffi::c_void,sync::atomic::{AtomicIsize,AtomicUsize,Ordering}};
 
 type Hwnd=*mut c_void;
 const GWL_WNDPROC:i32=-4;
@@ -34,6 +34,16 @@ const CURSOR_SHOWING:u32=0x1;
 struct Point{x:i32,y:i32}
 #[repr(C)]
 struct CursorInfo{size:u32,flags:u32,hcursor:Hwnd,screen:Point}
+#[repr(C)]
+struct WinMessage{
+    hwnd:Hwnd,message:u32,wparam:usize,lparam:isize,time:u32,
+    point:Point,lprivate:u32
+}
+const PM_REMOVE:u32=1;
+const NATIVE_MOVIE_PUMP_MAX_PER_FLIP:usize=4;
+thread_local!{
+    static IN_NATIVE_MOVIE_PUMP:Cell<bool>=const{Cell::new(false)};
+}
 
 #[link(name="user32")]
 extern "system"{
@@ -42,6 +52,9 @@ extern "system"{
     fn GetInputState()->i32;
     fn GetCursorInfo(info:*mut CursorInfo)->i32;
     fn GetCursorPos(pos:*mut Point)->i32;
+    fn PeekMessageW(msg:*mut WinMessage,hwnd:Hwnd,first:u32,last:u32,remove:u32)->i32;
+    fn TranslateMessage(msg:*const WinMessage)->i32;
+    fn DispatchMessageW(msg:*const WinMessage)->isize;
     fn GetWindowThreadProcessId(hwnd:Hwnd,pid:*mut u32)->u32;
     fn GetWindowLongW(hwnd:Hwnd,index:i32)->i32;
     fn SetWindowLongW(hwnd:Hwnd,index:i32,value:i32)->i32;
@@ -69,6 +82,11 @@ static MOUSE_MOVE_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_BUTTON_COUNT:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
 static MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
+// Armed only by native Windows RGB32 800x600 resource preflight while
+// explicit NativeMovieMessagePump=1. Never used in Wine or ordinary graph.
+static NATIVE_MOVIE_PUMP_HWND:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_PUMP_CALLS:AtomicUsize=AtomicUsize::new(0);
+static NATIVE_MOVIE_PUMP_MESSAGES:AtomicUsize=AtomicUsize::new(0);
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct WindowPaintStats{
@@ -236,6 +254,72 @@ pub fn sample_input_state(hwnd:usize)->Option<WindowInputState>{
     }
 }
 
+/// Arm for the exact process-owned game HWND; only the physically verified
+/// native RGB32 movie epoch may call this (guarded by the caller's config).
+/// This does not post, fetch, or dispatch messages during setup.
+pub fn arm_native_movie_pump(hwnd:usize)->Result<(),String>{
+    if hwnd==0{return Err("NULL game HWND".into());}
+    unsafe{
+        let window=hwnd as Hwnd;
+        if IsWindow(window)==0{return Err("invalid game HWND".into());}
+        let mut pid=0;
+        let tid=GetWindowThreadProcessId(window,&mut pid);
+        if tid==0 || pid!=GetCurrentProcessId() || tid!=GetCurrentThreadId(){
+            return Err("game HWND not owned by current process/thread".into());
+        }
+        let old=NATIVE_MOVIE_PUMP_HWND.load(Ordering::Acquire);
+        if old!=0 && old!=hwnd{return Err("another game HWND already armed".into());}
+        NATIVE_MOVIE_PUMP_HWND.store(hwnd,Ordering::Release);
+        Ok(())
+    }
+}
+
+/// Dispatch at most four messages per native RGB32 movie Flip, for exactly
+/// the same game HWND on its owning thread. Never dispatch inside WndProc,
+/// never enter with the virtual Flip mutex held (caller responsibility).
+/// A per-thread guard suppresses nested pumps during WndProc reentrancy.
+/// Filtering by HWND avoids removing the thread's WM_QUIT and unrelated
+/// window messages. This is EXPERIMENTAL and opt-in; it can affect the
+/// legacy game's own keyboard/input processing.
+pub fn pump_native_movie_window(hwnd:usize)->Option<(usize,usize,usize)>{
+    if hwnd==0 || NATIVE_MOVIE_PUMP_HWND.load(Ordering::Acquire)!=hwnd{
+        return None;
+    }
+    unsafe{
+        let window=hwnd as Hwnd;
+        if IsWindow(window)==0 ||
+            GetWindowThreadProcessId(window,std::ptr::null_mut())!=GetCurrentThreadId(){
+            return None;
+        }
+    }
+    let entered=IN_NATIVE_MOVIE_PUMP.with(|flag|{
+        if flag.get(){false}else{flag.set(true);true}
+    });
+    if !entered{return None;}
+    struct Reset;
+    impl Drop for Reset{
+        fn drop(&mut self){IN_NATIVE_MOVIE_PUMP.with(|f|f.set(false));}
+    }
+    let _reset=Reset;
+    let mut dispatched=0usize;
+    unsafe{
+        for _ in 0..NATIVE_MOVIE_PUMP_MAX_PER_FLIP{
+            if IsWindow(hwnd as Hwnd)==0{break;}
+            let mut msg:WinMessage=std::mem::zeroed();
+            if PeekMessageW(&mut msg,hwnd as Hwnd,0,0,PM_REMOVE)==0{break;}
+            // HWND filter should never return a NULL or foreign window;
+            // do not dispatch unexpected messages into a different owner.
+            if msg.hwnd!=hwnd as Hwnd{break;}
+            let _=TranslateMessage(&msg);
+            let _=DispatchMessageW(&msg);
+            dispatched+=1;
+        }
+    }
+    let calls=NATIVE_MOVIE_PUMP_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+    let total=NATIVE_MOVIE_PUMP_MESSAGES.fetch_add(dispatched,Ordering::Relaxed)+dispatched;
+    Some((dispatched,calls,total))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -268,6 +352,14 @@ mod tests{
         assert_eq!(client_mouse_point(0xffff_ffffu32 as isize),(-1,-1));
         assert_eq!(std::mem::size_of::<Point>(),8);
         assert_eq!(std::mem::size_of::<CursorInfo>(),20); // x86 only
+        assert_eq!(std::mem::size_of::<WinMessage>(),32); // x86 only
+        assert_eq!(NATIVE_MOVIE_PUMP_MAX_PER_FLIP,4);
+    }
+    #[test]
+    fn native_movie_pump_requires_a_strictly_armed_window(){
+        assert_eq!(pump_native_movie_window(0),None);
+        // No OS call is made for non-armed identifiers.
+        assert_eq!(pump_native_movie_window(0x98765),None);
     }
     #[test]
     fn guarded_window_stats_require_installed_window(){
