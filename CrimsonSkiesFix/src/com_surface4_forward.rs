@@ -60,9 +60,23 @@ static NATIVE_MENU_PRIMARY_BLT_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MENU_BLTFAST_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MENU_GETDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
 static NATIVE_MENU_RELEASEDC_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
-fn native_menu_cursor_probe_enabled()->bool{
-    crate::cfg().native_movie_rgb32 && crate::cfg().native_dd4_bootstrap &&
-        crate::diagnostics::is_native_windows()
+// Infer opt-in from the actual verified virtual graph, never from global
+// configuration. This file is also compiled by the standalone x86 test
+// probe binary, which intentionally has no crate::cfg/diagnostics functions.
+fn native_menu_cursor_probe_enabled(this:SurfaceThis)->bool{
+    unsafe {
+        let Some(node)=graph_node(this) else{return false;};
+        match node.role {
+            SurfaceRole::Backbuffer=>node.native_movie_rgb32,
+            SurfaceRole::Primary=>{
+                let back=(*this.cast::<Surface4Forwarder>())
+                    .attached.load(Ordering::Acquire);
+                graph_node(back).is_some_and(|b|b.role==SurfaceRole::Backbuffer &&
+                    b.native_movie_rgb32)
+            },
+            SurfaceRole::Depth=>false
+        }
+    }
 }
 fn native_menu_trace_count(count:usize)->bool{count<=12 || count%120==0}
 
@@ -867,7 +881,7 @@ unsafe fn convert_known_native_movie_blt(
 unsafe extern "system" fn forward_blt(this:SurfaceThis,p1:*mut Rect,p2:SurfaceThis,p3:*mut Rect,p4:u32,p5:*mut c_void)->i32{
     if let Some(node)=graph_node(this){
         if node.role==SurfaceRole::Primary{
-            if native_menu_cursor_probe_enabled(){
+            if native_menu_cursor_probe_enabled(this){
                 let n=NATIVE_MENU_PRIMARY_BLT_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
                 if native_menu_trace_count(n){
                     crate::log(&format!(
@@ -989,7 +1003,7 @@ unsafe extern "system" fn forward_blt_batch(this:SurfaceThis,p1:*mut c_void,p2:u
 
 unsafe extern "system" fn forward_blt_fast(this:SurfaceThis,p1:u32,p2:u32,p3:SurfaceThis,p4:*mut Rect,p5:u32)->i32{
     if let Some(node)=graph_node(this){
-        if native_menu_cursor_probe_enabled(){
+        if native_menu_cursor_probe_enabled(this){
             let n=NATIVE_MENU_BLTFAST_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
             if native_menu_trace_count(n){
                 crate::log(&format!(
@@ -1238,7 +1252,7 @@ unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->
     if real.is_null(){return E_POINTER;}
     let hr=(real_vtable(real).get_dc)(real,p1);
     if let Some(node)=node{
-        if native_menu_cursor_probe_enabled(){
+        if native_menu_cursor_probe_enabled(this){
             let n=NATIVE_MENU_GETDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
             if native_menu_trace_count(n){
                 crate::log(&format!(
@@ -1394,7 +1408,7 @@ unsafe extern "system" fn forward_release_dc(this:SurfaceThis,p1:*mut c_void)->i
     if real.is_null(){return E_POINTER;}
     let hr=(real_vtable(real).release_dc)(real,p1);
     if let Some(node)=node{
-        if native_menu_cursor_probe_enabled(){
+        if native_menu_cursor_probe_enabled(this){
             let n=NATIVE_MENU_RELEASEDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
             if native_menu_trace_count(n){
                 crate::log(&format!(
