@@ -36,22 +36,22 @@ pub const DEFAULT_INI: &str = concat!(
     "; Try this only under native Windows when UI/HUD is cropped at 125% DPI.\n",
     "; May alter legacy game behavior; never default-on or apply under Wine.\n",
     "NativeDpiAware=0\n",
-    "; Experimental native Windows A/B: hook verified game's DD4 mode setup BEFORE first exclusive request; off by default.\n",
-    "NativeDD4Bootstrap=0\n",
+    "; Native Windows only: exact-game DD4 bootstrap with strict preflight; enabled by default, never Wine/Proton.\n",
+    "NativeDD4Bootstrap=1\n",
     "; Native Win11/DirectShow A/B: match the original 32-bit XRGB movie\n",
     "; backbuffer at 800x600 instead of the RGB565 conversion path.\n",
     "; Requires NativeDD4Bootstrap=1.\n",
-    "; Experimental; disabled by default and never used on Wine/Proton.\n",
-    "NativeMovieRGB32=0\n",
-    "; Windows-only: bounded post-Flip game-window message dispatch, experimental; off by default.\n",
+    "; Enabled for verified native Windows 800x600 videos; never active under Wine/Proton.\n",
+    "NativeMovieRGB32=1\n",
+    "; Native Windows movie-only: bounded post-Flip message dispatch; enabled by default.\n",
     "; Requires NativeMovieRGB32=1 and NativeDD4Bootstrap=1.\n",
-    "NativeMovieMessagePump=0\n",
+    "NativeMovieMessagePump=1\n",
     "; Native Windows-only opt-in 4:3 menu mouse coordinate remap, 800x600 virtual movie graph.\n",
     "; Disabled by default: original Win32 mouse messages remain unchanged.\n",
     "NativeMenuMouseRemap=0\n",
     "; Native Windows-only A/B: repair stale ClipCursor from pre-borderless small game window.\n",
-    "; Requires native DD4 virtual graph and verified game-owned HWND; disabled by default.\n",
-    "NativeMouseClipRepair=0\n",
+    "; Requires verified native DD4 game HWND; enabled by default but acts only on a proven stale clip.\n",
+    "NativeMouseClipRepair=1\n",
     "; Native Windows 800x600 only: test visibility using standard OS arrow in MainMenu.\n",
     "; Requires WindowEraseGuard; no virtual coordinate remap. Debug only, OFF by default.\n",
     "NativeSystemCursorProbe=0\n",
@@ -60,18 +60,18 @@ pub const DEFAULT_INI: &str = concat!(
     "NativeDirectInputMouseTrace=0\n",
     "; Native Win11 mouse compatibility experiment: replace invalid DINPUT\n",
     "; exclusive+background (0x9) mouse mode with nonexclusive+foreground (0x6).\n",
-    "; Exact authenticated GUID_SysMouse only; requires Log=1 + NativeDD4Bootstrap=1.\n",
-    "; OFF by default and NEVER used on Wine/Proton.\n",
-    "NativeDirectInputMouseCoopRepair=0\n",
+    "; Exact authenticated GUID_SysMouse only; requires native DD4 bootstrap, no debug logging.\n",
+    "; Enabled for native Windows only; NEVER used under Wine/Proton.\n",
+    "NativeDirectInputMouseCoopRepair=1\n",
     "; Native Windows 800x600 MainMenu only: synchronize original GOS cursor\n",
     "; with mouse position on centered 4:3 menu (DirectInput deltas only).\n",
-    "; Original buttons and game renderer preserved. Experimental / OFF.\n",
-    "NativeGosCursorBridge=0\n",
+    "; Original buttons and game renderer preserved; enabled for verified native Windows menus.\n",
+    "NativeGosCursorBridge=1\n",
     "; Windows-native RGB32 800x600 videos/menus: compose full window offscreen\n",
     "; (black background + aspect-correct 4:3 frame), then one primary Blt.\n",
     "; No separate sidebar rectangles/GDI; fallback if unsupported by driver.\n",
-    "; STRICTLY experimental and OFF by default, never applied to 3D or Wine.\n",
-    "NativeFullFrameCompose=0\n",
+    "; Native Windows 800x600 only, enabled by default with fail-closed Blt fallback; never 3D or Wine.\n",
+    "NativeFullFrameCompose=1\n",
     "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
     "SurfaceUsageTrace=0\n",
     "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
@@ -129,7 +129,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: false, native_movie_rgb32: false, native_movie_message_pump: false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -249,6 +249,21 @@ fn ini_line_keys(content:&str)->Vec<Option<String>>{
     }).collect()
 }
 
+/// A known key with an invalid value is not a suitable survivor of a
+/// duplicate cleanup, even when the current default happens to match
+/// an earlier valid entry. Only FPSLimit and GosVideoLock are non-boolean.
+fn known_ini_value_valid(key:&str,line:&str)->bool{
+    let clean=line.split([';', '#']).next().unwrap_or("").trim();
+    let Some((_,value))=clean.split_once('=') else{return false;};
+    match key {
+        "graphics/fpslimit"=>value.trim().parse::<u32>().is_ok(),
+        "graphics/gosvideolock"=>
+            matches!(value.trim().to_ascii_lowercase().as_str(),
+                "on"|"off"|"restore"|"1"|"0"|"true"|"false"),
+        _=>enabled(value).is_some()
+    }
+}
+
 /// Normalize repeated known INI keys while preserving the EXACT effective
 /// parsed configuration, comments, unknown options and original line endings.
 /// Example: if an old valid value is followed by an invalid duplicate, the
@@ -277,6 +292,8 @@ pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
         // last text line: invalid trailing values are ignored by parse().
         let mut accepted=false;
         for &candidate in indexes.iter().rev(){
+            let Some(key)=keys[candidate].as_deref() else{continue;};
+            if !known_ini_value_valid(key,lines[candidate]){continue;}
             for &i in indexes{keep[i]=i==candidate;}
             let trial:String=lines.iter().enumerate()
                 .filter_map(|(i,line)|keep[i].then_some(*line)).collect();
@@ -330,6 +347,15 @@ mod tests {
         assert!(!cleaned.contains("NativeDD4Bootstrap=invalid\n"));
     }
     #[test]
+    fn redundant_default_on_value_prefers_valid_over_invalid_duplicate(){
+        let ini="[Debug]\nNativeDD4Bootstrap=1\nNativeDD4Bootstrap=broken\n";
+        let (output,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,1);
+        assert!(output.contains("NativeDD4Bootstrap=1\n"));
+        assert!(!output.contains("NativeDD4Bootstrap=broken\n"));
+        assert_eq!(parse(&output),parse(ini));
+    }
+    #[test]
     fn identical_and_mixed_case_keys_only_cleaned_inside_known_sections(){
         let ini="[Debug]\nLog=1\nLOG=1\n[Modded]\nLOG=0\nLOG=1\n[Graphics]\nBorderless=1\nBORDERLESS=1";
         let (cleaned,count)=deduplicate_known_ini(ini).unwrap();
@@ -355,7 +381,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap:false, native_movie_rgb32:false, native_movie_message_pump:false, native_menu_mouse_remap:false, native_mouse_clip_repair:false, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair:false, native_gos_cursor_bridge:false, native_full_frame_compose:false, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
@@ -381,25 +407,25 @@ mod tests {
         assert!(!parse("[Graphics]\nEarlyNativePhysicalMode=1").early_native_physical_mode);
     }
     #[test]
-    fn native_full_frame_compose_is_strictly_opt_in_and_debug_only(){
-        assert!(!Config::default().native_full_frame_compose);
+    fn native_full_frame_compose_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_full_frame_compose);
         assert!(parse("[Debug]\nNativeFullFrameCompose=1").native_full_frame_compose);
         assert!(!parse("[Debug]\nNativeFullFrameCompose=0").native_full_frame_compose);
-        assert!(!parse("[Graphics]\nNativeFullFrameCompose=1").native_full_frame_compose);
-        assert!(!parse("[Compatibility]\nNativeFullFrameCompose=1").native_full_frame_compose);
+        assert!(parse("[Graphics]\nNativeFullFrameCompose=1").native_full_frame_compose);
+        assert!(parse("[Compatibility]\nNativeFullFrameCompose=1").native_full_frame_compose);
     }
     #[test]
-    fn native_gos_cursor_bridge_is_debug_opt_in_only(){
-        assert!(!Config::default().native_gos_cursor_bridge);
+    fn native_gos_cursor_bridge_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_gos_cursor_bridge);
         assert!(parse("[Debug]\nNativeGosCursorBridge=1").native_gos_cursor_bridge);
-        assert!(!parse("[Graphics]\nNativeGosCursorBridge=1").native_gos_cursor_bridge);
+        assert!(parse("[Graphics]\nNativeGosCursorBridge=1").native_gos_cursor_bridge);
         assert!(!parse("[Debug]\nNativeGosCursorBridge=0").native_gos_cursor_bridge);
     }
     #[test]
-    fn native_directinput_mouse_coop_repair_is_strictly_opt_in(){
-        assert!(!Config::default().native_direct_input_mouse_coop_repair);
+    fn native_directinput_mouse_coop_repair_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_direct_input_mouse_coop_repair);
         assert!(parse("[Debug]\nNativeDirectInputMouseCoopRepair=1").native_direct_input_mouse_coop_repair);
-        assert!(!parse("[Graphics]\nNativeDirectInputMouseCoopRepair=1").native_direct_input_mouse_coop_repair);
+        assert!(parse("[Graphics]\nNativeDirectInputMouseCoopRepair=1").native_direct_input_mouse_coop_repair);
         assert!(!parse("[Debug]\nNativeDirectInputMouseCoopRepair=0").native_direct_input_mouse_coop_repair);
     }
     #[test]
@@ -417,11 +443,11 @@ mod tests {
         assert!(!parse("[Graphics]\nNativeSystemCursorProbe=1").native_system_cursor_probe);
     }
     #[test]
-    fn native_mouse_clip_repair_is_debug_only_and_off_by_default(){
-        assert!(!Config::default().native_mouse_clip_repair);
+    fn native_mouse_clip_repair_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_mouse_clip_repair);
         assert!(parse("[Debug]\nNativeMouseClipRepair=1").native_mouse_clip_repair);
         assert!(!parse("[Debug]\nNativeMouseClipRepair=0").native_mouse_clip_repair);
-        assert!(!parse("[Graphics]\nNativeMouseClipRepair=1").native_mouse_clip_repair);
+        assert!(parse("[Graphics]\nNativeMouseClipRepair=1").native_mouse_clip_repair);
     }
     #[test]
     fn native_menu_mouse_remap_is_debug_only_and_off_by_default(){
@@ -431,25 +457,25 @@ mod tests {
         assert!(!parse("[Graphics]\nNativeMenuMouseRemap=1").native_menu_mouse_remap);
     }
     #[test]
-    fn native_movie_message_pump_is_strictly_opt_in(){
-        assert!(!Config::default().native_movie_message_pump);
+    fn native_movie_message_pump_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_movie_message_pump);
         assert!(parse("[Debug]\nNativeMovieMessagePump=1").native_movie_message_pump);
         assert!(!parse("[Debug]\nNativeMovieMessagePump=0").native_movie_message_pump);
-        assert!(!parse("[Graphics]\nNativeMovieMessagePump=1").native_movie_message_pump);
+        assert!(parse("[Graphics]\nNativeMovieMessagePump=1").native_movie_message_pump);
     }
     #[test]
-    fn native_movie_rgb32_is_debug_only_and_off_by_default(){
-        assert!(!Config::default().native_movie_rgb32);
+    fn native_movie_rgb32_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_movie_rgb32);
         assert!(parse("[Debug]\nNativeMovieRGB32=1").native_movie_rgb32);
         assert!(!parse("[Debug]\nNativeMovieRGB32=0").native_movie_rgb32);
-        assert!(!parse("[Graphics]\nNativeMovieRGB32=1").native_movie_rgb32);
-        assert!(!parse("[Compatibility]\nNativeMovieRGB32=1").native_movie_rgb32);
+        assert!(parse("[Graphics]\nNativeMovieRGB32=1").native_movie_rgb32);
+        assert!(parse("[Compatibility]\nNativeMovieRGB32=1").native_movie_rgb32);
     }
     #[test]
-    fn native_dd4_bootstrap_is_debug_only_opt_in(){
-        assert!(!Config::default().native_dd4_bootstrap);
+    fn native_dd4_bootstrap_is_native_default_and_debug_overridable(){
+        assert!(Config::default().native_dd4_bootstrap);
         assert!(parse("[Debug]\nNativeDD4Bootstrap=1").native_dd4_bootstrap);
-        assert!(!parse("[Graphics]\nNativeDD4Bootstrap=1").native_dd4_bootstrap);
+        assert!(parse("[Graphics]\nNativeDD4Bootstrap=1").native_dd4_bootstrap);
         assert!(!parse("[Debug]\nNativeDD4Bootstrap=0").native_dd4_bootstrap);
     }
     #[test]
@@ -598,6 +624,18 @@ mod tests {
         assert!(initial.legacy_offscreen_rgb565);
         assert!(initial.focus_repaint);
         assert!(initial.window_erase_guard);
+        // Native-only functional options are default-on, independently
+        // of diagnostic logging. Their hooks still require exact EXE,
+        // native OS and COM identity checks before modifying behavior.
+        for enabled in [
+            initial.native_dd4_bootstrap, initial.native_movie_rgb32,
+            initial.native_movie_message_pump, initial.native_mouse_clip_repair,
+            initial.native_direct_input_mouse_coop_repair,
+            initial.native_gos_cursor_bridge, initial.native_full_frame_compose
+        ]{assert!(enabled);}
+        assert!(!initial.native_direct_input_mouse_trace);
+        assert!(!initial.native_system_cursor_probe);
+        assert!(!initial.native_menu_mouse_remap);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(initial.roffile_terminator_fix);
         assert!(!initial.log_enabled);

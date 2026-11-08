@@ -206,10 +206,14 @@ never runs from the native allocation hook, and reports are throttled.
 If no allocation count appears after installation, then use of the hook has
 **not been demonstrated** in that test. It does not mean the patch failed.
 
-A DLL loaded and parsed entirely before the next graphics callback could
-escape this opportunistic hook; an absent installation log means the fix
-was never confirmed active. The hook remains restricted to the exact supported
-ROFFILE.DLL SHA-256 and known instruction signatures. Unrecognized editions
+When ROFFILE.DLL is loaded through the authenticated game's observed
+`LoadLibrary` import, the Wine EOF repair is now attempted immediately
+**after** the loader returns and **before** original ROF archive observation.
+Graphics-frame probing remains a fallback for other loading paths. A DLL
+loaded and parsed through an unobserved path can still escape the repair;
+an absent `ROFFILE-FIX: installed` log means activation was not confirmed.
+The hook remains restricted to the exact supported ROFFILE.DLL SHA-256
+and known instruction signatures. Unrecognized editions
 are not modified. Tests under native Windows and additional long Wine sessions
 remain desirable; no assumption of identical behavior on every computer
 is made.
@@ -217,6 +221,36 @@ is made.
 To turn the fix off on the next launch, set
 `RoffileTerminatorFix=0`. This does not require restoring any original
 game file because the patch never writes to disk.
+
+## Native Windows automatic compatibility
+
+For a **new installation**, seven previously validated native-Windows-only
+compatibility switches are now enabled in the generated INI: `NativeDD4Bootstrap`,
+`NativeMovieRGB32`, `NativeMovieMessagePump`, `NativeFullFrameCompose`,
+`NativeMouseClipRepair`, `NativeDirectInputMouseCoopRepair` and
+`NativeGosCursorBridge`. These keep their strict exact-game and runtime
+preflight guards and do **not** run under Wine/Proton. They no longer require
+`[Debug] Log=1` just to work. Optional mouse tracing, screen cursor
+probes, frame-time profiling and other debug diagnostics stay disabled.
+
+Existing user INI files are **not overwritten or silently migrated**; previous
+explicit `=0` values remain respected. Under native Windows, these settings
+can still be disabled individually in `[Debug]` to isolate hardware/driver
+regressions. The initial Windows owner validation used an explicit test
+configuration; a **new default-install Windows 11 runtime smoke test** is still
+needed before a public stable release. The Wine/GE-Proton path continues to use RGB565 game presentation.
+**Wine-only native Blt safety** from v0.1.55 now installs its minimal
+Surface4 QueryInterface/GetAttachedSurface/Blt guards whenever the verified
+virtual windowed adapter is enabled, even with `[Debug] Log=0` and
+`[Graphics] ModernFPSPacing=0`. It unwraps authenticated synthetic
+surface sources before passing them to Wine's native DirectDraw Blt; it does
+not enable opt-in tracing, extra Flip interception, or FPS pacing. Previously
+this guard was accidentally tied to the logging/pacing switches, so the
+default INI could leave it inactive. A native Windows run with `Log=0`
+retains its previously validated hooks. `ExperimentalWindowedAdapter=0`
+intentionally disables the virtual graph and therefore does not exercise
+this specific source-unwrapping protection. This change requires owner
+runtime verification at the original reproducible Wine crash location.
 
 ## Logging and diagnostics
 

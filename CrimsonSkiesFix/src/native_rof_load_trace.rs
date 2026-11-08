@@ -6,8 +6,9 @@
 //! After SHA-256 game-EXE admission, inspect ONLY that EXE's named KERNEL32
 //! LoadLibrary[A/W]/LoadLibraryEx[A/W] PE32 imports. If any exist and match
 //! the original Win32 API pointer, redirect just the game's IAT slots to
-//! transparent wrappers. A successful load triggers the original verified
-//! ROFFILE.DLL file-open observer immediately on return from LoadLibrary.
+//! transparent wrappers. A successful load triggers the fingerprinted Wine
+//! ROFFILE.DLL EOF repair BEFORE the original verified archive-open observer,
+//! immediately after LoadLibrary returns (never under the loader lock).
 //!
 //! No global hooks, loader-lock callbacks, filename logging, script editing,
 //! or direct GOS UI changes. Shared archive routing is installed only after
@@ -100,9 +101,15 @@ unsafe fn on_load_return(){
     // callback). Never inspect the loader's own incoming filename pointer.
     if !GetModuleHandleA(b"roffile.dll\0".as_ptr().cast()).is_null() {
         if NOTICE.fetch_add(1,Ordering::Relaxed)==0 {
-            log("GOS-ROF-LOAD: ROFFILE.DLL is loaded after a game LoadLibrary call; attempting immediate original-ROFFILE IAT observation");
+            log("GOS-ROF-LOAD: ROFFILE.DLL is loaded after a game LoadLibrary call; checking Wine EOF patch before archive access");
         }
-        crate::native_rof_open_trace::probe();
+        // A dynamically loaded ROFFILE.DLL may parse an INI immediately
+        // after LoadLibrary returns, without any intervening graphics frame.
+        // The shared ROFFILE probe first authenticates/patches the Wine-only
+        // allocator and then installs the exact original ROF archive observer.
+        // Native Windows never receives the EOF patch. The original loader
+        // LastError is saved and restored by our caller.
+        crate::roffile_terminator_fix::probe();
     }
 }
 unsafe extern "system" fn load_a(name:*const c_char)->*mut c_void{

@@ -7,9 +7,11 @@
 //! We redirect ONLY its allocation CALL at RVA 0x1172 to the DLL's own allocator,
 //! requesting size+2 and writing those two sentinel bytes before ReadFile.
 //!
-//! Wine-only, with explicit user opt-out. The module may be loaded dynamically, so we look for it
-//! during active graphics calls; a load immediately followed by parsing with no
-//! intervening graphics call will not be patched. This limitation is logged.
+//! Wine-only, with explicit user opt-out. The module may be loaded dynamically;
+//! game LoadLibrary import interception attempts the patch immediately after
+//! LoadLibrary returns, before any subsequent parser call. Graphics probes
+//! remain as a fallback for other load paths. Installation is still contingent
+//! on the exact on-disk SHA-256 and in-memory instruction signatures.
 //! Nothing is attempted from DllMain or Windows' loader lock.
 use std::{
     ffi::{c_char, c_void, OsString},

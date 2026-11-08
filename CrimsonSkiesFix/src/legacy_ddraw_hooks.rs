@@ -102,6 +102,9 @@ pub(super) unsafe extern "system" fn set_cooperative(this:*mut c_void,hwnd:Hwnd,
 /// same no-argument x86 COM ABI in IDirectDraw 1/2/4/7 (vtable slot 19).
 /// It cannot repair the missing virtual windowed bridge by itself.
 pub(super) unsafe extern "system" fn restore_display_mode(this:*mut c_void)->Hr {
+    // Even a virtual acknowledgement requires an authentic live COM
+    // interface; never return success on NULL or unknown pointers.
+    let Some(addr)=orig(this,DD_RESTORE_DISPLAY_MODE) else{return DDERR_GENERIC};
     // The game's logical RestoreDisplayMode cannot reconfigure the user's
     // real monitor in a strictly non-exclusive native session. No native
     // display mode has been changed, so acknowledge it without forwarding.
@@ -109,7 +112,6 @@ pub(super) unsafe extern "system" fn restore_display_mode(this:*mut c_void)->Hr 
         log("NATIVE-STRICT-BORDERLESS: RestoreDisplayMode acknowledged virtually; desktop unchanged");
         return S_OK;
     }
-    let Some(addr)=orig(this,DD_RESTORE_DISPLAY_MODE) else{return DDERR_GENERIC};
     let call:RestoreModeFn=std::mem::transmute(addr);
     let trace=cfg().log_enabled && diagnostics::is_native_windows() &&
         NATIVE_RESTORE_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16;

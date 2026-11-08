@@ -62,25 +62,23 @@ EarlyNativePhysicalMode=0
 NativeDpiAware=0
 ; EXPERIMENTAL Windows-native A/B: attach the game's verified real DD4
 ; owner before its first mode switch, enabling windowed DirectDraw preflight.
-; Tested in-game under Windows 11 with the exact opt-in compatibility profile.
-; Requires ExperimentalWindowedAdapter=1, Native3DWidescreen=1, Log=1.
-; Uses an in-memory exact-EXE entrypoint hook; original game file unchanged.
-; Keep 0 normally. Never active on Wine/Proton.
-NativeDD4Bootstrap=0
+; Tested with the owner's verified Windows 11 profile. Enabled by default
+; under native Windows only, with exact EXE, monitor and HAL gates.
+; Does not depend on Log=1; no game files are changed.
+NativeDD4Bootstrap=1
 ; Native Win11/DirectShow A/B: use a real 32-bit XRGB backbuffer for 800x600
 ; video and menus instead of real RGB565 plus software movie conversion.
 ; Virtual game mode remains logically 800x600x16; primary CPU Lock is RGB565.
 ; Requires NativeDD4Bootstrap=1; never used on Wine/Proton.
-; Visually validated by the owner under Windows 11 using the explicit test profile.
-; Still disabled on fresh installs pending a general default-profile test.
-NativeMovieRGB32=0
-; Experimental Windows-only UI responsiveness investigation.
+; Visually validated under Windows 11; enabled by default for native Windows.
+; No behavior change under Wine/Proton.
+NativeMovieRGB32=1
+; Native Windows movie/menu-only UI responsiveness fix, enabled by default.
 ; On each native RGB32 intro/menu Flip, after the DirectDraw presentation
 ; lock has been released, dispatch at most 4 queued messages for the exact
 ; verified game HWND on its owner thread. Nested pumps are suppressed.
-; Never runs in Wine/Proton or normal gameplay; opt-in only.
-; Keep 0 unless explicitly diagnosing Windows "Not Responding".
-NativeMovieMessagePump=0
+; Never active under Wine/Proton or during 3D gameplay.
+NativeMovieMessagePump=1
 ; Native Windows-only 800x600 MainMenu/Preferences A/B: remap only the
 ; game's WM_MOUSEMOVE and mouse button client coordinates to the centered
 ; 4:3 canvas (e.g. 1536x960 window -> centered 1280x960 -> 800x600).
@@ -94,8 +92,9 @@ NativeMenuMouseRemap=0
 ; When the OS clip exactly matches the game's traced stale request,
 ; expand it to the verified HWND client rectangle, with readback check.
 ; Does NOT show the Windows cursor or modify input coordinates.
-; Test with NativeMenuMouseRemap=0 to isolate this single change.
-NativeMouseClipRepair=0
+; Enabled by default for proven stale native Windows clips only.
+; NativeMenuMouseRemap=0 remains the default.
+NativeMouseClipRepair=1
 ; DIAGNOSTIC Windows-native 800x600 MainMenu/Preferences only:
 ; Display the standard Windows arrow after the original game WndProc,
 ; on mouse movement, without changing coordinates or game input.
@@ -108,7 +107,7 @@ NativeSystemCursorProbe=0
 ; Reports GUID_SysMouse CreateDevice, SetCooperativeLevel, Acquire,
 ; SetDataFormat, GetDeviceState and GetDeviceData HRESULT and counters.
 ; Exact game EXE DirectInputCreateA IAT, original calls forwarded unchanged.
-; Requires Log=1 + NativeDD4Bootstrap=1. No cursor movement or click injection.
+; Native mouse tracing requires Log=1; compatibility fixes do not.
 ; OFF by default; never active on Wine/Proton.
 NativeDirectInputMouseTrace=0
 ; Native Windows ONLY: opt-in DirectInput system mouse cooperative repair.
@@ -116,9 +115,10 @@ NativeDirectInputMouseTrace=0
 ; which DirectInput rejects on system mouse with E_NOTIMPL (0x80004001).
 ; Replace precisely that call with DISCL_NONEXCLUSIVE | DISCL_FOREGROUND
 ; (0x6), forward native COM result; no virtual mouse, emulation or DPI
-; changes. Requires Log=1 + NativeDD4Bootstrap=1. OFF by default.
+; changes. Requires NativeDD4Bootstrap=1 but NOT Log=1.
+; Enabled by default only for verified GUID_SysMouse under native Windows.
 ; Does not apply to Wine/Proton, keyboard, controllers or gameplay remap.
-NativeDirectInputMouseCoopRepair=0
+NativeDirectInputMouseCoopRepair=1
 ; DIAGNOSTIC native Windows MainMenu/Preferences + post-gameplay ESC pause UI original GOS cursor bridge.
 ; The Win11 dumps show mouse x=799,y=599 (lower-right clamp) while the
 ; 800x600 menu is presented centered in a 1536x960 logical HWND. This
@@ -126,21 +126,21 @@ NativeDirectInputMouseCoopRepair=0
 ; adjusting only GUID_SysMouse DirectInput relative dx/dy to the same
 ; 4:3 viewport transformation as rendered menu. No fabricated clicks.
 ; Requires NativeDD4Bootstrap=1, NativeMovieRGB32=1,
-; NativeDirectInputMouseCoopRepair=1, WindowEraseGuard=1, Log=1.
+; NativeDirectInputMouseCoopRepair=1, WindowEraseGuard=1; no Log=1 needed.
 ; Keep NativeMenuMouseRemap=0 and NativeSystemCursorProbe=0 for isolation.
 ; Also handles the 800x600 pause interface reached DIRECTLY from verified
 ; native 3D gameplay after the original MainMenu was observed. The intro
 ; movie phase is excluded; 3D flight input is never remapped.
-; Windows only; OFF by default, no Wine/Proton/gameplay modifications.
-NativeGosCursorBridge=0
+; Windows only; enabled by default, no Wine/Proton/gameplay modifications.
+NativeGosCursorBridge=1
 ; Windows-native XRGB8888 800x600 menu/movie: compose black background
 ; and centered aspect-correct 4:3 image on one full-window offscreen
 ; DirectDraw surface, then one complete primary Blt per frame.
 ; No side-rectangle color fills, no GDI, native 3D remains unmodified.
 ; Output dimensions follow current Win32 game HWND client, including DPI.
-; Wine/Proton never use this experiment. Driver errors fall back to the
-; previous validated DirectDraw mode. Default OFF, Debug A/B only.
-NativeFullFrameCompose=0
+; Wine/Proton never use this compositor. Driver errors fall back to the
+; previously validated DirectDraw mode. Enabled by default on native Windows.
+NativeFullFrameCompose=1
 SurfaceUsageTrace=0
 CrashBltTrace=0
 ; Passive, opt-in successful virtual DD4 Flip spacing over batches of 120 frames.
