@@ -19,8 +19,11 @@ Expected no-argument flow:
    A CUE file must resolve its referenced BIN tracks safely, including
    relative paths, mixed-mode tracks and filenames with spaces. Missing or
    ambiguous data must cause an explicit refusal.
-3. Fingerprint the image and identify the supported game edition from
-   per-edition scan profiles; reject unknown or malformed media.
+3. Open the filesystem contained in the media and identify the edition
+   **from its actual files**: normalized relative paths, byte sizes, and
+   SHA-256 of file payloads. Never require an image-wide SHA-256 or byte size
+   match: the same game CD may be represented by different ISO/BIN dumps.
+   Reject unknown file manifests, unsafe paths, collisions and malformed media.
 4. Extract the appropriate original game assets to a transactional staging
    directory; verify a per-edition manifest, preserve writable files and
    publish only on success.
@@ -47,10 +50,36 @@ CrimsonSkiesFix/
     CrimsonSkiesFix.ini
 ```
 
-To create reliable edition profiles, collect for each disc image: name,
-size, SHA-256, ISO volume identity, internal file list with sizes and hashes,
-and CUE track layout where relevant. Do not rely on comparing only existing
-installed directories.
+### Edition scans: compare the CD's *contained files*, never the image
+
+Scan each disc filesystem and generate a **manifest of its contained files**
+with at least: relative file path, file byte size and file SHA-256.
+Those are the edition identifiers and integrity checks. Distinguish
+original CD files from the installed files or files transformed by the
+official 1.02 updater. Include a source edition/language label as metadata.
+
+The ISO filename, raw image byte count, whole-ISO/whole-BIN checksum,
+sector padding, mastering/recording software, pregaps and non-file sectors
+**must not** be requirements for accepting a known edition. Two materially
+different CD images should be recognized as the same edition **if the
+relevant contained files are identical**. Optional image/track information
+may help parse or debug the media format but must not become an edition
+signature. The parser must still honor CUE track offsets and actual data
+extents to extract the correct file bytes safely.
+
+Prefer the full reliable file inventory where available; define explicitly
+which payload paths are essential for the installer and which files are
+expected to differ between language editions. Compare paths in a
+case-insensitive normalized form for Windows compatibility, reject unsafe
+relative paths and normalization collisions, and retain actual file data
+unmodified. ISO9660 versus Joliet naming differences need explicit
+validation and must not trigger a false edition mismatch.
+
+A file-derived receipt can verify that extracted files match their source
+manifest; it must not be confused with authenticating an unknown disc as
+an officially supported retail edition. The approved 1.02 executable SHA-256
+gate remains separate. Do not rely on comparing only existing installed
+directories.
 
 The Windows x86 release workflow now also builds a **single-file
 CrimsonSkiesFix.exe**, separately from the existing five-file DirectDraw
