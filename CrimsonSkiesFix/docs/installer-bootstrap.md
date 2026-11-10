@@ -164,3 +164,27 @@ Wine/Proton with an actual accepted game before merging.
 When an authenticated `update1.02` installer is available next to `CrimsonSkiesFix.exe`, future builds will offer to apply it as part of installation. **This bootstrap does not execute arbitrary nearby files.** We must first validate the updater's exact file format, identity and supported source editions from the owner's forthcoming disc/version scans, and ensure the update does not overwrite user data. The official retail updater may leave a SafeDisc-protected executable; it does not by itself satisfy the strict accepted unwrapped EXE SHA-256 check.
 
 The intended final flat layout is exactly one `CrimsonSkiesFix/` game directory, with `CrimsonSkiesFix.ini` at that game's root and `CrimsonSkiesFix.log` beside the launcher. Existing nested INIs are migrated to the game root on first DLL load, without deletion of the original.
+
+## Read-only CD inventory: --inspect-cd
+
+Run the experimental launcher with a single ISO or CUE/BIN image beside it; no installed game is required:
+
+```text
+CrimsonSkiesFix.exe --inspect-cd
+CrimsonSkiesFix.exe --inspect-cd "D:\CDs\Crimson Skies.cue"
+CrimsonSkiesFix.exe --inspect-cd "D:\CDs\Crimson Skies.iso"
+```
+
+This command creates or replaces **CrimsonSkiesFix.log beside the launcher**, even when the game's normal INI has `Log=0`. It reads the CD filesystem and writes the relative path, byte length, SHA-256 of the file's payload, and an OK/SUSPECT status for each internal file. **It never computes or requires an image-wide checksum or image byte count**.
+
+The inspector supports ISO9660/Joliet, 2048-byte ISO, and data tracks referenced by CUE/BIN in MODE1/2352, MODE1/2048, MODE2/2352 and MODE2/2336. Other tracks can be present but do not identify the edition. Unsafe, ambiguous or unsupported layouts are reported explicitly.
+
+This is a read-only inventory step: **no installation, game launch, 1.02 update, or modification to the CD image**. Edition recognition and the final ISO/CUE/BIN installation flow remain pending the actual scans.
+
+For Linux/Wine:
+
+```bash
+WINEDEBUG=-all wine CrimsonSkiesFix.exe --inspect-cd
+```
+
+Send `CrimsonSkiesFix.log` with the edition/language information. If more than one ISO or CUE exists alongside the launcher, use the explicit image path to avoid ambiguity.

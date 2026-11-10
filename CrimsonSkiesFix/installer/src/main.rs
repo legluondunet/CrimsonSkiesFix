@@ -1,6 +1,7 @@
 //! Standalone bootstrap launcher for the owner's already-installed Crimson Skies 1.02.
 //! No copyrighted game assets, executable or disc patches are distributed.
 mod sha256;
+mod disc_inspect;
 
 use std::{
     env,
@@ -314,6 +315,8 @@ fn usage() {
          CrimsonSkiesFix.exe            verify or import an adjacent installed game, then play\n\
          CrimsonSkiesFix.exe --import DIR   import an existing installed game and play\n\
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
+         CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
+         CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
          CrimsonSkiesFix.exe --version\n\
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
@@ -334,14 +337,39 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if !args.is_empty() && !(args.len() == 1 && args[0] == "--verify")
-        && !(args.len() == 2 && args[0] == "--import") {
+        && !(args.len() == 2 && args[0] == "--import")
+        && !(args.len() == 1 && args[0] == "--inspect-cd")
+        && !(args.len() == 2 && args[0] == "--inspect-cd") {
         usage();
         return Err("unsupported command or number of arguments".into());
     }
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
-    if args.len() == 1 && args[0] == "--verify" {
+    if !args.is_empty() && args[0] == "--inspect-cd" {
+        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
+        // Explicit diagnostic scans always produce a log even with Log=0.
+        // They never launch, install, patch or modify the disc image.
+        let report=disc_inspect::inspect(base,selected.as_deref());
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: refusing to overwrite a non-file".into());
+        }
+        let text=match &report {
+            Ok(content)=>content.clone(),
+            Err(why)=>format!("CrimsonSkiesFix CD INSPECT v1\nINSPECT_RESULT=ERROR\nERROR={why}\n"),
+        };
+        fs::write(&log,text).map_err(error)?;
+        match report {
+            Ok(content)=>{
+                let count=content.lines().find(|line|line.starts_with("FilesTotal="))
+                    .unwrap_or("FilesTotal=UNKNOWN");
+                println!("CD inspection complete ({count}); full internal-file manifest: {}",log.display());
+                Ok(0)
+            }
+            Err(why)=>Err(format!("{why}; details: {}",log.display())),
+        }
+    } else if args.len() == 1 && args[0] == "--verify" {
         verify(&game)?;
         println!("Verified: original game EXE and bundled DirectDraw patch.");
         return Ok(0);
