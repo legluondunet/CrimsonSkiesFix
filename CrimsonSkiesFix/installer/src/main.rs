@@ -320,9 +320,6 @@ struct DiscInstallation {
     chapter_zbd_files:usize,
     chapter_bytes:u64,
     chapter_short_aliases:usize,
-    retail_support_files:usize,
-    retail_support_bytes:u64,
-    retail_renamed_files:usize,
     destination:PathBuf,
 }
 
@@ -349,12 +346,6 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
     let count=disc_inspect::verify_installed_without_cabs(game,edition)?;
-    // These eight original retail loader/setup companion files come from
-    // the CD root, not its GAME/ directory. Verify the original CD hashes.
-    let support_count=disc_inspect::verify_retail_support(game,edition)?;
-    if support_count!=disc_inspect::RETAIL_SUPPORT_FILES {
-        return Err("incomplete retail root support files".into());
-    }
     // Copying the chapter CABs alone is not a complete retail install.
     // Verify every expanded member byte-for-byte against the original CAB.
     let receipt=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
@@ -437,9 +428,6 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
         finalized.zbd_files!=chapters.zbd_files {
         return Err("chapter members changed while finalizing CAB removal".into());
     }
-    // Reproduce the exact filenames from the owner's installed retail
-    // directory AFTER official patch extraction verified the original names.
-    let renamed=disc_inspect::normalize_game_filenames(&stage,extracted.edition)?;
     // Game saves and user-defined planes belong beside the game executable,
     // not in Program Files, system folders or a shared staging directory.
     for name in ["SavedGames","Planes"] {
@@ -454,20 +442,16 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
          UpdateSHA256={}\nPatchAssetSHA256={}\n\
          ChapterCabMembers={}\nChapterCabZbdFiles={}\nChapterCabPayloadBytes={}\n\
          ChapterManifestSHA256={}\nChapterShortAliasCandidates={}\nChapterCABsPruned=8\n\
-         RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
         update102::PATCH_SHA256,update102::ASSET_SHA256,
         finalized.members,finalized.zbd_files,finalized.payload_bytes,
-        finalized.manifest_sha,finalized.short_name_candidates,
-        extracted.retail_support_files,extracted.retail_support_bytes,renamed
+        finalized.manifest_sha,finalized.short_name_candidates
     );
     ensure_new_text(&stage.join(INSTALL_RECEIPT),&receipt)?;
     let (edition,verified_count)=verify_installed_cd_assets(&stage)?;
     if verified_count+disc_inspect::REMOVED_CHAPTER_CABS!=extracted.file_count ||
-        edition!=extracted.edition ||
-        extracted.retail_support_files!=disc_inspect::RETAIL_SUPPORT_FILES {
-
+        edition!=extracted.edition {
         return Err("installation verification disagrees with extracted source manifest".into());
     }
     // The final name only appears when source, ROF, proxy and writable
@@ -478,9 +462,6 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
         chapter_members:finalized.members,chapter_zbd_files:finalized.zbd_files,
         chapter_bytes:finalized.payload_bytes,
         chapter_short_aliases:finalized.short_name_candidates,
-        retail_support_files:extracted.retail_support_files,
-        retail_support_bytes:extracted.retail_support_bytes,
-        retail_renamed_files:renamed,
         destination:game.to_path_buf()})
 }
 
@@ -625,8 +606,7 @@ fn run() -> Result<i32, String> {
                 Edition={edition}\nOriginalFilesVerified={files}\n\
                 Official102Asset=SHA256_VERIFIED\nProxy=SHA256_VERIFIED\n\
                 ChapterManifest=SHA256_VERIFIED\nChapterPayloads=SHA256_VERIFIED\n\
-                ChapterCABsPruned=8\nRetailSupport=8_FILES_SHA256_VERIFIED\n\
-                RetailNames=VERIFIED\n\
+                ChapterCABsPruned=8\n\
                 WritableDirectories=SavedGames,Planes\nExecutableState=PROTECTED_PENDING\n\
                 VERIFY_INSTALL_RESULT=COMPLETE\n",verification_target.display()),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
@@ -665,13 +645,11 @@ fn run() -> Result<i32, String> {
                 ChapterCabMembers={}\nChapterZbdFiles={}\nChapterPayloadBytes={}\n\
                 ChapterContentVerified=YES\n\
                 ChapterCABsPruned=8\nChapterShortAliasCandidates={}\n\
-                RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
                 GameFilesVerified=YES\nExecutableState=PROTECTED_PENDING\n\
                 INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING\n",
                 r.edition,r.file_count,r.byte_count,r.asset_status,r.destination.display(),
                 r.chapter_members,r.chapter_zbd_files,r.chapter_bytes,
-                r.chapter_short_aliases,
-                r.retail_support_files,r.retail_support_bytes,r.retail_renamed_files),
+                r.chapter_short_aliases),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
                 Destination={}\nINSTALL_RESULT=ERROR\nERROR={why}\n",
                 install_target.display()),
@@ -685,8 +663,6 @@ fn run() -> Result<i32, String> {
                     r.chapter_members,r.chapter_zbd_files,r.chapter_bytes);
                 println!("Pruned all 8 temporary chapter CABs after verification; {} filenames contain possible DOS 8.3 aliases.",
                     r.chapter_short_aliases);
-                println!("Installed {} authenticated retail CD-root files and corrected {} installed game filenames.",
-                    r.retail_support_files,r.retail_renamed_files);
                 println!("Official 1.02 resource: {}. Bundled ddraw.dll and writable game folders installed.",r.asset_status);
                 println!("Installation data ready; protected game executable kept unchanged for the final step.");
                 Ok(0)

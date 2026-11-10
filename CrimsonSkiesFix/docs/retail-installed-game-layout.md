@@ -1,118 +1,55 @@
-# Reconstructing the actual Crimson Skies retail install layout
+# Original Crimson Skies install layout: reference, not yet implemented
 
-On 2026-11-10 the owner supplied the `tree "Crimson Skies/"` listing
-from an actual traditional Microsoft game installation:
+The owner supplied the complete `tree "Crimson Skies/"` from a classic
+Microsoft installation on 2026-11-10. It lists **68 directories and
+225 files**. This is useful as a reference but does not prove content
+equality without comparing SHA-256 of the files.
 
-- 68 directories and 225 files.
-- `ZBD/C1/`, `C1B/`, `C1C/`, `C2/`, `C2B/`, `C3/`,
-  `C4/`, `C5/`, with `IA1`, `M01`...`M05`,
-  `MP1`...`MP3` child directories and the actual
-  `cam_anim.zbd`, `mis_anim.zbd`, `rtexture*.zbd`,
-  `gamez.zbd`, `texture.zbd`, `zrdr.zbd` files.
-- Six directly stored `ZBD/*.zbd` resources, plus **177** files
-  inside the eight chapter directories in the supplied classic tree,
-  for **183** installed ZBD files. The earlier extractor logged 178
-  member files from its eight CABs: that is **one more file than the
-  classic layout** and remains to be audited.
-- No `ZBD/*.CAB` in the final installed game.
+## Current narrowly scoped installation work
 
-## Observed mismatches with the previous installer
+This milestone deliberately covers **only**:
 
-All three ISO/CUE profiles have seven loader/support files at the disc
-*root*, not beneath `GAME/`. The old installer only extracted
-`GAME/` and omitted them.
+1. Filenames inside `ZBD/C1/`, `C1B/`, `C1C/`, `C2/`, `C2B/`,
+   `C3/`, `C4/`, `C5/` and their `Mxx`/`MPx`/`IA1` subdirectories.
+   The original CAB file entry `name()` is not necessarily the
+   eventual retail-installed long filename; do not fabricate an expansion
+   of an 8.3 alias. The name audit compares extracted files with a
+   genuine installed `ZBD/` tree recursively and by per-file SHA-256.
+2. Removing the eight temporary `C*.CAB` files *after* expanding
+   and independently verifying the ZBD resources. Per-file hashes are
+   sealed into `CrimsonSkiesFix.chapters.tsv` before publishing the
+   transaction so `--verify-install` can work without retained CABs.
 
-| Original disc root | Installed game root |
-|---|---|
-| `CLCD16.DLL` | `clcd16.dll` |
-| `CLCD32.DLL` | `clcd32.dll` |
-| `CLOKSPL.EXE` | `clokspl.exe` |
-| `DPLAYERX.DLL` | `dplayerx.dll` |
-| `DRVMGT.DLL` | `drvmgt.dll` |
-| `MCP.DLL` | `mcp.dll` |
-| `SETUPENU.DLL` | `SETUPENU.DLL` |
+The owner's reference tree contains **177** files within eight
+chapter directories, plus six direct `ZBD/` files, for **183** ZBDs.
+Earlier CAB-based installation logs reported **178 chapter members**,
+one more than the reference count. The audit reports counts per chapter;
+the extra entry must be identified before deleting or renaming anything.
 
-The eighth file is the localized disc-root README, installed as
-`Readme.rtf`: `LISEZMOI.RTF` on FR and `README.RTF` on US/DE.
+To examine an already installed USA game from an earlier experimental
+build, while providing the classic installed game as the reference:
 
-The retail installer also normalizes two shortened filenames across all
-editions, plus the localized French EULA:
-
-| Original disc `GAME/` name | Installed game name | Editions |
-|---|---|---|
-| `CRIMSO_1.IFR` | `crimsonff.ifr` | FR, DE, USA/Europe |
-| `CSZONE_1.EXE` | `cszoneregister.exe` | FR, DE, USA/Europe |
-| `CLUF.RTF` | `EULA.RTF` | FR |
-| `EULA.RTF` | unchanged | DE, USA/Europe |
-
-These mappings come from the owner's real installed tree, checked
-against the exact recognized original-CD profiles, not arbitrary
-expansions of DOS short names.
-
-## Changes to the file installer
-
-- `--install-cd` now extracts **eight** additional original CD root
-  files, SHA-256 verifying each source member and checking the bytes
-  again as **retail installed support files**.
-- It applies the above game-root names **only after** the existing
-  original-CD full-file verification, CAB expansion, and official
-  1.02 overlay application. All moves are in the private
-  `<installation>.installing/` directory and use non-overwriting
-  destination checks.
-- `--verify-install` maps the renamed original GAME/ filenames back
-  to their original CD manifest records and re-verifies the actual
-  bytes, verifies all eight additional root support files against
-  the same CD manifest, and checks the CAB-free chapter SHA-256 manifest.
-- The eight source chapter `C*.CAB` archives are not part of the final
-  game layout; they are removed from *staging* only **after their
-  178 decompressed game members pass verification**.
-- Source images and the official 1.02 update executable are unchanged;
-  the SafeDisc-protected game executable is left alone.
-
-## Expected official-installer-generated files (not copied from CD)
-
-`EBUSetup.sem` and `UNINSTAL.EXE` appear in the owner's historical
-installation but are **not** present in any of the three authenticated
-CD profiles. These may be generated by Microsoft/Electronic Arts'
-original installer. This project does **not** invent, bundle, or fake
-the uninstaller executable or an unknown setup marker. Their necessity
-needs separate evidence; they are not expected to be needed to run
-the game. This is not proof of complete registry/system equivalence.
-
-## Remaining name audit
-
-The supplied `tree` output establishes the **expected directory
-layout** but does not include file hashes. The classic chapter counts
-are: C1=23, C1B=17, C1C=17, C2=25, C2B=16, C3=27, C4=27,
-C5=25, totaling **177**. Our CAB decoder previously reported
-**178**. We must identify the extra entry and any short-name aliases
-before claiming byte-for-byte retail directory equivalence. The chapter archives may
-also use shortened names that are *not* the same as their actual
-retail-installed filenames. Keep their filenames as extracted pending
-matching against the owner's installed files by SHA-256 using the
-read-only `--audit-shortnames` command.
-
-For owner validation on an already-built USA game directory:
-
-```sh
-WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA
-# Optional with a real retail ZBD directory, to resolve chapter aliases:
-WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA "Z:\\path\\to\\original\\Crimson Skies\\ZBD"
+```bash
+REF_ZBD="$(winepath -w "$PWD/Crimson Skies/ZBD")"
+WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA "$REF_ZBD"
+cp CrimsonSkiesFix.log shortnames-reference-USA.log
 ```
 
-The filename audit now traverses the authentic installed **ZBD tree
-recursively**, including `C1/`, `C2/`, `M01/`, `MP1/`, etc. Hash-identical
-files repeated across chapters are matched by directory first, then the
-known source chapter archive. Ambiguous aliases are reported, never
-guessed. The reference directory is read-only.
+The original classic-installed `Crimson Skies/ZBD` directory is
+read-only to this command; it requires access to the existing original
+installation. Hash matching is only meaningful for the **same game
+edition and asset version**.
 
-```sh
-# Use your real installed game's ZBD directory, with Wine path conversion:
-WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA \
-  "C:\\Program Files (x86)\\Microsoft Games\\Crimson Skies\\ZBD"
-cp CrimsonSkiesFix.log shortnames-USA-reference.log
-```
+## Outside this milestone — documented only, not being changed now
 
-No additional executable/asset files are distributed. Real-media
-Wine/Windows 11 tests of the revised complete installed layout are
-required before closing the installation workstream.
+The classic root contains `clcd16.dll`, `clcd32.dll`, `clokspl.exe`,
+`dplayerx.dll`, `drvmgt.dll`, `mcp.dll`, `SETUPENU.DLL`,
+`Readme.rtf`, `EBUSetup.sem`, and `UNINSTAL.EXE`.
+Its `crimsonff.ifr`, `cszoneregister.exe`, and French `EULA.RTF`
+names differ from some original CD filenames. These are **observed
+differences**, not part of the current approved corrections.
+Other installer-generated files, registry state, and SafeDisc handling
+are deferred.
+
+No original game files or protected executables are bundled with the
+project. The PR remains draft pending real-media validation.
