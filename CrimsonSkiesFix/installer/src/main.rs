@@ -3,6 +3,7 @@
 mod sha256;
 mod disc_inspect;
 mod update102;
+mod chapter_cabs;
 
 use std::{
     env,
@@ -300,6 +301,9 @@ struct DiscInstallation {
     file_count:usize,
     byte_count:u64,
     asset_status:&'static str,
+    chapter_members:usize,
+    chapter_zbd_files:usize,
+    chapter_bytes:u64,
     destination:PathBuf,
 }
 
@@ -326,6 +330,22 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
     let count=disc_inspect::verify_staging(game,edition)?;
+    // Copying the chapter CABs alone is not a complete retail install.
+    // Verify every expanded member byte-for-byte against the original CAB.
+    let chapters=chapter_cabs::verify_expanded(game)?;
+    let receipt=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
+    for (key,actual) in [
+        ("ChapterCabMembers",chapters.members as u64),
+        ("ChapterCabZbdFiles",chapters.zbd_files as u64),
+        ("ChapterCabPayloadBytes",chapters.payload_bytes),
+    ] {
+        let values=receipt.lines().filter_map(|s|
+            s.strip_prefix(&format!("{key}="))
+        ).collect::<Vec<_>>();
+        if values.len()!=1 || values[0].parse::<u64>().ok()!=Some(actual) {
+            return Err(format!("chapter CAB verification receipt does not match: {key}"));
+        }
+    }
     if !regular(&game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF"))
         || digest(&game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF"))?
             !=update102::ASSET_SHA256 {
@@ -362,6 +382,10 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path)
     let updater=update102::find(base,patch)?;
     println!("Building original game installation from verified CD and official 1.02 updater...");
     let extracted=disc_inspect::extract_for_install(base,disc,&stage)?;
+    // The original retail setup materializes hundreds of files from
+    // GAME/ZBD/C*.CAB. Keep the original CABs, and safely expand their
+    // verified members before publishing the installed game directory.
+    let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
     let asset=update102::apply_asset(base,&stage,extracted.edition,Some(&updater))?;
@@ -377,9 +401,11 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path)
          InstallState=GAME_FILES_READY_EXECUTABLE_PENDING\n\
          ExtractedGameFiles={}\nExtractedGameBytes={}\n\
          UpdateSHA256={}\nPatchAssetSHA256={}\n\
+         ChapterCabMembers={}\nChapterCabZbdFiles={}\nChapterCabPayloadBytes={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
-        update102::PATCH_SHA256,update102::ASSET_SHA256
+        update102::PATCH_SHA256,update102::ASSET_SHA256,
+        chapters.members,chapters.zbd_files,chapters.payload_bytes
     );
     ensure_new_text(&stage.join(INSTALL_RECEIPT),&receipt)?;
     let (edition,verified_count)=verify_installed_cd_assets(&stage)?;
@@ -390,7 +416,9 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path)
     // directories have all been verified. Never delete an interrupted stage.
     fs::rename(&stage,game).map_err(error)?;
     Ok(DiscInstallation{edition,file_count:extracted.file_count,
-        byte_count:extracted.bytes,asset_status:asset,destination:game.to_path_buf()})
+        byte_count:extracted.bytes,asset_status:asset,
+        chapter_members:chapters.members,chapter_zbd_files:chapters.zbd_files,
+        chapter_bytes:chapters.payload_bytes,destination:game.to_path_buf()})
 }
 
 fn source_candidates(base: &Path, game: &Path) -> Result<Vec<PathBuf>, String> {
@@ -478,6 +506,7 @@ fn run() -> Result<i32, String> {
             Ok((edition,files))=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
                 Edition={edition}\nOriginalFilesVerified={files}\n\
                 Official102Asset=SHA256_VERIFIED\nProxy=SHA256_VERIFIED\n\
+                ChapterCABContent=VERIFIED\n\
                 WritableDirectories=SavedGames,Planes\nExecutableState=PROTECTED_PENDING\n\
                 VERIFY_INSTALL_RESULT=COMPLETE\n"),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
@@ -507,9 +536,12 @@ fn run() -> Result<i32, String> {
                 Official102Asset={}\n\
                 Destination={}\nInstalledProxy=VERIFIED\n\
                 SavedGamesDirectory=CREATED\nPlanesDirectory=CREATED\n\
+                ChapterCabMembers={}\nChapterZbdFiles={}\nChapterPayloadBytes={}\n\
+                ChapterContentVerified=YES\n\
                 GameFilesVerified=YES\nExecutableState=PROTECTED_PENDING\n\
                 INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING\n",
-                r.edition,r.file_count,r.byte_count,r.asset_status,r.destination.display()),
+                r.edition,r.file_count,r.byte_count,r.asset_status,r.destination.display(),
+                r.chapter_members,r.chapter_zbd_files,r.chapter_bytes),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
                 Destination={}\nINSTALL_RESULT=ERROR\nERROR={why}\n",
                 game.display()),
@@ -519,6 +551,8 @@ fn run() -> Result<i32, String> {
             Ok(r)=>{
                 println!("Installed and verified {} original files ({}) for {} in {}.",
                     r.file_count,r.byte_count,r.edition,r.destination.display());
+                println!("Expanded {} chapter CAB members, including {} ZBD files ({} bytes).",
+                    r.chapter_members,r.chapter_zbd_files,r.chapter_bytes);
                 println!("Official 1.02 resource: {}. Bundled ddraw.dll and writable game folders installed.",r.asset_status);
                 println!("Installation data ready; protected game executable kept unchanged for the final step.");
                 Ok(0)
