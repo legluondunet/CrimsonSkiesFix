@@ -296,7 +296,7 @@ fn canonical_chapter_name(source:&str,relative:&Path)->Result<PathBuf,String>{
     if !CHAPTER_CABS.contains(&source) {
         return Err(format!("unsupported chapter cabinet for name mapping: {source}"));
     }
-    let original=relative.to_string_lossy().replace('\',"/");
+    let original=relative.to_string_lossy().replace('\\',"/");
     let source_chapter=source.trim_end_matches(".CAB");
     if !original.split('/').next().is_some_and(|c|c.eq_ignore_ascii_case(source_chapter)){
         return Err(format!("CAB member outside expected chapter {source}: {original}"));
