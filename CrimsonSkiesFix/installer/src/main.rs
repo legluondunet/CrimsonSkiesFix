@@ -322,6 +322,8 @@ fn usage() {
          CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
          CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
          CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
+         CrimsonSkiesFix.exe --extract-update      verify and extract official ROF to CD test directory\n\
+         CrimsonSkiesFix.exe --extract-update FILE apply specified verified updater to CD test directory\n\
          CrimsonSkiesFix.exe --version\n\
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
@@ -348,13 +350,51 @@ fn run() -> Result<i32, String> {
         && !(args.len() == 1 && args[0] == "--extract-cd")
         && !(args.len() == 2 && args[0] == "--extract-cd")
         && !(args.len() == 1 && args[0] == "--inspect-update")
-        && !(args.len() == 2 && args[0] == "--inspect-update") {
+        && !(args.len() == 2 && args[0] == "--inspect-update")
+        && !(args.len() == 1 && args[0] == "--extract-update")
+        && !(args.len() == 2 && args[0] == "--extract-update") {
         usage();
         return Err("unsupported command or number of arguments".into());
     }
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
+    if !args.is_empty() && args[0] == "--extract-update" {
+        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
+        let stage=base.join("CrimsonSkiesFix.extract-test");
+        // No update is applied to a published installation, only to a
+        // non-playable game image extracted in this isolated test folder.
+        let result=update102::apply_asset(base,&stage,selected.as_deref());
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: cannot overwrite non-file".into());
+        }
+        let report=match &result {
+            Ok(status)=>format!("CrimsonSkiesFix UPDATE102 EXTRACT v1\n\
+                 UpdaterIdentity=VERIFIED_OFFICIAL_1.02\n\
+                 SourceSHA256={}\n\
+                 Target={}\n\
+                 Asset=GOSDATA/ASSETS/CRIMPTCH.ROF\n\
+                 AssetSHA256={}\n\
+                 AssetStatus={status}\n\
+                 ProtectedGameExe=NOT_APPROVED\n\
+                 InstallPublished=NO_STAGING_ONLY\n\
+                 EXTRACT_RESULT=COMPLETE\n",
+                 update102::PATCH_SHA256,stage.display(),update102::ASSET_SHA256),
+            Err(err)=>format!("CrimsonSkiesFix UPDATE102 EXTRACT v1\n\
+                 Target={}\n\
+                 EXTRACT_RESULT=ERROR\nERROR={err}\n",stage.display()),
+        };
+        fs::write(&log,report).map_err(error)?;
+        return match result {
+            Ok(status)=>{
+                println!("Official 1.02 LZX CAB asset: {status}; verified in {}.",stage.display());
+                println!("Protected CRIMSON.EXE was NOT replaced or launched.");
+                Ok(0)
+            }
+            Err(err)=>Err(format!("{err}; see {}",log.display())),
+        };
+    }
     if !args.is_empty() && args[0] == "--extract-cd" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
         let staging=base.join("CrimsonSkiesFix.extract-test");

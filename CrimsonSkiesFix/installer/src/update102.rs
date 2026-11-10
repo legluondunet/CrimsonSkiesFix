@@ -3,8 +3,9 @@
 //! Extracting the LZX cabinet is a separate installation milestone.
 use crate::sha256;
 use std::{
-    fs::{self,File},
-    io::{Read,Seek,SeekFrom},
+    collections::BTreeMap,
+    fs::{self,File,OpenOptions},
+    io::{Cursor,Read,Seek,SeekFrom,Write},
     path::{Path,PathBuf},
 };
 
@@ -104,6 +105,92 @@ pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     }
 }
 
+/// Official 1.02 CAB member names and uncompressed sizes, confirmed by
+/// static inspection of the owner-provided exactly hashed update executable.
+/// Other entries (including execute-after-extract instructions) are refused.
+const EXPECTED_MEMBERS:[(&str,u32);5]=[
+    ("setupenu.dll",32768),
+    ("readmeusa.rtf",57539),
+    ("crimson.exe",344851),
+    ("crimson.icd",2580578),
+    ("gosdata/assets/crimptch.rof",797),
+];
+pub const ASSET_SHA256:&str=
+    "7ae28cfb65645a3e22aadc64a68badc23e2543bc56356d599fb59375d9ebbefe";
+
+fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String> {
+    validate(path)?;
+    let mut file=File::open(path).map_err(err)?;
+    file.seek(SeekFrom::Start(CAB_OFFSET)).map_err(err)?;
+    let mut bytes=vec![0u8;CAB_BYTES as usize];
+    file.read_exact(&mut bytes).map_err(err)?;
+    let mut cabinet=cab::Cabinet::new(Cursor::new(bytes)).map_err(err)?;
+    // Enumerate the archive's uncompressed file directory before opening
+    // any member. Ignore archive path strings until they are normalized and
+    // matched against the exact audited whitelist.
+    let mut inventory=BTreeMap::new();
+    for folder in cabinet.folder_entries() {
+        for member in folder.file_entries() {
+            let actual=member.name().to_owned();
+            let normalized=actual.replace('\\',"/").to_ascii_lowercase();
+            if !EXPECTED_MEMBERS.iter().any(|(name,size)|
+                normalized==*name && member.uncompressed_size()==*size) {
+                return Err(format!("unexpected 1.02 CAB entry: {actual}"));
+            }
+            if inventory.insert(normalized,actual).is_some() {
+                return Err("duplicate case-normalized CAB member".into());
+            }
+        }
+    }
+    if inventory.len()!=EXPECTED_MEMBERS.len() {
+        return Err(format!("expected {} CAB files, found {}",
+            EXPECTED_MEMBERS.len(),inventory.len()));
+    }
+    let name=inventory.get("gosdata/assets/crimptch.rof")
+        .ok_or("official CAB is missing CRIMPTCH.ROF")?;
+    let mut contents=Vec::with_capacity(797);
+    let reader=cabinet.read_file(name).map_err(err)?;
+    // Hard cap to reject unexpectedly decompressed payloads.
+    reader.take(798).read_to_end(&mut contents).map_err(err)?;
+    if contents.len()!=797 || sha256::hex(&contents)!=ASSET_SHA256 {
+        return Err("decompressed official 1.02 CRIMPTCH.ROF failed size/SHA256 verification".into());
+    }
+    Ok(contents)
+}
+
+/// Stage only the audited 797-byte gameplay asset from a locally provided,
+/// hash-pinned official updater. No protected executable is copied, no
+/// historical installer is executed, and a correct FR asset is preserved.
+pub fn apply_asset(base:&Path,game:&Path,specified:Option<&Path>)->Result<&'static str,String> {
+    if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false) {
+        return Err("no extracted game staging directory; run --extract-cd first".into());
+    }
+    let path=find(base,specified)?;
+    let contents=read_asset_from_authenticated_update(&path)?;
+    let assets=game.join("GOSDATA").join("ASSETS");
+    if !fs::symlink_metadata(&assets).map(|m|m.file_type().is_dir()).unwrap_or(false) {
+        return Err("extracted game GOSDATA/ASSETS directory is missing or unsafe".into());
+    }
+    let target=assets.join("CRIMPTCH.ROF");
+    if fs::symlink_metadata(&target).is_ok() {
+        let meta=fs::symlink_metadata(&target).map_err(err)?;
+        if !meta.file_type().is_file() || meta.len()!=797 {
+            return Err("existing CRIMPTCH.ROF is not a regular official 797-byte asset".into());
+        }
+        if file_sha(&target)?!=ASSET_SHA256 {
+            return Err("existing CRIMPTCH.ROF does not match official 1.02 asset".into());
+        }
+        return Ok("ALREADY_PRESENT_UNCHANGED");
+    }
+    let mut out=OpenOptions::new().write(true).create_new(true).open(&target).map_err(err)?;
+    out.write_all(&contents).map_err(err)?;
+    out.sync_all().map_err(err)?;
+    if file_sha(&target)?!=ASSET_SHA256 {
+        return Err("staged CRIMPTCH.ROF failed on-disk SHA-256 verification".into());
+    }
+    Ok("EXTRACTED_VERIFIED_FROM_LZX_CAB")
+}
+
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
     let path=find(base,specified)?;
     Ok(format!(
@@ -139,6 +226,8 @@ mod tests {
         assert_eq!(CAB_OFFSET,CAB_OFFSET);
         assert!(CAB_OFFSET+CAB_BYTES as u64<=PATCH_LEN);
         assert_eq!(CAB_FILES,5);
+        assert_eq!(EXPECTED_MEMBERS.len(),5);
+        assert_eq!(ASSET_SHA256.len(),64);
     }
     #[test]
     fn refuse_wrong_updater_without_execution(){

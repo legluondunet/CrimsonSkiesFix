@@ -9,6 +9,10 @@ description = "Standalone Crimson Skies installer, verifier and launcher"
 name = "CrimsonSkiesFix"
 path = "src/main.rs"
 
+[dependencies]
+# MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
+cab = "=0.6.0"
+
 [profile.release]
 panic = "abort"
 lto = true
