@@ -534,6 +534,18 @@ fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->R
 /// checked against a previously *complete* recognized original-CD manifest.
 /// No image bytes or whole-image metadata are used in edition recognition.
 pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,String> {
+    extract_game_to(base,specified,None)
+}
+
+/// Installation uses the same content-authenticated extractor as --extract-cd,
+/// but places files in its private transaction rather than a diagnostic folder.
+pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
+    ->Result<Extraction,String> {
+    extract_game_to(base,specified,Some(transaction))
+}
+
+fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
+    ->Result<Extraction,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
@@ -547,7 +559,10 @@ pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,Strin
     let [edition]=matches.as_slice() else {
         return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
     };
-    let dest=stage_path(base,edition)?;
+    let dest=match target {
+        Some(path)=>path.to_path_buf(),
+        None=>stage_path(base,edition)?,
+    };
     if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} staging already exists; refusing to overwrite: {}",
             edition,dest.display()));
@@ -706,6 +721,18 @@ mod tests {
             files.remove("game/crimson.exe");
             assert!(!matches_profile(&files,profile));
         }
+    }
+    #[test]
+    fn refuse_existing_install_transaction_without_overwriting() {
+        let dir=workdir();
+        let transaction=dir.join("CrimsonSkiesFix.installing");
+        fs::create_dir(&transaction).unwrap();
+        let marker=transaction.join("user-data.txt");
+        fs::write(&marker,b"preserve").unwrap();
+        let image=dir.join("missing.iso");
+        assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
+        assert_eq!(fs::read(marker).unwrap(),b"preserve");
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn separate_edition_staging_paths_and_fail_closed_selectors() {
