@@ -157,6 +157,10 @@ WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA "/path/to/origina
 cp CrimsonSkiesFix.log shortnames-reference-USA.log
 ```
 
+The audit also works on verified installations produced by previous builds
+that **still contain the eight CABs**, so these installations need not be
+deleted or reinstalled merely to gather filename evidence.
+
 This compares extracted and reference files **by SHA-256**, reports only
 unambiguous candidate mappings, and never renames or modifies existing
 files. Exact, reviewed alias→canonical-name entries will be incorporated

@@ -555,12 +555,22 @@ fn run() -> Result<i32, String> {
         }else{None};
         let target=chosen.as_ref().map(|(_,path)|path).unwrap_or(&game);
         let reference=if args.len()==3 {Some(PathBuf::from(&args[2]))}else{None};
-        let report=verify_installed_cd_assets(target).and_then(|(edition,_)|{
+        let report=(||->Result<String,String>{
+            let edition=installed_cd_edition(target)?;
             if chosen.as_ref().is_some_and(|(expected,_)|*expected!=edition) {
                 return Err("requested edition does not match installed game".into());
             }
-            chapter_cabs::short_name_audit(target,reference.as_deref())
-        });
+            if regular(&target.join(chapter_cabs::INSTALLED_MANIFEST)) {
+                verify_installed_cd_assets(target)?;
+                chapter_cabs::short_name_audit(target,reference.as_deref())
+            }else {
+                // Support a read-only name audit of older *verified* installs
+                // that retain their original CABs. This does not modify
+                // their files or rely on the missing new chapter manifest.
+                disc_inspect::verify_staging(target,edition)?;
+                chapter_cabs::short_name_audit_legacy(target,reference.as_deref())
+            }
+        })();
         let log=base.join("CrimsonSkiesFix.log");
         if any_entry(&log) && !regular(&log) {
             return Err("unsafe CrimsonSkiesFix.log: refusing non-file".into());

@@ -427,6 +427,46 @@ pub fn short_name_audit(game:&Path,reference:Option<&Path>)->Result<String,Strin
     if !real_file(&path){return Err("missing installed chapter manifest".into());}
     let raw=fs::read_to_string(&path).map_err(err)?;
     if raw.len()>MAX_MEMBERS*160+64 {return Err("chapter manifest size limit exceeded".into());}
+    audit_raw_short_names(&raw,reference)
+}
+
+/// Read-only audit compatible with the already-installed 2026-11-10 builds,
+/// where original C*.CABs still exist. All archived member contents are
+/// independently verified before using their SHA-256 to build candidates.
+pub fn short_name_audit_legacy(game:&Path,reference:Option<&Path>)->Result<String,String>{
+    verify_expanded(game)?;
+    let root=game.join("ZBD");
+    let mut raw=String::from("#CrimsonSkiesFixChapterManifestV1\n");
+    let mut seen=HashSet::new();
+    for source in CHAPTER_CABS{
+        let cabpath=root.join(source);
+        let cabinet=cab::Cabinet::new(File::open(cabpath).map_err(err)?).map_err(err)?;
+        for folder in cabinet.folder_entries(){
+            for entry in folder.file_entries(){
+                let relative=member_path(entry.name())?;
+                let portable=relative.to_string_lossy().replace('\\',"/");
+                if !seen.insert(portable.to_ascii_lowercase()) {
+                    return Err("duplicate chapter CAB member in old installation".into());
+                }
+                if portable.contains(|c:char|c.is_control()){
+                    return Err("invalid chapter filename in old installation".into());
+                }
+                let dest=root.join(&relative);
+                let bytes=fs::metadata(&dest).map_err(err)?.len();
+                if bytes!=u64::from(entry.uncompressed_size()){
+                    return Err(format!("wrong size in old installed chapter: {}",dest.display()));
+                }
+                let hash=hash_file(&dest)?;
+                raw.push_str(&format!("{source}\t{portable}\t{bytes}\t{hash}\n"));
+            }
+        }
+    }
+    let mut text=audit_raw_short_names(&raw,reference)?;
+    text.push_str("AuditSource=VERIFIED_ORIGINAL_CHAPTER_CABS\n");
+    Ok(text)
+}
+
+fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String>{
     let mut out=String::from("CrimsonSkiesFix CHAPTER SHORT NAMES AUDIT v1\n");
     let mut candidates=0usize;
     for line in raw.lines().skip(1) {
