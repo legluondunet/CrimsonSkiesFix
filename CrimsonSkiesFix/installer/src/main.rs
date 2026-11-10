@@ -469,10 +469,29 @@ fn run() -> Result<i32, String> {
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
     if args.len()==1 && args[0]=="--verify-install" {
-        let (edition,files)=verify_installed_cd_assets(&game)?;
-        println!("CD installation files verified: edition={edition}; original files={files}; official 1.02 asset and ddraw.dll verified.");
-        println!("Only the final executable compatibility step is pending.");
-        return Ok(0);
+        let result=verify_installed_cd_assets(&game);
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: refusing to replace non-file".into());
+        }
+        let report=match &result {
+            Ok((edition,files))=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
+                Edition={edition}\nOriginalFilesVerified={files}\n\
+                Official102Asset=SHA256_VERIFIED\nProxy=SHA256_VERIFIED\n\
+                WritableDirectories=SavedGames,Planes\nExecutableState=PROTECTED_PENDING\n\
+                VERIFY_INSTALL_RESULT=COMPLETE\n"),
+            Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
+                VERIFY_INSTALL_RESULT=ERROR\nERROR={why}\n"),
+        };
+        fs::write(&log,report).map_err(error)?;
+        return match result {
+            Ok((edition,files))=>{
+                println!("CD installation files verified: edition={edition}; original files={files}; official 1.02 asset and ddraw.dll verified.");
+                println!("Only the final executable compatibility step is pending.");
+                Ok(0)
+            }
+            Err(why)=>Err(format!("{why}; details: {}",log.display()))
+        };
     }
     if !args.is_empty() && args[0]=="--install-cd" {
         let disc=if args.len()>=2 {Some(PathBuf::from(&args[1]))}else{None};
