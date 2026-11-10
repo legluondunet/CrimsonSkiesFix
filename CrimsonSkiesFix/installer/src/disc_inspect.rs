@@ -424,10 +424,85 @@ fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
     seen>0 && seen==files.len()
 }
 
+/// Selectors name an *approved* CD file-content profile, not an image
+/// filename/volume label. FR and DE must never share the same test output.
+pub fn edition_selector(label:&str)->Option<&'static str> {
+    match label.to_ascii_uppercase().as_str() {
+        "USA"|"EN"|"C_SKIES_DISC_001"=>Some("C_SKIES_DISC_001"),
+        "FR"|"C_SKIES_FR_001"=>Some("C_SKIES_FR_001"),
+        "DE"|"C_SKIES_DE_001"=>Some("C_SKIES_DE_001"),
+        _=>None,
+    }
+}
+pub fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
+    let suffix=match edition {
+        "C_SKIES_DISC_001"=>"USA",
+        "C_SKIES_FR_001"=>"FR",
+        "C_SKIES_DE_001"=>"DE",
+        _=>return Err(format!("unknown staging edition: {edition}")),
+    };
+    Ok(base.join(format!("CrimsonSkiesFix.extract-test.{suffix}")))
+}
+
+/// Verify every *original game file* against the selected CD profile before
+/// applying a patch. This prevents accidentally updating a French staging
+/// directory under a German label, even if the folder was renamed manually.
+/// It also detects incomplete/modified game extractions.
+pub fn verify_staging(game:&Path,edition:&str)->Result<usize,String> {
+    if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false) {
+        return Err(format!("missing or unsafe {edition} staging directory: {}",game.display()));
+    }
+    let profile=PROFILES.iter().find(|(name,_)|*name==edition)
+        .map(|(_,text)|*text).ok_or("unknown edition requested")?;
+    let mut checked=0usize;
+    for line in profile.lines().filter(|line|!line.starts_with('#')&&!line.is_empty()) {
+        let cols=line.split('\t').collect::<Vec<_>>();
+        if cols.len()!=3 {return Err("invalid compiled-in CD profile".into());}
+        let Some(relative)=cols[0].strip_prefix("GAME/") else {continue;};
+        let path=game.join(relative);
+        // The expected names are only normalized game-file paths from a
+        // verified fixed manifest. Still reject non-directory ancestors,
+        // including junctions/symlinks, before reading the target.
+        let mut cur=game.to_path_buf();
+        let components=Path::new(relative).components().collect::<Vec<_>>();
+        if components.is_empty() || !components.iter().all(|c|matches!(c,Component::Normal(_))) {
+            return Err("invalid compiled-in game file path".into());
+        }
+        for component in &components[..components.len()-1] {
+            cur.push(component.as_os_str());
+            if !fs::symlink_metadata(&cur).map(|m|m.file_type().is_dir()).unwrap_or(false) {
+                return Err(format!("unsafe game asset directory: {}",cur.display()));
+            }
+        }
+        if !fs::symlink_metadata(&path).map(|m|m.file_type().is_file()).unwrap_or(false) {
+            return Err(format!("missing or unsafe staged original file: {}",path.display()));
+        }
+        let expected_size=cols[1].parse::<u64>().map_err(err)?;
+        if fs::metadata(&path).map_err(err)?.len()!=expected_size {
+            return Err(format!("{edition} game file size mismatch: {}",path.display()));
+        }
+        let mut file=File::open(&path).map_err(err)?;
+        let mut hasher=sha256::Digest::new();
+        let mut buffer=[0u8;32768];
+        loop {
+            let n=file.read(&mut buffer).map_err(err)?;
+            if n==0 {break;}
+            hasher.update(&buffer[..n]);
+        }
+        if hasher.finish()!=cols[2] {
+            return Err(format!("{edition} game file SHA-256 mismatch: {}",path.display()));
+        }
+        checked+=1;
+    }
+    if checked==0 {return Err("edition manifest had no game files".into());}
+    Ok(checked)
+}
+
 /// Prepared CD-game payload; a protected original CD executable is *not* a
 /// valid game executable until the separate strict 1.02 gate is satisfied.
 pub struct Extraction {
     pub edition:&'static str,
+    pub destination:PathBuf,
     pub file_count:usize,
     pub bytes:u64,
 }
@@ -458,10 +533,7 @@ fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->R
 /// Extract files beneath GAME/ to a new directory, with per-file SHA-256
 /// checked against a previously *complete* recognized original-CD manifest.
 /// No image bytes or whole-image metadata are used in edition recognition.
-pub fn extract_game(base:&Path,specified:Option<&Path>,dest:&Path)->Result<Extraction,String> {
-    if fs::symlink_metadata(dest).is_ok() {
-        return Err(format!("destination exists; refusing to overwrite: {}",dest.display()));
-    }
+pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
@@ -475,6 +547,11 @@ pub fn extract_game(base:&Path,specified:Option<&Path>,dest:&Path)->Result<Extra
     let [edition]=matches.as_slice() else {
         return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
     };
+    let dest=stage_path(base,edition)?;
+    if fs::symlink_metadata(&dest).is_ok() {
+        return Err(format!("{} staging already exists; refusing to overwrite: {}",
+            edition,dest.display()));
+    }
     let files=walker.results.values().filter(|entry|entry.path.starts_with("GAME/"))
         .collect::<Vec<_>>();
     if files.is_empty() || files.len()>MAX_FILES {
@@ -484,7 +561,7 @@ pub fn extract_game(base:&Path,specified:Option<&Path>,dest:&Path)->Result<Extra
     if bytes>2_000_000_000 {
         return Err("recognized CD extraction exceeds the safe 2 GB limit".into());
     }
-    fs::create_dir(dest).map_err(err)?;
+    fs::create_dir(&dest).map_err(err)?;
     let mut disc=File::open(&image.file).map_err(err)?;
     for (index,rec) in files.iter().enumerate() {
         let relative=rec.path.strip_prefix("GAME/").ok_or("not a game file")?;
@@ -499,7 +576,7 @@ pub fn extract_game(base:&Path,specified:Option<&Path>,dest:&Path)->Result<Extra
             println!("Extracted {}/{} game files...",index+1,files.len());
         }
     }
-    Ok(Extraction{edition:*edition,file_count:files.len(),bytes})
+    Ok(Extraction{edition:*edition,destination:dest,file_count:files.len(),bytes})
 }
 
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
@@ -631,6 +708,25 @@ mod tests {
         }
     }
     #[test]
+    fn separate_edition_staging_paths_and_fail_closed_selectors() {
+        let base=Path::new("test");
+        assert_ne!(stage_path(base,"C_SKIES_FR_001").unwrap(),
+                   stage_path(base,"C_SKIES_DE_001").unwrap());
+        assert_eq!(edition_selector("DE"),Some("C_SKIES_DE_001"));
+        assert_eq!(edition_selector("fr"),Some("C_SKIES_FR_001"));
+        assert_eq!(edition_selector("USA"),Some("C_SKIES_DISC_001"));
+        assert_eq!(edition_selector("unknown"),None);
+    }
+    #[test]
+    fn reject_staging_edition_confusion_before_asset_application() {
+        let dir=workdir();
+        let wrong=stage_path(&dir,"C_SKIES_DE_001").unwrap();
+        fs::create_dir(&wrong).unwrap();
+        assert!(verify_staging(&wrong,"C_SKIES_DE_001").is_err());
+        assert!(verify_staging(&wrong,"C_SKIES_FR_001").is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn extracted_bytes_match_source_and_reject_replacement() {
         let dir=workdir();
         let iso_file=dir.join("disc.iso");
@@ -648,8 +744,8 @@ mod tests {
         let mut changed=r.clone();
         changed.sha="0".repeat(64);
         assert!(extract_one(&image,&mut src,&changed,&dir.join("invalid")).is_err());
-        assert!(extract_game(&dir,Some(&iso_file),&dir.join("rejected")).is_err());
-        assert!(!dir.join("rejected").exists());
+        assert!(extract_game(&dir,Some(&iso_file)).is_err());
+        assert!(!dir.join("CrimsonSkiesFix.extract-test.FR").exists());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

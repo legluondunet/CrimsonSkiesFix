@@ -318,12 +318,12 @@ fn usage() {
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
-         CrimsonSkiesFix.exe --extract-cd         extract recognized CD GAME/ to a staging folder\n\
+         CrimsonSkiesFix.exe --extract-cd         extract CD GAME/ into separate USA/FR/DE staging\n\
          CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
          CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
          CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
-         CrimsonSkiesFix.exe --extract-update      verify and extract official ROF to CD test directory\n\
-         CrimsonSkiesFix.exe --extract-update FILE apply specified verified updater to CD test directory\n\
+         CrimsonSkiesFix.exe --extract-update ED          verify official ROF for USA/FR/DE staged CD\n\
+         CrimsonSkiesFix.exe --extract-update ED FILE     use verified update FILE for edition ED\n\
          CrimsonSkiesFix.exe --version\n\
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
@@ -351,8 +351,8 @@ fn run() -> Result<i32, String> {
         && !(args.len() == 2 && args[0] == "--extract-cd")
         && !(args.len() == 1 && args[0] == "--inspect-update")
         && !(args.len() == 2 && args[0] == "--inspect-update")
-        && !(args.len() == 1 && args[0] == "--extract-update")
-        && !(args.len() == 2 && args[0] == "--extract-update") {
+        && !(args.len() == 2 && args[0] == "--extract-update")
+        && !(args.len() == 3 && args[0] == "--extract-update") {
         usage();
         return Err("unsupported command or number of arguments".into());
     }
@@ -360,11 +360,15 @@ fn run() -> Result<i32, String> {
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
     if !args.is_empty() && args[0] == "--extract-update" {
-        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
-        let stage=base.join("CrimsonSkiesFix.extract-test");
-        // No update is applied to a published installation, only to a
-        // non-playable game image extracted in this isolated test folder.
-        let result=update102::apply_asset(base,&stage,selected.as_deref());
+        let selector=args[1].to_str().ok_or("edition selector must be UTF-8")?;
+        let edition=disc_inspect::edition_selector(selector)
+            .ok_or("unknown update edition: use USA, FR, or DE")?;
+        let selected=if args.len()==3 {Some(PathBuf::from(&args[2]))}else{None};
+        let stage=disc_inspect::stage_path(base,edition)?;
+        // A mandatory edition selector prevents accidentally applying an
+        // update to a staging directory left over from another CD.
+        // Full file hash verification also rejects a renamed/mixed staging.
+        let result=update102::apply_asset(base,&stage,edition,selected.as_deref());
         let log=base.join("CrimsonSkiesFix.log");
         if any_entry(&log) && !regular(&log) {
             return Err("unsafe CrimsonSkiesFix.log: cannot overwrite non-file".into());
@@ -372,6 +376,7 @@ fn run() -> Result<i32, String> {
         let report=match &result {
             Ok(status)=>format!("CrimsonSkiesFix UPDATE102 EXTRACT v1\n\
                  UpdaterIdentity=VERIFIED_OFFICIAL_1.02\n\
+                 Edition={edition}\n\
                  SourceSHA256={}\n\
                  Target={}\n\
                  Asset=GOSDATA/ASSETS/CRIMPTCH.ROF\n\
@@ -382,6 +387,7 @@ fn run() -> Result<i32, String> {
                  EXTRACT_RESULT=COMPLETE\n",
                  update102::PATCH_SHA256,stage.display(),update102::ASSET_SHA256),
             Err(err)=>format!("CrimsonSkiesFix UPDATE102 EXTRACT v1\n\
+                 Edition={edition}\n\
                  Target={}\n\
                  EXTRACT_RESULT=ERROR\nERROR={err}\n",stage.display()),
         };
@@ -397,10 +403,9 @@ fn run() -> Result<i32, String> {
     }
     if !args.is_empty() && args[0] == "--extract-cd" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
-        let staging=base.join("CrimsonSkiesFix.extract-test");
-        // This command is a non-destructive extraction test, NOT an install:
-        // never publish under CrimsonSkiesFix/ or execute the protected EXE.
-        let result=disc_inspect::extract_game(base,selected.as_deref(),&staging);
+        // The CD profile chooses a unique staging directory. The former
+        // CrimsonSkiesFix.extract-test (without an edition) is left untouched.
+        let result=disc_inspect::extract_game(base,selected.as_deref());
         let log=base.join("CrimsonSkiesFix.log");
         if any_entry(&log) && !regular(&log) {
             return Err("unsafe CrimsonSkiesFix.log: refusing a non-file log target".into());
@@ -410,16 +415,16 @@ fn run() -> Result<i32, String> {
                 Edition={}\nFilesExtracted={}\nBytesExtracted={}\n\
                 Destination={}\nProtectedGameExe=NOT_APPROVED\n\
                 InstallPublished=NO_STAGING_ONLY\nEXTRACT_RESULT=COMPLETE\n",
-                r.edition,r.file_count,r.bytes,staging.display()),
+                r.edition,r.file_count,r.bytes,r.destination.display()),
             Err(why)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
-                Destination={}\nInstallPublished=NO_STAGING_ONLY\n\
-                EXTRACT_RESULT=ERROR\nERROR={why}\n",staging.display()),
+                Destination=NONE (edition-specific; extraction refused)\nInstallPublished=NO_STAGING_ONLY\n\
+                EXTRACT_RESULT=ERROR\nERROR={why}\n"),
         };
         fs::write(&log,report).map_err(error)?;
         return match result {
             Ok(r)=>{
                 println!("Verified extraction of {} files ({} bytes) for {} into {}.",
-                    r.file_count,r.bytes,r.edition,staging.display());
+                    r.file_count,r.bytes,r.edition,r.destination.display());
                 println!("The original protected game is NOT launched. See CrimsonSkiesFix.log.");
                 Ok(0)
             }

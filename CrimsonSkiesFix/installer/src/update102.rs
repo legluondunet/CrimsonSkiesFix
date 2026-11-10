@@ -1,7 +1,7 @@
 //! Strict, read-only verification of the owner-supplied 1.02 updater.
 //! Never execute the historical setup program or ship its copyrighted bytes.
 //! Extracting the LZX cabinet is a separate installation milestone.
-use crate::sha256;
+use crate::{sha256,disc_inspect};
 use std::{
     collections::BTreeMap,
     fs::{self,File,OpenOptions},
@@ -161,10 +161,12 @@ fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String> {
 /// Stage only the audited 797-byte gameplay asset from a locally provided,
 /// hash-pinned official updater. No protected executable is copied, no
 /// historical installer is executed, and a correct FR asset is preserved.
-pub fn apply_asset(base:&Path,game:&Path,specified:Option<&Path>)->Result<&'static str,String> {
-    if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false) {
-        return Err("no extracted game staging directory; run --extract-cd first".into());
-    }
+pub fn apply_asset(base:&Path,game:&Path,edition:&str,specified:Option<&Path>)->Result<&'static str,String> {
+    // Before even opening the updater, rehash all original CD game files.
+    // This verifies which edition actually occupies this directory and
+    // refuses incomplete/corrupted/misidentified prior staging folders.
+    let verified=disc_inspect::verify_staging(game,edition)?;
+    if verified==0 {return Err("no verified game files in staging".into());}
     let path=find(base,specified)?;
     let contents=read_asset_from_authenticated_update(&path)?;
     let assets=game.join("GOSDATA").join("ASSETS");
