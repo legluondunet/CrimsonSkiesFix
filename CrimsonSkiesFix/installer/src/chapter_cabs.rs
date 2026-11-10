@@ -466,6 +466,62 @@ pub fn short_name_audit_legacy(game:&Path,reference:Option<&Path>)->Result<Strin
     Ok(text)
 }
 
+/// Walk a user's genuine Microsoft-installed ZBD tree recursively:
+/// the historical layout has chapter, mission and multiplayer subfolders.
+/// Earlier audits enumerated only ZBD/ itself (six direct ZBD files) and
+/// incorrectly missed the 178 nested chapter files.
+fn collect_reference_zbd(root:&Path,relative:&Path,depth:usize,
+    hashes:&mut BTreeMap<String,Vec<String>>,count:&mut usize)->Result<(),String>{
+    if depth>8 {return Err("authentic installed ZBD directory nesting is too deep".into());}
+    let current=root.join(relative);
+    if !real_dir(&current){
+        return Err(format!("unsafe or missing reference directory: {}",current.display()));
+    }
+    for entry in fs::read_dir(&current).map_err(err)?{
+        let e=entry.map_err(err)?;
+        let name=e.file_name().to_string_lossy().to_string();
+        if name.is_empty() || name=="." || name==".." ||
+            name.contains(|c:char|c.is_control()||"/\\:".contains(c)) {
+            return Err("unsafe reference ZBD filename".into());
+        }
+        let next=relative.join(&name);
+        if next.components().any(|c|!matches!(c,Component::Normal(_))){
+            return Err("invalid reference ZBD path component".into());
+        }
+        let path=e.path();
+        let typ=e.file_type().map_err(err)?;
+        if typ.is_symlink(){return Err(format!("symbolic link in reference ZBD: {}",path.display()));}
+        if typ.is_dir(){
+            collect_reference_zbd(root,&next,depth+1,hashes,count)?;
+        } else if typ.is_file(){
+            if !name.to_ascii_lowercase().ends_with(".zbd"){continue;}
+            *count+=1;
+            if *count>MAX_MEMBERS{return Err("too many reference ZBD files".into());}
+            let display=next.to_string_lossy().replace('\\',"/");
+            hashes.entry(hash_file(&path)?).or_default().push(display);
+        } else {
+            return Err("unsupported reference ZBD entry type".into());
+        }
+    }
+    Ok(())
+}
+
+/// With repeated ZBD data across missions, the SHA-256 alone can have
+/// several matching paths. Prefer an exact matching directory; otherwise
+/// restrict by the chapter CAB name. Never pick an arbitrary match.
+fn reference_candidates<'a>(source_cab:&str,extracted:&str,names:&'a [String])->Vec<&'a String>{
+    let parent=Path::new(extracted).parent().unwrap_or(Path::new(""));
+    let matching_parent=names.iter().filter(|name|
+        Path::new(name).parent().is_some_and(|p|p.to_string_lossy()
+            .eq_ignore_ascii_case(&parent.to_string_lossy()))
+    ).collect::<Vec<_>>();
+    if !matching_parent.is_empty(){return matching_parent;}
+    let chapter=source_cab.trim_end_matches(".CAB");
+    names.iter().filter(|name|
+        name.split('/').next().is_some_and(|prefix|prefix.eq_ignore_ascii_case(chapter))
+    ).collect()
+}
+
 fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String>{
     let mut out=String::from("CrimsonSkiesFix CHAPTER SHORT NAMES AUDIT v1\n");
     let mut candidates=0usize;
@@ -485,30 +541,26 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
         if !real_dir(ref_dir) {return Err("reference ZBD folder must be a real directory".into());}
         let mut hashes=BTreeMap::<String,Vec<String>>::new();
         let mut total=0usize;
-        for entry in fs::read_dir(ref_dir).map_err(err)?{
-            let item=entry.map_err(err)?;
-            let name=item.file_name().to_string_lossy().to_string();
-            if !name.to_ascii_lowercase().ends_with(".zbd"){continue;}
-            if !real_file(&item.path()){return Err(format!("unsafe reference entry {name}"));}
-            if name.contains(|c:char|c.is_control()||"/\\:".contains(c)){
-                return Err("reference file has invalid path characters".into());
-            }
-            total+=1;
-            if total>MAX_MEMBERS {return Err("too many reference ZBD files".into());}
-            hashes.entry(hash_file(&item.path())?).or_default().push(name);
-        }
+        collect_reference_zbd(ref_dir,Path::new(""),0,&mut hashes,&mut total)?;
         out.push_str(&format!("ReferenceZbdFiles={total}\n"));
         for line in raw.lines().skip(1) {
             let fields=line.split('\t').collect::<Vec<_>>();
+            if fields.len()!=4 {return Err("invalid installed chapter manifest row".into());}
             let old=fields[1];
             match hashes.get(fields[3]) {
-                Some(names) if names.len()==1 && !names[0].eq_ignore_ascii_case(old) => {
-                    out.push_str(&format!("MappingCandidate={}\t{}\t{}\n",
-                        old,names[0],fields[3]));
+                Some(names)=>{
+                    let narrowed=reference_candidates(fields[0],old,names);
+                    match narrowed.as_slice(){
+                        [candidate] if !candidate.eq_ignore_ascii_case(old) =>
+                            out.push_str(&format!("MappingCandidate={}\t{}\t{}\n",
+                                old,candidate,fields[3])),
+                        [_]=>{},
+                        []=>out.push_str(&format!("UnmatchedPath={}\tSHA256_MATCH_OUTSIDE_CHAPTER\n",old)),
+                        _=>out.push_str(&format!(
+                            "AmbiguousAlias={}\t{} chapter-matched candidates for {}\n",
+                            old,narrowed.len(),fields[3])),
+                    }
                 }
-                Some(names) if names.len()==1 => {},
-                Some(names)=>out.push_str(&format!(
-                    "AmbiguousAlias={}\t{} matches for {}\n",old,names.len(),fields[3])),
                 None=>out.push_str(&format!("UnmatchedAlias={}\t{}\n",old,fields[3])),
             }
         }
@@ -522,6 +574,28 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn retail_reference_zbd_audit_walks_nested_chapter_and_mission_folders(){
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let temp=std::env::temp_dir().join(format!("crimson-reference-names-{}-{id}",std::process::id()));
+        fs::create_dir_all(temp.join("C1").join("M02")).unwrap();
+        fs::create_dir_all(temp.join("C1B").join("MP1")).unwrap();
+        fs::write(temp.join("INTERP.ZBD"),b"original direct").unwrap();
+        fs::write(temp.join("C1").join("M02").join("mis_anim.zbd"),b"chapter one").unwrap();
+        fs::write(temp.join("C1B").join("MP1").join("mis_anim.zbd"),b"chapter one").unwrap();
+        let mut hashes=BTreeMap::new();
+        let mut count=0;
+        collect_reference_zbd(&temp,Path::new(""),0,&mut hashes,&mut count).unwrap();
+        assert_eq!(count,3);
+        let digest=hash_file(&temp.join("C1").join("M02").join("mis_anim.zbd")).unwrap();
+        let dup=hashes.get(&digest).unwrap();
+        assert_eq!(dup.len(),2);
+        assert_eq!(reference_candidates("C1.CAB","C1/M02/MIS_ANI.ZBD",dup).len(),1);
+        let all=reference_candidates("C1.CAB","C1/M02/XX.ZBD",dup);
+        assert_eq!(all.len(),1);
+        fs::remove_dir_all(temp).unwrap();
+    }
     #[test]
     fn alias_detection_is_diagnostic_not_filename_inference(){
         assert!(possible_short_alias(Path::new("SOMETH~1.ZBD")));
