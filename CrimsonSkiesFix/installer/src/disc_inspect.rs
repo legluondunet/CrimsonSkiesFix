@@ -459,6 +459,113 @@ pub fn verify_installed_without_cabs(game:&Path,edition:&str)->Result<usize,Stri
     verify_original_files(game,edition,true)
 }
 
+// Authentic FR INSTALL.EXE and DE/USA SETUP.EXE copy these seven
+// companions from the verified CD ROOT into the installed GAME root.
+// This includes SETUPENU.DLL; the localized root README makes eight.
+// These are *file-copy rules only*, never a reason to execute SETUP.EXE.
+const RETAIL_ROOT_SUPPORT:[(&str,&str);7]=[
+    ("CLCD16.DLL","clcd16.dll"),
+    ("CLCD32.DLL","clcd32.dll"),
+    ("CLOKSPL.EXE","clokspl.exe"),
+    ("DPLAYERX.DLL","dplayerx.dll"),
+    ("DRVMGT.DLL","drvmgt.dll"),
+    ("MCP.DLL","mcp.dll"),
+    ("SETUPENU.DLL","SETUPENU.DLL"),
+];
+pub const RETAIL_SUPPORT_FILES:usize=8; // seven common + regional Readme
+fn retail_readme(edition:&str)->Result<(&'static str,&'static str),String>{
+    match edition{
+        "C_SKIES_FR_001"=>Ok(("LISEZMOI.RTF","Readme.rtf")),
+        "C_SKIES_DE_001"|"C_SKIES_DISC_001"=>Ok(("README.RTF","Readme.rtf")),
+        _=>Err("unrecognized retail installer edition".into()),
+    }
+}
+fn installed_game_name(edition:&str,original:&str)->&'static str{
+    match original {
+        "CRIMSO_1.IFR"=>"crimsonff.ifr",
+        "CSZONE_1.EXE"=>"cszoneregister.exe",
+        "CLUF.RTF" if edition=="C_SKIES_FR_001"=>"EULA.RTF",
+        _=>"",
+    }
+}
+fn expected_installed_path<'a>(edition:&str,relative:&'a str)->&'a str{
+    match installed_game_name(edition,relative){
+        ""=>relative,
+        "crimsonff.ifr"=>"crimsonff.ifr",
+        "cszoneregister.exe"=>"cszoneregister.exe",
+        "EULA.RTF"=>"EULA.RTF",
+        _=>relative,
+    }
+}
+
+/// Apply the original setup's exact source→destination filename table
+/// for the two shortened GAME-root names, plus FR localized EULA.
+/// Applies to the staged new game directory, never an existing install.
+pub fn normalize_game_filenames(game:&Path,edition:&str)->Result<usize,String>{
+    if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false){
+        return Err("missing/unsafe game stage for retail filename normalization".into());
+    }
+    let originals=if edition=="C_SKIES_FR_001"{
+        &["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"][..]
+    } else if edition=="C_SKIES_DISC_001"||edition=="C_SKIES_DE_001" {
+        &["CRIMSO_1.IFR","CSZONE_1.EXE"][..]
+    } else {
+        return Err("unsupported edition for retail filename normalization".into());
+    };
+    for name in originals{
+        let from=game.join(name);
+        let dest=game.join(installed_game_name(edition,name));
+        if !fs::symlink_metadata(&from).map(|m|m.file_type().is_file()).unwrap_or(false){
+            return Err(format!("retail source file missing/unsafe: {}",from.display()));
+        }
+        if fs::symlink_metadata(&dest).is_ok(){
+            return Err(format!("refusing to overwrite retail target: {}",dest.display()));
+        }
+        fs::rename(&from,&dest).map_err(err)?;
+    }
+    Ok(originals.len())
+}
+
+/// Verify the eight additional root-level files against their original CD
+/// manifest, not against self-reported install receipts.
+pub fn verify_retail_support(game:&Path,edition:&str)->Result<usize,String>{
+    if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false){
+        return Err("missing/unsafe game directory for retail support verification".into());
+    }
+    let profile=PROFILES.iter().find(|(name,_)|*name==edition)
+        .map(|(_,text)|*text).ok_or("unrecognized retail support edition")?;
+    let readme=retail_readme(edition)?;
+    let mut verified=0;
+    for (src,dst) in RETAIL_ROOT_SUPPORT.into_iter().chain(std::iter::once(readme)){
+        let row=profile.lines().filter(|line|!line.starts_with('#'))
+            .find(|line|line.starts_with(&format!("{src}\t")))
+            .ok_or(format!("regional CD manifest missing retail support: {src}"))?;
+        let fields=row.split('\t').collect::<Vec<_>>();
+        if fields.len()!=3 {return Err("invalid root support CD manifest row".into());}
+        let target=game.join(dst);
+        if !fs::symlink_metadata(&target).map(|m|m.file_type().is_file()).unwrap_or(false){
+            return Err(format!("retail support missing/unsafe: {}",target.display()));
+        }
+        let size=fields[1].parse::<u64>().map_err(err)?;
+        if fs::metadata(&target).map_err(err)?.len()!=size{
+            return Err(format!("retail support file wrong size: {}",target.display()));
+        }
+        let mut file=File::open(&target).map_err(err)?;
+        let mut digest=sha256::Digest::new();
+        let mut buffer=[0u8;32768];
+        loop{
+            let n=file.read(&mut buffer).map_err(err)?;
+            if n==0{break;}
+            digest.update(&buffer[..n]);
+        }
+        if digest.finish()!=fields[2]{
+            return Err(format!("retail support SHA-256 mismatch: {}",target.display()));
+        }
+        verified+=1;
+    }
+    Ok(verified)
+}
+
 pub const REMOVED_CHAPTER_CABS:usize=8;
 fn is_pruned_chapter_cab(path:&str)->bool{
     matches!(path,"GAME/ZBD/C1.CAB"|"GAME/ZBD/C1B.CAB"|"GAME/ZBD/C1C.CAB"|
@@ -483,12 +590,16 @@ fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool)->Result<usize,S
             }
             continue;
         }
-        let path=game.join(relative);
+        let actual_relative=if skip_cabs{expected_installed_path(edition,relative)}else{relative};
+        let path=game.join(actual_relative);
+        if skip_cabs && actual_relative!=relative && fs::symlink_metadata(game.join(relative)).is_ok(){
+            return Err(format!("obsolete short CD filename remains beside canonical retail file: {relative}"));
+        }
         // The expected names are only normalized game-file paths from a
         // verified fixed manifest. Still reject non-directory ancestors,
         // including junctions/symlinks, before reading the target.
         let mut cur=game.to_path_buf();
-        let components=Path::new(relative).components().collect::<Vec<_>>();
+        let components=Path::new(actual_relative).components().collect::<Vec<_>>();
         if components.is_empty() || !components.iter().all(|c|matches!(c,Component::Normal(_))) {
             return Err("invalid compiled-in game file path".into());
         }
@@ -529,6 +640,8 @@ pub struct Extraction {
     pub destination:PathBuf,
     pub file_count:usize,
     pub bytes:u64,
+    pub retail_support_files:usize,
+    pub retail_support_bytes:u64,
 }
 
 fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->Result<(),String> {
@@ -600,6 +713,23 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     if bytes>2_000_000_000 {
         return Err("recognized CD extraction exceeds the safe 2 GB limit".into());
     }
+    // Preflight also requires the eight files that the historical installer
+    // copies from the disc ROOT to the installed game ROOT. They are absent
+    // from the GAME/ folder and were previously omitted by --install-cd.
+    let additional=if target.is_some(){
+        let mut selected=Vec::new();
+        let readme=retail_readme(edition)?;
+        for (src,dst) in RETAIL_ROOT_SUPPORT.into_iter().chain(std::iter::once(readme)){
+            let entry=walker.results.get(&src.to_ascii_lowercase())
+                .ok_or(format!("verified CD missing expected root support: {src}"))?;
+            selected.push((entry,dst));
+        }
+        selected
+    }else{Vec::new()};
+    let retail_support_bytes=additional.iter().map(|(r,_)|r.size as u64).sum::<u64>();
+    if bytes+retail_support_bytes>2_000_000_000 {
+        return Err("CD extraction and retail support payload exceeds 2 GB".into());
+    }
     fs::create_dir(&dest).map_err(err)?;
     let mut disc=File::open(&image.file).map_err(err)?;
     for (index,rec) in files.iter().enumerate() {
@@ -615,7 +745,11 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
             println!("Extracted {}/{} game files...",index+1,files.len());
         }
     }
-    Ok(Extraction{edition:*edition,destination:dest,file_count:files.len(),bytes})
+    for (record,name) in &additional {
+        extract_one(&image,&mut disc,record,&dest.join(name))?;
+    }
+    Ok(Extraction{edition:*edition,destination:dest,file_count:files.len(),bytes,
+        retail_support_files:additional.len(),retail_support_bytes})
 }
 
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
@@ -757,6 +891,53 @@ mod tests {
         assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn retail_file_renames_keep_bytes_and_refuse_overwrite() {
+        let dir=workdir();
+        for (short,bytes) in [
+            ("CRIMSO_1.IFR",&b"ifrlocal"[..]),
+            ("CSZONE_1.EXE",&b"zone"[..]),
+            ("CLUF.RTF",&b"french license"[..])
+        ] {
+            fs::write(dir.join(short),bytes).unwrap();
+        }
+        assert_eq!(normalize_game_filenames(&dir,"C_SKIES_FR_001").unwrap(),3);
+        assert_eq!(fs::read(dir.join("crimsonff.ifr")).unwrap(),b"ifrlocal");
+        assert_eq!(fs::read(dir.join("cszoneregister.exe")).unwrap(),b"zone");
+        assert_eq!(fs::read(dir.join("EULA.RTF")).unwrap(),b"french license");
+        assert!(!dir.join("CRIMSO_1.IFR").exists());
+        assert!(!dir.join("CSZONE_1.EXE").exists());
+        assert!(!dir.join("CLUF.RTF").exists());
+        // Staging must never replace an already present canonical file.
+        fs::write(dir.join("CRIMSO_1.IFR"),b"unexpected").unwrap();
+        assert!(normalize_game_filenames(&dir,"C_SKIES_FR_001").is_err());
+        assert_eq!(fs::read(dir.join("crimsonff.ifr")).unwrap(),b"ifrlocal");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn retail_cd_root_file_names_are_mapped_to_historical_game_layout(){
+        assert_eq!(retail_readme("C_SKIES_FR_001").unwrap(),("LISEZMOI.RTF","Readme.rtf"));
+        assert_eq!(retail_readme("C_SKIES_DISC_001").unwrap(),("README.RTF","Readme.rtf"));
+        for (edition,expected) in [
+            ("C_SKIES_FR_001",3),
+            ("C_SKIES_DE_001",2),
+            ("C_SKIES_DISC_001",2),
+        ]{
+            let count=["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"]
+                .iter().filter(|s|!installed_game_name(edition,s).is_empty()).count();
+            assert_eq!(count,expected);
+        }
+        assert_eq!(expected_installed_path("C_SKIES_FR_001","CLUF.RTF"),"EULA.RTF");
+        assert_eq!(expected_installed_path("C_SKIES_DE_001","EULA.RTF"),"EULA.RTF");
+        assert_eq!(RETAIL_ROOT_SUPPORT.len()+1,RETAIL_SUPPORT_FILES);
+        for (edition,profile) in PROFILES{
+            let readme=retail_readme(edition).unwrap();
+            for (source,_) in RETAIL_ROOT_SUPPORT.into_iter().chain(std::iter::once(readme)){
+                assert!(profile.lines().any(|line|line.starts_with(&format!("{source}\t"))),
+                    "missing {source} in {edition}");
+            }
+        }
     }
     #[test]
     fn only_eight_fixed_chapter_cabs_may_be_removed() {
