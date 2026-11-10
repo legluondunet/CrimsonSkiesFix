@@ -2,6 +2,7 @@
 //! No copyrighted game assets, executable or disc patches are distributed.
 mod sha256;
 mod disc_inspect;
+mod update102;
 
 use std::{
     env,
@@ -317,6 +318,8 @@ fn usage() {
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
+         CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
+         CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
          CrimsonSkiesFix.exe --version\n\
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
@@ -339,13 +342,35 @@ fn run() -> Result<i32, String> {
     if !args.is_empty() && !(args.len() == 1 && args[0] == "--verify")
         && !(args.len() == 2 && args[0] == "--import")
         && !(args.len() == 1 && args[0] == "--inspect-cd")
-        && !(args.len() == 2 && args[0] == "--inspect-cd") {
+        && !(args.len() == 2 && args[0] == "--inspect-cd")
+        && !(args.len() == 1 && args[0] == "--inspect-update")
+        && !(args.len() == 2 && args[0] == "--inspect-update") {
         usage();
         return Err("unsupported command or number of arguments".into());
     }
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
+    if !args.is_empty() && args[0] == "--inspect-update" {
+        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))} else {None};
+        let report=update102::inspect(base,selected.as_deref());
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: cannot replace non-file".into());
+        }
+        let content=match &report {
+            Ok(content)=>content.clone(),
+            Err(why)=>format!("CrimsonSkiesFix UPDATE102 INSPECT v1\nINSPECT_RESULT=ERROR\nERROR={why}\n"),
+        };
+        fs::write(&log,content).map_err(error)?;
+        return match report {
+            Ok(_)=>{
+                println!("Verified official Crimson Skies 1.02 updater; no installation was performed. Log: {}",log.display());
+                Ok(0)
+            },
+            Err(why)=>Err(format!("{why}; details: {}",log.display())),
+        };
+    }
     if !args.is_empty() && args[0] == "--inspect-cd" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
         // Explicit diagnostic scans always produce a log even with Log=0.
