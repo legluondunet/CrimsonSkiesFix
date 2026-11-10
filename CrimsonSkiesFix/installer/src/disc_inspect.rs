@@ -399,6 +399,23 @@ impl Walker<'_> {
     }
 }
 
+// This fingerprint intentionally ignores raw ISO/BIN size and hash.
+const PROFILE_001: &str=include_str!("../profiles/c_skies_disc_001.tsv");
+fn matches_profile_001(files:&BTreeMap<String,FileRecord>)->bool {
+    let mut seen=0usize;
+    for line in PROFILE_001.lines() {
+        if line.is_empty() || line.starts_with('#') {continue;}
+        let mut cells=line.split('\t');
+        let (Some(path),Some(size),Some(hash),None)=
+            (cells.next(),cells.next(),cells.next(),cells.next()) else { return false; };
+        let Ok(bytes)=size.parse::<u32>() else {return false;};
+        let Some(actual)=files.get(&path.to_lowercase()) else {return false;};
+        if actual.size!=bytes || actual.sha!=hash || actual.status!="OK" {return false;}
+        seen+=1;
+    }
+    seen==112 && seen==files.len()
+}
+
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media)?}else{open_iso(&media)?};
@@ -414,6 +431,11 @@ pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
     let bad=walk.results.len()-good;
     let total=walk.results.values().filter(|r|r.status=="OK")
         .map(|r|r.size as u64).sum::<u64>();
+    let (edition,recognition)=if bad==0 && matches_profile_001(&walk.results) {
+        ("C_SKIES_DISC_001","EXACT_INTERNAL_FILE_MANIFEST")
+    } else {
+        ("UNKNOWN","NO_EXACT_INTERNAL_FILE_MANIFEST_MATCH")
+    };
     let mut report=format!(
         "CrimsonSkiesFix CD INSPECT v1\n\
          SourceMedia={}\n\
@@ -421,7 +443,8 @@ pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
          DataTracks={}\n\
          Filesystem={}\n\
          VolumeLabel={}\n\
-         Edition=UNKNOWN (file profiles not yet supplied)\n\
+         Edition={edition}\n\
+         EditionRecognition={recognition}\n\
          IdentificationRule=normalized internal paths + internal file sizes + internal file SHA256\n\
          WholeImageSHA256=NOT_USED\n\
          WholeImageSize=NOT_USED\n\
@@ -490,6 +513,24 @@ mod tests {
         let dir=std::env::temp_dir().join(format!("crimson-inspect-cd-{}-{id}",std::process::id()));
         fs::create_dir(&dir).unwrap();
         dir
+    }
+    #[test]
+    fn baseline_profile_recognizes_only_exact_internal_manifest() {
+        let mut files=BTreeMap::new();
+        for line in PROFILE_001.lines().filter(|s|!s.is_empty() && !s.starts_with('#')) {
+            let cols=line.split('\t').collect::<Vec<_>>();
+            assert_eq!(cols.len(),3);
+            let path=cols[0].to_owned();
+            let size=cols[1].parse::<u32>().unwrap();
+            let sha=cols[2].to_owned();
+            assert!(files.insert(path.to_lowercase(),FileRecord {
+                path,size,sha,status:"OK".to_owned()
+            }).is_none());
+        }
+        assert_eq!(files.len(),112);
+        assert!(matches_profile_001(&files));
+        files.get_mut("game/crimson.exe").unwrap().sha="0".repeat(64);
+        assert!(!matches_profile_001(&files));
     }
     #[test]
     fn inspect_internal_file_hash_not_iso_image_hash() {
