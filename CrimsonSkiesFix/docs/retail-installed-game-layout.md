@@ -9,8 +9,11 @@ from an actual traditional Microsoft game installation:
   `MP1`...`MP3` child directories and the actual
   `cam_anim.zbd`, `mis_anim.zbd`, `rtexture*.zbd`,
   `gamez.zbd`, `texture.zbd`, `zrdr.zbd` files.
-- Six directly stored `ZBD/*.zbd` resources, and the 178
-  additional `*.zbd` expanded from chapter CABs, for 184 total.
+- Six directly stored `ZBD/*.zbd` resources, plus **177** files
+  inside the eight chapter directories in the supplied classic tree,
+  for **183** installed ZBD files. The earlier extractor logged 178
+  member files from its eight CABs: that is **one more file than the
+  classic layout** and remains to be audited.
 - No `ZBD/*.CAB` in the final installed game.
 
 ## Observed mismatches with the previous installer
@@ -79,7 +82,11 @@ the game. This is not proof of complete registry/system equivalence.
 ## Remaining name audit
 
 The supplied `tree` output establishes the **expected directory
-layout** but does not include file hashes. The chapter archives may
+layout** but does not include file hashes. The classic chapter counts
+are: C1=23, C1B=17, C1C=17, C2=25, C2B=16, C3=27, C4=27,
+C5=25, totaling **177**. Our CAB decoder previously reported
+**178**. We must identify the extra entry and any short-name aliases
+before claiming byte-for-byte retail directory equivalence. The chapter archives may
 also use shortened names that are *not* the same as their actual
 retail-installed filenames. Keep their filenames as extracted pending
 matching against the owner's installed files by SHA-256 using the

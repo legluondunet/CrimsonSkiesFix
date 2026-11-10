@@ -522,12 +522,24 @@ fn reference_candidates<'a>(source_cab:&str,extracted:&str,names:&'a [String])->
     ).collect()
 }
 
+// Counts from the owner's classic Microsoft installation tree (68 folders,
+// 225 files): C1 23, C1B 17, C1C 17, C2 25, C2B 16, C3 27, C4 27,
+// C5 25. Total 177 chapter ZBDs plus 6 directly stored ZBDs = 183.
+// The earlier 178 CAB members was a count of *all* archive members, NOT a
+// proof that the classic retail installer places every member on disk.
+const RETAIL_REFERENCE_CHAPTER_COUNTS:[(&str,usize);8]=[
+    ("C1.CAB",23),("C1B.CAB",17),("C1C.CAB",17),("C2.CAB",25),
+    ("C2B.CAB",16),("C3.CAB",27),("C4.CAB",27),("C5.CAB",25),
+];
+
 fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String>{
     let mut out=String::from("CrimsonSkiesFix CHAPTER SHORT NAMES AUDIT v1\n");
     let mut candidates=0usize;
+    let mut per_cab=BTreeMap::<String,usize>::new();
     for line in raw.lines().skip(1) {
         let fields=line.split('\t').collect::<Vec<_>>();
         if fields.len()!=4 {return Err("invalid installed chapter manifest entry".into());}
+        *per_cab.entry(fields[0].to_owned()).or_default()+=1;
         let relative=member_path(fields[1])?;
         out.push_str(&format!("ChapterMember={}\t{}\t{}\t{}\n",
             fields[0],fields[1],fields[2],fields[3]));
@@ -537,6 +549,15 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
                 fields[0],fields[1],fields[2],fields[3]));
         }
     }
+    for (source,expected) in RETAIL_REFERENCE_CHAPTER_COUNTS {
+        let found=per_cab.get(source).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "ChapterCount={source}\tExtracted={found}\tClassicReference={expected}\tMatch={}\n",
+            if found==expected{"YES"}else{"NO"}
+        ));
+    }
+    out.push_str(&format!("ChapterFilesExtracted={}\nClassicReferenceChapterFiles=177\n",
+        per_cab.values().sum::<usize>()));
     if let Some(ref_dir)=reference {
         if !real_dir(ref_dir) {return Err("reference ZBD folder must be a real directory".into());}
         let mut hashes=BTreeMap::<String,Vec<String>>::new();
@@ -574,6 +595,12 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn classic_reference_chapter_counts_sum_to_177_not_178(){
+        assert_eq!(RETAIL_REFERENCE_CHAPTER_COUNTS.len(),8);
+        assert_eq!(RETAIL_REFERENCE_CHAPTER_COUNTS.iter()
+            .map(|(_,size)|*size).sum::<usize>(),177);
+    }
     #[test]
     fn retail_reference_zbd_audit_walks_nested_chapter_and_mission_folders(){
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

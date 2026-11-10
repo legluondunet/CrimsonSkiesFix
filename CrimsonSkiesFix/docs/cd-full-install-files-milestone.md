@@ -10,9 +10,11 @@ permanent `CrimsonSkiesFix/` installation directory, **decompresses the
 original per-chapter CAB archives into the game's ZBD resources**, adds the
 official 1.02 gameplay asset, installs the bundled DirectDraw compatibility
 proxy, creates the writable game folders, verifies the result, and records
-provenance. A previously examined working installation contained 184 `.zbd`
-files, demonstrating why simply copying the eight `C*.CAB` files is
-insufficient. The exact installed count will be recorded in the first
+provenance. The owner's complete classic-install tree contains 177 chapter ZBDs
+plus six directly stored ZBDs, totaling **183**. The extract-to-game
+pipeline produced 178 CAB members, one more than the retail tree.
+We must compare per-chapter inventories and resolve this extra entry;
+copying the eight `C*.CAB` files is not a complete installation. The exact installed count will be recorded in the first
 end-to-end test, not assumed equal across editions.
 
 ## First installation test under Wine
