@@ -6,26 +6,26 @@ proxy package. This is an early installer/launcher PR, not the 1.0 release.
 
 ## Usage and layout
 
-Place \`CrimsonSkiesFix.exe\` beside **one complete, already installed**
+Place `CrimsonSkiesFix.exe` beside **one complete, already installed**
 Crimson Skies directory containing the **exact hash-approved unwrapped 1.02**
-\`CRIMSON.EXE\` and \`GOSDATA/ASSETS/\` archives:
+`CRIMSON.EXE` and `GOSDATA/ASSETS/` archives:
 
-\`\`\`text
+```text
 CrimsonSkiesFix.exe
 Crimson Skies/        # pre-existing game directory: copied, never altered
     CRIMSON.EXE
     GOSDATA/ASSETS/crimson.rof
     GOSDATA/ASSETS/crimptch.rof
-\`\`\`
+```
 
 On startup, the launcher verifies the original EXE SHA-256 and required ROF
-files, copies everything through \`CrimsonSkiesFix.installing/\`, inserts its
-embedded and SHA-256-verified \`ddraw.dll\`, and publishes the game in
-\`CrimsonSkiesFix/\`. It then verifies and launches it with that directory as
+files, copies everything through `CrimsonSkiesFix.installing/`, inserts its
+embedded and SHA-256-verified `ddraw.dll`, and publishes the game in
+`CrimsonSkiesFix/`. It then verifies and launches it with that directory as
 its working directory. Subsequent starts verify/update the patch and launch
 without copying game data again.
 
-\`\`\`text
+```text
 CrimsonSkiesFix.exe
 CrimsonSkiesFix/
     CRIMSON.EXE
@@ -38,12 +38,12 @@ CrimsonSkiesFix/
         README.md
         LICENSE
         build-info.txt
-\`\`\`
+```
 
-The alternative explicit command \`CrimsonSkiesFix.exe --import "C:\\My Games\\Crimson Skies"\`
-imports the indicated complete installed game. \`--verify\` verifies the
+The alternative explicit command `CrimsonSkiesFix.exe --import "C:\\My Games\\Crimson Skies"`
+imports the indicated complete installed game. `--verify` verifies the
 supported EXE, required resource files and installed DLL **without writing**.
-\`--version\` and \`--help\` are available. No \`--launch\` option is needed.
+`--version` and `--help` are available. No `--launch` option is needed.
 
 **Not supported in this PR:** ISO/CUE/BIN game-asset extraction, retail
 installer automation, SafeDisc-protected executable transformation, a
@@ -60,12 +60,12 @@ disable the existing EXE gate.
 - Symlinks/junction-like links observed as symlinks are refused during import.
   Any stale staging/upgrade path causes a clear failure for manual inspection.
 - A proxy DLL upgrade is staged and hash-checked before publishing. The
-  previous active DLL is retained as one rolling \`.bak\` version; there is no
+  previous active DLL is retained as one rolling `.bak` version; there is no
   numbered backup accumulation.
 - The original game directory is read-only to the importer; it copies data
   to an independent folder. Its source EXE is not rewritten.
 - The runtime DLL still owns the small reversible GOS overlay
-  \`crimptch.rof\` update. Follow its backup/restore instructions before
+  `crimptch.rof` update. Follow its backup/restore instructions before
   uninstalling a fully installed patch.
 - The standalone EXE embeds the exact DLL, current documentation, sample INI
   and GPL-3.0-or-later license text. No copyrighted game data is included.
