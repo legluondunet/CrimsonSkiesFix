@@ -449,6 +449,24 @@ pub fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
 /// directory under a German label, even if the folder was renamed manually.
 /// It also detects incomplete/modified game extractions.
 pub fn verify_staging(game:&Path,edition:&str)->Result<usize,String> {
+    verify_original_files(game,edition,false)
+}
+
+/// Post-install game payloads omit the eight original chapter CAB archives:
+/// all their contents have been expanded, hashed and sealed into a separate
+/// manifest. Pre-install verification still checks the exact original CABs.
+pub fn verify_installed_without_cabs(game:&Path,edition:&str)->Result<usize,String>{
+    verify_original_files(game,edition,true)
+}
+
+pub const REMOVED_CHAPTER_CABS:usize=8;
+fn is_pruned_chapter_cab(path:&str)->bool{
+    matches!(path,"GAME/ZBD/C1.CAB"|"GAME/ZBD/C1B.CAB"|"GAME/ZBD/C1C.CAB"|
+        "GAME/ZBD/C2.CAB"|"GAME/ZBD/C2B.CAB"|"GAME/ZBD/C3.CAB"|
+        "GAME/ZBD/C4.CAB"|"GAME/ZBD/C5.CAB")
+}
+
+fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool)->Result<usize,String> {
     if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false) {
         return Err(format!("missing or unsafe {edition} staging directory: {}",game.display()));
     }
@@ -459,6 +477,12 @@ pub fn verify_staging(game:&Path,edition:&str)->Result<usize,String> {
         let cols=line.split('\t').collect::<Vec<_>>();
         if cols.len()!=3 {return Err("invalid compiled-in CD profile".into());}
         let Some(relative)=cols[0].strip_prefix("GAME/") else {continue;};
+        if skip_cabs && is_pruned_chapter_cab(cols[0]){
+            if fs::symlink_metadata(game.join(relative)).is_ok() {
+                return Err(format!("obsolete chapter CAB remains installed: {}",cols[0]));
+            }
+            continue;
+        }
         let path=game.join(relative);
         // The expected names are only normalized game-file paths from a
         // verified fixed manifest. Still reject non-directory ancestors,
@@ -733,6 +757,17 @@ mod tests {
         assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn only_eight_fixed_chapter_cabs_may_be_removed() {
+        let paths=["GAME/ZBD/C1.CAB","GAME/ZBD/C1B.CAB","GAME/ZBD/C1C.CAB",
+            "GAME/ZBD/C2.CAB","GAME/ZBD/C2B.CAB","GAME/ZBD/C3.CAB",
+            "GAME/ZBD/C4.CAB","GAME/ZBD/C5.CAB"];
+        assert_eq!(paths.iter().filter(|p|is_pruned_chapter_cab(p)).count(),
+            REMOVED_CHAPTER_CABS);
+        assert!(!is_pruned_chapter_cab("GAME/GOSDATA/C1.CAB"));
+        assert!(!is_pruned_chapter_cab("GAME/ZBD/INTERP.ZBD"));
+        assert!(!is_pruned_chapter_cab("GAME/ZBD/OTHER.CAB"));
     }
     #[test]
     fn separate_edition_staging_paths_and_fail_closed_selectors() {

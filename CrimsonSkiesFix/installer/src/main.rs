@@ -319,6 +319,7 @@ struct DiscInstallation {
     chapter_members:usize,
     chapter_zbd_files:usize,
     chapter_bytes:u64,
+    chapter_short_aliases:usize,
     destination:PathBuf,
 }
 
@@ -344,15 +345,22 @@ fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
 fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
-    let count=disc_inspect::verify_staging(game,edition)?;
+    let count=disc_inspect::verify_installed_without_cabs(game,edition)?;
     // Copying the chapter CABs alone is not a complete retail install.
     // Verify every expanded member byte-for-byte against the original CAB.
-    let chapters=chapter_cabs::verify_expanded(game)?;
     let receipt=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
+    let values=receipt.lines().filter_map(|line|
+        line.strip_prefix("ChapterManifestSHA256=")
+    ).collect::<Vec<_>>();
+    if values.len()!=1 || values[0].len()!=64 {
+        return Err("installation receipt is missing unique chapter manifest SHA-256".into());
+    }
+    let chapters=chapter_cabs::verify_without_archives(game,values[0])?;
     for (key,actual) in [
         ("ChapterCabMembers",chapters.members as u64),
         ("ChapterCabZbdFiles",chapters.zbd_files as u64),
         ("ChapterCabPayloadBytes",chapters.payload_bytes),
+        ("ChapterShortAliasCandidates",chapters.short_name_candidates as u64),
     ] {
         let values=receipt.lines().filter_map(|s|
             s.strip_prefix(&format!("{key}="))
@@ -411,6 +419,15 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
     let asset=update102::apply_asset(base,&stage,extracted.edition,Some(&updater))?;
+    // Before publication, independently compare all expanded members against
+    // their authenticated CAB inputs. Seal per-file hashes in a manifest and
+    // remove ONLY the eight temporary chapter CABs from this new staging tree.
+    let finalized=chapter_cabs::finalize_without_archives(&stage)?;
+    if finalized.members!=chapters.members ||
+        finalized.payload_bytes!=chapters.payload_bytes ||
+        finalized.zbd_files!=chapters.zbd_files {
+        return Err("chapter members changed while finalizing CAB removal".into());
+    }
     // Game saves and user-defined planes belong beside the game executable,
     // not in Program Files, system folders or a shared staging directory.
     for name in ["SavedGames","Planes"] {
@@ -424,14 +441,17 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
          ExtractedGameFiles={}\nExtractedGameBytes={}\n\
          UpdateSHA256={}\nPatchAssetSHA256={}\n\
          ChapterCabMembers={}\nChapterCabZbdFiles={}\nChapterCabPayloadBytes={}\n\
+         ChapterManifestSHA256={}\nChapterShortAliasCandidates={}\nChapterCABsPruned=8\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
         update102::PATCH_SHA256,update102::ASSET_SHA256,
-        chapters.members,chapters.zbd_files,chapters.payload_bytes
+        finalized.members,finalized.zbd_files,finalized.payload_bytes,
+        finalized.manifest_sha,finalized.short_name_candidates
     );
     ensure_new_text(&stage.join(INSTALL_RECEIPT),&receipt)?;
     let (edition,verified_count)=verify_installed_cd_assets(&stage)?;
-    if verified_count!=extracted.file_count || edition!=extracted.edition {
+    if verified_count+disc_inspect::REMOVED_CHAPTER_CABS!=extracted.file_count ||
+        edition!=extracted.edition {
         return Err("installation verification disagrees with extracted source manifest".into());
     }
     // The final name only appears when source, ROF, proxy and writable
@@ -439,8 +459,10 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     fs::rename(&stage,game).map_err(error)?;
     Ok(DiscInstallation{edition,file_count:extracted.file_count,
         byte_count:extracted.bytes,asset_status:asset,
-        chapter_members:chapters.members,chapter_zbd_files:chapters.zbd_files,
-        chapter_bytes:chapters.payload_bytes,destination:game.to_path_buf()})
+        chapter_members:finalized.members,chapter_zbd_files:finalized.zbd_files,
+        chapter_bytes:finalized.payload_bytes,
+        chapter_short_aliases:finalized.short_name_candidates,
+        destination:game.to_path_buf()})
 }
 
 fn source_candidates(base: &Path, game: &Path) -> Result<Vec<PathBuf>, String> {
@@ -476,6 +498,7 @@ fn usage() {
          CrimsonSkiesFix.exe --install-cd IMAGE PATCH --into ED    test alongside an existing install (ED=USA/FR/DE)\n\
          CrimsonSkiesFix.exe --verify-install      verify default CD installation\n\
          CrimsonSkiesFix.exe --verify-install ED   verify a named USA/FR/DE installation\n\
+         CrimsonSkiesFix.exe --audit-shortnames [ED] [REFERENCE_ZBD]   inspect CAB 8.3 name aliases\n\
          CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
          CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
          CrimsonSkiesFix.exe --extract-update ED          verify official ROF for USA/FR/DE staged CD\n\
@@ -515,13 +538,43 @@ fn run() -> Result<i32, String> {
         && !(args.len() == 3 && args[0] == "--install-cd")
         && !(args.len() == 5 && args[0] == "--install-cd" && args[3] == "--into")
         && !(args.len() == 1 && args[0] == "--verify-install")
-        && !(args.len() == 2 && args[0] == "--verify-install") {
+        && !(args.len() == 2 && args[0] == "--verify-install")
+        && !(args.len() == 1 && args[0] == "--audit-shortnames")
+        && !(args.len() == 2 && args[0] == "--audit-shortnames")
+        && !(args.len() == 3 && args[0] == "--audit-shortnames") {
         usage();
         return Err("unsupported command or number of arguments".into());
     }
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
+    if !args.is_empty() && args[0]=="--audit-shortnames" {
+        let chosen=if args.len()>=2 {
+            Some(test_install_destination(base,args[1].to_str()
+                .ok_or("edition selector must be text")?)?)
+        }else{None};
+        let target=chosen.as_ref().map(|(_,path)|path).unwrap_or(&game);
+        let reference=if args.len()==3 {Some(PathBuf::from(&args[2]))}else{None};
+        let report=verify_installed_cd_assets(target).and_then(|(edition,_)|{
+            if chosen.as_ref().is_some_and(|(expected,_)|*expected!=edition) {
+                return Err("requested edition does not match installed game".into());
+            }
+            chapter_cabs::short_name_audit(target,reference.as_deref())
+        });
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: refusing non-file".into());
+        }
+        fs::write(&log,match &report {
+            Ok(text)=>text.clone(),
+            Err(why)=>format!("CrimsonSkiesFix CHAPTER SHORT NAMES AUDIT v1\n\
+                AUDIT_RESULT=ERROR\nERROR={why}\n")
+        }).map_err(error)?;
+        return match report{
+            Ok(_)=>{println!("Chapter filename audit complete: {}",log.display());Ok(0)}
+            Err(why)=>Err(format!("{why}; see {}",log.display()))
+        };
+    }
     if !args.is_empty() && args[0]=="--verify-install" {
         let chosen=if args.len()==2 {
             Some(test_install_destination(base,args[1].to_str()
@@ -542,7 +595,8 @@ fn run() -> Result<i32, String> {
                 VerifiedDirectory={}\n\
                 Edition={edition}\nOriginalFilesVerified={files}\n\
                 Official102Asset=SHA256_VERIFIED\nProxy=SHA256_VERIFIED\n\
-                ChapterCABContent=VERIFIED\n\
+                ChapterManifest=SHA256_VERIFIED\nChapterPayloads=SHA256_VERIFIED\n\
+                ChapterCABsPruned=8\n\
                 WritableDirectories=SavedGames,Planes\nExecutableState=PROTECTED_PENDING\n\
                 VERIFY_INSTALL_RESULT=COMPLETE\n",verification_target.display()),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
@@ -580,10 +634,12 @@ fn run() -> Result<i32, String> {
                 SavedGamesDirectory=CREATED\nPlanesDirectory=CREATED\n\
                 ChapterCabMembers={}\nChapterZbdFiles={}\nChapterPayloadBytes={}\n\
                 ChapterContentVerified=YES\n\
+                ChapterCABsPruned=8\nChapterShortAliasCandidates={}\n\
                 GameFilesVerified=YES\nExecutableState=PROTECTED_PENDING\n\
                 INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING\n",
                 r.edition,r.file_count,r.byte_count,r.asset_status,r.destination.display(),
-                r.chapter_members,r.chapter_zbd_files,r.chapter_bytes),
+                r.chapter_members,r.chapter_zbd_files,r.chapter_bytes,
+                r.chapter_short_aliases),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
                 Destination={}\nINSTALL_RESULT=ERROR\nERROR={why}\n",
                 install_target.display()),
@@ -595,6 +651,8 @@ fn run() -> Result<i32, String> {
                     r.file_count,r.byte_count,r.edition,r.destination.display());
                 println!("Expanded {} chapter CAB members, including {} ZBD files ({} bytes).",
                     r.chapter_members,r.chapter_zbd_files,r.chapter_bytes);
+                println!("Pruned all 8 temporary chapter CABs after verification; {} filenames contain possible DOS 8.3 aliases.",
+                    r.chapter_short_aliases);
                 println!("Official 1.02 resource: {}. Bundled ddraw.dll and writable game folders installed.",r.asset_status);
                 println!("Installation data ready; protected game executable kept unchanged for the final step.");
                 Ok(0)

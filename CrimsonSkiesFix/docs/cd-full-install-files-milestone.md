@@ -53,7 +53,7 @@ CrimsonSkiesFix/                   # created ONLY after full preflight
             CRIMPTCH.ROF            # same verified official 1.02 ROF
             GRAPHICS/...
             BINARIES/...
-    ZBD/                            # original CABs + expanded chapter files, sound/geometry archives
+    ZBD/                            # expanded chapter ZBD files, sound/geometry archives (NO .CAB)
     SavedGames/                     # newly created, writable
     Planes/                         # newly created, writable
     CrimsonSkiesFix.ini.example     # active INI generated at first game start
@@ -67,8 +67,12 @@ The CD provides the edition-specific localization, videos, CABs and ZBDs.
 Each of the eight chapter `C*.CAB` files is decoded through the audited
 pure-Rust CAB reader, with safe relative paths, no overwrites, bounded
 output sizes and an independent byte-for-byte verification against the
-source CAB before the final directory is published. The original CABs
-are retained as provenance until their safe removal is separately verified.
+source CAB **while the install is still staged**. After verification, a
+compact SHA-256 manifest of every installed chapter member is written to
+`CrimsonSkiesFix.chapters.tsv`, its hash is pinned into the installation
+receipt, and the eight CABs are **removed** before the game directory is
+published. `--verify-install` checks this manifest and the hashes of the
+actual expanded files instead of depending on redundant CABs.
 A corrupt, missing or unsupported chapter archive **blocks publication**.
 
 The original 1.02 patch is never run as a Windows executable; its
@@ -81,8 +85,10 @@ The installer creates `CrimsonSkiesFix.installing/` first. Every
 original GAME/ file is checked against the CD's authenticated per-file
 manifest **both during extraction and before the final rename**.
 The official ROF and our embedded `ddraw.dll` are hash verified. The
-expanded chapter content is verified again by `--verify-install`, using
-the original CAB files rather than trusting editable receipt checksums.
+expanded chapter content is checked by `--verify-install` against the
+on-disk SHA-256 chapter manifest sealed before CAB deletion. This detects
+accidental data corruption, but does not claim independent reauthentication
+against original CAB bytes after their intentional deletion.
 An existing `CrimsonSkiesFix/` or abandoned
 `CrimsonSkiesFix.installing/` is never overwritten or deleted.
 A failure leaves staging for manual investigation without publishing an
@@ -96,6 +102,7 @@ SavedGamesDirectory=CREATED
 PlanesDirectory=CREATED
 GameFilesVerified=YES
 ChapterContentVerified=YES
+ChapterCABsPruned=8
 ChapterCabMembers=<number from actual cabinets>
 ChapterZbdFiles=<number from actual cabinets>
 ExecutableState=PROTECTED_PENDING
@@ -103,9 +110,10 @@ INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING
 ```
 
 The separate `--verify-install` command independently rehashes
-all installed original GAME/ files (including the original protected
-EXE), decompresses and **compares every installed CAB member against its
-original content**, and verifies the official patch asset and embedded proxy. It does
+all retained original GAME/ files (including the original protected
+EXE, excluding the eight intentionally pruned chapter CABs), checks
+**each expanded chapter member against the sealed per-file SHA-256 manifest**,
+and verifies the official patch asset and embedded proxy. It does
 **not** attempt to execute the game or mistake a protected executable
 for the project's required **exact unwrapped 1.02** game EXE.
 
@@ -129,3 +137,29 @@ applied; it belongs to the deferred executable stage.
 Further validations: real ISO/CUE installations under Wine and native
 Windows 11, `--verify-install`, refusal to overwrite an installation,
 and eventual supported 1.02 executable launch. Keep PR #26 **draft**.
+
+## Short DOS 8.3 filenames: canonical-name audit
+
+Some source chapter cabinets contain short DOS-style names. A filename like
+`SOMETH~1.ZBD` cannot be expanded uniquely by inventing the missing
+characters; the correct name must be recovered from a genuine retail
+installation or authenticated installer's mapping.
+
+The experimental installer now reports `ChapterShortAliasCandidates`
+and supports a read-only filename audit:
+
+```sh
+WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA
+cp CrimsonSkiesFix.log shortnames-USA.log
+
+# Compare installed filenames against a *genuine* Microsoft-installed ZBD:
+WINEDEBUG=-all wine CrimsonSkiesFix.exe --audit-shortnames USA "/path/to/original/Crimson Skies/ZBD"
+cp CrimsonSkiesFix.log shortnames-reference-USA.log
+```
+
+This compares extracted and reference files **by SHA-256**, reports only
+unambiguous candidate mappings, and never renames or modifies existing
+files. Exact, reviewed alias→canonical-name entries will be incorporated
+into the installer's extraction pipeline. Until those are available,
+**automatic long-filename restoration is not yet considered resolved**.
+The original-game copy protection is unrelated and remains deferred.
