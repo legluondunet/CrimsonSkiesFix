@@ -1,5 +1,57 @@
 # Standalone launcher bootstrap (experimental)
 
+## Required final installation sources: ISO or CUE/BIN
+
+**Project requirement (2026-11-10):** The public installer must operate
+directly on original optical-disc **ISO** images or **CUE/BIN** sets.
+Requiring a pre-installed game directory is not an acceptable substitute
+for this feature. The `--import DIR` behavior in the current experimental
+bootstrap is **temporary scaffolding only**, not the requested end-state.
+Do not mark this PR ready to merge until disc image installation is implemented
+and tested with authentic edition scans.
+
+Expected no-argument flow:
+
+1. If the game is already installed under `CrimsonSkiesFix/`, validate
+   its known executable version, installed resource manifest and bundled DLL,
+   then launch without requiring the original disc image again.
+2. Otherwise require **exactly one** adjacent `.iso` or `.cue` file.
+   A CUE file must resolve its referenced BIN tracks safely, including
+   relative paths, mixed-mode tracks and filenames with spaces. Missing or
+   ambiguous data must cause an explicit refusal.
+3. Fingerprint the image and identify the supported game edition from
+   per-edition scan profiles; reject unknown or malformed media.
+4. Extract the appropriate original game assets to a transactional staging
+   directory; verify a per-edition manifest, preserve writable files and
+   publish only on success.
+5. If a verified official `update1.02` file is present beside the launcher,
+   apply it **only to a compatible recognized source edition**, with a rollback
+   and provenance check. Do not execute an unverified arbitrary updater.
+6. Verify the final executable against the **existing exact unwrapped 1.02
+   SHA-256 gate**, then deploy the pinned bundled `ddraw.dll` and the minimal
+   `CrimsonSkiesFix.ini` at the installed game root, and launch it.
+   Official 1.02 updating and SafeDisc handling must be validated separately:
+   a protected retail EXE will not be accepted by the runtime DLL.
+
+### Intended user layout
+
+```text
+CrimsonSkiesFix.exe
+CrimsonSkiesFix.log              # generated beside the launcher if enabled
+CrimsonSkies-FR.iso              # OR CrimsonSkies-FR.cue + referenced BIN files
+update1.02                      # optional, exact verified official updater
+CrimsonSkiesFix/
+    CRIMSON.EXE
+    ddraw.dll
+    GOSDATA/...
+    CrimsonSkiesFix.ini
+```
+
+To create reliable edition profiles, collect for each disc image: name,
+size, SHA-256, ISO volume identity, internal file list with sizes and hashes,
+and CUE track layout where relevant. Do not rely on comparing only existing
+installed directories.
+
 The Windows x86 release workflow now also builds a **single-file
 CrimsonSkiesFix.exe**, separately from the existing five-file DirectDraw
 proxy package. This is an early installer/launcher PR, not the 1.0 release.
