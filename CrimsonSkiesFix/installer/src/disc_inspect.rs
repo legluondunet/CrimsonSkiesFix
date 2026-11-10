@@ -591,6 +591,9 @@ fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool)->Result<usize,S
         }
         let actual_relative=if skip_cabs{expected_installed_path(edition,relative)}else{relative};
         let path=game.join(actual_relative);
+        if skip_cabs && actual_relative!=relative && fs::symlink_metadata(game.join(relative)).is_ok(){
+            return Err(format!("obsolete short CD filename remains beside canonical retail file: {relative}"));
+        }
         // The expected names are only normalized game-file paths from a
         // verified fixed manifest. Still reject non-directory ancestors,
         // including junctions/symlinks, before reading the target.
@@ -886,6 +889,29 @@ mod tests {
         let image=dir.join("missing.iso");
         assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn retail_file_renames_keep_bytes_and_refuse_overwrite() {
+        let dir=workdir();
+        for (short,bytes) in [
+            ("CRIMSO_1.IFR",&b"ifrlocal"[..]),
+            ("CSZONE_1.EXE",&b"zone"[..]),
+            ("CLUF.RTF",&b"french license"[..])
+        ] {
+            fs::write(dir.join(short),bytes).unwrap();
+        }
+        assert_eq!(normalize_game_filenames(&dir,"C_SKIES_FR_001").unwrap(),3);
+        assert_eq!(fs::read(dir.join("crimsonff.ifr")).unwrap(),b"ifrlocal");
+        assert_eq!(fs::read(dir.join("cszoneregister.exe")).unwrap(),b"zone");
+        assert_eq!(fs::read(dir.join("EULA.RTF")).unwrap(),b"french license");
+        assert!(!dir.join("CRIMSO_1.IFR").exists());
+        assert!(!dir.join("CSZONE_1.EXE").exists());
+        assert!(!dir.join("CLUF.RTF").exists());
+        // Staging must never replace an already present canonical file.
+        fs::write(dir.join("CRIMSO_1.IFR"),b"unexpected").unwrap();
+        assert!(normalize_game_filenames(&dir,"C_SKIES_FR_001").is_err());
+        assert_eq!(fs::read(dir.join("crimsonff.ifr")).unwrap(),b"ifrlocal");
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
