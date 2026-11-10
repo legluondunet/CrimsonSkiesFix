@@ -727,8 +727,19 @@ mod tests{
         assert_eq!(final_install.short_name_candidates,0);
         assert!(zbd.join("C1/rtexture15.zbd").is_file());
         assert!(zbd.join("C2B/rtexture9.zbd").is_file());
-        assert!(!zbd.join("C1/RTEXTU~1.ZBD").exists());
-        assert!(!zbd.join("C2B/RT60AC~1.ZBD").exists());
+        // On NTFS a long filename itself may have an automatically
+        // generated DOS 8.3 alias. The old alias can still resolve via
+        // metadata even when the *directory entry* has the right long name.
+        // Enumerate actual filenames instead of checking oldpath.exists().
+        let files_in=|chapter:&str|->Vec<String>{
+            fs::read_dir(zbd.join(chapter)).unwrap()
+                .map(|entry|entry.unwrap().file_name().to_string_lossy().to_ascii_lowercase())
+                .collect()
+        };
+        assert!(!files_in("C1").iter().any(|n|n=="rtextu~1.zbd"));
+        assert!(!files_in("C2B").iter().any(|n|n=="rt60ac~1.zbd"));
+        assert!(files_in("C1").iter().any(|n|n=="rtexture15.zbd"));
+        assert!(files_in("C2B").iter().any(|n|n=="rtexture9.zbd"));
         for name in CHAPTER_CABS {assert!(!zbd.join(name).exists());}
         assert_eq!(verify_without_archives(&root,&final_install.manifest_sha).unwrap().members,8);
         fs::remove_dir_all(root).unwrap();
@@ -786,7 +797,7 @@ mod tests{
         fs::create_dir_all(&zbd).unwrap();
         for (n,name) in CHAPTER_CABS.iter().enumerate() {
             let mut builder=cab::CabinetBuilder::new();
-            let membername=format!("CHAPTER{n}.ZBD");
+            let membername=format!("{}/CHAPTER{n}.ZBD",name.trim_end_matches(".CAB"));
             builder.add_folder(cab::CompressionType::MsZip)
                 .add_file(&membername);
             let file=File::create(zbd.join(name)).unwrap();
@@ -804,7 +815,7 @@ mod tests{
         }
         assert!(base.join(INSTALLED_MANIFEST).is_file());
         assert_eq!(verify_without_archives(&base,&finalized.manifest_sha).unwrap().members,8);
-        fs::write(zbd.join("CHAPTER0.ZBD"),b"bad data").unwrap();
+        fs::write(zbd.join("C1").join("CHAPTER0.ZBD"),b"bad data").unwrap();
         assert!(verify_without_archives(&base,&finalized.manifest_sha).is_err());
         fs::remove_dir_all(base).unwrap();
     }
