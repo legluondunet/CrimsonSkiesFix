@@ -118,17 +118,11 @@ fn ensure_new_text(path: &Path, text: &str) -> Result<(), String> {
 
 // Never overwrite the active INI. The proxy creates it on its first game launch.
 fn deploy_documentation(game: &Path) -> Result<(), String> {
-    let folder = game.join("CrimsonSkiesFix");
-    if any_entry(&folder) {
-        if !directory(&folder) {
-            return Err("unsafe CrimsonSkiesFix configuration directory".into());
-        }
-    } else {
-        fs::create_dir(&folder).map_err(error)?;
-    }
-    ensure_new_text(&folder.join("README.md"), README)?;
-    ensure_new_text(&folder.join("LICENSE"), LICENSE)?;
-    ensure_new_text(&folder.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
+    // Flat installed-game layout: never create CrimsonSkiesFix/CrimsonSkiesFix/.
+    // The proxy creates CrimsonSkiesFix.ini directly in this game directory.
+    ensure_new_text(&game.join("README.md"), README)?;
+    ensure_new_text(&game.join("LICENSE"), LICENSE)?;
+    ensure_new_text(&game.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
     let source = format!("https://github.com/legluondunet/CrimsonSkiesFix/tree/{COMMIT}");
     let build_info = format!(
         "Project=CrimsonSkiesFix\nVersion={VERSION}\nCommit={COMMIT}\n\
@@ -138,7 +132,7 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_DDRAW),
         BUNDLED_DDRAW.len()
     );
-    let manifest = folder.join("build-info.txt");
+    let manifest = game.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
     }

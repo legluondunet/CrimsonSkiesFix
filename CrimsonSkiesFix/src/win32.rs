@@ -251,7 +251,9 @@ fn exe_directory()->Option<PathBuf> {
 
 pub fn project_path(name:&str)->Option<PathBuf> {
     // Fixed internal file names only; never insert user-controlled paths here.
-    Some(exe_directory()?.join("CrimsonSkiesFix").join(name))
+    // The standalone installer keeps the active INI in the game root.
+    // Manual DLL-only installations now use the same layout.
+    Some(exe_directory()?.join(name))
 }
 
 fn regular_file(path:&Path)->bool {
@@ -279,9 +281,11 @@ fn create_ini_once(path:&Path)->std::io::Result<bool> {
     }
 }
 
-// Preserve either previous configuration. Prefer the last active layout.
+// Migrate an older nested CrimsonSkiesFix INI to the new game-root layout,
+// without rewriting/deleting the player's original file.
 fn previous_ini(exe:&Path)->Option<PathBuf> {
-    [exe.join("CrimsonFix").join("CrimsonFix.ini"),
+    [exe.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini"),
+     exe.join("CrimsonFix").join("CrimsonFix.ini"),
      exe.join("CrimsonFix.ini")]
         .into_iter().find(|p|regular_file(p))
 }
@@ -414,17 +418,32 @@ fn dll_directory()->Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
 }
 
+fn log_directory()->Option<PathBuf> {
+    let dll_dir=dll_directory()?;
+    // Standalone layout: launcher sits immediately above game folder.
+    // Direct DLL installations continue writing beside ddraw.dll.
+    if dll_dir.file_name().map(|s|s.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"))
+        .unwrap_or(false) {
+        if let Some(parent)=dll_dir.parent() {
+            if safe_directory(parent,false) && regular_file(&parent.join("CrimsonSkiesFix.exe")) {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+    Some(dll_dir)
+}
+
 pub fn log_path()->Option<PathBuf> {
-    // Same directory as ddraw.dll. Do not modify logs from earlier releases.
-    let path=dll_directory()?.join("CrimsonSkiesFix.log");
+    // Share the standalone launcher's root log when it is present.
+    let path=log_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
 }
 
 pub fn crash_blt_trace_path()->Option<PathBuf> {
-    // Separate, bounded rolling trace, always beside the loaded proxy DLL.
+    // Keep the optional rolling crash trace beside the main log.
     // Do not overwrite or follow arbitrary preexisting symlinks.
-    let path=dll_directory()?.join("CrimsonSkiesFix-BltTrace.log");
+    let path=log_directory()?.join("CrimsonSkiesFix-BltTrace.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
 }
