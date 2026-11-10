@@ -64,6 +64,8 @@ impl Digest {
                 let block=self.pending;
                 self.block(&block);
                 self.used=0;
+            } else {
+                return; // Pending partial block cannot be discarded.
             }
         }
         while bytes.len()>=64 {
@@ -103,6 +105,9 @@ mod tests {
         let mut digest=Digest::new();
         for chunk in bytes.chunks(137) {digest.update(chunk);}
         assert_eq!(digest.finish(),"cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+        let mut tiny=Digest::new();
+        for byte in b"abc" { tiny.update(&[*byte]); }
+        assert_eq!(tiny.finish(),hex(b"abc"));
         let mut empty=Digest::new();
         empty.update(&[]);
         assert_eq!(empty.finish(),hex(b""));
