@@ -199,7 +199,27 @@ fn deploy_proxy(game: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+// Only migrate known files from a previous nested proxy configuration.
+// Never silently discard unknown content from that directory.
+fn recognized_old_config(from: &Path) -> Result<(), String> {
+    if !directory(from) { return Err("unsafe old CrimsonSkiesFix directory".into()); }
+    for entry in fs::read_dir(from).map_err(error)? {
+        let entry = entry.map_err(error)?;
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        let known = matches!(name.as_str(),
+            "crimsonskiesfix.ini" | "crimsonskiesfix.ini.example" |
+            "readme.md" | "license" | "build-info.txt");
+        if !known || !regular(&entry.path()) {
+            return Err(format!(
+                "unknown content in previous CrimsonSkiesFix subdirectory: {}; refusing to discard it",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path, root: bool) -> Result<(), String> {
     if !directory(from) {
         return Err(format!("source is not a real directory: {}", from.display()));
     }
@@ -212,7 +232,11 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
         if kind.is_symlink() {
             return Err(format!("refusing source link: {}", src.display()));
         } else if kind.is_dir() {
-            copy_tree(&src, &dst)?;
+            if root && entry.file_name().to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix") {
+                recognized_old_config(&src)?;
+                continue;
+            }
+            copy_tree(&src, &dst, false)?;
         } else if kind.is_file() {
             fs::copy(&src, &dst).map_err(error)?;
             // The original CD may mark files read-only; the GOS overlay needs
@@ -248,7 +272,16 @@ fn install_from(source: &Path, dest: &Path) -> Result<(), String> {
     println!("Importing existing game files into {}...", dest.display());
     // Failed copies leave staging for manual inspection; never expose an
     // incomplete tree under the finished game directory.
-    copy_tree(source, &staging)?;
+    copy_tree(source, &staging, true)?;
+    // Preserve the previous active INI while avoiding a second nested folder.
+    let old_ini = source.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini");
+    let root_ini = staging.join("CrimsonSkiesFix.ini");
+    if regular(&old_ini) && !any_entry(&root_ini) {
+        fs::copy(&old_ini, &root_ini).map_err(error)?;
+        let mut permissions = fs::metadata(&root_ini).map_err(error)?.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&root_ini, permissions).map_err(error)?;
+    }
     validated_game_exe(&staging)?;
     deploy_proxy(&staging)?;
     deploy_documentation(&staging)?;
@@ -366,5 +399,19 @@ mod tests {
     fn embedded_proxy_present() {
         assert!(!BUNDLED_DDRAW.is_empty());
         assert_eq!(sha256::hex(BUNDLED_DDRAW).len(), 64);
+    }
+    #[test]
+    fn old_nested_configuration_is_only_imported_when_known() {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "crimsonskiesfix-flat-layout-{}-{id}", std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("CrimsonSkiesFix.ini"), "[Debug]\\nLog=1\\n").unwrap();
+        assert!(recognized_old_config(&dir).is_ok());
+        fs::write(dir.join("user-save.dat"), "save data").unwrap();
+        assert!(recognized_old_config(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

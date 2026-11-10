@@ -805,6 +805,17 @@ mod persistent_ini_tests {
         fs::remove_dir_all(&root).unwrap();
     }
     #[test]
+    fn legacy_nested_ini_is_migrated_preferentially() {
+        let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!("CrimsonSkiesFix-nested-{}-{id}",std::process::id()));
+        let old=root.join("CrimsonSkiesFix");
+        fs::create_dir_all(&old).unwrap();
+        let prior=old.join("CrimsonSkiesFix.ini");
+        fs::write(&prior,"[Debug]\\nLog=1\\n").unwrap();
+        assert_eq!(previous_ini(&root),Some(prior));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn creates_default_ini_only_once_without_overwriting_edits() {
         let unique=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!("CrimsonSkiesFix-ini-test-{}-{unique}",std::process::id()));
