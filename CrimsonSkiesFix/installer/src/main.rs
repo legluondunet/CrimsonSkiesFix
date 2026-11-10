@@ -360,7 +360,7 @@ fn run() -> Result<i32, String> {
             Err(why)=>format!("CrimsonSkiesFix CD INSPECT v1\nINSPECT_RESULT=ERROR\nERROR={why}\n"),
         };
         fs::write(&log,text).map_err(error)?;
-        match report {
+        return match report {
             Ok(content)=>{
                 let count=content.lines().find(|line|line.starts_with("FilesTotal="))
                     .unwrap_or("FilesTotal=UNKNOWN");
@@ -368,7 +368,7 @@ fn run() -> Result<i32, String> {
                 Ok(0)
             }
             Err(why)=>Err(format!("{why}; details: {}",log.display())),
-        }
+        };
     } else if args.len() == 1 && args[0] == "--verify" {
         verify(&game)?;
         println!("Verified: original game EXE and bundled DirectDraw patch.");
