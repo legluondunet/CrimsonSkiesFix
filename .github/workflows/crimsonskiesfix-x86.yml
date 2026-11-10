@@ -205,3 +205,70 @@ jobs:
           python3 CrimsonSkiesFix/tools/verify_ddraw_exports.py \
             --dll candidate/ddraw.dll \
             --definitions CrimsonSkiesFix/src/ddraw_exports.def
+
+
+  installer-windows-x86:
+    name: standalone-installer
+    needs: [windows-x86, verify-downloaded-artifact]
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}\CrimsonSkiesFix\installer-input\ddraw.dll
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Download the verified DLL artifact to embed
+        uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
+          path: CrimsonSkiesFix/installer-input
+      - name: Install Windows x86 Rust target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Run independent launcher tests (x86)
+        run: cargo test --manifest-path installer/Cargo.toml --target i686-pc-windows-msvc
+      - name: Build single executable containing the exact verified ddraw.dll
+        run: cargo build --manifest-path installer/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Check PE32, run CLI smoke and check package
+        shell: pwsh
+        run: |
+          $exe = 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          if (!(Test-Path $exe)) { throw 'Standalone installer not produced' }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw '--help failed' }
+          $version = & $exe --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) {
+            throw 'Standalone launcher version/source SHA mismatch'
+          }
+          & $exe --verify
+          if ($LASTEXITCODE -ne 2) { throw 'Missing installed game must be refused' }
+          New-Item -ItemType Directory -Force 'installer-smoke/Crimson Skies' | Out-Null
+          [IO.File]::WriteAllText(
+            (Join-Path (Resolve-Path 'installer-smoke/Crimson Skies') 'CRIMSON.EXE'),
+            'UNSUPPORTED GAME', [Text.Encoding]::ASCII)
+          Copy-Item $exe 'installer-smoke/CrimsonSkiesFix.exe'
+          & 'installer-smoke/CrimsonSkiesFix.exe'
+          if ($LASTEXITCODE -ne 2) { throw 'Unverified executable must be rejected' }
+          if (Test-Path 'installer-smoke/CrimsonSkiesFix') {
+            throw 'Rejected original must never create an installed game'
+          }
+          New-Item -ItemType Directory -Force 'installer-dist' | Out-Null
+          Copy-Item $exe 'installer-dist/CrimsonSkiesFix.exe'
+          if (@(Get-ChildItem 'installer-dist' -File).Count -ne 1) {
+            throw 'Standalone installer package must contain exactly one EXE'
+          }
+      - name: Upload standalone launcher for owner testing (experimental)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL
+          path: CrimsonSkiesFix/installer-dist/CrimsonSkiesFix.exe
+          if-no-files-found: error
+          retention-days: 30

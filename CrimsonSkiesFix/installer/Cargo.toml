@@ -1,0 +1,15 @@
+[package]
+name = "crimsonskiesfix-launcher"
+version = "0.1.90"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Standalone Crimson Skies installer, verifier and launcher"
+
+[[bin]]
+name = "CrimsonSkiesFix"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
