@@ -236,6 +236,7 @@ jobs:
       - name: Check PE32, run CLI smoke and check package
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $exe = 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
           if (!(Test-Path $exe)) { throw 'Standalone installer not produced' }
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path $exe))
@@ -265,6 +266,7 @@ jobs:
           if (@(Get-ChildItem 'installer-dist' -File).Count -ne 1) {
             throw 'Standalone installer package must contain exactly one EXE'
           }
+          $global:LASTEXITCODE = 0
       - name: Upload standalone launcher for owner testing (experimental)
         uses: actions/upload-artifact@v4
         with:
