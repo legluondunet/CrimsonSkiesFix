@@ -422,7 +422,7 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
-    let finalized=chapter_cabs::finalize_without_archives(&stage)?;
+    let finalized=chapter_cabs::finalize_without_archives(&stage,extracted.edition)?;
     if finalized.members!=chapters.members ||
         finalized.payload_bytes!=chapters.payload_bytes ||
         finalized.zbd_files!=chapters.zbd_files {

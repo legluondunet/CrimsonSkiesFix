@@ -292,7 +292,26 @@ const RETAIL_ZBD_NAMES:[(&str,&str);40]=[
     ("C5/RT6C9C~1.ZBD", "C5/rtexture8.zbd"),
 ];
 
-fn canonical_chapter_name(source:&str,relative:&Path)->Result<PathBuf,String>{
+// The US/Europe original SETUP.EXE has five *different source aliases*
+// in C2B, even though its retail destination filenames exactly match DE/FR.
+// SHA-256 04e26ce391bb9f2a5d81518588aa0f7d553a95c5202a742d58af54b4070a89df.
+// The German and French setup tables have the same C2B aliases.
+const US_C2B_NAMES:[(&str,&str);5]=[
+    ("C2B/RTEXTU~2.ZBD","C2B/rtexture2.zbd"),
+    ("C2B/RTEXTU~3.ZBD","C2B/rtexture4.zbd"),
+    ("C2B/RTEXTU~4.ZBD","C2B/rtexture6.zbd"),
+    ("C2B/RT6C9C~1.ZBD","C2B/rtexture8.zbd"),
+    ("C2B/RTEXTU~1.ZBD","C2B/rtexture9.zbd"),
+];
+
+fn valid_retail_edition(edition:&str)->bool{
+    matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DE_001"|"C_SKIES_DISC_001")
+}
+
+fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathBuf,String>{
+    if !valid_retail_edition(edition){
+        return Err(format!("unknown original setup edition: {edition}"));
+    }
     if !CHAPTER_CABS.contains(&source) {
         return Err(format!("unsupported chapter cabinet for name mapping: {source}"));
     }
@@ -301,8 +320,11 @@ fn canonical_chapter_name(source:&str,relative:&Path)->Result<PathBuf,String>{
     if !original.split('/').next().is_some_and(|c|c.eq_ignore_ascii_case(source_chapter)){
         return Err(format!("CAB member outside expected chapter {source}: {original}"));
     }
-    let matched=RETAIL_ZBD_NAMES.iter().find(|(short,_)|
-        short.eq_ignore_ascii_case(&original));
+    let matched=if source=="C2B.CAB" && edition=="C_SKIES_DISC_001"{
+        US_C2B_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
+    } else {
+        RETAIL_ZBD_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
+    };
     match matched {
         Some((_,destination))=>member_path(destination),
         None if possible_short_alias(relative)=>Err(format!(
@@ -346,7 +368,11 @@ fn possible_short_alias(path:&Path)->bool{
 /// and carry its manifest checksum into the installation receipt.
 /// The final SHA check detects accidental corruption; this is not a signature
 /// against intentional rewriting of both manifests by an attacker.
-pub fn finalize_without_archives(game:&Path)->Result<Finalized,String>{
+pub fn finalize_without_archives(game:&Path,edition:&str)->Result<Finalized,String>{
+    // Never apply a language-specific short-name map to an unidentified CD.
+    if !valid_retail_edition(edition){
+        return Err(format!("unsupported original setup edition: {edition}"));
+    }
     let expansion=verify_expanded(game)?;
     let zbd=game.join("ZBD");
     let mut listed=BTreeMap::<String,(String,String,u64,String)>::new();
@@ -368,7 +394,7 @@ pub fn finalize_without_archives(game:&Path)->Result<Finalized,String>{
                 let expected=u64::from(entry.uncompressed_size());
                 if bytes!=expected {return Err(format!("chapter member size changed: {original}"));}
                 let hash=hash_file(&target)?;
-                let canonical=canonical_chapter_name(source,&relative)?;
+                let canonical=canonical_chapter_name(source,&relative,edition)?;
                 if canonical!=relative{
                     let renamed=zbd.join(&canonical);
                     if fs::symlink_metadata(&renamed).is_ok() {
@@ -688,17 +714,37 @@ mod tests{
             assert!(to.insert(dst.to_ascii_lowercase()));
             let source=src.split('/').next().unwrap();
             let cab=format!("{source}.CAB");
-            let mapped=canonical_chapter_name(&cab,Path::new(src)).unwrap();
+            let mapped=canonical_chapter_name(&cab,Path::new(src),"C_SKIES_DE_001").unwrap();
             assert_eq!(mapped,PathBuf::from(dst));
         }
-        assert_eq!(canonical_chapter_name("C1.CAB",Path::new("C1/RTEXTU~1.ZBD")).unwrap(),
+        assert_eq!(canonical_chapter_name("C1.CAB",Path::new("C1/RTEXTU~1.ZBD"),"C_SKIES_DE_001").unwrap(),
             PathBuf::from("C1/rtexture15.zbd"));
-        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT60AC~1.ZBD")).unwrap(),
+        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT60AC~1.ZBD"),"C_SKIES_FR_001").unwrap(),
             PathBuf::from("C2B/rtexture9.zbd"));
-        assert!(canonical_chapter_name("C1.CAB",Path::new("C1/UNKNOWN~1.ZBD")).is_err());
-        assert!(canonical_chapter_name("C3.CAB",Path::new("C2B/RTEXTU~1.ZBD")).is_err());
-        assert_eq!(canonical_chapter_name("C4.CAB",Path::new("C4/IA1/mis_anim.zbd")).unwrap(),
+        assert!(canonical_chapter_name("C1.CAB",Path::new("C1/UNKNOWN~1.ZBD"),"C_SKIES_DE_001").is_err());
+        assert!(canonical_chapter_name("C3.CAB",Path::new("C2B/RTEXTU~1.ZBD"),"C_SKIES_FR_001").is_err());
+        assert_eq!(canonical_chapter_name("C4.CAB",Path::new("C4/IA1/mis_anim.zbd"),"C_SKIES_DISC_001").unwrap(),
             PathBuf::from("C4/IA1/mis_anim.zbd"));
+    }
+    #[test]
+    fn us_c2b_uses_different_sources_than_french_and_german_setups(){
+        assert_eq!(US_C2B_NAMES.len(),5);
+        let mut canonical_targets=HashSet::new();
+        for (source,target) in US_C2B_NAMES {
+            assert!(canonical_targets.insert(target.to_ascii_lowercase()));
+            assert_eq!(canonical_chapter_name("C2B.CAB",Path::new(source),
+                "C_SKIES_DISC_001").unwrap(),PathBuf::from(target));
+        }
+        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
+            "C_SKIES_FR_001").unwrap(),PathBuf::from("C2B/rtexture2.zbd"));
+        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
+            "C_SKIES_DE_001").unwrap(),PathBuf::from("C2B/rtexture2.zbd"));
+        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
+            "C_SKIES_DISC_001").unwrap(),PathBuf::from("C2B/rtexture9.zbd"));
+        assert!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT60AC~1.ZBD"),
+            "C_SKIES_DISC_001").is_err());
+        assert!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
+            "UNKNOWN").is_err());
     }
     #[test]
     fn compressed_8_3_alias_uses_original_retail_target_and_then_prunes_cab(){
@@ -723,7 +769,7 @@ mod tests{
         assert_eq!(expand(&root).unwrap().members,8);
         assert!(zbd.join("C1/RTEXTU~1.ZBD").is_file());
         assert!(zbd.join("C2B/RT60AC~1.ZBD").is_file());
-        let final_install=finalize_without_archives(&root).unwrap();
+        let final_install=finalize_without_archives(&root,"C_SKIES_DE_001").unwrap();
         assert_eq!(final_install.short_name_candidates,0);
         assert!(zbd.join("C1/rtexture15.zbd").is_file());
         assert!(zbd.join("C2B/rtexture9.zbd").is_file());
@@ -742,6 +788,35 @@ mod tests{
         assert!(files_in("C2B").iter().any(|n|n=="rtexture9.zbd"));
         for name in CHAPTER_CABS {assert!(!zbd.join(name).exists());}
         assert_eq!(verify_without_archives(&root,&final_install.manifest_sha).unwrap().members,8);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn usa_c2b_archive_renames_different_alias_to_retail_rtexture9(){
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!("crimson-us-setup-map-{}-{id}",std::process::id()));
+        let zbd=root.join("ZBD");
+        fs::create_dir_all(&zbd).unwrap();
+        for (n,name) in CHAPTER_CABS.iter().enumerate(){
+            let mut builder=cab::CabinetBuilder::new();
+            let chapter=name.trim_end_matches(".CAB");
+            let member=if n==4 {"C2B/RTEXTU~1.ZBD".to_owned()}
+                else {format!("{chapter}/MEMBER{n}.ZBD")};
+            builder.add_folder(cab::CompressionType::MsZip).add_file(&member);
+            let mut writer=builder.build(File::create(zbd.join(name)).unwrap()).unwrap();
+            while let Some(mut entry)=writer.next_file().unwrap(){
+                entry.write_all(format!("real-{name}").as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        assert_eq!(expand(&root).unwrap().members,8);
+        let finalized=finalize_without_archives(&root,"C_SKIES_DISC_001").unwrap();
+        let names=fs::read_dir(zbd.join("C2B")).unwrap()
+            .map(|e|e.unwrap().file_name().to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        assert_eq!(names,vec!["rtexture9.zbd"]);
+        for cab in CHAPTER_CABS {assert!(!zbd.join(cab).exists());}
+        assert_eq!(verify_without_archives(&root,&finalized.manifest_sha).unwrap().members,8);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -809,7 +884,7 @@ mod tests{
         }
         let expanded=expand(&base).unwrap();
         assert_eq!(expanded.members,CHAPTER_CABS.len());
-        let finalized=finalize_without_archives(&base).unwrap();
+        let finalized=finalize_without_archives(&base,"C_SKIES_DE_001").unwrap();
         for name in CHAPTER_CABS{
             assert!(!zbd.join(name).exists());
         }
