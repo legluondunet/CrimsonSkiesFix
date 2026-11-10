@@ -161,8 +161,11 @@ The audit also works on verified installations produced by previous builds
 that **still contain the eight CABs**, so these installations need not be
 deleted or reinstalled merely to gather filename evidence.
 
-This compares extracted and reference files **by SHA-256**, reports only
-unambiguous candidate mappings, and never renames or modifies existing
+The audit lists **all CAB member filenames** (not just names containing
+`~`) and highlights likely DOS aliases. When a genuine installed
+reference is supplied, it compares filenames **by SHA-256** and reports
+only unambiguous differing-name candidates, so truncated names without
+a tilde can also be discovered. It never renames or modifies existing
 files. Exact, reviewed alias→canonical-name entries will be incorporated
 into the installer's extraction pipeline. Until those are available,
 **automatic long-filename restoration is not yet considered resolved**.

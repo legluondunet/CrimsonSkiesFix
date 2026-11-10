@@ -473,6 +473,8 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
         let fields=line.split('\t').collect::<Vec<_>>();
         if fields.len()!=4 {return Err("invalid installed chapter manifest entry".into());}
         let relative=member_path(fields[1])?;
+        out.push_str(&format!("ChapterMember={}\t{}\t{}\t{}\n",
+            fields[0],fields[1],fields[2],fields[3]));
         if possible_short_alias(&relative){
             candidates+=1;
             out.push_str(&format!("AliasCandidate={}\t{}\t{}\t{}\n",
@@ -499,12 +501,12 @@ fn audit_raw_short_names(raw:&str,reference:Option<&Path>)->Result<String,String
         for line in raw.lines().skip(1) {
             let fields=line.split('\t').collect::<Vec<_>>();
             let old=fields[1];
-            if !possible_short_alias(Path::new(old)){continue;}
             match hashes.get(fields[3]) {
-                Some(names) if names.len()==1 => {
+                Some(names) if names.len()==1 && !names[0].eq_ignore_ascii_case(old) => {
                     out.push_str(&format!("MappingCandidate={}\t{}\t{}\n",
                         old,names[0],fields[3]));
                 }
+                Some(names) if names.len()==1 => {},
                 Some(names)=>out.push_str(&format!(
                     "AmbiguousAlias={}\t{} matches for {}\n",old,names.len(),fields[3])),
                 None=>out.push_str(&format!("UnmatchedAlias={}\t{}\n",old,fields[3])),
