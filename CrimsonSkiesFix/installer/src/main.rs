@@ -318,6 +318,8 @@ fn usage() {
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
+         CrimsonSkiesFix.exe --extract-cd         extract recognized CD GAME/ to a staging folder\n\
+         CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
          CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
          CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
          CrimsonSkiesFix.exe --version\n\
@@ -343,6 +345,8 @@ fn run() -> Result<i32, String> {
         && !(args.len() == 2 && args[0] == "--import")
         && !(args.len() == 1 && args[0] == "--inspect-cd")
         && !(args.len() == 2 && args[0] == "--inspect-cd")
+        && !(args.len() == 1 && args[0] == "--extract-cd")
+        && !(args.len() == 2 && args[0] == "--extract-cd")
         && !(args.len() == 1 && args[0] == "--inspect-update")
         && !(args.len() == 2 && args[0] == "--inspect-update") {
         usage();
@@ -351,6 +355,37 @@ fn run() -> Result<i32, String> {
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
     let game = base.join("CrimsonSkiesFix");
+    if !args.is_empty() && args[0] == "--extract-cd" {
+        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
+        let staging=base.join("CrimsonSkiesFix.extract-test");
+        // This command is a non-destructive extraction test, NOT an install:
+        // never publish under CrimsonSkiesFix/ or execute the protected EXE.
+        let result=disc_inspect::extract_game(base,selected.as_deref(),&staging);
+        let log=base.join("CrimsonSkiesFix.log");
+        if any_entry(&log) && !regular(&log) {
+            return Err("unsafe CrimsonSkiesFix.log: refusing a non-file log target".into());
+        }
+        let report=match &result {
+            Ok(r)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
+                Edition={}\nFilesExtracted={}\nBytesExtracted={}\n\
+                Destination={}\nProtectedGameExe=NOT_APPROVED\n\
+                InstallPublished=NO_STAGING_ONLY\nEXTRACT_RESULT=COMPLETE\n",
+                r.edition,r.file_count,r.bytes,staging.display()),
+            Err(why)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
+                Destination={}\nInstallPublished=NO_STAGING_ONLY\n\
+                EXTRACT_RESULT=ERROR\nERROR={why}\n",staging.display()),
+        };
+        fs::write(&log,report).map_err(error)?;
+        return match result {
+            Ok(r)=>{
+                println!("Verified extraction of {} files ({} bytes) for {} into {}.",
+                    r.file_count,r.bytes,r.edition,staging.display());
+                println!("The original protected game is NOT launched. See CrimsonSkiesFix.log.");
+                Ok(0)
+            }
+            Err(why)=>Err(format!("{why}; see {}",log.display())),
+        };
+    }
     if !args.is_empty() && args[0] == "--inspect-update" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))} else {None};
         let report=update102::inspect(base,selected.as_deref());

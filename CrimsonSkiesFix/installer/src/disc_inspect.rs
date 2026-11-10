@@ -5,8 +5,8 @@ use crate::sha256;
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::OsStr,
-    fs::{self,File},
-    io::{Read,Seek,SeekFrom},
+    fs::{self,File,OpenOptions},
+    io::{Read,Write,Seek,SeekFrom},
     path::{Component,Path,PathBuf},
 };
 
@@ -324,7 +324,7 @@ fn parse_volume(source:&ImageSource,file:&mut File)->Result<Volume,String> {
 
 #[derive(Clone)]
 struct FileRecord {
-    path:String,size:u32,sha:String,status:String,
+    path:String,size:u32,sha:String,status:String,extent:u32,
 }
 struct Walker<'a> {
     image:&'a ImageSource,
@@ -392,7 +392,7 @@ impl Walker<'_> {
                     }
                     (hash.finish(),"OK".to_owned())
                 };
-                self.results.insert(key,FileRecord{path,size:item.size,sha,status});
+                self.results.insert(key,FileRecord{path,size:item.size,sha,status,extent:item.extent});
             }
         }
         Ok(())
@@ -422,6 +422,84 @@ fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
         seen+=1;
     }
     seen>0 && seen==files.len()
+}
+
+/// Prepared CD-game payload; a protected original CD executable is *not* a
+/// valid game executable until the separate strict 1.02 gate is satisfied.
+pub struct Extraction {
+    pub edition:&'static str,
+    pub file_count:usize,
+    pub bytes:u64,
+}
+
+fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->Result<(),String> {
+    if rec.status!="OK" {return Err(format!("cannot extract suspect file: {}",rec.path));}
+    let parent=path.parent().ok_or("no game file parent")?;
+    fs::create_dir_all(parent).map_err(err)?;
+    let mut out=OpenOptions::new().write(true).create_new(true).open(path).map_err(err)?;
+    let mut digest=sha256::Digest::new();
+    let mut remaining=rec.size as usize;
+    let mut sector=rec.extent as u64;
+    while remaining>0 {
+        let bytes=source.read_sector(disc,sector)?;
+        let n=remaining.min(USER_SECTOR);
+        out.write_all(&bytes[..n]).map_err(err)?;
+        digest.update(&bytes[..n]);
+        remaining-=n;sector+=1;
+    }
+    out.sync_all().map_err(err)?;
+    let sha=digest.finish();
+    if sha!=rec.sha || fs::metadata(path).map_err(err)?.len()!=rec.size as u64 {
+        return Err(format!("CD changed during extraction or copy failed: {}",rec.path));
+    }
+    Ok(())
+}
+
+/// Extract files beneath GAME/ to a new directory, with per-file SHA-256
+/// checked against a previously *complete* recognized original-CD manifest.
+/// No image bytes or whole-image metadata are used in edition recognition.
+pub fn extract_game(base:&Path,specified:Option<&Path>,dest:&Path)->Result<Extraction,String> {
+    if fs::symlink_metadata(dest).is_ok() {
+        return Err(format!("destination exists; refusing to overwrite: {}",dest.display()));
+    }
+    let media=select(base,specified)?;
+    let image=if has_ext(&media,"cue"){open_cue(&media)?} else {open_iso(&media)?};
+    let mut file=File::open(&image.file).map_err(err)?;
+    let volume=parse_volume(&image,&mut file)?;
+    let mut walker=Walker{image:&image,file,joliet:volume.filename_source=="Joliet",
+        results:BTreeMap::new(),visited:HashSet::new()};
+    walker.walk(volume.root.extent,volume.root.size,"",0)?;
+    // Fail *before* creating a directory unless the full known edition matches.
+    let matches=PROFILES.iter().filter(|(_,profile)|matches_profile(&walker.results,profile))
+        .map(|(name,_)|*name).collect::<Vec<_>>();
+    let [edition]=matches.as_slice() else {
+        return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
+    };
+    let files=walker.results.values().filter(|entry|entry.path.starts_with("GAME/"))
+        .collect::<Vec<_>>();
+    if files.is_empty() || files.len()>MAX_FILES {
+        return Err("recognized CD contains no GAME/ files".into());
+    }
+    let bytes=files.iter().map(|r|r.size as u64).sum();
+    if bytes>2_000_000_000 {
+        return Err("recognized CD extraction exceeds the safe 2 GB limit".into());
+    }
+    fs::create_dir(dest).map_err(err)?;
+    let mut disc=File::open(&image.file).map_err(err)?;
+    for (index,rec) in files.iter().enumerate() {
+        let relative=rec.path.strip_prefix("GAME/").ok_or("not a game file")?;
+        if relative.is_empty() {return Err("empty game file path".into());}
+        let relative_path=Path::new(relative);
+        if !relative_path.components().all(|c|matches!(c,Component::Normal(_))) {
+            return Err(format!("unsafe game asset path: {}",rec.path));
+        }
+        let target=dest.join(relative_path);
+        extract_one(&image,&mut disc,rec,&target)?;
+        if (index+1)%10==0 || index+1==files.len() {
+            println!("Extracted {}/{} game files...",index+1,files.len());
+        }
+    }
+    Ok(Extraction{edition:*edition,file_count:files.len(),bytes})
 }
 
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
@@ -539,7 +617,7 @@ mod tests {
                 let size=cols[1].parse::<u32>().unwrap();
                 let sha=cols[2].to_owned();
                 assert!(files.insert(path.to_lowercase(),FileRecord {
-                    path,size,sha,status:"OK".to_owned()
+                    path,size,sha,status:"OK".to_owned(),extent:0
                 }).is_none());
             }
             assert_eq!(files.len(),count);
@@ -551,6 +629,28 @@ mod tests {
             files.remove("game/crimson.exe");
             assert!(!matches_profile(&files,profile));
         }
+    }
+    #[test]
+    fn extracted_bytes_match_source_and_reject_replacement() {
+        let dir=workdir();
+        let iso_file=dir.join("disc.iso");
+        fs::write(&iso_file,make_iso()).unwrap();
+        let image=open_iso(&iso_file).unwrap();
+        let mut src=File::open(&iso_file).unwrap();
+        let output=dir.join("output").join("CRIMSON.EXE");
+        let r=FileRecord{
+            path:"GAME/CRIMSON.EXE".to_owned(),size:5,extent:20,
+            sha:sha256::hex(b"hello"),status:"OK".to_owned()
+        };
+        extract_one(&image,&mut src,&r,&output).unwrap();
+        assert_eq!(fs::read(&output).unwrap(),b"hello");
+        assert!(extract_one(&image,&mut src,&r,&output).is_err());
+        let mut changed=r.clone();
+        changed.sha="0".repeat(64);
+        assert!(extract_one(&image,&mut src,&changed,&dir.join("invalid")).is_err());
+        assert!(extract_game(&dir,Some(&iso_file),&dir.join("rejected")).is_err());
+        assert!(!dir.join("rejected").exists());
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn inspect_internal_file_hash_not_iso_image_hash() {
