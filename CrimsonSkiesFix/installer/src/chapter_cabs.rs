@@ -722,7 +722,10 @@ mod tests{
             assert!(to.insert(dst.to_ascii_lowercase()));
             let source=src.split('/').next().unwrap();
             let cab=format!("{source}.CAB");
-            let mapped=canonical_chapter_name(&cab,Path::new(src),"C_SKIES_DE_001").unwrap();
+            // The shared table's C2B entries are from the FR CAB source;
+            // USA and DE have an identical but different C2B member table.
+            let edition=if source=="C2B"{"C_SKIES_FR_001"}else{"C_SKIES_DE_001"};
+            let mapped=canonical_chapter_name(&cab,Path::new(src),edition).unwrap();
             assert_eq!(mapped,PathBuf::from(dst));
         }
         assert_eq!(canonical_chapter_name("C1.CAB",Path::new("C1/RTEXTU~1.ZBD"),"C_SKIES_DE_001").unwrap(),
