@@ -400,6 +400,37 @@ pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
     let end = video.offset.checked_add(video.compressed)?;
     Some((video.offset as u64, end as u64))
 }
+/// Re-encode a *verified* script to exactly the stored member size.
+/// zlib allows empty non-final DEFLATE blocks of 5 or 6 bytes; this
+/// preserves all neighboring archive member offsets on every edition.
+/// If this exact-size representation is impossible, fail closed.
+fn encode_exact_zlib(script:&[u8], target_size:usize)->Option<Vec<u8>>{
+    for level in 1..=9{
+        let mut writer=ZlibEncoder::new(Vec::new(),Compression::new(level));
+        writer.write_all(script).ok()?;
+        let packed=writer.finish().ok()?;
+        if packed.len()<6 || packed.len()>target_size{continue;}
+        let padding=target_size-packed.len();
+        if padding>512{continue;}
+        let six=padding%5;
+        if six*6>padding{continue;}
+        let five=(padding-six*6)/5;
+        let mut result=Vec::with_capacity(target_size);
+        result.extend_from_slice(&packed[..2]);
+        for _ in 0..six{result.extend_from_slice(&[2,0,0,0,255,255]);}
+        for _ in 0..five{result.extend_from_slice(&[0,0,0,255,255]);}
+        result.extend_from_slice(&packed[2..]);
+        if result.len()!=target_size{continue;}
+        let mut checked=Vec::new();
+        if ZlibDecoder::new(result.as_slice())
+          .take(script.len() as u64+1).read_to_end(&mut checked).is_ok()
+          && checked==script {
+            return Some(result);
+        }
+    }
+    None
+}
+
 /// Exact-identity, memory-only alternative when GameOS does not mount
 /// the installed CRIMPTCH.ROF. No original archive bytes are written.
 pub(crate) struct VirtualVideo {
@@ -452,45 +483,15 @@ pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
             return None;
         }
     }
-    // zlib permits empty non-final deflate blocks: a 5-byte stored block
-    // or a 6-byte fixed-Huffman EOB followed by an empty stored block.
-    // Every padding size >=20 is a combination of 5 and 6, allowing an
-    // exact-length zlib stream without trailing garbage or ROF relocation.
-    for level in 1..=9 {
-        let mut writer=ZlibEncoder::new(Vec::new(),Compression::new(level));
-        writer.write_all(&modified).ok()?;
-        let packed=writer.finish().ok()?;
-        if packed.len()<6 || packed.len()>original.compressed{continue;}
-        let padding=original.compressed-packed.len();
-        if padding>512{continue;}
-        let six=padding%5;
-        if six*6>padding{continue;}
-        let five=(padding-six*6)/5;
-        let mut replacement=Vec::with_capacity(original.compressed);
-        replacement.extend_from_slice(&packed[..2]);
-        for _ in 0..six{
-            // Empty fixed-Huffman block + empty stored block, both nonfinal.
-            replacement.extend_from_slice(&[2,0,0,0,255,255]);
-        }
-        for _ in 0..five{
-            replacement.extend_from_slice(&[0,0,0,255,255]);
-        }
-        replacement.extend_from_slice(&packed[2..]);
-        if replacement.len()!=original.compressed{continue;}
-        let mut decoded=Vec::new();
-        if ZlibDecoder::new(replacement.as_slice())
-           .take(VIDEO_MODIFIED_SIZE as u64+1)
-           .read_to_end(&mut decoded).is_err() || decoded!=modified{
-            continue;
-        }
-        return Some(VirtualVideo{
-            size_field_at:header.checked_add(4)? as u64,
-            data_at:original.offset as u64,
-            replacement,
-            expanded_size:VIDEO_MODIFIED_SIZE as u32,
-        });
-    }
-    None
+    // Preserve the member's exact compressed length regardless of locale:
+    // the parser's other offsets and the ReadFile byte count remain intact.
+    let replacement=encode_exact_zlib(&modified,original.compressed)?;
+    Some(VirtualVideo{
+        size_field_at:header.checked_add(4)? as u64,
+        data_at:original.offset as u64,
+        replacement,
+        expanded_size:VIDEO_MODIFIED_SIZE as u32,
+    })
 }
 
 /// Read-only diagnostics: locate the original VIDEO.SCRIPT member in a
@@ -715,6 +716,34 @@ mod tests {
     fn fixture_archive(air: &[u8], video: &[u8]) -> Vec<u8> {
         write_overlay(&Payload { name:"AIRFRAME.SCRIPT", expanded:air.len(),
             compressed_bytes:air.to_vec(), kind:0 },video).unwrap()
+    }
+    #[test]
+    fn parsed_member_descriptor_is_authentic_and_unambiguous(){
+        let raw=fixture_archive(b"old airframe",b"sample video");
+        let items=parse(&raw).unwrap();
+        assert_eq!(items.len(),2);
+        for item in items{
+            assert_eq!(u32_at(&raw,item.descriptor).unwrap(),item.offset);
+            assert_eq!(u32_at(&raw,item.descriptor+4).unwrap(),item.expanded);
+            assert_eq!(u32_at(&raw,item.descriptor+8).unwrap(),item.compressed);
+            assert_eq!(u32_at(&raw,item.descriptor+12).unwrap(),item.kind as usize);
+        }
+    }
+    #[test]
+    fn different_edition_zlib_member_lengths_keep_contents_exact(){
+        let script=b"VIDEO.SCRIPT locale-independent test payload".repeat(80);
+        let mut encoder=ZlibEncoder::new(Vec::new(),Compression::new(2));
+        encoder.write_all(&script).unwrap();
+        let baseline=encoder.finish().unwrap().len();
+        for extra in [25,31,37,43,49]{
+            let stream=encode_exact_zlib(&script,baseline+extra)
+                .expect("synthetic edition stored length should be representable");
+            assert_eq!(stream.len(),baseline+extra);
+            let mut actual=Vec::new();
+            ZlibDecoder::new(stream.as_slice()).read_to_end(&mut actual).unwrap();
+            assert_eq!(actual,script);
+        }
+        assert!(encode_exact_zlib(&script,baseline+1024).is_none());
     }
     #[test]
     fn rof_roundtrip_preserves_uncompressed_airframe_and_zlib_video() {
