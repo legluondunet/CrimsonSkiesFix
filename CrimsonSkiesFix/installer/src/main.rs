@@ -438,6 +438,7 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
             "image edition {} does not match selected test installation edition {}; staging retained for inspection",
             extracted.edition,expected_edition.unwrap()));
     }
+    println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
     // expand all eight chapter CABs with edition-specific long ZBD names
     // and delete the CABs only after full content verification.
@@ -448,7 +449,10 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
-    let finalized=chapter_cabs::finalize_without_archives(&stage,extracted.edition)?;
+    let finalized=chapter_cabs::finalize_without_archives(&stage,extracted.edition)
+        .map_err(|err|format!(
+            "chapter CAB source-to-destination mapping failed for authenticated edition {}: {err}",
+            extracted.edition))?;
     if finalized.members!=chapters.members ||
         finalized.payload_bytes!=chapters.payload_bytes ||
         finalized.zbd_files!=chapters.zbd_files {
