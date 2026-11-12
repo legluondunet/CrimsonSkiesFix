@@ -263,12 +263,21 @@ fn cfg()->Config {
             Some(win32::enable_native_system_dpi_experiment())
         }else{None};
         if parsed.log_enabled || parsed.experimental_windowed_adapter {
+            // The standalone installer writes this run's first section into
+            // CrimsonSkiesFix.log and starts the game with an explicit
+            // one-child handoff marker. Append only for that verified layout;
+            // direct/manual DLL installs still start a fresh game log.
+            let append_session=win32::append_to_launcher_session_log();
             if let Some(path)=win32::log_path() {
-                if let Ok(file)=OpenOptions::new().create(true).write(true).truncate(true).open(path) {
+                let mut options=OpenOptions::new();
+                options.create(true);
+                if append_session {options.append(true);} else {options.write(true).truncate(true);}
+                if let Ok(file)=options.open(path) {
                     let _=LOG.set(Mutex::new(file));
                 }
             }
             if LOG.get().is_some() {
+                if append_session {log("\n=== CrimsonSkiesFix GAME ===");}
                 log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
                 if let Some(ref status)=ini_dedup_status{log(status);}
                 if parsed.gos_video_lock==gos_video_lock::Mode::Off &&
