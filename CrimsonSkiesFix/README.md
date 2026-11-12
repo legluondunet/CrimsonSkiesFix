@@ -4,7 +4,7 @@
 
 CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes default-enabled, reversible GameOS (GOS) Video menu resource integration.
 
-**Status (12 November 2026): experimental standalone release candidate, not published.** The owner validated original **FR and DE disc installs**, repeat launch without re-extracting, and non-editable native Graphics/Resolution options under **GE-Proton11-12 / Wine 11.0** on Manjaro (1920×1080). The final German run also verified the managed GOS overlay on the subsequent launch and a clean game exit. USA/Europe edition matching and CAB-name mapping are implemented with authenticated original-file SHA-256 profiles, but no USA original disc is currently available for end-to-end gameplay testing. Earlier native Windows 11 gameplay used an opt-in profile on older code; the **current standalone installer and in-memory VIDEO.SCRIPT substitution are not yet validated in native Windows gameplay**. The 22 DirectDraw exports are verified in CI. See [current release scope](docs/release-preparation-2026-11-12.md).
+**Status (12 November 2026): experimental standalone release candidate, not published.** The owner validated original **FR and DE disc installs**, repeat launch without re-extracting, and non-editable native Graphics/Resolution options under **GE-Proton11-12 / Wine 11.0** on Manjaro (1920×1080). The final German run also verified the managed GOS overlay on the subsequent launch and a clean game exit. USA/Europe edition matching and CAB-name mapping are implemented with authenticated original-file SHA-256 profiles, but no USA original disc is currently available for end-to-end gameplay testing. Earlier native Windows 11 gameplay used an opt-in profile on older code; the **current standalone installer and in-memory VIDEO.SCRIPT substitution are not yet validated in native Windows gameplay**. The 22 DirectDraw exports are verified in CI. See [current release scope](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/release-preparation-2026-11-12.md).
 
 ## What it does
 
@@ -80,7 +80,7 @@ files are left untouched.
 **Owner end-to-end tests cover FR and DE under GE-Proton only.** USA/Europe remains hash-profiled and synthetically tested but is not currently available for real-disc validation. Native Windows tests of this exact build are outstanding. The existing manual DLL installation described below remains available. The original game, decrypted executable and protected installer are **never bundled**.
 
 Detailed behavior and testing checklist:
-[automatic installer workflow](docs/automatic-installer-workflow.md).
+[automatic installer workflow](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/automatic-installer-workflow.md).
 
 ## Installation
 
@@ -337,11 +337,11 @@ exception is evidence for a normal exit, not a guarantee that every runtime
 resource was freed. A nonzero status needs interpretation.
 
 The exact protocol and optional Windows 11 instructions are in
-[exit validation](docs/exit-validation-2026-11-04.md). A **real GE-Proton 11-12 gameplay session** on `0.1.90-f2b2ca42` has now been observed to end with `0` in Lutris/umu, with no unhandled exception reported; this successful session did **not** run the Python observer. Native Windows 11 game exit remains untested. Automated synthetic process tests do not replace actual gameplay verification.
+[exit validation](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/exit-validation-2026-11-04.md). A **real GE-Proton 11-12 gameplay session** on `0.1.90-f2b2ca42` has now been observed to end with `0` in Lutris/umu, with no unhandled exception reported; this successful session did **not** run the Python observer. Native Windows 11 game exit remains untested. Automated synthetic process tests do not replace actual gameplay verification.
 
 ## Local Windows x86 build without GitHub Actions
 
-**Manjaro alternative:** [build the exact Windows x86 MSVC DLL from Linux](docs/manjaro-cross-build.md)
+**Manjaro alternative:** [build the exact Windows x86 MSVC DLL from Linux](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/manjaro-cross-build.md)
 with `tools/build_linux_windows_x86.sh` and `cargo-xwin`. The script verifies
 all 22 native DDRAW exports and packages a source-hashed candidate without
 installing Visual Studio or modifying the native Windows 11 test machine.
@@ -350,7 +350,7 @@ Successful cross-compilation alone is **not** Windows gameplay validation.
 As of 7 November 2026, the owner's **private-repository** GitHub Actions allowance is exhausted, while public SpiderMan2k1Fix still runs free standard hosted runners:
 the jobs are blocked **before any compilation step**. Do not interpret the
 failed Actions status as evidence that the proposed Rust 22-export fix failed
-to compile. Use the [local Windows build and acceptance protocol](docs/windows-local-build.md)
+to compile. Use the [local Windows build and acceptance protocol](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/windows-local-build.md)
 on a Windows MSVC developer environment. The source includes
 `tools/build_windows_local.ps1`, which builds the 32-bit DLL, runs tests and
 both 22-export name/ordinal and loader checks, and creates a hash/provenance
@@ -368,9 +368,9 @@ cargo build --locked --release --target i686-pc-windows-msvc
 
 The repository commits `Cargo.lock` to pin the tested `flate2` dependency tree.
 
-The [x86 workflow](../.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type and all 22 canonical DirectDraw names/ordinals, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is an internal experimental DirectDraw diagnostic; its build and tests remain part of CI, but it is no longer published as an artifact and must not be placed in the game directory.
+The [x86 workflow](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/.github/workflows/crimsonskiesfix-x86.yml) builds `ddraw.dll`, verifies the PE machine type and all 22 canonical DirectDraw names/ordinals, runs Rust and safe ROF/Python synthetic tests, performs a native Windows x86 DLL load/export/unload smoke check, and packages the game layout with the GPL license and build provenance manifest. `windowed_ddraw_probe.exe` is an internal experimental DirectDraw diagnostic; its build and tests remain part of CI, but it is no longer published as an artifact and must not be placed in the game directory.
 
-For original GameOS Video UI research and owner test evidence, see [Video Preferences native UI](docs/video-preferences-native-ui.md) and [GOS archive inspector](tools/inspect_gos_rof.py). Earlier experiments and detailed changelogs remain available in the repository's Git history.
+For original GameOS Video UI research and owner test evidence, see [Video Preferences native UI](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/video-preferences-native-ui.md) and [GOS archive inspector](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/tools/inspect_gos_rof.py). Earlier experiments and detailed changelogs remain available in the repository's Git history.
 
 ## Known limitations
 
