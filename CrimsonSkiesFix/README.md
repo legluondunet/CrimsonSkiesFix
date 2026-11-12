@@ -55,7 +55,13 @@ updater, and your own **2,580,480-byte** decrypted EXE with SHA-256
 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75
 beside the launcher; then run it without arguments. External originals
 are needed only for a fresh installation or repair. A fully verified
-installed game launches without media.
+installed game launches without media. The verifier recognizes the exact
+official 1.02 CRIMPTCH.ROF **or** CrimsonSkiesFix's authenticated GOS Video
+overlay with its independently verified official-original backup; a managed
+overlay is not CD damage and must not trigger extraction. A bundled-DLL-only
+version change is repaired by replacing ddraw.dll, without rebuilding the game.
+The installer log reports `GosOverlayState=OFFICIAL_102` or
+`GosOverlayState=VERIFIED_MANAGED` after a successful verification.
 
 If files are damaged, the launcher constructs a separate verified
 installation, migrates the player's SavedGames, Planes and active INI,
