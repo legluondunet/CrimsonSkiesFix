@@ -32,7 +32,12 @@ struct FileInfo{
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct FileId{volume:u32,index_hi:u32,index_lo:u32}
 #[derive(Clone,Copy)]
-struct References{overlay:FileId,base:FileId,video_span:Option<(u64,u64)>}
+struct References{
+    overlay:FileId,
+    base:FileId,
+    video_span:Option<(u64,u64)>,
+    base_video_span:Option<(u64,u64)>,
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum Archive{Overlay,Base}
 #[link(name="kernel32")]
@@ -66,7 +71,12 @@ fn reference_files()->Option<References>{
     let overlay=id_for_path(&folder.join("crimptch.rof"))?;
     let base=id_for_path(&folder.join("crimson.rof"))?;
     let video_span=gos_video_lock::installed_video_compressed_span();
-    Some(References{overlay,base,video_span})
+    // Only the opt-in diagnostic reads/authenticates the larger original
+    // archive. Normal [Debug] Log=0 startup remains unchanged.
+    let base_video_span=if crate::cfg().log_enabled {
+        gos_video_lock::original_video_compressed_span()
+    }else{None};
+    Some(References{overlay,base,video_span,base_video_span})
 }
 fn archive_for(id:FileId,refs:References)->Option<Archive>{
     if id==refs.overlay{Some(Archive::Overlay)}
@@ -247,6 +257,13 @@ pub fn references_ready()->bool{
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
     count>0 && start<span.1 && start.saturating_add(count as u64)>span.0
 }
+fn video_span_for_archive(archive:Archive,refs:Option<References>)->Option<(u64,u64)>{
+    let refs=refs?;
+    match archive {
+        Archive::Overlay=>refs.video_span,
+        Archive::Base=>refs.base_video_span,
+    }
+}
 unsafe extern "system" fn observe_read(
     handle:*mut c_void,buffer:*mut c_void,length:u32,
     bytes_read:*mut u32,overlapped:*mut c_void
@@ -271,8 +288,8 @@ unsafe extern "system" fn observe_read(
             Archive::Base=>BASE_READS.fetch_add(1,Ordering::Relaxed),
         };
         let got=if result!=0 && !bytes_read.is_null(){Some(*bytes_read)}else{None};
-        let span=refs.and_then(|r|r.video_span);
-        let overlap=archive==Archive::Overlay && has_start &&
+        let span=video_span_for_archive(archive,refs);
+        let overlap=has_start &&
             got.is_some_and(|n|span.is_some_and(|range|
                 overlaps_read(start as u64,n,range)));
         let extra=overlap && OVERLAPS.fetch_add(1,Ordering::Relaxed)<8;
@@ -305,8 +322,8 @@ pub unsafe fn install(module:usize,rva:Option<usize>)->bool{
         return false;
     };
     log(&format!(
-        "GOS-ROF-READ: file ID references ready, patched_video_span_known={} [read-only; paths hidden]",
-        refs.video_span.is_some()
+        "GOS-ROF-READ: file ID references ready, patched_video_span_known={} original_video_span_known={} [read-only; paths hidden]",
+        refs.video_span.is_some(),refs.base_video_span.is_some()
     ));
     if ORIGINAL.compare_exchange(0,previous,Ordering::AcqRel,Ordering::Acquire).is_err(){
         return false;
@@ -348,10 +365,16 @@ mod tests{
         let a=FileId{volume:1,index_hi:2,index_lo:3};
         let b=FileId{volume:1,index_hi:2,index_lo:4};
         let foreign=FileId{volume:2,index_hi:2,index_lo:3};
-        let r=References{overlay:a,base:b,video_span:Some((100,200))};
+        let r=References{
+            overlay:a,base:b,video_span:Some((100,200)),
+            base_video_span:Some((300,400))
+        };
         assert_eq!(archive_for(a,r),Some(Archive::Overlay));
         assert_eq!(archive_for(b,r),Some(Archive::Base));
         assert_eq!(archive_for(foreign,r),None);
+        assert_eq!(video_span_for_archive(Archive::Overlay,Some(r)),Some((100,200)));
+        assert_eq!(video_span_for_archive(Archive::Base,Some(r)),Some((300,400)));
+        assert_eq!(video_span_for_archive(Archive::Base,None),None);
         assert!(overlaps_read(99,2,(100,200)));
         assert!(overlaps_read(199,2,(100,200)));
         assert!(!overlaps_read(200,1,(100,200)));
