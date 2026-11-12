@@ -203,8 +203,18 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
 fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     let new=base.join(REBUILT);
     let previous=base.join(PREVIOUS);
-    if any_entry(&new)||any_entry(&new.with_file_name(format!("{REBUILT}.installing"))){
-        return Err("incomplete rebuilt game exists; inspect it before another repair".into());
+    // Staging folders may hold player files or a previous partially verified
+    // install. Identify the blocking pathname but NEVER remove/replace it.
+    if any_entry(&new){
+        return Err(format!(
+            "rebuild blocked by existing {} (preserved; inspect before any manual action)",
+            new.display()));
+    }
+    let pending=new.with_file_name(format!("{REBUILT}.installing"));
+    if any_entry(&pending){
+        return Err(format!(
+            "rebuild blocked by existing {} (preserved; inspect before any manual action)",
+            pending.display()));
     }
     if old_present && any_entry(&previous){
         return Err("previous game backup already exists; refusing to overwrite it".into());
@@ -277,25 +287,30 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
             }
             Err(reason)=>{
                 println!("Installed CD files did not verify: {reason}");
-                // If just our bundled DLL changed across versions, repair
-                // that first without asking for the original disc again.
-                if let Ok(())=deploy_proxy(game) {
-                    if verify_installed_cd_assets(game).is_ok() {
-                        // Keep build-info.txt in sync with the newly installed
-                        // DLL. Otherwise --verify passes but reports the old
-                        // embedded DLL SHA and commit from the last launcher.
-                        deploy_documentation(game)?;
-                        if validated_game_exe(game).is_ok() {
-                            return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                // Preserve the precise first verification failure. The
+                // previous launcher's log lost this evidence when a later
+                // stale staging directory blocked the reconstruction.
+                // If only the bundled DLL changed, repair that first.
+                let followup=match deploy_proxy(game){
+                    Ok(())=>match verify_installed_cd_assets(game){
+                        Ok(_)=>{
+                            // Keep build-info.txt in sync with the DLL.
+                            deploy_documentation(game)?;
+                            if validated_game_exe(game).is_ok(){
+                                return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                            }
+                            let source=approved_executable(base,game)?;
+                            activate_verified_exe(game,&source)?;
+                            return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                         }
-                        // When the only other missing step is an approved
-                        // EXE, do not re-extract an already verified CD.
-                        let source=approved_executable(base,game)?;
-                        activate_verified_exe(game,&source)?;
-                        return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
-                    }
-                }
-                build_and_publish(base,game,true)?;
+                        Err(after)=>format!(
+                            "installed CD verification after bundled DLL repair: {after}"),
+                    },
+                    Err(err)=>format!("bundled DLL repair not completed: {err}"),
+                };
+                build_and_publish(base,game,true).map_err(|err|format!(
+                    "existing installed CD verification failed: {reason}; \
+                     {followup}; rebuild not completed: {err}"))?;
                 return Ok("REPAIRED_FROM_CD_AND_LAUNCH");
             }
         }
@@ -303,11 +318,15 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     // Backwards compatibility: a validated manually imported installation
     // may lack an original-CD receipt. Its old-format verification is less
     // comprehensive than the new immutable CD file manifest.
-    if verify(game).is_ok(){
-        return Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH");
+    match verify(game){
+        Ok(_)=>Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH"),
+        Err(reason)=>{
+            build_and_publish(base,game,true).map_err(|err|format!(
+                "legacy installed game verification failed: {reason}; \
+                 rebuild not completed: {err}"))?;
+            Ok("REBUILT_LEGACY_INSTALL_FROM_CD_AND_LAUNCH")
+        }
     }
-    build_and_publish(base,game,true)?;
-    Ok("REBUILT_LEGACY_INSTALL_FROM_CD_AND_LAUNCH")
 }
 
 /// Entry point for no-argument execution. The launcher's session report
@@ -410,6 +429,36 @@ mod tests{
         assert!(whole.contains("CrimsonSkiesFix GAME: initialization"));
         assert!(!whole.contains("Action=OLD"));
         assert!(!root.join(OLD_AUTO_LOG).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn blocking_staging_directory_reports_initial_cd_failure_without_deletion(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let stale=root.join(REBUILT);
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("keep-me"),b"owner data").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"invalid receipt").unwrap();
+        let error=auto_prepare(&root,&game).unwrap_err();
+        assert!(error.contains("existing installed CD verification failed"));
+        assert!(error.contains("rebuild blocked by existing"));
+        assert!(error.contains("CrimsonSkiesFix.rebuilding"));
+        assert_eq!(fs::read(stale.join("keep-me")).unwrap(),b"owner data");
+        assert!(game.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pending_staging_directory_is_identified_without_removal(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let pending=root.join(format!("{REBUILT}.installing"));
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&pending).unwrap();
+        fs::write(pending.join("keep-me"),b"pending owner data").unwrap();
+        let error=build_and_publish(&root,&game,true).unwrap_err();
+        assert!(error.contains("CrimsonSkiesFix.rebuilding.installing"));
+        assert_eq!(fs::read(pending.join("keep-me")).unwrap(),b"pending owner data");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
