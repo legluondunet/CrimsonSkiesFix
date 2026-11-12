@@ -4,7 +4,7 @@
 
 CrimsonSkiesFix adapts one strictly verified, SafeDisc-free Crimson Skies 1.02 executable to modern screens. The original executable is never rewritten. The active project is a single 32-bit `ddraw.dll` written in Rust; it also includes default-enabled, reversible GameOS (GOS) Video menu resource integration.
 
-**Status (8 November 2026): experimental PR #23.** The owner has run the 32-bit Rust `ddraw.dll` under **native Windows 11** (1920×1200 physical display with DPI scaling) and **GE-Proton11-12 / Wine 11.0** on Manjaro (1920×1080). On native Windows, the original opening image, video/menu path, GameOS Video controls, borderless window and native 3D rendering were validated with a deliberately enabled native diagnostic/compatibility INI profile. Under GE-Proton, native widescreen rendering, menu/version signature, modified GOS video archive and gameplay were validated with the Wine profile. The earlier three-export HAL failure described in [issue #22](https://github.com/legluondunet/CrimsonSkiesFix/issues/22) is historical; this PR forwards all 22 DirectDraw exports. **These runtime reports do not yet validate a fresh-install Windows default configuration or all hardware/driver combinations.**
+**Status (12 November 2026): experimental standalone release candidate, not published.** The owner validated original **FR and DE disc installs**, repeat launch without re-extracting, and non-editable native Graphics/Resolution options under **GE-Proton11-12 / Wine 11.0** on Manjaro (1920×1080). The final German run also verified the managed GOS overlay on the subsequent launch and a clean game exit. USA/Europe edition matching and CAB-name mapping are implemented with authenticated original-file SHA-256 profiles, but no USA original disc is currently available for end-to-end gameplay testing. Earlier native Windows 11 gameplay used an opt-in profile on older code; the **current standalone installer and in-memory VIDEO.SCRIPT substitution are not yet validated in native Windows gameplay**. The 22 DirectDraw exports are verified in CI. See [current release scope](docs/release-preparation-2026-11-12.md).
 
 ## What it does
 
@@ -40,7 +40,7 @@ Only the exact verified, unmodified SafeDisc-free **Crimson Skies 1.0.2.0** exec
 
 On a mismatch, the DLL reports the actual SHA-256 and refuses to launch; it never silently falls back to an unsupported executable.
 
-## Standalone automatic installation and repair (experimental PR #26)
+## Standalone automatic installation and repair (candidate PR #26 + #27)
 
 The separate Windows-x86 standalone launcher, **CrimsonSkiesFix.exe**, now
 automatically verifies the existing game and launches it when all pinned
@@ -77,10 +77,7 @@ removes an obsolete `CrimsonSkiesFix.installer.log` only if its small,
 regular-file contents match the old launcher-generated format. Unrecognized
 files are left untouched.
 
-This is **not yet validated end to end on all three physical original
-editions**. The existing manual DLL installation described below remains
-available. The original game, decrypted executable and protected
-installer are **never bundled**.
+**Owner end-to-end tests cover FR and DE under GE-Proton only.** USA/Europe remains hash-profiled and synthetically tested but is not currently available for real-disc validation. Native Windows tests of this exact build are outstanding. The existing manual DLL installation described below remains available. The original game, decrypted executable and protected installer are **never bundled**.
 
 Detailed behavior and testing checklist:
 [automatic installer workflow](docs/automatic-installer-workflow.md).
