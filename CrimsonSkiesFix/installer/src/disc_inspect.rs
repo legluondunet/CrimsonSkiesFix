@@ -598,6 +598,17 @@ fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool,activated:bool)-
             }
             continue;
         }
+        // Original FR (and any other listed retail edition) has a CD
+        // CRIMPTCH.ROF entry. Once the official 1.02 updater and our native
+        // GOS lock have run, its bytes may intentionally differ from the
+        // original CD profile. This one file is independently authenticated
+        // against the official 1.02 hash or the exact managed overlay +
+        // original backup. Every other retail asset remains CD-hash locked.
+        if skip_cabs && relative.eq_ignore_ascii_case("GOSDATA/ASSETS/CRIMPTCH.ROF") {
+            crate::managed_gos_patch::verify_game_overlay(game)?;
+            checked+=1;
+            continue;
+        }
         // Once the owner-supplied approved 1.02 executable has been
         // activated, the exact original CD-protected CRIMSON.EXE is
         // kept under this fixed name and verified against the original
