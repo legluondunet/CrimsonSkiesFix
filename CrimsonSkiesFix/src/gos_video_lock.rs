@@ -33,6 +33,10 @@ use crate::{exe_gate, log};
 
 const BASE_SIZE: usize = 60_236_221;
 const BASE_HASH: &str = "acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174";
+// French retail CRIMSON.ROF (verified original CD archive).
+// Both editions contain the exact same VIDEO.SCRIPT.
+const FR_BASE_SIZE: usize = 62_745_707;
+const FR_BASE_HASH: &str = "99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f";
 const ORIGINAL_VIDEO_HASH: &str = "f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9";
 const MODIFIED_VIDEO_HASH: &str = "a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d";
 const VIDEO_PATH: &str = "ASSETS/SCRIPTS/VIDEO.SCRIPT";
@@ -326,12 +330,21 @@ fn checked_patch(path: &Path) -> Result<Vec<u8>, String> {
     }
     fs::read(path).map_err(|e| e.to_string())
 }
-fn read_original_video(base: &Path) -> Result<Vec<u8>, String> {
-    if fs::metadata(base).map_err(|e| e.to_string())?.len() as usize != BASE_SIZE {
-        return Err("unsupported original crimson.rof size".into());
+// Reject every archive except the exact verified retail edition fingerprints.
+fn supported_base_archive_hash(size: u64) -> Option<&'static str> {
+    match size {
+        n if n == BASE_SIZE as u64 => Some(BASE_HASH),
+        n if n == FR_BASE_SIZE as u64 => Some(FR_BASE_HASH),
+        _ => None,
     }
+}
+
+fn read_original_video(base: &Path) -> Result<Vec<u8>, String> {
+    let size = fs::metadata(base).map_err(|e| e.to_string())?.len();
+    let expected_hash = supported_base_archive_hash(size)
+        .ok_or("unsupported original crimson.rof size")?;
     let bytes = fs::read(base).map_err(|e| e.to_string())?;
-    if exe_gate::sha256(&bytes) != BASE_HASH {
+    if exe_gate::sha256(&bytes) != expected_hash {
         return Err("unsupported original crimson.rof SHA-256".into());
     }
     let entries = parse(&bytes)?;
@@ -549,6 +562,16 @@ pub fn apply(mode: Mode, widescreen_ready: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_verified_base_archive_sizes_map_to_expected_hashes() {
+        assert_eq!(supported_base_archive_hash(BASE_SIZE as u64), Some(BASE_HASH));
+        assert_eq!(supported_base_archive_hash(FR_BASE_SIZE as u64), Some(FR_BASE_HASH));
+        assert_ne!(BASE_HASH, FR_BASE_HASH);
+        for unknown_size in [0, BASE_SIZE as u64 - 1, BASE_SIZE as u64 + 1,
+                             FR_BASE_SIZE as u64 - 1, FR_BASE_SIZE as u64 + 1] {
+            assert_eq!(supported_base_archive_hash(unknown_size), None);
+        }
+    }
     fn fixture_archive(air: &[u8], video: &[u8]) -> Vec<u8> {
         write_overlay(&Payload { name:"AIRFRAME.SCRIPT", expanded:air.len(),
             compressed_bytes:air.to_vec(), kind:0 },video).unwrap()
