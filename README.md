@@ -21,23 +21,13 @@ If the installation is older than 1.02, the [official 1.02 updater](https://www.
 
 ## Install
 
-Use the `CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL` artifact from a successful [Windows x86 GitHub Actions run](https://github.com/legluondunet/CrimsonSkiesFix/actions). Back up an older `ddraw.dll` before placing the proxy next to the accepted executable.
+The workflow now publishes **one downloadable artifact only**: `CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL`, containing `CrimsonSkiesFix.exe`. Download it from a successful [Windows x86 GitHub Actions run](https://github.com/legluondunet/CrimsonSkiesFix/actions); the standalone installer includes the exact, verified `ddraw.dll` and deploys it automatically. The former `CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL` archive is no longer published.
 
-```text
-Crimson Skies/
-  CRIMSON.EXE
-  ddraw.dll
-  CrimsonSkiesFix/
-    CrimsonSkiesFix.ini.example
-    README.md
-    LICENSE
-    build-info.txt
-    CrimsonSkiesFix.ini   # created on first launch, never shipped
-```
+For a first installation, place one original supported ISO or CUE/BIN image, the official 1.02 updater, and your own SHA-256-approved decrypted 1.02 executable beside the launcher, then run `CrimsonSkiesFix.exe`. For an already verified installation, the launcher verifies and launches the game without requiring the original media.
 
-The archive does **not** include the original game, game assets, or an active user INI. On first launch, the default-on `GosVideoLock=on` feature may modify the game's small `GOSDATA/ASSETS/crimptch.rof` overlay **after verifying its content and making a backup**. This is persistent; disable the feature *before first launch* or use `GosVideoLock=restore` to restore the backed-up file before uninstalling.
+The downloaded artifact contains **only the launcher**: it never distributes the original game, game assets or decrypted executable. The installed game receives its own `ddraw.dll`, documentation and `CrimsonSkiesFix.ini.example`; an active user INI is created on first game launch, never bundled. By default, `GosVideoLock=on` may modify the small original `GOSDATA/ASSETS/crimptch.rof` overlay after verifying and backing it up. Set `GosVideoLock=restore` to restore the original archive before removing the fix if desired.
 
-For options, Win32/Wine requirements, GOS restoration, troubleshooting and known limitations, read the [detailed installation guide](CrimsonSkiesFix/README.md).
+For the exact supported media and the installation/repair flow, see the [detailed installation guide](CrimsonSkiesFix/README.md).
 
 ## Identify a build
 
