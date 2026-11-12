@@ -27,11 +27,19 @@ type LoadA=unsafe extern "system" fn(*const c_char)->*mut c_void;
 type LoadW=unsafe extern "system" fn(*const u16)->*mut c_void;
 type LoadExA=unsafe extern "system" fn(*const c_char,*mut c_void,u32)->*mut c_void;
 type LoadExW=unsafe extern "system" fn(*const u16,*mut c_void,u32)->*mut c_void;
+type CreateA=unsafe extern "system" fn(*const c_char,u32,u32,*mut c_void,u32,u32,*mut c_void)->*mut c_void;
+type CreateW=unsafe extern "system" fn(*const u16,u32,u32,*mut c_void,u32,u32,*mut c_void)->*mut c_void;
+const INVALID_HANDLE_VALUE:usize=usize::MAX;
 static A:AtomicUsize=AtomicUsize::new(0);
 static W:AtomicUsize=AtomicUsize::new(0);
 static EXA:AtomicUsize=AtomicUsize::new(0);
 static EXW:AtomicUsize=AtomicUsize::new(0);
 static NOTICE:AtomicUsize=AtomicUsize::new(0);
+// Opt-in diagnostic: named game-EXE imports, independent of ROFFILE.DLL's own
+// imports. Never intercept all KERNEL32 exports or alter ROF file contents.
+static FILE_A:AtomicUsize=AtomicUsize::new(0);
+static FILE_W:AtomicUsize=AtomicUsize::new(0);
+static FILE_EVENTS:AtomicUsize=AtomicUsize::new(0);
 
 #[link(name="kernel32")]
 extern "system" {
@@ -43,7 +51,8 @@ extern "system" {
 }
 
 #[derive(Default,Clone,Copy)]
-struct Slots{a:Option<usize>,w:Option<usize>,exa:Option<usize>,exw:Option<usize>}
+struct Slots{a:Option<usize>,w:Option<usize>,exa:Option<usize>,exw:Option<usize>,
+    create_a:Option<usize>,create_w:Option<usize>}
 fn read16(image:&[u8],at:usize)->Option<u16>{
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
 }
@@ -90,11 +99,78 @@ fn named_game_load_library_imports(image:&[u8])->Option<Slots>{
                 b"LoadLibraryW"=>out.w=Some(target),
                 b"LoadLibraryExA"=>out.exa=Some(target),
                 b"LoadLibraryExW"=>out.exw=Some(target),
+                b"CreateFileA"=>out.create_a=Some(target),
+                b"CreateFileW"=>out.create_w=Some(target),
                 _=>{}
             }
         }
     }
     Some(out)
+}
+fn classify_rof_basename(path:&[u8])->Option<&'static str>{
+    let base=path.rsplit(|x|*x==b'\\'||*x==b'/').next()?;
+    if base.eq_ignore_ascii_case(b"crimptch.rof"){Some("patch-overlay")}
+    else if base.eq_ignore_ascii_case(b"crimson.rof"){Some("base-archive")}
+    else if base.len()>=4 && base[base.len()-4..].eq_ignore_ascii_case(b".rof"){
+        Some("other-rof")
+    }else{None}
+}
+unsafe fn classify_a_path(path:*const c_char)->Option<&'static str>{
+    if path.is_null(){return None;}
+    let mut bytes=[0u8;512];
+    for (i,dst) in bytes.iter_mut().enumerate(){
+        let b=*path.add(i) as u8;
+        if b==0{return classify_rof_basename(&bytes[..i]);}
+        *dst=b;
+    }
+    None
+}
+unsafe fn classify_w_path(path:*const u16)->Option<&'static str>{
+    if path.is_null(){return None;}
+    let mut bytes=[0u8;512];
+    for (i,dst) in bytes.iter_mut().enumerate(){
+        let code=*path.add(i);
+        if code==0{return classify_rof_basename(&bytes[..i]);}
+        if code>0x7f{return None;} // fail open for non-ASCII paths
+        *dst=code as u8;
+    }
+    None
+}
+fn log_game_archive_open(api:&str,kind:Option<&str>,handle:*mut c_void,disposition:u32){
+    let Some(kind)=kind else{return;};
+    let event=FILE_EVENTS.fetch_add(1,Ordering::Relaxed);
+    if event<24 {
+        log(&format!(
+            "GOS-GAME-ROF-OPEN: caller=verified-CRIMSON.EXE api={api} archive={kind} success={} disposition={} [original game CreateFile forwarded; path hidden; no resource execution inferred]",
+            !handle.is_null() && handle as usize!=INVALID_HANDLE_VALUE,disposition
+        ));
+    }
+}
+unsafe extern "system" fn file_a(
+    name:*const c_char,access:u32,share:u32,security:*mut c_void,
+    disposition:u32,flags:u32,template:*mut c_void
+)->*mut c_void{
+    let p=FILE_A.load(Ordering::Acquire);
+    if p==0{return INVALID_HANDLE_VALUE as *mut c_void;}
+    let real:CreateA=std::mem::transmute(p);
+    let result=real(name,access,share,security,disposition,flags,template);
+    let error=GetLastError();
+    log_game_archive_open("CreateFileA",classify_a_path(name),result,disposition);
+    SetLastError(error);
+    result
+}
+unsafe extern "system" fn file_w(
+    name:*const u16,access:u32,share:u32,security:*mut c_void,
+    disposition:u32,flags:u32,template:*mut c_void
+)->*mut c_void{
+    let p=FILE_W.load(Ordering::Acquire);
+    if p==0{return INVALID_HANDLE_VALUE as *mut c_void;}
+    let real:CreateW=std::mem::transmute(p);
+    let result=real(name,access,share,security,disposition,flags,template);
+    let error=GetLastError();
+    log_game_archive_open("CreateFileW",classify_w_path(name),result,disposition);
+    SetLastError(error);
+    result
 }
 unsafe fn on_load_return(){
     // Only after the genuine Windows loader returns (outside the loader
@@ -197,6 +273,16 @@ pub fn install(){
         let w=patch_named_import(base,kernel,slots.w,b"LoadLibraryW\0",load_w as usize,&W);
         let exa=patch_named_import(base,kernel,slots.exa,b"LoadLibraryExA\0",load_exa as usize,&EXA);
         let exw=patch_named_import(base,kernel,slots.exw,b"LoadLibraryExW\0",load_exw as usize,&EXW);
+        // Only diagnostic; release with Log=0 leaves these game IAT slots untouched.
+        // ROFFILE.DLL's independent CreateFile hooks remain in effect as before.
+        if crate::cfg().log_enabled {
+            let ca=patch_named_import(base,kernel,slots.create_a,b"CreateFileA\0",file_a as usize,&FILE_A);
+            let cw=patch_named_import(base,kernel,slots.create_w,b"CreateFileW\0",file_w as usize,&FILE_W);
+            log(&format!(
+                "GOS-GAME-ROF-OPEN: named CreateFileA_present={} hook={} CreateFileW_present={} hook={} [diagnostic only; paths hidden]",
+                slots.create_a.is_some(),ca,slots.create_w.is_some(),cw
+            ));
+        }
         log(&format!(
             "GOS-ROF-LOAD: shared Windows/Wine game loader observer LoadLibraryA={a} LoadLibraryW={w} LoadLibraryExA={exa} LoadLibraryExW={exw}; original calls forwarded, no global loader changes"
         ));
@@ -217,5 +303,15 @@ mod tests{
         let _:LoadW=load_w;
         let _:LoadExA=load_exa;
         let _:LoadExW=load_exw;
+        let _:CreateA=file_a;
+        let _:CreateW=file_w;
+    }
+    #[test]
+    fn only_rof_names_match_without_exposing_paths(){
+        assert_eq!(classify_rof_basename(b"C:\\Games\\GOSDATA\\ASSETS\\crimptch.rof"),Some("patch-overlay"));
+        assert_eq!(classify_rof_basename(b"/other/CRIMSON.ROF"),Some("base-archive"));
+        assert_eq!(classify_rof_basename(b"C:\\Games\\ANOTHER.ROF"),Some("other-rof"));
+        assert_eq!(classify_rof_basename(b"C:\\Games\\VIDEO.SCRIPT"),None);
+        assert_eq!(classify_rof_basename(b"C:\\Games\\crimptch.rof.bak"),None);
     }
 }
