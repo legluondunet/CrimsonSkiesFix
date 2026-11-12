@@ -236,6 +236,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import hashlib
           import struct
 
           files = sorted(path for path in Path("candidate").rglob("*") if path.is_file())
@@ -255,4 +256,6 @@ jobs:
           if machine != 0x14C or magic != 0x10B or not characteristics & 0x0002:
               raise SystemExit(f"Not an executable PE32 x86: {machine:#x} / {magic:#x} / {characteristics:#x}")
           print(f"Verified single PE32 x86 standalone artifact: {len(data)} bytes")
+          print(f"CrimsonSkiesFix.exe SHA-256: {hashlib.sha256(data).hexdigest()}")
+          print("Publish only this exact downloaded candidate for the recorded source commit.")
           PY
