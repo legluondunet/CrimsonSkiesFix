@@ -118,21 +118,21 @@ fn classify_rof_basename(path:&[u8])->Option<&'static str>{
 unsafe fn classify_a_path(path:*const c_char)->Option<&'static str>{
     if path.is_null(){return None;}
     let mut bytes=[0u8;512];
-    for (i,dst) in bytes.iter_mut().enumerate(){
+    for i in 0..bytes.len(){
         let b=*path.add(i) as u8;
         if b==0{return classify_rof_basename(&bytes[..i]);}
-        *dst=b;
+        bytes[i]=b;
     }
     None
 }
 unsafe fn classify_w_path(path:*const u16)->Option<&'static str>{
     if path.is_null(){return None;}
     let mut bytes=[0u8;512];
-    for (i,dst) in bytes.iter_mut().enumerate(){
+    for i in 0..bytes.len(){
         let code=*path.add(i);
         if code==0{return classify_rof_basename(&bytes[..i]);}
         if code>0x7f{return None;} // fail open for non-ASCII paths
-        *dst=code as u8;
+        bytes[i]=code as u8;
     }
     None
 }
