@@ -390,6 +390,91 @@ pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
     let end = video.offset.checked_add(video.compressed)?;
     Some((video.offset as u64, end as u64))
 }
+/// Exact-identity, memory-only alternative when GameOS does not mount
+/// the installed CRIMPTCH.ROF. No original archive bytes are written.
+pub(crate) struct VirtualVideo {
+    pub size_field_at:u64,
+    pub data_at:u64,
+    pub replacement:Vec<u8>,
+    pub expanded_size:u32,
+}
+pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
+    let (base,overlay)=paths().ok()?;
+    // Require the owner's officially patched 1.02 original and our exact
+    // managed postimage together with its authenticated official backup.
+    let backup=overlay.with_file_name(format!("crimptch.rof{BACKUP_SUFFIX}"));
+    if !regular_file(&backup) || fs::metadata(&backup).ok()?.len()!=797{return None;}
+    let previous=checked_patch(&backup).ok()?;
+    if exe_gate::sha256(&previous)!=
+       "7ae28cfb65645a3e22aadc64a68badc23e2543bc56356d599fb59375d9ebbefe"{
+        return None;
+    }
+    let preserved=original_airframe(&previous).ok()?;
+    let installed=checked_patch(&overlay).ok()?;
+    if !overlay_video_matches(&installed).ok()?{return None;}
+    let patch_entries=parse(&installed).ok()?;
+    let air=named(&patch_entries,AIRFRAME_PATH)?;
+    if air.kind!=preserved.kind || air.expanded!=preserved.expanded ||
+       installed.get(air.offset..air.offset+air.compressed)?
+       !=preserved.compressed_bytes.as_slice(){return None;}
+    let modified=inflate(&installed,named(&patch_entries,VIDEO_PATH)?).ok()?;
+    if modified.len()!=VIDEO_MODIFIED_SIZE ||
+       exe_gate::sha256(&modified)!=MODIFIED_VIDEO_HASH{return None;}
+
+    let size=fs::metadata(&base).ok()?.len();
+    let digest=supported_base_archive_hash(size)?;
+    let bytes=fs::read(base).ok()?;
+    if bytes.len() as u64!=size || exe_gate::sha256(&bytes)!=digest{return None;}
+    let tree=parse(&bytes).ok()?;
+    let original=named(&tree,VIDEO_PATH)?;
+    if original.kind!=2 || original.expanded!=VIDEO_SIZE ||
+       original.compressed<6 || original.compressed>MAX_SCRIPT_BYTES ||
+       exe_gate::sha256(&inflate(&bytes,original).ok()?)!=ORIGINAL_VIDEO_HASH{
+        return None;
+    }
+    // Find the UNIQUE 24-byte member descriptor within the already-hashed
+    // game-owned archive. This works on supported US and FR layouts alike.
+    let mut signature=Vec::with_capacity(16);
+    for value in [original.offset,original.expanded,original.compressed,2usize]{
+        signature.extend_from_slice(&(u32::try_from(value).ok()?).to_le_bytes());
+    }
+    let header=bytes.windows(16).position(|part|part==signature.as_slice())?;
+    if bytes[header+16..].windows(16).any(|part|part==signature.as_slice()){
+        return None;
+    }
+    // zlib permits any number of empty nonfinal stored blocks, each 5 bytes.
+    // Compress the user's authenticated modified script and choose a level
+    // allowing the replacement to have EXACTLY the original stored length.
+    for level in 1..=9 {
+        let mut writer=ZlibEncoder::new(Vec::new(),Compression::new(level));
+        writer.write_all(&modified).ok()?;
+        let packed=writer.finish().ok()?;
+        if packed.len()<6 || packed.len()>original.compressed{continue;}
+        let padding=original.compressed-packed.len();
+        if padding>512 || padding%5!=0{continue;}
+        let mut replacement=Vec::with_capacity(original.compressed);
+        replacement.extend_from_slice(&packed[..2]);
+        for _ in 0..padding/5{
+            replacement.extend_from_slice(&[0,0,0,255,255]);
+        }
+        replacement.extend_from_slice(&packed[2..]);
+        if replacement.len()!=original.compressed{continue;}
+        let mut decoded=Vec::new();
+        if ZlibDecoder::new(replacement.as_slice())
+           .take(VIDEO_MODIFIED_SIZE as u64+1)
+           .read_to_end(&mut decoded).is_err() || decoded!=modified{
+            continue;
+        }
+        return Some(VirtualVideo{
+            size_field_at:header.checked_add(4)? as u64,
+            data_at:original.offset as u64,
+            replacement,
+            expanded_size:VIDEO_MODIFIED_SIZE as u32,
+        });
+    }
+    None
+}
+
 /// Read-only diagnostics: locate the original VIDEO.SCRIPT member in a
 /// fully authenticated source archive. Used only with [Debug] Log=1,
 /// never as a fallback to an unknown archive or an input modification.
