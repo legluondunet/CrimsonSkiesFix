@@ -505,21 +505,6 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
         destination:game.to_path_buf()})
 }
 
-fn source_candidates(base: &Path, game: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut found = Vec::new();
-    for item in fs::read_dir(base).map_err(error)? {
-        let entry = item.map_err(error)?;
-        let path = entry.path();
-        if path == game || !directory(&path) { continue; }
-        if ["CRIMSON.EXE", "CRIMSON-UNWRAPPED.EXE"]
-            .iter().any(|name| any_entry(&path.join(name))) {
-            found.push(path);
-        }
-    }
-    found.sort();
-    Ok(found)
-}
-
 fn usage() {
     println!(
         "CrimsonSkiesFix {VERSION} ({})\n\
