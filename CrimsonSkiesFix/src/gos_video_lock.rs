@@ -390,6 +390,27 @@ pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
     let end = video.offset.checked_add(video.compressed)?;
     Some((video.offset as u64, end as u64))
 }
+/// Read-only diagnostics: locate the original VIDEO.SCRIPT member in a
+/// fully authenticated source archive. Used only with [Debug] Log=1,
+/// never as a fallback to an unknown archive or an input modification.
+/// Seeing the compressed interval read does not establish script execution.
+pub(crate) fn original_video_compressed_span() -> Option<(u64, u64)> {
+    let (base, _) = paths().ok()?;
+    let size = fs::metadata(&base).ok()?.len();
+    let expected_hash = supported_base_archive_hash(size)?;
+    let bytes = fs::read(base).ok()?;
+    if bytes.len() as u64 != size || exe_gate::sha256(&bytes) != expected_hash {
+        return None;
+    }
+    let entries = parse(&bytes).ok()?;
+    let video = named(&entries, VIDEO_PATH)?;
+    if video.expanded != VIDEO_SIZE ||
+       exe_gate::sha256(&inflate(&bytes, video).ok()?) != ORIGINAL_VIDEO_HASH {
+        return None;
+    }
+    let end = video.offset.checked_add(video.compressed)?;
+    Some((video.offset as u64, end as u64))
+}
 
 fn wide(path: &OsStr) -> Vec<u16> {
     path.encode_wide().chain(std::iter::once(0)).collect()
