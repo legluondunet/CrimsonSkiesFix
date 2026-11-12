@@ -1,4 +1,4 @@
-name: CrimsonSkiesFix DirectDraw DLL x86
+name: CrimsonSkiesFix Standalone Installer x86
 
 on:
   push:
@@ -16,6 +16,8 @@ jobs:
     runs-on: windows-latest
     env:
       RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/target/i686-pc-windows-msvc/release/ddraw.dll
     defaults:
       run:
         working-directory: CrimsonSkiesFix
@@ -159,12 +161,6 @@ jobs:
         run: |
           python tools/verify_release_candidate.py --directory dist --expected-commit $env:CRIMSONSKIESFIX_COMMIT --cargo-toml Cargo.toml --license ../LICENSE
           if ($LASTEXITCODE -ne 0) { throw 'Independent candidate validation failed before upload' }
-      - name: Publish experimental x86 proxy and clean game layout
-        uses: actions/upload-artifact@v4
-        with:
-          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
-          path: CrimsonSkiesFix/dist/
-          if-no-files-found: error
       - name: Verify standalone windowed probe PE machine is Intel x86
         shell: pwsh
         run: |
@@ -175,60 +171,6 @@ jobs:
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw "Windowed probe is not i686: 0x$($machine.ToString('X'))" }
           Write-Host 'Standalone windowed probe verified x86'
-
-  verify-downloaded-artifact:
-    name: verify-download
-    needs: windows-x86
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: External game exit observer self-test on Linux
-        run: python3 CrimsonSkiesFix/tools/verify_game_exit.py --self-test
-      - name: Download actual Windows x86 candidate archive
-        uses: actions/download-artifact@v4
-        with:
-          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
-          path: candidate
-      - name: Verify downloaded archive, manifest, license and PE32 DLL
-        env:
-          CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          python3 CrimsonSkiesFix/tools/verify_release_candidate.py \
-            --directory candidate \
-            --expected-commit "$CRIMSONSKIESFIX_COMMIT" \
-            --cargo-toml CrimsonSkiesFix/Cargo.toml \
-            --license LICENSE
-      - name: Verify downloaded DLL exports independently on Ubuntu
-        run: |
-          python3 CrimsonSkiesFix/tools/verify_ddraw_exports.py \
-            --dll candidate/ddraw.dll \
-            --definitions CrimsonSkiesFix/src/ddraw_exports.def
-
-
-  installer-windows-x86:
-    name: standalone-installer
-    needs: [windows-x86, verify-downloaded-artifact]
-    runs-on: windows-latest
-    env:
-      RUSTFLAGS: -C target-feature=+crt-static
-      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}\CrimsonSkiesFix\installer-input\ddraw.dll
-      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-    defaults:
-      run:
-        working-directory: CrimsonSkiesFix
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Download the verified DLL artifact to embed
-        uses: actions/download-artifact@v4
-        with:
-          name: CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL
-          path: CrimsonSkiesFix/installer-input
-      - name: Install Windows x86 Rust target
-        run: rustup target add i686-pc-windows-msvc
       - name: Run independent launcher tests (x86)
         run: cargo test --manifest-path installer/Cargo.toml --target i686-pc-windows-msvc
       - name: Build single executable containing the exact verified ddraw.dll
@@ -267,10 +209,50 @@ jobs:
             throw 'Standalone installer package must contain exactly one EXE'
           }
           $global:LASTEXITCODE = 0
-      - name: Upload standalone launcher for owner testing (experimental)
+      - name: Publish only standalone launcher for owner testing
         uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL
           path: CrimsonSkiesFix/installer-dist/CrimsonSkiesFix.exe
           if-no-files-found: error
           retention-days: 30
+
+  verify-downloaded-artifact:
+    name: verify-single-download
+    needs: windows-x86
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: External game exit observer self-test on Linux
+        run: python3 CrimsonSkiesFix/tools/verify_game_exit.py --self-test
+      - name: Download the only published standalone installer
+        uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL
+          path: candidate
+      - name: Verify downloaded archive contains exactly one valid PE32 x86 executable
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+
+          files = sorted(path for path in Path("candidate").rglob("*") if path.is_file())
+          if len(files) != 1 or files[0] != Path("candidate/CrimsonSkiesFix.exe"):
+              raise SystemExit(f"Unexpected standalone artifact contents: {files}")
+          data = files[0].read_bytes()
+          if len(data) < 0x100 or data[:2] != b"MZ":
+              raise SystemExit("Standalone executable has no DOS/PE header")
+          offset = struct.unpack_from("<I", data, 0x3C)[0]
+          if not (0x40 <= offset <= len(data) - 26):
+              raise SystemExit("Invalid PE header offset")
+          if data[offset:offset + 4] != b"PE\\0\\0":
+              raise SystemExit("Missing PE signature")
+          machine = struct.unpack_from("<H", data, offset + 4)[0]
+          magic = struct.unpack_from("<H", data, offset + 24)[0]
+          characteristics = struct.unpack_from("<H", data, offset + 22)[0]
+          if machine != 0x14C or magic != 0x10B or not characteristics & 0x0002:
+              raise SystemExit(f"Not an executable PE32 x86: {machine:#x} / {magic:#x} / {characteristics:#x}")
+          print(f"Verified single PE32 x86 standalone artifact: {len(data)} bytes")
+          PY
