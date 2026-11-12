@@ -131,6 +131,8 @@ This is the **owner's previously validated configuration**. `LegacyOffscreenRGB5
 
 ### GOS Video dropdown lock, backup and restoration
 
+`GosVideoLock=on` accepts only two complete, fingerprinted `crimson.rof` archives: the original 60,236,221-byte variant (SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`) and the French 62,745,707-byte variant (SHA-256 `99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f`). Both contain the identical, verified `VIDEO.SCRIPT` (SHA-256 `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`). Unknown full-archive hashes are still refused; script and reversible-overlay verification remain unchanged.
+
 On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accepted executable and the original `crimson.rof` and `VIDEO.SCRIPT`, then create a small overlay containing the unchanged original `AIRFRAME.SCRIPT` patch and an edited, owner-derived `VIDEO.SCRIPT`. It modifies **only** the installed `GOSDATA/ASSETS/crimptch.rof`, saving a byte-for-byte original as:
 
 ```text
