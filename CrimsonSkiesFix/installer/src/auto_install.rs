@@ -223,7 +223,11 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     let source=approved_executable(base,game)?;
     // Preflight a valid, user-supplied official update before extraction.
     let _updater=update102::find(base,None)?;
-    println!("Rebuilding game from original CD and verified official 1.02 patch...");
+    if old_present {
+        println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
+    }else{
+        println!("Installing new game from original CD and verified official 1.02 patch...");
+    }
     let _installed=install_from_cd(base,None,None,&new,None)?;
     if old_present {preserve_player_data(game,&new)?;}
     activate_verified_exe(&new,&source)?;
