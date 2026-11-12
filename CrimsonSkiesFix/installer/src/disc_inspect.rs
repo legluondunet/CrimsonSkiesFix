@@ -454,14 +454,14 @@ pub fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
 /// directory under a German label, even if the folder was renamed manually.
 /// It also detects incomplete/modified game extractions.
 pub fn verify_staging(game:&Path,edition:&str)->Result<usize,String> {
-    verify_original_files(game,edition,false)
+    verify_original_files(game,edition,false,false)
 }
 
 /// Post-install game payloads omit the eight original chapter CAB archives:
 /// all their contents have been expanded, hashed and sealed into a separate
 /// manifest. Pre-install verification still checks the exact original CABs.
-pub fn verify_installed_without_cabs(game:&Path,edition:&str)->Result<usize,String>{
-    verify_original_files(game,edition,true)
+pub fn verify_installed_without_cabs(game:&Path,edition:&str,activated:bool)->Result<usize,String>{
+    verify_original_files(game,edition,true,activated)
 }
 
 // Authentic FR INSTALL.EXE and DE/USA SETUP.EXE copy these seven
@@ -578,7 +578,10 @@ fn is_pruned_chapter_cab(path:&str)->bool{
         "GAME/ZBD/C4.CAB"|"GAME/ZBD/C5.CAB")
 }
 
-fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool)->Result<usize,String> {
+fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool,activated:bool)->Result<usize,String> {
+    if activated && !skip_cabs {
+        return Err("approved EXE backup is only valid for a completed retail install".into());
+    }
     if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false) {
         return Err(format!("missing or unsafe {edition} staging directory: {}",game.display()));
     }
@@ -595,9 +598,18 @@ fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool)->Result<usize,S
             }
             continue;
         }
-        let actual_relative=if skip_cabs{expected_installed_path(edition,relative)}else{relative};
+        // Once the owner-supplied approved 1.02 executable has been
+        // activated, the exact original CD-protected CRIMSON.EXE is
+        // kept under this fixed name and verified against the original
+        // immutable disc manifest. Never mistake the replacement game EXE
+        // for the disc's protected bytes.
+        let actual_relative=if activated && relative.eq_ignore_ascii_case("CRIMSON.EXE"){
+            "CRIMSON.EXE.protected.bak"
+        }else if skip_cabs{expected_installed_path(edition,relative)}else{relative};
         let path=game.join(actual_relative);
-        if skip_cabs && actual_relative!=relative && fs::symlink_metadata(game.join(relative)).is_ok(){
+        if skip_cabs && actual_relative!=relative
+            && !relative.eq_ignore_ascii_case("CRIMSON.EXE")
+            && fs::symlink_metadata(game.join(relative)).is_ok(){
             return Err(format!("obsolete short CD filename remains beside canonical retail file: {relative}"));
         }
         // The expected names are only normalized game-file paths from a
@@ -896,6 +908,19 @@ mod tests {
         assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn completed_install_checks_protected_original_backup_not_active_executable() {
+        let profile=PROFILES.iter().find(|(name,_)|*name=="C_SKIES_DISC_001").unwrap().1;
+        let row=profile.lines().find(|l|l.starts_with("GAME/CRIMSON.EXE\t")).unwrap();
+        let columns=row.split('\t').collect::<Vec<_>>();
+        assert_eq!(columns.len(),3);
+        assert_eq!(columns[2].len(),64);
+        // A completed installation keeps this original in a separate
+        // backup; the installed CRIMSON.EXE must pass the *other*
+        // approved unwrapped executable SHA-256 gate.
+        assert_ne!(columns[2],
+            "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75");
     }
     #[test]
     fn retail_file_renames_keep_bytes_and_refuse_overwrite() {

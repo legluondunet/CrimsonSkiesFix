@@ -4,6 +4,7 @@ mod sha256;
 mod disc_inspect;
 mod update102;
 mod chapter_cabs;
+mod auto_install;
 
 use std::{
     env,
@@ -335,7 +336,10 @@ fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
         return Err("CD installation receipt is unexpectedly large".into());
     }
     let content=fs::read_to_string(&file).map_err(error)?;
-    if !content.lines().any(|l|l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING") {
+    let states=content.lines().filter_map(|l|l.strip_prefix("InstallState="))
+        .collect::<Vec<_>>();
+    if states.len()!=1 || !matches!(states[0],
+        "GAME_FILES_READY_EXECUTABLE_PENDING"|"GAME_READY") {
         return Err("unexpected CD installation state".into());
     }
     let matches=content.lines().filter_map(|l|l.strip_prefix("Edition="))
@@ -348,7 +352,9 @@ fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
 fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
-    let count=disc_inspect::verify_installed_without_cabs(game,edition)?;
+    let state=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
+    let activated=state.lines().any(|l|l=="InstallState=GAME_READY");
+    let count=disc_inspect::verify_installed_without_cabs(game,edition,activated)?;
     // These eight original retail loader/setup companion files come from
     // the CD root, not its GAME/ directory. Verify the original CD hashes.
     let support_count=disc_inspect::verify_retail_support(game,edition)?;
@@ -395,6 +401,15 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !regular(&game.join("CrimsonSkiesFix.ini.example"))
         || !regular(&game.join("build-info.txt")) {
         return Err("missing installed patch documentation/build information".into());
+    }
+    if activated {
+        // The original protected EXE is hash-checked above using the
+        // immutable original-CD manifest under its saved backup name.
+        // The executable used to play is separately pinned to one SHA-256.
+        validated_game_exe(game)?;
+        if !regular(&game.join("CRIMSON.EXE.protected.bak")) {
+            return Err("completed CD installation lost protected EXE backup".into());
+        }
     }
     Ok((edition,count))
 }
@@ -504,7 +519,7 @@ fn usage() {
         "CrimsonSkiesFix {VERSION} ({})\n\
          Automatic installer / verifier / launcher for Crimson Skies 1.02.\n\
          \nUsage:\n\
-         CrimsonSkiesFix.exe            verify or import an adjacent installed game, then play\n\
+         CrimsonSkiesFix.exe            verify, install from adjacent CD or repair, then play\n\
          CrimsonSkiesFix.exe --import DIR   import an existing installed game and play\n\
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
@@ -526,7 +541,7 @@ fn usage() {
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         The approved unwrapped 1.02 executable remains a separate final step.\n\
+         Supply a local approved decrypted 1.02 executable alongside this launcher.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
     );
@@ -627,8 +642,9 @@ fn run() -> Result<i32, String> {
                 ChapterManifest=SHA256_VERIFIED\nChapterPayloads=SHA256_VERIFIED\n\
                 ChapterCABsPruned=8\nRetailSupport=8_FILES_SHA256_VERIFIED\n\
                 RetailNames=VERIFIED\n\
-                WritableDirectories=SavedGames,Planes\nExecutableState=PROTECTED_PENDING\n\
-                VERIFY_INSTALL_RESULT=COMPLETE\n",verification_target.display()),
+                WritableDirectories=SavedGames,Planes\nExecutableState={}\n\
+                VERIFY_INSTALL_RESULT=COMPLETE\n",verification_target.display(),
+                if validated_game_exe(verification_target).is_ok() {"APPROVED_READY"}else{"PROTECTED_PENDING"}),
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
                 VerifiedDirectory={}\nVERIFY_INSTALL_RESULT=ERROR\nERROR={why}\n",verification_target.display()),
         };
@@ -636,7 +652,8 @@ fn run() -> Result<i32, String> {
         return match result {
             Ok((edition,files))=>{
                 println!("CD installation files verified: edition={edition}; original files={files}; official 1.02 asset and ddraw.dll verified.");
-                println!("Only the final executable compatibility step is pending.");
+                println!("Executable state: {}.",
+                    if validated_game_exe(verification_target).is_ok() {"approved 1.02 ready"}else{"protected pending"});
                 Ok(0)
             }
             Err(why)=>Err(format!("{why}; details: {}",log.display()))
@@ -810,47 +827,20 @@ fn run() -> Result<i32, String> {
             Err(why)=>Err(format!("{why}; details: {}",log.display())),
         };
     } else if args.len() == 1 && args[0] == "--verify" {
+        if regular(&game.join(INSTALL_RECEIPT)){
+            verify_installed_cd_assets(&game)?;
+        }
         verify(&game)?;
-        println!("Verified: original game EXE and bundled DirectDraw patch.");
+        println!("Verified: approved game EXE, game data and DirectDraw patch.");
         return Ok(0);
     }
-    if !any_entry(&game) {
-        let source = if args.len() == 2 {
-            PathBuf::from(&args[1])
-        } else {
-            let choices = source_candidates(base, &game)?;
-            if choices.len() != 1 {
-                return Err(format!(
-                    "expected one adjacent installed game directory, found {}; \
-                     use --import DIR or place your existing verified game in CrimsonSkiesFix/. \
-                     ISO/CUE installation is not supported yet",
-                    choices.len()
-                ));
-            }
-            choices[0].clone()
-        };
-        install_from(&source, &game)?;
-    } else if args.len() == 2 {
-        return Err("CrimsonSkiesFix/ already exists; --import never overwrites it".into());
+    if args.len()==2 {
+        if any_entry(&game) {
+            return Err("CrimsonSkiesFix/ already exists; --import never overwrites it".into());
+        }
+        install_from(&PathBuf::from(&args[1]),&game)?;
     }
-    // An installed original CD is useful and verifiable *before* SafeDisc
-    // conversion. On subsequent runs, never report the protected original
-    // as a completed playable installation, and never launch it.
-    if regular(&game.join(INSTALL_RECEIPT)) && validated_game_exe(&game).is_err() {
-        let (edition,count)=verify_installed_cd_assets(&game)?;
-        println!("{} original CD files verified for {edition}.",count);
-        println!("Game data installation is complete; only approved 1.02 executable setup remains.");
-        return Ok(0);
-    }
-    let exe = validated_game_exe(&game)?;
-    deploy_proxy(&game)?;
-    deploy_documentation(&game)?;
-    verify(&game)?;
-    println!("Starting {}...", exe.display());
-    let status = Command::new(&exe).current_dir(&game).status().map_err(error)?;
-    let code = status.code().unwrap_or(2);
-    println!("Game exited with status {code}.");
-    Ok(code)
+    auto_install::auto_run(base,&game)
 }
 
 fn main() {
