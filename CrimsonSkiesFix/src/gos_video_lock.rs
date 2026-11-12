@@ -442,19 +442,27 @@ pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
     if bytes[header+16..].windows(16).any(|part|part==signature.as_slice()){
         return None;
     }
-    // zlib permits any number of empty nonfinal stored blocks, each 5 bytes.
-    // Compress the user's authenticated modified script and choose a level
-    // allowing the replacement to have EXACTLY the original stored length.
+    // zlib permits empty non-final deflate blocks: a 5-byte stored block
+    // or a 6-byte fixed-Huffman EOB followed by an empty stored block.
+    // Every padding size >=20 is a combination of 5 and 6, allowing an
+    // exact-length zlib stream without trailing garbage or ROF relocation.
     for level in 1..=9 {
         let mut writer=ZlibEncoder::new(Vec::new(),Compression::new(level));
         writer.write_all(&modified).ok()?;
         let packed=writer.finish().ok()?;
         if packed.len()<6 || packed.len()>original.compressed{continue;}
         let padding=original.compressed-packed.len();
-        if padding>512 || padding%5!=0{continue;}
+        if padding>512{continue;}
+        let six=padding%5;
+        if six*6>padding{continue;}
+        let five=(padding-six*6)/5;
         let mut replacement=Vec::with_capacity(original.compressed);
         replacement.extend_from_slice(&packed[..2]);
-        for _ in 0..padding/5{
+        for _ in 0..six{
+            // Empty fixed-Huffman block + empty stored block, both nonfinal.
+            replacement.extend_from_slice(&[2,0,0,0,255,255]);
+        }
+        for _ in 0..five{
             replacement.extend_from_slice(&[0,0,0,255,255]);
         }
         replacement.extend_from_slice(&packed[2..]);
