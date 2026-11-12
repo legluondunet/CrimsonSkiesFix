@@ -247,7 +247,7 @@ jobs:
           offset = struct.unpack_from("<I", data, 0x3C)[0]
           if not (0x40 <= offset <= len(data) - 26):
               raise SystemExit("Invalid PE header offset")
-          if data[offset:offset + 4] != b"PE\\0\\0":
+          if data[offset:offset + 4] != b"PE\0\0":
               raise SystemExit("Missing PE signature")
           machine = struct.unpack_from("<H", data, offset + 4)[0]
           magic = struct.unpack_from("<H", data, offset + 24)[0]
