@@ -31,7 +31,7 @@ For the exact supported media and the installation/repair flow, see the [detaile
 
 ## Identify a build
 
-`CrimsonSkiesFix/build-info.txt` in each newly packaged CI artifact records the full source commit, the expected eight-character build label, and the SHA-256 of the exact `ddraw.dll`. Compare `LogIdentity` with the first line of `CrimsonSkiesFix.log` while testing and compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
+`CrimsonSkiesFix/build-info.txt` in each newly packaged CI artifact records the full source commit, the expected eight-character build label, and the SHA-256 of the exact `ddraw.dll`. Compare `LogIdentity` with the game initialization line of `CrimsonSkiesFix.log` while testing (after the installer section when started through the standalone launcher) and compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
 
 The original game's and ROFFILE.DLL's expected hashes are separate from the **proxy DLL** hash in this manifest.
 
