@@ -1,6 +1,6 @@
 # Automatic verified install, repair and launch
 
-This is an EXPERIMENTAL draft milestone in PR #26. Running the standalone Windows-x86 CrimsonSkiesFix.exe with no arguments now verifies, installs, repairs when required, and launches the game.
+This experimental standalone installer is implemented in stacked PRs #26 and #27. The owner validated FR and DE installations and repeated launches under GE-Proton11-12 in November 2026. USA/Europe is identified by an exact CD manifest but lacks current owner runtime testing; native Windows validation of this candidate remains pending. Running the Windows-x86 `CrimsonSkiesFix.exe` without arguments verifies, installs, repairs when needed, and launches the approved game.
 
 ## Local sources (no original files are bundled)
 
@@ -14,7 +14,7 @@ For an already verified, fully playable installation, these three external files
 
 ## Default behavior
 
-1. If the game directory has an original-CD installation receipt, verify the edition-specific original-file SHA-256 inventory, all installed retail support files, 178 CAB members via the sealed chapter manifest, the official 1.02 ROF, the included DirectDraw proxy and the approved game EXE.
+1. If the game directory has an original-CD installation receipt, verify the edition-specific original-file SHA-256 inventory, all installed retail support files, **177 chapter CAB members** via the sealed chapter manifest (plus 6 original direct ZBD files), the official 1.02 ROF, the included DirectDraw proxy and the approved game EXE.
 2. If the game data is verified but the protected CD EXE is still pending, locate the local approved decrypted EXE by SHA-256 and install its copy as CRIMSON.EXE. Preserve the untouched protected original under CRIMSON.EXE.protected.bak. The complete file manifest continues to authenticate this backup against the original CD.
 3. If only the bundled DirectDraw DLL differs, use the existing verified backup-and-replace mechanism and revalidate the whole game without rereading the CD.
 4. If the game data is corrupted, build a complete new installation alongside the old one, from an authenticated original CD, the authenticated official updater, and an authenticated decrypted executable. Preserve the original directory and copy SavedGames, Planes and CrimsonSkiesFix.ini into the verified new installation. Refuse unsafe links and collisions.
@@ -36,10 +36,12 @@ Legacy imported games without the new original-CD receipt retain their existing 
 
 No original game or decrypted executable is shipped with CrimsonSkiesFix. No registry, DirectPlay, system DLL, shortcut, or uninstaller operations are introduced here. Those historical setup actions remain for separate verification.
 
-## Owner acceptance tests before merging
+## Release-candidate acceptance matrix (12 November 2026)
 
-- Fresh USA/Europe, FR and DE CDs: fully verified file layout and CAB removal, original EXE backed up, approved 1.02 EXE activated and actual game launch.
-- Subsequent launch without disc/update/decrypted source files succeeds, without extraction.
-- Partial or corrupted game assets cause a safe repair, preserving saved games, custom planes, INI and original directory.
-- Missing official CD, updater or approved EXE produces a clear error without altering an existing incomplete game (apart from a deliberate verified proxy-only update).
-- Existing repair staging or backup never gets overwritten.
+- **FR — accepted by owner under GE-Proton:** real-disc installation, automatic launch, verified in-memory GOS VIDEO.SCRIPT lock and unified session logging.
+- **DE — accepted by owner under GE-Proton:** real-disc installation including authenticated CAB 8.3→long filename mapping, repeat verified launch without re-extraction, managed GOS overlay, read-only Graphics/Resolution controls, and clean process exit.
+- **USA/Europe — implementation only:** exact 112-file original-CD profile and matching synthetic CAB assertions; **no owner original CD remains for actual runtime testing**. Do not advertise gameplay validation.
+- **Native Windows — outstanding for this candidate:** older DLL with an explicit compatibility INI was tested on Windows 11, but not the latest standalone package or native VIDEO.SCRIPT memory virtualization. Not a blocker for a clearly labelled experimental GE-Proton-tested prerelease if the owner elects to publish it.
+- **Safety checks enforced by CI:** missing sources do not overwrite the original installation, player data is preserved on rebuild, staged directories are not deleted automatically, and exactly one PE32 x86 launcher artifact is emitted.
+
+Do not claim all-edition or native-Windows gameplay acceptance from the Rust unit tests or the installer manifest alone.
