@@ -811,7 +811,9 @@ mod tests{
         assert_eq!(expand(&root).unwrap().members,8);
         assert!(zbd.join("C1/RTEXTU~1.ZBD").is_file());
         assert!(zbd.join("C2B/RT60AC~1.ZBD").is_file());
-        let final_install=finalize_without_archives(&root,"C_SKIES_DE_001").unwrap();
+        // This synthetic CAB contains the FR-only RT60AC alias, not the
+        // authentic USA/DE RT6C9C member. Exercise the FR source profile.
+        let final_install=finalize_without_archives(&root,"C_SKIES_FR_001").unwrap();
         assert_eq!(final_install.short_name_candidates,0);
         assert!(zbd.join("C1/rtexture15.zbd").is_file());
         assert!(zbd.join("C2B/rtexture9.zbd").is_file());
