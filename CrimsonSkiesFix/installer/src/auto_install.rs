@@ -14,8 +14,32 @@ const AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
 /// Discover an external executable by its *full byte identity*, not its
 /// basename, because owners legitimately rename their decrypted file.
 fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
-    if let Ok(exe)=validated_game_exe(existing){
-        return Ok(exe);
+    // A corrupt/missing ROF must not prevent reuse of a perfectly valid
+    // approved EXE that was already installed. Check the EXE's bytes
+    // separately from the game's asset verifier during repair preflight.
+    let mut installed_valid=Vec::<PathBuf>::new();
+    for name in ["CRIMSON.EXE","CRIMSON-UNWRAPPED.EXE"] {
+        let candidate=existing.join(name);
+        if regular(&candidate)
+            && fs::metadata(&candidate).map_err(error)?.len()==GAME_EXE_SIZE
+            && digest(&candidate)?==GAME_EXE_HASH {
+            installed_valid.push(candidate);
+        }
+    }
+    if installed_valid.len()>1 {
+        return Err("ambiguous approved game EXEs in existing installation".into());
+    }
+    if let Some(exe)=installed_valid.pop(){
+        // A protected-pending install can be activated only with an EXE
+        // outside its game directory: keeping an extra alternate candidate
+        // there would make validated_game_exe reject the final directory.
+        let pending=fs::read_to_string(existing.join(INSTALL_RECEIPT))
+            .map(|s|s.lines().any(|l|
+                l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"))
+            .unwrap_or(false);
+        if !pending || exe.file_name().is_some_and(|name|name==OsStr::new("CRIMSON.EXE")) {
+            return Ok(exe);
+        }
     }
     let mut valid=Vec::<PathBuf>::new();
     for entry in fs::read_dir(base).map_err(error)?{
