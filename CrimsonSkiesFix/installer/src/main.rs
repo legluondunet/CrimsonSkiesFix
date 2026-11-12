@@ -3,6 +3,7 @@
 mod sha256;
 mod disc_inspect;
 mod update102;
+mod managed_gos_patch;
 mod chapter_cabs;
 mod auto_install;
 
@@ -384,11 +385,12 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
             return Err(format!("chapter CAB verification receipt does not match: {key}"));
         }
     }
-    if !regular(&game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF"))
-        || digest(&game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF"))?
-            !=update102::ASSET_SHA256 {
-        return Err("installed 1.02 CRIMPTCH.ROF missing or does not match official SHA-256".into());
-    }
+    // The game's own official 1.02 asset is immutable, but our GOS Video
+    // control lock replaces it with a managed two-script overlay at runtime.
+    // Verify the exact official archive OR a strictly authenticated managed
+    // postimage together with its exact official original backup.
+    // Never trigger a full CD extraction for a known reversible GOS overlay.
+    managed_gos_patch::verify_game_overlay(game)?;
     for folder in ["SavedGames","Planes"] {
         if !directory(&game.join(folder)) {
             return Err(format!("missing or unsafe writable game directory: {folder}"));
