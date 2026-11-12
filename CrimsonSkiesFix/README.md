@@ -170,7 +170,7 @@ This is the **owner's previously validated configuration**. `LegacyOffscreenRGB5
 
 ### GOS Video dropdown lock, backup and restoration
 
-`GosVideoLock=on` accepts only two complete, fingerprinted `crimson.rof` archives: the original 60,236,221-byte variant (SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`) and the French 62,745,707-byte variant (SHA-256 `99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f`). Both contain the identical, verified `VIDEO.SCRIPT` (SHA-256 `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`). Unknown full-archive hashes are still refused; script and reversible-overlay verification remain unchanged.
+The experimental `GosVideoLock=on` path identifies exactly three complete `crimson.rof` archives using the installer's original-CD SHA-256 profiles: USA (60,236,221 bytes, SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`), FR (62,745,707 bytes, SHA-256 `99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f`), and DE (62,678,770 bytes, SHA-256 `4ccc5d25c2635ea9ad042ff1e356408d504e4c616389084cb087b49ddb28cbc7`). The USA and FR copies contain the same independently verified `VIDEO.SCRIPT` (SHA-256 `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`). **DE has not yet been tested with its original archive bytes**: accepting its whole-archive hash does not imply that its script is identical. The runtime must also authenticate the extracted script's exact hash and length. If DE has a different script, the lock fails closed; other editions or modified archives are never guessed from their country names.
 
 
 On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accepted executable and the original `crimson.rof` and `VIDEO.SCRIPT`, then create a small overlay containing the unchanged original `AIRFRAME.SCRIPT` patch and an edited, owner-derived `VIDEO.SCRIPT`. It modifies **only** the installed `GOSDATA/ASSETS/crimptch.rof`, saving a byte-for-byte original as:
@@ -179,7 +179,7 @@ On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accep
 GOSDATA/ASSETS/crimptch.rof.CrimsonSkiesFix.original.bak
 ```
 
-The original `crimson.rof`, executable and DLL are not modified. A repeat launch recognizes the existing override and does not rewrite it. Unsupported/modified archives, missing or inconsistent backups and errors are handled conservatively. No original game script is distributed in the repository or DLL.
+The game engine may ignore the `VIDEO.SCRIPT` member placed in the small overlay archive. In the current experimental workaround, the SHA-256-verified `ROFFILE.DLL` read of the **original `CRIMSON.ROF`** receives the corrected, user-derived script **only in memory**. The parsed ROF member descriptor supplies its exact offset without a locale-specific constant; a standards-compliant zlib stream is regenerated to match that member's original compressed byte length, preserving every other member and file position. This needs the authentic original archive, the exact 797-byte official patch backup, and the managed modified overlay; any mismatch disables virtualization. The actual original `CRIMSON.ROF`, executable and DLL are not modified. A repeat launch recognizes the existing overlay and does not rewrite it. No original game script is distributed in the project. This method is **owner-validated under GE-Proton for FR, both with `Log=1` and `Log=0`**, but not yet validated in-game for USA, DE, or native Windows.
 
 | Setting | Effect |
 |---|---|
@@ -189,7 +189,7 @@ The original `crimson.rof`, executable and DLL are not modified. A repeat launch
 
 After restoring, change the setting back to `off` (or `on` to install it again). **Always use `restore` before removing the DLL if you want the original unmodified GOS Video screen.** The override is persistent across game exits and DLL removal.
 
-The GOS overlay installation, idempotence and restoration were validated under Wine/GE-Proton on 4 November 2026. On 8 November, the owner also validated **disabled Video Graphics/Resolution controls on native Windows**: the verified Windows ROFFILE hook selected the installed managed patch, whereas GE-Proton directly loaded that already-patched archive without requiring redirection. Native Windows restoration was not independently retested in this PR.
+Historical GOS overlay installation, idempotence and restoration were validated under Wine/GE-Proton in early November 2026. Earlier native Windows tests used a different overlay-routing path; those tests do not validate this new read-buffer virtualization. The owner confirmed the native disabled **Graphics**/**Resolution** controls with the in-memory method on the original FR edition under GE-Proton on 12 November 2026, with and without diagnostic logging. USA/DE runtime acceptance and native Windows acceptance remain outstanding. For other media editions, the installer must supply only the exactly hashed original assets and official 1.02 update; fail-closed checks must not be bypassed.
 
 ## Wine ROFFILE.DLL INI parser guard (enabled by default)
 
