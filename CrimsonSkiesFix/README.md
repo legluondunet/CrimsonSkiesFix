@@ -67,8 +67,15 @@ If files are damaged, the launcher constructs a separate verified
 installation, migrates the player's SavedGames, Planes and active INI,
 and retains the old installation in CrimsonSkiesFix.previous rather
 than deleting it. If a required original source is absent, it refuses
-to overwrite the current directory. It writes a separate
-CrimsonSkiesFix.installer.log with the result.
+to overwrite the current directory. The no-argument launcher now writes
+one `CrimsonSkiesFix.log` beside `CrimsonSkiesFix.exe`: an installer section
+followed by the game's DirectDraw diagnostics (when available). The game
+appends to that same session only when started by the launcher; otherwise
+a manual game launch starts its own log. Every new launcher run replaces
+the previous session log. After creating the unified report, the launcher
+removes an obsolete `CrimsonSkiesFix.installer.log` only if its small,
+regular-file contents match the old launcher-generated format. Unrecognized
+files are left untouched.
 
 This is **not yet validated end to end on all three physical original
 editions**. The existing manual DLL installation described below remains
@@ -122,9 +129,11 @@ Under PowerShell, check the SHA-256 of the installed proxy:
 Get-Content .\build-info.txt
 ```
 
-Compare the computed hash with `DllSha256` and check that the first line
-of `CrimsonSkiesFix.log` begins with the `LogIdentity` value, followed
-by ` - init`. The `Commit` and `Source` fields identify the exact
+Compare the computed hash with `DllSha256` and find the game's
+initialization line in `CrimsonSkiesFix.log`; it begins with `LogIdentity`
+and ends with ` - init; ...`. With the standalone launcher, the file begins
+with an auto-install result and the game initialization follows the
+`=== CrimsonSkiesFix GAME ===` separator. The `Commit` and `Source` fields identify the exact
 repository state. The distributed `LICENSE` is copied verbatim from
 the repository and should be preserved when sharing the proxy DLL.
 The standalone artifact itself contains one EXE; these files are created inside the game directory.
@@ -296,7 +305,7 @@ runtime verification at the original reproducible Wine crash location.
 
 ## Logging and diagnostics
 
-Set `[Debug] Log=1` to write `CrimsonSkiesFix.log` next to the loaded `ddraw.dll`; logging is normally off. Rejected executables are logged even when ordinary logging is disabled, if the directory is writable.
+The standalone launcher generates a **single per-run** `CrimsonSkiesFix.log` beside `CrimsonSkiesFix.exe`, containing the installer/repair result and then the game session. The child game appends only when explicitly started by the launcher; starting a game manually initializes its own log (in the game directory for standalone-independent DLL installations). Set `[Debug] Log=1` for full game diagnostics. Rejected executables can be logged even with `Log=0` if the directory is writable. An optional `CrashBltTrace=1` deliberately creates a separate bounded rolling crash trace; it is not part of the normal unified log.
 
 The initialization report provides privacy-filtered Windows/Wine, CPU, display, graphics and controller information. Optional `[Debug]` flags include `SurfaceUsageTrace`, `CrashBltTrace` and `FrameTimeTrace`, all disabled by default. Retired `NativeIntroExclusive`, `NativeGdiSidebars`, `ColorProbe` and `ColorCapture` INI keys are ignored by this branch; no BMP files are created. Crash Blt tracing is intentionally verbose and writes a separate bounded rotating trace; disable it again after diagnosis.
 
@@ -308,8 +317,9 @@ Useful GOS log markers: `GOS-VIDEO-LOCK:`, `MENU-RESOLUTION-LABEL:`, `WINDOWED-W
 
 A successful graphics session does not establish that Crimson Skies shuts
 down cleanly. The DLL intentionally performs **no file I/O under the loader
-lock in `DllMain`**, so the last line of `CrimsonSkiesFix.log` cannot be
-used as an exit-status indicator.
+lock in `DllMain`**. The last DirectDraw DLL line alone is not an exit
+status indicator; when launched by `CrimsonSkiesFix.exe`, the parent
+appends `GAME_EXIT_CODE=...` after waiting for the child process to exit.
 
 The repository includes an optional read-only external process observer:
 `tools/verify_game_exit.py`. On Linux, launch the **actual game process**
