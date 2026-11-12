@@ -40,6 +40,38 @@ Only the exact verified, unmodified SafeDisc-free **Crimson Skies 1.0.2.0** exec
 
 On a mismatch, the DLL reports the actual SHA-256 and refuses to launch; it never silently falls back to an unsupported executable.
 
+## Standalone automatic installation and repair (experimental PR #26)
+
+The separate Windows-x86 standalone launcher, **CrimsonSkiesFix.exe**, now
+automatically verifies the existing game and launches it when all pinned
+hashes match. When no game exists, it installs from an owner-provided
+authentic USA/Europe, FR or DE ISO/CUE and the official 1.02 update, then
+installs an exact-hash-approved, user-provided decrypted 1.02 game EXE and
+launches the game. The original protected EXE is preserved as
+CRIMSON.EXE.protected.bak.
+
+Place one original ISO or CUE with its BIN/IMG, the official 1.02
+updater, and your own **2,580,480-byte** decrypted EXE with SHA-256
+43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75
+beside the launcher; then run it without arguments. External originals
+are needed only for a fresh installation or repair. A fully verified
+installed game launches without media.
+
+If files are damaged, the launcher constructs a separate verified
+installation, migrates the player's SavedGames, Planes and active INI,
+and retains the old installation in CrimsonSkiesFix.previous rather
+than deleting it. If a required original source is absent, it refuses
+to overwrite the current directory. It writes a separate
+CrimsonSkiesFix.installer.log with the result.
+
+This is **not yet validated end to end on all three physical original
+editions**. The existing manual DLL installation described below remains
+available. The original game, decrypted executable and protected
+installer are **never bundled**.
+
+Detailed behavior and testing checklist:
+[automatic installer workflow](docs/automatic-installer-workflow.md).
+
 ## Installation
 
 Obtain the **CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL** artifact from a successful [Windows x86 GitHub Actions build](https://github.com/legluondunet/CrimsonSkiesFix/actions). Copy the contents alongside your supported executable (back up any previous `ddraw.dll` first):

@@ -880,6 +880,26 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn cd_receipt_accepts_ready_only_once_and_tracks_exact_edition() {
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!("crimson-cd-ready-{}-{id}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let receipt=dir.join(INSTALL_RECEIPT);
+        fs::write(&receipt,
+            "Project=CrimsonSkiesFix\nEdition=C_SKIES_DISC_001\nInstallState=GAME_READY\n"
+        ).unwrap();
+        assert_eq!(installed_cd_edition(&dir).unwrap(),"C_SKIES_DISC_001");
+        // A receipt alone can identify the intended edition, but it can
+        // never validate the actual files or executable.
+        assert!(verify_installed_cd_assets(&dir).is_err());
+        fs::write(&receipt,
+            "Project=CrimsonSkiesFix\nEdition=C_SKIES_DISC_001\nInstallState=GAME_READY\nInstallState=GAME_READY\n"
+        ).unwrap();
+        assert!(installed_cd_edition(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn side_by_side_test_directories_never_alias_default_install() {
         let base=Path::new("test");
         let d=base.join("CrimsonSkiesFix");

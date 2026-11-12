@@ -217,9 +217,15 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // If just our bundled DLL changed across versions, repair
                 // that first without asking for the original disc again.
                 if let Ok(())=deploy_proxy(game) {
-                    if verify_installed_cd_assets(game).is_ok()
-                        && validated_game_exe(game).is_ok() {
-                        return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                    if verify_installed_cd_assets(game).is_ok() {
+                        if validated_game_exe(game).is_ok() {
+                            return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                        }
+                        // When the only other missing step is an approved
+                        // EXE, do not re-extract an already verified CD.
+                        let source=approved_executable(base,game)?;
+                        activate_verified_exe(game,&source)?;
+                        return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                     }
                 }
                 build_and_publish(base,game,true)?;
