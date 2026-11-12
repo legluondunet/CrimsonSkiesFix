@@ -183,9 +183,14 @@ fn open_cue(path:&Path)->Result<ImageSource,String> {
                 let fields=val.split_whitespace().collect::<Vec<_>>();
                 if fields.len()!=2 {return Err(format!("CUE line {}: invalid INDEX",i+1));}
                 let target=tracks.last_mut().ok_or("INDEX before TRACK")?;
-                if fields[0]=="01" {
+                // CUE sheets from some imaging programs use INDEX 1
+                // rather than INDEX 01. These are the same numeric index;
+                // parse the number while retaining duplicate protection.
+                let index=fields[0].parse::<u32>()
+                    .map_err(|_|format!("CUE line {}: invalid INDEX number",i+1))?;
+                if index==1 {
                     if target.index.replace(parse_msf(fields[1])?).is_some() {
-                        return Err(format!("CUE line {}: repeated INDEX 01",i+1));
+                        return Err(format!("CUE line {}: repeated INDEX 01 (or 1)",i+1));
                     }
                 }
             }
@@ -1021,6 +1026,41 @@ mod tests {
         let report=inspect(&dir,None).unwrap();
         assert!(report.contains(&format!("CRIMSON.EXE\t5\t{}\tOK",sha256::hex(b"hello"))));
         assert!(report.contains("Format=CUE/MODE1/2352"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cue_unpadded_index_one_with_img_is_identical_to_original_iso() {
+        // Exact CUE layout supplied by the owner: CRIMSON.img with
+        // TRACK 1 MODE1/2352 and INDEX 1 00:00:00 (CRLF line endings).
+        let dir=workdir();
+        let iso=make_iso();
+        let mut img=vec![0u8;21*2352];
+        for (i,sector) in iso.chunks_exact(USER_SECTOR).enumerate(){
+            img[i*2352+16..i*2352+16+USER_SECTOR].copy_from_slice(sector);
+        }
+        fs::write(dir.join("CRIMSON.img"),img).unwrap();
+        let cue=dir.join("CRIMSON.cue");
+        fs::write(&cue,
+            "FILE \"CRIMSON.img\" BINARY\r\n   TRACK 1 MODE1/2352\r\n   INDEX 1 00:00:00\r\n"
+        ).unwrap();
+        let result=inspect(&dir,Some(&cue)).unwrap();
+        assert!(result.contains("Format=CUE/MODE1/2352"));
+        assert!(result.contains(&format!("CRIMSON.EXE\t5\t{}\tOK",sha256::hex(b"hello"))));
+        // Changing only the zero-padding must not change interpretation.
+        fs::write(&cue,
+            "FILE \"CRIMSON.img\" BINARY\n TRACK 01 MODE1/2352\n INDEX 01 00:00:00\n"
+        ).unwrap();
+        assert_eq!(inspect(&dir,Some(&cue)).unwrap(),result);
+        // Both spellings refer to the same INDEX 01; reject duplicate.
+        fs::write(&cue,
+            "FILE \"CRIMSON.img\" BINARY\n TRACK 1 MODE1/2352\n INDEX 1 00:00:00\n INDEX 01 00:00:00\n"
+        ).unwrap();
+        assert!(inspect(&dir,Some(&cue)).is_err());
+        // INDEX 00 alone is still not the data-track start.
+        fs::write(&cue,
+            "FILE \"CRIMSON.img\" BINARY\n TRACK 1 MODE1/2352\n INDEX 0 00:00:00\n"
+        ).unwrap();
+        assert!(inspect(&dir,Some(&cue)).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
