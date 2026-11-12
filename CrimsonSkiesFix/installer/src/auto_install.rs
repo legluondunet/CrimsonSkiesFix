@@ -263,6 +263,10 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // that first without asking for the original disc again.
                 if let Ok(())=deploy_proxy(game) {
                     if verify_installed_cd_assets(game).is_ok() {
+                        // Keep build-info.txt in sync with the newly installed
+                        // DLL. Otherwise --verify passes but reports the old
+                        // embedded DLL SHA and commit from the last launcher.
+                        deploy_documentation(game)?;
                         if validated_game_exe(game).is_ok() {
                             return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
                         }
