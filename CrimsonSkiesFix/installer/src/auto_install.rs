@@ -300,10 +300,12 @@ pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
         Ok(action)=>format!(
             "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
-             OriginalProtectedBackup={}\nAUTO_INSTALL_RESULT=READY\n",
+             OriginalProtectedBackup={}\nGosOverlayState={}\nAUTO_INSTALL_RESULT=READY\n",
             game.display(),if regular(&game.join(INSTALL_RECEIPT)){"YES"}else{"LEGACY_ONLY"},
             if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
-            if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"}),
+            if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
+            crate::managed_gos_patch::verify_game_overlay(game)
+                .map(|state|state.label()).unwrap_or("INVALID_OR_UNKNOWN")),
         Err(err)=>format!(
             "CrimsonSkiesFix AUTO INSTALL v1\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
             game.display()),
