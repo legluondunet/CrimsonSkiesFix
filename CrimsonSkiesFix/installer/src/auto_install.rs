@@ -314,13 +314,19 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
 /// remains as the first section of the ONE CrimsonSkiesFix.log file.
 /// The child DLL appends its own diagnostics without truncating it.
 pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
-    let result=auto_prepare(base,game);
+    // Include the final on-disk verification in the status that we
+    // persist. Never log READY if verification fails after repair.
+    let result=auto_prepare(base,game).and_then(|action|{
+        if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
+        let exe=verify(game)?;
+        Ok((action,exe))
+    });
     let log=base.join(AUTO_LOG);
     if any_entry(&log) && !regular(&log){
         return Err("unsafe installer log path (not a regular file)".into());
     }
     let message=match &result{
-        Ok(action)=>format!(
+        Ok((action,_exe))=>format!(
             "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
              OriginalProtectedBackup={}\nGosOverlayState={}\nAUTO_INSTALL_RESULT=READY\n",
@@ -335,9 +341,7 @@ pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
     };
     fs::write(&log,message).map_err(error)?;
     remove_old_installer_log(base);
-    let action=result?;
-    if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
-    let exe=verify(game)?;
+    let (action,exe)=result?;
     println!("{action}: launching {}...",exe.display());
     let status=Command::new(&exe)
         .current_dir(game)
