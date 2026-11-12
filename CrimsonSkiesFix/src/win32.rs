@@ -1,4 +1,4 @@
-use std::{ffi::{c_char, c_void, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{ffi::{c_char, c_void, OsStr, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use crate::config::DEFAULT_INI;
 use std::sync::OnceLock;
 
@@ -418,19 +418,33 @@ fn dll_directory()->Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
 }
 
+fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
+    if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"){
+        return None;
+    }
+    let parent=dll_dir.parent()?;
+    if !safe_directory(parent,false) ||
+       !regular_file(&parent.join("CrimsonSkiesFix.exe")){return None;}
+    Some(parent.to_path_buf())
+}
+
 fn log_directory()->Option<PathBuf> {
     let dll_dir=dll_directory()?;
-    // Standalone layout: launcher sits immediately above game folder.
+    // Standalone layout: launcher sits immediately above the game folder.
     // Direct DLL installations continue writing beside ddraw.dll.
-    if dll_dir.file_name().map(|s|s.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"))
-        .unwrap_or(false) {
-        if let Some(parent)=dll_dir.parent() {
-            if safe_directory(parent,false) && regular_file(&parent.join("CrimsonSkiesFix.exe")) {
-                return Some(parent.to_path_buf());
-            }
-        }
-    }
-    Some(dll_dir)
+    Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
+}
+
+/// Only an EXE launched by our standalone installer is allowed to append
+/// gameplay diagnostics to the installer's newly written session report.
+/// A direct/manual game launch still resets its own gameplay log.
+pub fn append_to_launcher_session_log()->bool{
+    let marker=std::env::var_os("CRIMSONSKIESFIX_APPEND_LAUNCHER_LOG");
+    if marker.as_deref()!=Some(OsStr::new("1")){return false;}
+    dll_directory()
+        .as_deref()
+        .and_then(standalone_launcher_root)
+        .is_some()
 }
 
 pub fn log_path()->Option<PathBuf> {
@@ -789,6 +803,25 @@ mod early_monitor_tests{
     }
 }
 
+#[cfg(test)]
+mod unified_log_routing_tests {
+    use super::*;
+    #[test]
+    fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
+        let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-merged-log-route-{}-{id}",std::process::id()));
+        let game=root.join("CrimsonSkiesFix");
+        let wrong=root.join("DifferentGame");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(&wrong).unwrap();
+        assert!(standalone_launcher_root(&game).is_none());
+        fs::write(root.join("CrimsonSkiesFix.exe"),b"test-only fake exe").unwrap();
+        assert_eq!(standalone_launcher_root(&game),Some(root.clone()));
+        assert!(standalone_launcher_root(&wrong).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 #[cfg(test)]
 mod persistent_ini_tests {
     use super::*;
