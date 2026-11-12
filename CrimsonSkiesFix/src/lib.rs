@@ -5,6 +5,7 @@ mod config;
 mod build_info;
 mod menu_scene;
 mod gos_video_lock; // experimental, backed-up native GOS Video .rof overlay
+mod gos_registry_diag; // opt-in retail UIAssetPath/EXE Path read-only provenance
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
@@ -373,6 +374,9 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             config.native_3d_widescreen &&
             config.desktop_resolution
         );
+        // Compare the retail installation's original UI asset-path registration
+        // with our standalone game folder; do not modify registry state.
+        if config.log_enabled {gos_registry_diag::report();}
     });
     static ROF_ROUTING_EARLY_ONCE:Once=Once::new();
     ROF_ROUTING_EARLY_ONCE.call_once(native_rof_open_trace::probe);
