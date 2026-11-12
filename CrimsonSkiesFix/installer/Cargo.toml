@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
 cab = "=0.6.0"
+# Read-only verification of managed GOS VIDEO.SCRIPT zlib payload.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
 panic = "abort"
