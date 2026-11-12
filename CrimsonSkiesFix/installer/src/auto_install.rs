@@ -82,7 +82,10 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
         let _=fs::remove_file(&pending);
         return Err("abandoned ready receipt exists; refusing to replace it".into());
     }
-    fs::write(&receipt_pending,new_receipt).map_err(error)?;
+    if let Err(err)=fs::write(&receipt_pending,new_receipt) {
+        let _=fs::remove_file(&pending);
+        return Err(format!("cannot stage ready installation receipt: {err}"));
+    }
     if let Err(err)=fs::rename(&active,&backup){
         let _=fs::remove_file(&pending);
         let _=fs::remove_file(&receipt_pending);
@@ -175,19 +178,37 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     verify_installed_cd_assets(&new)?;
     verify(&new)?;
     if old_present {
-        // A failure during publication must put the original directory back.
+        // Publish using a reversible directory swap. If the final
+        // post-publish SHA check fails, put the original directory back,
+        // leaving the candidate under the separate reconstruction name.
         fs::rename(game,&previous).map_err(error)?;
         if let Err(err)=fs::rename(&new,game){
             let rollback=fs::rename(&previous,game);
             return Err(format!("cannot publish rebuilt game: {err}; rollback={rollback:?}"));
         }
+        let validated=verify_installed_cd_assets(game)
+            .and_then(|_|verify(game).map(|_|()));
+        if let Err(reason)=validated {
+            if let Err(err)=fs::rename(game,&new){
+                return Err(format!(
+                    "repaired installation failed final SHA verification ({reason});                      old installation is safe in {} but new game could not be moved: {err}",
+                    previous.display()));
+            }
+            if let Err(err)=fs::rename(&previous,game){
+                return Err(format!(
+                    "repaired installation failed final SHA verification ({reason});                      original game remains in {} because rollback failed: {err}",
+                    previous.display()));
+            }
+            return Err(format!(
+                "rebuilt game failed post-publication verification ({reason});                  previous game restored; failed rebuild retained at {}",new.display()));
+        }
         println!("Previous installation preserved at {}.",previous.display());
     }else{
         if any_entry(game){return Err("game target appeared while installing; refusing overwrite".into());}
         fs::rename(&new,game).map_err(error)?;
+        verify_installed_cd_assets(game)?;
+        verify(game)?;
     }
-    verify_installed_cd_assets(game)?;
-    verify(game)?;
     Ok(())
 }
 
