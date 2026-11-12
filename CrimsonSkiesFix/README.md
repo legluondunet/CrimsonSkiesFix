@@ -74,45 +74,46 @@ Detailed behavior and testing checklist:
 
 ## Installation
 
-Obtain the **CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL** artifact from a successful [Windows x86 GitHub Actions build](https://github.com/legluondunet/CrimsonSkiesFix/actions). Copy the contents alongside your supported executable (back up any previous `ddraw.dll` first):
+Download **CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL** from a successful [Windows x86 GitHub Actions build](https://github.com/legluondunet/CrimsonSkiesFix/actions). The archive contains **one file**, `CrimsonSkiesFix.exe`. This launcher embeds the already verified Windows x86 `ddraw.dll`; no separate DLL download is published.
+
+For a fresh install, put an authentic supported ISO or CUE/BIN, the official 1.02 update and your own approved decrypted 1.02 EXE beside `CrimsonSkiesFix.exe`, then run it. Existing verified installations can launch without original media. The launcher installs the proxy beside `CRIMSON.EXE` and writes its documentation and template into the game directory. It never packages copyrighted original game files.
+
+After installation, the relevant files have this layout:
 
 ```text
-Crimson Skies/
-├── CRIMSON.EXE                     # supported SHA-256 (name may differ)
-├── ddraw.dll                       # CrimsonSkiesFix Windows x86 DLL
-├── GOSDATA/
-│   └── ASSETS/
-│       ├── crimson.rof             # original game content: DO NOT replace
-│       └── crimptch.rof            # small original GOS overlay
-└── CrimsonSkiesFix/
-    ├── CrimsonSkiesFix.ini.example # shipped with the build
-    ├── CrimsonSkiesFix.ini         # generated once; never shipped
-    ├── README.md
-    ├── LICENSE                     # GPL-3.0 full license text
-    └── build-info.txt              # source SHA and DLL SHA-256
+CrimsonSkiesFix.exe                 # standalone installer and launcher
+CrimsonSkiesFix/
+├── CRIMSON.EXE                     # validated user-provided 1.02 EXE
+├── ddraw.dll                       # extracted from the launcher
+├── GOSDATA/ASSETS/                 # user's original ROF assets
+├── CrimsonSkiesFix.ini.example    # generated template, not active
+├── CrimsonSkiesFix.ini            # generated on first game launch
+├── README.md
+├── LICENSE
+└── build-info.txt                 # exact source and installed DLL digest
 ```
 
 **Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
 the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
-(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix.ini` in the installed game directory yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
-The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
+The DLL must be **next to the game executable**, not inside a separate configuration subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix.ini` in the installed game directory after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
 Wine users may need `WINEDLLOVERRIDES="ddraw=n,b"` to force the native proxy. The same Windows x86 DLL is used under Wine/Proton; it is **not** a Linux shared object.
 
-## Verify the downloaded DLL
+## Verify the DLL installed by the launcher
 
-New CI artifacts include `CrimsonSkiesFix/build-info.txt` with the exact
+The standalone launcher installs `build-info.txt` beside the game EXE with the exact
 Git source commit, the expected version/short-SHA text logged at startup,
 and the SHA-256 and size of the corresponding `ddraw.dll`. This prevents
-confusing an older DLL with a newer PR build that has the same download name.
+confusing an older installed DLL with the one embedded in the current launcher.
 It is **not** a cryptographic signature by the project author.
 
 Under PowerShell, check the SHA-256 of the installed proxy:
 
 ```powershell
 (Get-FileHash .\ddraw.dll -Algorithm SHA256).Hash
-Get-Content .\CrimsonSkiesFix\build-info.txt
+Get-Content .\build-info.txt
 ```
 
 Compare the computed hash with `DllSha256` and check that the first line
@@ -120,7 +121,7 @@ of `CrimsonSkiesFix.log` begins with the `LogIdentity` value, followed
 by ` - init`. The `Commit` and `Source` fields identify the exact
 repository state. The distributed `LICENSE` is copied verbatim from
 the repository and should be preserved when sharing the proxy DLL.
-Older experimental archives may not contain these two files.
+The standalone artifact itself contains one EXE; these files are created inside the game directory.
 
 ## Settings
 
