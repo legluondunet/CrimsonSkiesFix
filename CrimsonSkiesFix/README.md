@@ -134,7 +134,7 @@ Set `AspectRatio=4:3` for 4:3 gameplay with black sidebars. An existing custom I
 
 ## Compatibility
 
-CrimsonSkiesFix is for the **original PC game**, not the Xbox title. Wine/GE-Proton has been used for gameplay testing. Native Windows 11 support is included, but the complete default graphics configuration has not been validated on every Windows GPU and DPI setup. See the [1.0 release notes](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0) for known limitations.
+CrimsonSkiesFix is designed for the **original Crimson Skies (2000) PC game** on Windows and Wine/Proton. The Xbox edition and unrelated re-releases are not supported.
 
 ## License
 
