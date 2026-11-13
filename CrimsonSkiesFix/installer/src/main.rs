@@ -494,7 +494,7 @@ fn run() -> Result<i32, String> {
         return inspect_cd(base,&image,track.as_deref(),verbose);
     }
     let game = base.join("CrimsonSkiesFix");
-    if verbose {
+    if verbose && !(args.len()==1 && args[0]=="--launch-no-verify") {
         println!("VERBOSE: launcher={} game={} installed_exe={} runtime_dll={}",
             launcher.display(),game.display(),
             regular(&game.join("CRIMSON.EXE")),regular(&game.join("ddraw.dll")));
