@@ -146,13 +146,15 @@ protection, Windows-native compatibility fixes and GOS Graphics/Resolution
 lock are already active when the exact game/platform preflight succeeds.
 There are **no mandatory fix switches to enable**.
 
-The first-run `CrimsonSkiesFix.ini` and shipped `.ini.example` contain:
+The first-run `CrimsonSkiesFix.ini` and shipped `.ini.example` now contain three user-facing settings:
 
 ```ini
 ; CrimsonSkiesFix — optional user preferences (created once).
 ; Verified game compatibility fixes are built in and enabled automatically.
 ; Advanced diagnostics and GOS restoration are documented in README.md.
 [Graphics]
+; Game aspect ratio: auto (desktop) or 4:3 (centered pillarbox).
+AspectRatio=auto
 ; Frame pacing target, 1-60 frames per second.
 FPSLimit=60
 
@@ -160,6 +162,17 @@ FPSLimit=60
 ; Additional game diagnostics (0=off, 1=on).
 Log=0
 ```
+
+`AspectRatio=auto` fills the desktop with native-resolution 3D at the monitor's
+aspect ratio (the existing behavior). Set `AspectRatio=4:3` to render the **entire
+game in true 4:3**: widescreen displays show centered 3D with black bars on
+either side, matching the existing 4:3 menus/videos without stretching.
+At 1920×1080, 3D renders at **1440×1080** with **240-pixel sidebars**.
+The 3D camera, FOV and HUD are patched to that 4:3 internal resolution,
+not squeezed from an already-wide scene. The game remains in borderless
+fullscreen, and the system display mode is unchanged. On monitors too small
+to support the verified 3D source, the option fails closed rather than
+silently switching the physical display mode.
 
 `FPSLimit` can be set from 1 to 60; `Log=1` enables detailed diagnostics.
 For specialized investigations, advanced optional legacy/diagnostic switches
