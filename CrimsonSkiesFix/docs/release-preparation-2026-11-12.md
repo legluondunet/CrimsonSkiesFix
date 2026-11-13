@@ -13,7 +13,7 @@
 | Native **Windows 11** | Historical test of an earlier DLL/explicit INI, plus latest x86 GitHub runner's 22-export DLL load test | **Latest standalone build and memory-virtualization runtime UNTESTED** |
 | Renderer / graphics | Owner-tested under GE-Proton: borderless 1920×1080, wide 3D FOV/HUD, 4:3 menus, startup dialog bypass, RGB565 image fix, GameOS Graphics+Resolution read-only | **GE-Proton scope only** |
 | Restore and repair | Previous tests of reversible managed GOS overlay, strict hash checks, preserved player files and no automatic deletion of abandoned staging; tests of collisions and synthetic invalid assets | **Guards implemented; not a claim of every real-world repair scenario** |
-| Logs / packaging | Unified `CrimsonSkiesFix.log`: installer, game, final status; observed on owner FR/DE game sessions; one PE32 EXE artifact and complete in-game `build-info.txt` | **Accepted / CI-covered** |
+| Logs / packaging | Independent `CrimsonSkiesFix-installer.log` (retains last installation/repair/error across no-op relaunches) and fresh DLL `CrimsonSkiesFix.log` for every game session. CI regression tests cover separation. Earlier owner FR/DE runtime tests used the former unified log. | **Two-log candidate: CI tested; new owner runtime acceptance pending** |
 
 ### Exact authentication constraints
 
@@ -30,8 +30,9 @@
 - [x] Document that `GosVideoLock=off` does **not** reverse an existing managed overlay; `restore` does.
 - [x] Remove unused dead-code scanner and unused ISO directory-entry struct field (the original ISO flags still drive `is_directory` and `multiextent` guards).
 - [x] Replace obsolete experimental notes describing a five-file DLL artifact / only three exports with the current one-file launcher workflow.
+- [x] Restore two independently owned logs: persistent installer/repair report (only meaningful operations rewrite it) and fresh per-session DLL diagnostics; remove the old child environment append handoff. Previous owner gameplay logs used the old unified behavior.
 - [x] Correct stale FR/DE/USA test claims and 177-vs-178 chapter count.
-- [ ] Green CI on the **last release-preparation branch SHA**, after any docs or workflow adjustments.
+- [ ] Green CI on the **last release-preparation branch SHA**, including new two-log persistence/regression tests (earlier FR/DE acceptance used the unified logger).
 - [ ] Owner-approved merge **PR #26** into `main`, followed by retarget/review/merge of **PR #27**. Draft status alone is not approval.
 - [ ] Green CI on the **final main SHA**, and verify the downloaded artifact is the one emitted by that exact build.
 - [ ] Capture final `CrimsonSkiesFix.exe` SHA-256 and bytes; the build label and `build-info.txt` must match the final full commit, not an old PR-head or merge-ref.
