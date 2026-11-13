@@ -150,7 +150,7 @@ def self_test() -> None:
         folder = root / "CrimsonSkiesFix"
         folder.mkdir(parents=True)
         cargo = base / "Cargo.toml"
-        cargo.write_text('[package]\nname = "crimson-skies-fix"\nversion = "0.1.90"\n\n[dependencies]\n', encoding="utf-8")
+        cargo.write_text('[package]\nname = "crimson-skies-fix"\nversion = "1.0.0"\n\n[dependencies]\n', encoding="utf-8")
         license_path = base / "LICENSE"
         license_path.write_bytes(b"Mock license for synthetic test only\nSecond line with LF\n")
         (folder / "LICENSE").write_bytes(license_path.read_bytes())
@@ -169,9 +169,9 @@ def self_test() -> None:
         manifest_path = folder / "build-info.txt"
         fields = {
             "Project": "CrimsonSkiesFix",
-            "Version": "0.1.90",
+            "Version": "1.0.0",
             "Commit": commit,
-            "LogIdentity": "CrimsonSkiesFix 0.1.90-aaaaaaaa x86",
+            "LogIdentity": "CrimsonSkiesFix 1.0.0-aaaaaaaa x86",
             "Architecture": "Windows-x86",
             "DllSha256": sha256(dll),
             "DllSizeBytes": str(dll.stat().st_size),
@@ -213,10 +213,10 @@ def self_test() -> None:
         dll.write_bytes(b"not-a-PE" + bytes(300))
         reject("invalid PE32 DLL")
         dll.write_bytes(fake_pe)
-        fields["LogIdentity"] = "CrimsonSkiesFix 0.1.90-deadbeef x86"
+        fields["LogIdentity"] = "CrimsonSkiesFix 1.0.0-deadbeef x86"
         write_manifest()
         reject("wrong log build label")
-        fields["LogIdentity"] = "CrimsonSkiesFix 0.1.90-aaaaaaaa x86"
+        fields["LogIdentity"] = "CrimsonSkiesFix 1.0.0-aaaaaaaa x86"
         write_manifest()
         verify(root, commit, cargo, license_path)
     print("RELEASE-CANDIDATE-VERIFY: self-test PASS (valid and 8 rejected corruptions)")
