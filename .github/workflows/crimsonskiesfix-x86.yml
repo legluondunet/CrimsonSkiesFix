@@ -170,13 +170,14 @@ jobs:
           if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
           $usage = (& $exe --help) -join "`n"
           if ($LASTEXITCODE -ne 0) { throw '--help failed' }
-          foreach ($expected in @('--install-only', '--launch-no-verify', '--install-cd', '--verify-install')) {
+          foreach ($expected in @('--install-only', '--launch-no-verify', '--verify', '--version', '--help')) {
             if (-not $usage.Contains($expected)) { throw "Help does not advertise $expected" }
           }
           if ($usage -match '(?m)^\s*CrimsonSkiesFix\.exe --launch(?:\s|$)') {
             throw 'Retired --launch alias must not be advertised'
           }
-          foreach ($removed in @('--import', '--audit-shortnames', '--inspect-update', '--extract-update', '--into')) {
+          foreach ($removed in @('--import', '--audit-shortnames', '--inspect-update', '--extract-update', '--into',
+                               '--verify-install', '--inspect-cd', '--extract-cd', '--install-cd')) {
             if ($usage.Contains($removed)) { throw "Removed CLI switch still advertised: $removed" }
           }
           $version = & $exe --version
@@ -219,11 +220,17 @@ jobs:
               $installReport -match 'GAME_EXIT_CODE=') {
             throw '--install-only prerequisite failure must be reported without launching the game'
           }
-          & 'installer-smoke/CrimsonSkiesFix.exe' --extract-cd disc.iso
-          if ($LASTEXITCODE -ne 2) { throw '--extract-cd must refuse missing authentic sources before extraction' }
-          $extractReport = Get-Content -Raw $installerLog
-          if ($extractReport -notmatch 'EXTRACT_RESULT=ERROR') {
-            throw '--extract-cd prerequisite failure must produce its own extraction report'
+          # The obsolete maintenance CLI options must be rejected by the
+          # argument dispatcher and must not modify the installer report.
+          foreach ($removed in @('--verify-install', '--inspect-cd', '--extract-cd', '--install-cd')) {
+            $oldReport = Get-Content -Raw $installerLog
+            $rejection = (& 'installer-smoke/CrimsonSkiesFix.exe' $removed 2>&1) -join "`n"
+            if ($LASTEXITCODE -ne 2 -or $rejection -notmatch 'unsupported command or number of arguments') {
+              throw "Removed switch $removed was not rejected explicitly"
+            }
+            if ((Get-Content -Raw $installerLog) -ne $oldReport) {
+              throw "Removed switch $removed changed the installer report"
+            }
           }
           foreach ($name in @('CrimsonSkiesFix', 'CrimsonSkiesFix.rebuilding',
                               'CrimsonSkiesFix.rebuilding.installing', 'CrimsonSkiesFix.installing')) {
