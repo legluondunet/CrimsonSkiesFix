@@ -74,6 +74,15 @@ to overwrite the current directory. Two independent logs sit beside `CrimsonSkie
 repair or installer error**, while `CrimsonSkiesFix.log` is
 created afresh by the DirectDraw DLL at **every game launch**. A successful
 normal verification/relaunch leaves the previous installer report untouched.
+**Unified installer CLI (development PR #28):** `--install-only` installs,
+verifies and repairs known 1.02 components without launching; `--verify`
+checks read-only; `--launch-no-verify` starts directly. For an unsupported
+disc, `--inspect image.iso`, `--inspect image.cue` or
+`--inspect image.cue image.bin/img` produces a separate
+`CrimsonSkiesFix_inspect.log` to send in a support report.
+`--verbose` can accompany a command; `--help` and `-h` are equivalent.
+Images passed directly without `--inspect` are no longer accepted.
+
 A successful `--verify` is read-only and does not replace the installer report; an installation or repair failure records the actionable error. The
 launcher can safely migrate a recognized older `CrimsonSkiesFix-installer.log` to the underscore name if the new file is absent, and removes the older `CrimsonSkiesFix.installer.log` only after writing a
 new real installer report, and only when its small, regular-file contents
