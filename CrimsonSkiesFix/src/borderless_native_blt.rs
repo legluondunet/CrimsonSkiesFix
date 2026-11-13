@@ -44,7 +44,11 @@ impl NativeWindowedBlt {
         if primary.is_null()||source_surface.is_null()||
            client.0==0||client.1==0||
            !(matches!((source.width,source.height),(640,480)|(800,600)) ||
-             (source.width,source.height)==client)||
+             (source.width,source.height)==client ||
+             // The source is the real game's exact 4:3 render target,
+             // not a widescreen image squeezed after rendering.
+             crate::presentation::native_3d_dimensions(client,true)
+                 ==Some((source.width,source.height)))||
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false,
             full_frame_composite:ptr::null_mut(),composite_black_ready:false,
