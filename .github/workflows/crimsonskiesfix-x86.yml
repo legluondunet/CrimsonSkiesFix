@@ -214,18 +214,22 @@ jobs:
             (Join-Path (Resolve-Path 'installer-smoke') 'disc.iso'),[byte[]](1,2,3,4))
           & 'installer-smoke/CrimsonSkiesFix.exe' --install-only
           if ($LASTEXITCODE -ne 2) { throw '--install-only must refuse missing authentic sources' }
-          & 'installer-smoke/CrimsonSkiesFix.exe' --extract-cd disc.iso
-          if ($LASTEXITCODE -ne 2) { throw '--extract-cd must refuse missing authentic sources before extraction' }
-          foreach ($name in @('CrimsonSkiesFix', 'CrimsonSkiesFix.rebuilding',
-                              'CrimsonSkiesFix.rebuilding.installing', 'CrimsonSkiesFix.installing')) {
-            if (Test-Path "installer-smoke/$name") {
-              throw "--install-only extracted or created forbidden staging without prerequisites: $name"
-            }
-          }
           $installReport = Get-Content -Raw $installerLog
           if ($installReport -notmatch 'AUTO_INSTALL_RESULT=ERROR' -or
               $installReport -match 'GAME_EXIT_CODE=') {
             throw '--install-only prerequisite failure must be reported without launching the game'
+          }
+          & 'installer-smoke/CrimsonSkiesFix.exe' --extract-cd disc.iso
+          if ($LASTEXITCODE -ne 2) { throw '--extract-cd must refuse missing authentic sources before extraction' }
+          $extractReport = Get-Content -Raw $installerLog
+          if ($extractReport -notmatch 'EXTRACT_RESULT=ERROR') {
+            throw '--extract-cd prerequisite failure must produce its own extraction report'
+          }
+          foreach ($name in @('CrimsonSkiesFix', 'CrimsonSkiesFix.rebuilding',
+                              'CrimsonSkiesFix.rebuilding.installing', 'CrimsonSkiesFix.installing')) {
+            if (Test-Path "installer-smoke/$name") {
+              throw "Source-prerequisite failure created forbidden game or staging directory: $name"
+            }
           }
           New-Item -ItemType Directory -Force 'installer-dist' | Out-Null
           Copy-Item $exe 'installer-dist/CrimsonSkiesFix.exe'
