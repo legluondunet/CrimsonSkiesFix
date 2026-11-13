@@ -193,7 +193,9 @@ pub fn apply_asset(base:&Path,game:&Path,edition:&str,specified:Option<&Path>)->
     Ok("EXTRACTED_VERIFIED_FROM_LZX_CAB")
 }
 
-pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
+// Former standalone updater inspector: preserve only for regression tests.
+#[cfg(test)]
+fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
     let path=find(base,specified)?;
     Ok(format!(
         "CrimsonSkiesFix UPDATE102 INSPECT v1\n\
