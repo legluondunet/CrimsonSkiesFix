@@ -211,6 +211,8 @@ jobs:
             (Join-Path (Resolve-Path 'installer-smoke') 'disc.iso'),[byte[]](1,2,3,4))
           & 'installer-smoke/CrimsonSkiesFix.exe' --install-only
           if ($LASTEXITCODE -ne 2) { throw '--install-only must refuse missing authentic sources' }
+          & 'installer-smoke/CrimsonSkiesFix.exe' --extract-cd disc.iso
+          if ($LASTEXITCODE -ne 2) { throw '--extract-cd must refuse missing authentic sources before extraction' }
           foreach ($name in @('CrimsonSkiesFix', 'CrimsonSkiesFix.rebuilding',
                               'CrimsonSkiesFix.rebuilding.installing', 'CrimsonSkiesFix.installing')) {
             if (Test-Path "installer-smoke/$name") {
