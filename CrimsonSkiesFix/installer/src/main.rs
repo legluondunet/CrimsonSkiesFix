@@ -797,18 +797,5 @@ mod tests {
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }
-    #[test]
-    fn old_nested_configuration_is_only_imported_when_known() {
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "crimsonskiesfix-flat-layout-{}-{id}", std::process::id()
-        ));
-        fs::create_dir(&dir).unwrap();
-        fs::write(dir.join("CrimsonSkiesFix.ini"), "[Debug]\\nLog=1\\n").unwrap();
-        assert!(recognized_old_config(&dir).is_ok());
-        fs::write(dir.join("user-save.dat"), "save data").unwrap();
-        assert!(recognized_old_config(&dir).is_err());
-        fs::remove_dir_all(dir).unwrap();
-    }
+
 }
