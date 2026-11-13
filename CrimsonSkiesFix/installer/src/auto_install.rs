@@ -9,7 +9,72 @@ const REBUILT:&str="CrimsonSkiesFix.rebuilding";
 const PREVIOUS:&str="CrimsonSkiesFix.previous";
 const EXE_BACKUP:&str="CRIMSON.EXE.protected.bak";
 const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
-const AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
+// The installer and game use independent logs. The last installation or
+// repair report survives routine verified game launches; the DLL always
+// starts a fresh CrimsonSkiesFix.log for each game session.
+const OLD_AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
+const PREVIOUS_INSTALLER_LOG:&str="CrimsonSkiesFix-installer.log";
+
+/// Recognize only a previous launcher-generated report before migrating or
+/// retiring it. Unknown user files, symlinks and directories are preserved.
+fn previous_installer_report(path:&Path)->bool{
+    if !regular(path){return false;}
+    let Ok(meta)=fs::metadata(path) else{return false;};
+    if meta.len()>128*1024{return false;}
+    let Ok(bytes)=fs::read(path) else{return false;};
+    [
+        "CrimsonSkiesFix AUTO INSTALL v1\n",
+        "CrimsonSkiesFix CHAPTER SHORT NAMES AUDIT v1\n",
+        "CrimsonSkiesFix CD INSTALL VERIFY v1\n",
+        "CrimsonSkiesFix CD INSTALL v1\n",
+        "CrimsonSkiesFix UPDATE102 EXTRACT v1\n",
+        "CrimsonSkiesFix CD EXTRACT v1\n",
+        "CrimsonSkiesFix UPDATE102 INSPECT v1\n",
+        "CrimsonSkiesFix CD INSPECT v1\n",
+    ].iter().any(|prefix|bytes.starts_with(prefix.as_bytes()))
+}
+
+/// Preserve the previous diagnostic across a verified-only game launch
+/// after adopting the new spelling. Never replace an existing report.
+pub(super) fn migrate_previous_installer_log(base:&Path){
+    let target=base.join(INSTALLER_LOG);
+    let previous=base.join(PREVIOUS_INSTALLER_LOG);
+    if !any_entry(&target) && previous_installer_report(&previous){
+        let _=fs::rename(previous,target);
+    }
+}
+
+
+/// Routine verified launches do not replace an installer/repair diagnosis.
+/// A first install, repair, activation, or any failed preparation does.
+fn report_needed(action:Option<&str>)->bool{
+    !matches!(action,Some("VERIFIED_EXISTING_AND_LAUNCH"|"VERIFIED_LEGACY_IMPORT_AND_LAUNCH"))
+}
+
+/// Write only installer-owned records; never touch the DLL's gameplay log.
+/// A failed or real installation replaces the previous installer report.
+fn write_installer_report(base:&Path,report:&str,needed:bool)->Result<(),String>{
+    if !needed{return Ok(());}
+    let target=base.join(INSTALLER_LOG);
+    if any_entry(&target) && !regular(&target){
+        return Err("unsafe CrimsonSkiesFix_installer.log: refusing non-regular file".into());
+    }
+    fs::write(&target,report).map_err(error)?;
+    remove_old_installer_log(base);
+    Ok(())
+}
+
+/// Retire generated old spellings only after a new report was written.
+/// Preserve unknown files or owner data at any old spelling.
+fn remove_old_installer_log(base:&Path){
+    for filename in [OLD_AUTO_LOG,PREVIOUS_INSTALLER_LOG]{
+        let old=base.join(filename);
+        if previous_installer_report(&old){
+            let _=fs::remove_file(old);
+        }
+    }
+}
+
 
 /// Discover an external executable by its *full byte identity*, not its
 /// basename, because owners legitimately rename their decrypted file.
@@ -185,8 +250,18 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
 fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     let new=base.join(REBUILT);
     let previous=base.join(PREVIOUS);
-    if any_entry(&new)||any_entry(&new.with_file_name(format!("{REBUILT}.installing"))){
-        return Err("incomplete rebuilt game exists; inspect it before another repair".into());
+    // Staging folders may hold player files or a previous partially verified
+    // install. Identify the blocking pathname but NEVER remove/replace it.
+    if any_entry(&new){
+        return Err(format!(
+            "rebuild blocked by existing {} (preserved; inspect before any manual action)",
+            new.display()));
+    }
+    let pending=new.with_file_name(format!("{REBUILT}.installing"));
+    if any_entry(&pending){
+        return Err(format!(
+            "rebuild blocked by existing {} (preserved; inspect before any manual action)",
+            pending.display()));
     }
     if old_present && any_entry(&previous){
         return Err("previous game backup already exists; refusing to overwrite it".into());
@@ -195,7 +270,11 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     let source=approved_executable(base,game)?;
     // Preflight a valid, user-supplied official update before extraction.
     let _updater=update102::find(base,None)?;
-    println!("Rebuilding game from original CD and verified official 1.02 patch...");
+    if old_present {
+        println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
+    }else{
+        println!("Installing new game from original CD and verified official 1.02 patch...");
+    }
     let _installed=install_from_cd(base,None,None,&new,None)?;
     if old_present {preserve_player_data(game,&new)?;}
     activate_verified_exe(&new,&source)?;
@@ -259,25 +338,30 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
             }
             Err(reason)=>{
                 println!("Installed CD files did not verify: {reason}");
-                // If just our bundled DLL changed across versions, repair
-                // that first without asking for the original disc again.
-                if let Ok(())=deploy_proxy(game) {
-                    if verify_installed_cd_assets(game).is_ok() {
-                        // Keep build-info.txt in sync with the newly installed
-                        // DLL. Otherwise --verify passes but reports the old
-                        // embedded DLL SHA and commit from the last launcher.
-                        deploy_documentation(game)?;
-                        if validated_game_exe(game).is_ok() {
-                            return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                // Preserve the precise first verification failure. The
+                // previous launcher's log lost this evidence when a later
+                // stale staging directory blocked the reconstruction.
+                // If only the bundled DLL changed, repair that first.
+                let followup=match deploy_proxy(game){
+                    Ok(())=>match verify_installed_cd_assets(game){
+                        Ok(_)=>{
+                            // Keep build-info.txt in sync with the DLL.
+                            deploy_documentation(game)?;
+                            if validated_game_exe(game).is_ok(){
+                                return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                            }
+                            let source=approved_executable(base,game)?;
+                            activate_verified_exe(game,&source)?;
+                            return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                         }
-                        // When the only other missing step is an approved
-                        // EXE, do not re-extract an already verified CD.
-                        let source=approved_executable(base,game)?;
-                        activate_verified_exe(game,&source)?;
-                        return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
-                    }
-                }
-                build_and_publish(base,game,true)?;
+                        Err(after)=>format!(
+                            "installed CD verification after bundled DLL repair: {after}"),
+                    },
+                    Err(err)=>format!("bundled DLL repair not completed: {err}"),
+                };
+                build_and_publish(base,game,true).map_err(|err|format!(
+                    "existing installed CD verification failed: {reason}; \
+                     {followup}; rebuild not completed: {err}"))?;
                 return Ok("REPAIRED_FROM_CD_AND_LAUNCH");
             }
         }
@@ -285,23 +369,41 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     // Backwards compatibility: a validated manually imported installation
     // may lack an original-CD receipt. Its old-format verification is less
     // comprehensive than the new immutable CD file manifest.
-    if verify(game).is_ok(){
-        return Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH");
+    match verify(game){
+        Ok(_)=>Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH"),
+        Err(reason)=>{
+            build_and_publish(base,game,true).map_err(|err|format!(
+                "legacy installed game verification failed: {reason}; \
+                 rebuild not completed: {err}"))?;
+            Ok("REBUILT_LEGACY_INSTALL_FROM_CD_AND_LAUNCH")
+        }
     }
-    build_and_publish(base,game,true)?;
-    Ok("REBUILT_LEGACY_INSTALL_FROM_CD_AND_LAUNCH")
 }
 
-/// Entry point for no-argument execution. Always generate a separate
-/// installer log, because the DirectDraw DLL has its own gameplay log.
-pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
-    let result=auto_prepare(base,game);
-    let log=base.join(AUTO_LOG);
+/// Entry point for no-argument execution. The installer keeps its last
+/// meaningful installation/repair/error report in the root installer log.
+/// The DLL writes an independent fresh gameplay log on every game start.
+pub(super) fn auto_run(base:&Path,game:&Path,explicit_import:bool)->Result<i32,String>{
+    // Refuse unsafe installer-log paths before modifying an installation.
+    // A verified, no-op relaunch does not overwrite any existing report.
+    let log=base.join(INSTALLER_LOG);
     if any_entry(&log) && !regular(&log){
-        return Err("unsafe installer log path (not a regular file)".into());
+        return Err("unsafe CrimsonSkiesFix_installer.log: refusing non-regular file".into());
     }
+    // Never log READY unless the final independent validation succeeded.
+    let result=auto_prepare(base,game).and_then(|action|{
+        if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
+        let exe=verify(game)?;
+        // An explicit --import is an installation action, even when the
+        // freshly imported legacy data verifies without a CD receipt.
+        let action=if explicit_import && action=="VERIFIED_LEGACY_IMPORT_AND_LAUNCH"{
+            "IMPORTED_LEGACY_AND_LAUNCH"
+        }else{action};
+        Ok((action,exe))
+    });
+    let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
     let message=match &result{
-        Ok(action)=>format!(
+        Ok((action,_exe))=>format!(
             "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
              OriginalProtectedBackup={}\nGosOverlayState={}\nAUTO_INSTALL_RESULT=READY\n",
@@ -314,15 +416,35 @@ pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
             "CrimsonSkiesFix AUTO INSTALL v1\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
             game.display()),
     };
-    fs::write(&log,message).map_err(error)?;
-    let action=result?;
-    if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
-    let exe=verify(game)?;
+    write_installer_report(base,&message,needed)?;
+    let (action,exe)=result?;
     println!("{action}: launching {}...",exe.display());
-    let status=Command::new(&exe).current_dir(game).status().map_err(error)?;
-    let code=status.code().unwrap_or(2);
-    println!("Game exited with status {code}.");
-    Ok(code)
+    // No environment-marker handoff: the DLL owns CrimsonSkiesFix.log and
+    // truncates it at startup, while the installer report remains untouched.
+    let status=Command::new(&exe).current_dir(game).status();
+    match status{
+        Ok(status)=>{
+            let code=status.code().unwrap_or(2);
+            // Only an actual installation/repair report tracks its child
+            // exit. Ordinary verified launches preserve the last report.
+            if needed {
+                if let Ok(mut session)=OpenOptions::new().append(true).open(&log){
+                    let _=writeln!(session,"\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}");
+                }
+            }
+            println!("Game exited with status {code}.");
+            Ok(code)
+        }
+        Err(err)=>{
+            // A failed game start is a new launcher error worth recording,
+            // but never alters the independent DLL-owned gameplay log.
+            let failure=format!(
+                "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n                 AUTO_INSTALL_RESULT=ERROR\nERROR=GAME_LAUNCH_FAILED: {err}\n",
+                game.display());
+            write_installer_report(base,&failure,true)?;
+            Err(error(err))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +456,134 @@ mod tests{
         let p=std::env::temp_dir().join(format!("crimson-auto-flow-{}-{n}",std::process::id()));
         fs::create_dir(&p).unwrap();
         p
+    }
+    #[test]
+    fn old_generated_installer_log_removed_only_when_replaced(){
+        let root=temp();
+        let old=root.join(OLD_AUTO_LOG);
+        let new_log=root.join(INSTALLER_LOG);
+        let game_log=root.join("CrimsonSkiesFix.log");
+        fs::write(&old,b"CrimsonSkiesFix AUTO INSTALL v1\nAUTO_INSTALL_RESULT=READY\n").unwrap();
+        fs::write(&game_log,b"player game diagnostics\n").unwrap();
+        write_installer_report(&root,"Action=INSTALL_FROM_CD_AND_LAUNCH\n",true).unwrap();
+        assert!(!old.exists());
+        assert!(new_log.exists());
+        assert_eq!(fs::read(&game_log).unwrap(),b"player game diagnostics\n");
+        fs::write(&old,b"owner diagnostics; preserve me\n").unwrap();
+        write_installer_report(&root,"Action=REPAIRED_FROM_CD_AND_LAUNCH\n",true).unwrap();
+        assert_eq!(fs::read(&old).unwrap(),b"owner diagnostics; preserve me\n");
+        assert_eq!(fs::read(&game_log).unwrap(),b"player game diagnostics\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn hyphenated_installer_report_migrates_without_loss_on_relaunch(){
+        let root=temp();
+        let old=root.join(PREVIOUS_INSTALLER_LOG);
+        let target=root.join(INSTALLER_LOG);
+        let game=root.join("CrimsonSkiesFix.log");
+        let original=b"CrimsonSkiesFix AUTO INSTALL v1\nAction=INSTALL_FROM_CD_AND_LAUNCH\n";
+        fs::write(&old,original).unwrap();
+        fs::write(&game,b"previous game session").unwrap();
+        migrate_previous_installer_log(&root);
+        assert!(!old.exists());
+        assert_eq!(fs::read(&target).unwrap(),original);
+        assert_eq!(fs::read(&game).unwrap(),b"previous game session");
+        write_installer_report(&root,"Action=SKIP",false).unwrap();
+        assert_eq!(fs::read(&target).unwrap(),original);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unrecognized_legacy_log_is_never_deleted_or_renamed(){
+        let root=temp();
+        let old=root.join(PREVIOUS_INSTALLER_LOG);
+        let target=root.join(INSTALLER_LOG);
+        fs::write(&old,b"player private debugging notes").unwrap();
+        migrate_previous_installer_log(&root);
+        assert!(!target.exists());
+        assert_eq!(fs::read(&old).unwrap(),b"player private debugging notes");
+        write_installer_report(&root,"new installer report",true).unwrap();
+        assert_eq!(fs::read(&target).unwrap(),b"new installer report");
+        assert_eq!(fs::read(&old).unwrap(),b"player private debugging notes");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn recognized_hyphenated_log_retired_only_after_real_report(){
+        let root=temp();
+        let old=root.join(PREVIOUS_INSTALLER_LOG);
+        let previous=b"CrimsonSkiesFix CD INSPECT v1\nINSPECT_RESULT=COMPLETE\n";
+        fs::write(&old,previous).unwrap();
+        write_installer_report(&root,"new repair report",false).unwrap();
+        assert_eq!(fs::read(&old).unwrap(),previous);
+        write_installer_report(&root,"new repair report",true).unwrap();
+        assert!(!old.exists());
+        assert_eq!(fs::read(root.join(INSTALLER_LOG)).unwrap(),b"new repair report");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn installer_log_survives_verified_game_relaunch_but_not_repair(){
+        let root=temp();
+        let log=root.join(INSTALLER_LOG);
+        let game_log=root.join("CrimsonSkiesFix.log");
+        let install=b"Action=INSTALL_FROM_CD_AND_LAUNCH\n";
+        write_installer_report(&root,std::str::from_utf8(install).unwrap(),true).unwrap();
+        for action in ["VERIFIED_EXISTING_AND_LAUNCH","VERIFIED_LEGACY_IMPORT_AND_LAUNCH"]{
+            assert!(!report_needed(Some(action)));
+            write_installer_report(&root,"Action=SHOULD_NOT_REPLACE\n",report_needed(Some(action))).unwrap();
+            fs::write(&game_log,format!("GameSession={action}\n")).unwrap();
+            assert_eq!(fs::read(&log).unwrap(),install);
+        }
+        for action in ["INSTALL_FROM_CD_AND_LAUNCH","REPAIRED_FROM_CD_AND_LAUNCH",
+            "REPAIRED_BUNDLED_PROXY_AND_LAUNCH","ACTIVATE_APPROVED_EXE_AND_LAUNCH",
+            "IMPORTED_LEGACY_AND_LAUNCH"]{
+            assert!(report_needed(Some(action)));
+        }
+        assert!(report_needed(None)); // errors are always retained
+        write_installer_report(&root,"AUTO_INSTALL_RESULT=ERROR\n",report_needed(None)).unwrap();
+        assert_eq!(fs::read(&log).unwrap(),b"AUTO_INSTALL_RESULT=ERROR\n");
+        assert!(fs::read_to_string(&game_log).unwrap().starts_with("GameSession="));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unsafe_installer_log_never_truncates_game_log_or_owner_data(){
+        let root=temp();
+        let log=root.join(INSTALLER_LOG);
+        fs::create_dir(&log).unwrap();
+        fs::write(log.join("keep-me"),b"owner diagnostics").unwrap();
+        fs::write(root.join("CrimsonSkiesFix.log"),b"existing game log").unwrap();
+        assert!(write_installer_report(&root,"repair",true).is_err());
+        assert_eq!(fs::read(log.join("keep-me")).unwrap(),b"owner diagnostics");
+        assert_eq!(fs::read(root.join("CrimsonSkiesFix.log")).unwrap(),b"existing game log");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn blocking_staging_directory_reports_initial_cd_failure_without_deletion(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let stale=root.join(REBUILT);
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("keep-me"),b"owner data").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"invalid receipt").unwrap();
+        let error=auto_prepare(&root,&game).unwrap_err();
+        assert!(error.contains("existing installed CD verification failed"));
+        assert!(error.contains("rebuild blocked by existing"));
+        assert!(error.contains("CrimsonSkiesFix.rebuilding"));
+        assert_eq!(fs::read(stale.join("keep-me")).unwrap(),b"owner data");
+        assert!(game.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pending_staging_directory_is_identified_without_removal(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let pending=root.join(format!("{REBUILT}.installing"));
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&pending).unwrap();
+        fs::write(pending.join("keep-me"),b"pending owner data").unwrap();
+        let error=build_and_publish(&root,&game,true).unwrap_err();
+        assert!(error.contains("CrimsonSkiesFix.rebuilding.installing"));
+        assert_eq!(fs::read(pending.join("keep-me")).unwrap(),b"pending owner data");
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn damaged_existing_install_is_left_intact_without_authentic_sources(){

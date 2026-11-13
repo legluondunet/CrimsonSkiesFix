@@ -292,11 +292,17 @@ const RETAIL_ZBD_NAMES:[(&str,&str);40]=[
     ("C5/RT6C9C~1.ZBD", "C5/rtexture8.zbd"),
 ];
 
-// The US/Europe original SETUP.EXE has five *different source aliases*
-// in C2B, even though its retail destination filenames exactly match DE/FR.
+// The exact C2B.CAB archived bytes are identical for the USA and German
+// retail discs (SHA-256 59ee7b5e...), and contain the same DOS member names.
+// FR has a DIFFERENT C2B.CAB (SHA-256 3d4c41d6...) with different aliases.
+// Source identity therefore determines how to interpret CAB member names;
+// the game's desired long destinations are the same across these editions.
+// The USA SETUP.EXE file-copy table independently confirms these five pairs.
 // SHA-256 04e26ce391bb9f2a5d81518588aa0f7d553a95c5202a742d58af54b4070a89df.
-// The German and French setup tables have the same C2B aliases.
-const US_C2B_NAMES:[(&str,&str);5]=[
+// The DE SETUP.EXE file-copy table uses FR-style *source* spellings, but the
+// authenticated DE CAB's actual member names are byte-for-byte USA-like.
+// Never infer a rename from 8.3 spelling outside these exact pinned sources.
+const US_DE_C2B_NAMES:[(&str,&str);5]=[
     ("C2B/RTEXTU~2.ZBD","C2B/rtexture2.zbd"),
     ("C2B/RTEXTU~3.ZBD","C2B/rtexture4.zbd"),
     ("C2B/RTEXTU~4.ZBD","C2B/rtexture6.zbd"),
@@ -320,8 +326,10 @@ fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathB
     if !original.split('/').next().is_some_and(|c|c.eq_ignore_ascii_case(source_chapter)){
         return Err(format!("CAB member outside expected chapter {source}: {original}"));
     }
-    let matched=if source=="C2B.CAB" && edition=="C_SKIES_DISC_001"{
-        US_C2B_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
+    let matched=if source=="C2B.CAB" && edition!="C_SKIES_FR_001"{
+        // USA and DE carry the SAME original C2B.CAB bytes. Their actual
+        // CAB member aliases must be interpreted with this common table.
+        US_DE_C2B_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
     } else {
         RETAIL_ZBD_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
     };
@@ -714,7 +722,10 @@ mod tests{
             assert!(to.insert(dst.to_ascii_lowercase()));
             let source=src.split('/').next().unwrap();
             let cab=format!("{source}.CAB");
-            let mapped=canonical_chapter_name(&cab,Path::new(src),"C_SKIES_DE_001").unwrap();
+            // The shared table's C2B entries are from the FR CAB source;
+            // USA and DE have an identical but different C2B member table.
+            let edition=if source=="C2B"{"C_SKIES_FR_001"}else{"C_SKIES_DE_001"};
+            let mapped=canonical_chapter_name(&cab,Path::new(src),edition).unwrap();
             assert_eq!(mapped,PathBuf::from(dst));
         }
         assert_eq!(canonical_chapter_name("C1.CAB",Path::new("C1/RTEXTU~1.ZBD"),"C_SKIES_DE_001").unwrap(),
@@ -727,24 +738,55 @@ mod tests{
             PathBuf::from("C4/IA1/mis_anim.zbd"));
     }
     #[test]
-    fn us_c2b_uses_different_sources_than_french_and_german_setups(){
-        assert_eq!(US_C2B_NAMES.len(),5);
-        let mut canonical_targets=HashSet::new();
-        for (source,target) in US_C2B_NAMES {
-            assert!(canonical_targets.insert(target.to_ascii_lowercase()));
-            assert_eq!(canonical_chapter_name("C2B.CAB",Path::new(source),
-                "C_SKIES_DISC_001").unwrap(),PathBuf::from(target));
+    fn c2b_alias_policy_follows_authenticated_cab_bytes_not_setup_locale(){
+        assert_eq!(US_DE_C2B_NAMES.len(),5);
+        let mut targets=HashSet::new();
+        for (source,target) in US_DE_C2B_NAMES {
+            assert!(targets.insert(target.to_ascii_lowercase()));
+            for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001"]{
+                assert_eq!(canonical_chapter_name("C2B.CAB",Path::new(source),edition)
+                    .unwrap(),PathBuf::from(target));
+            }
         }
-        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
-            "C_SKIES_FR_001").unwrap(),PathBuf::from("C2B/rtexture2.zbd"));
-        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
-            "C_SKIES_DE_001").unwrap(),PathBuf::from("C2B/rtexture2.zbd"));
-        assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
-            "C_SKIES_DISC_001").unwrap(),PathBuf::from("C2B/rtexture9.zbd"));
-        assert!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT60AC~1.ZBD"),
-            "C_SKIES_DISC_001").is_err());
-        assert!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RTEXTU~1.ZBD"),
-            "UNKNOWN").is_err());
+        // Regression: exact archived member rejected during owner's DE test.
+        for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001"]{
+            assert_eq!(canonical_chapter_name("C2B.CAB",
+                Path::new("c2b/RT6C9C~1.ZBD"),edition).unwrap(),
+                PathBuf::from("C2B/rtexture8.zbd"));
+            assert_eq!(canonical_chapter_name("C2B.CAB",
+                Path::new("C2B/RTEXTU~1.ZBD"),edition).unwrap(),
+                PathBuf::from("C2B/rtexture9.zbd"));
+            assert!(canonical_chapter_name("C2B.CAB",
+                Path::new("C2B/RT60AC~1.ZBD"),edition).is_err());
+        }
+        assert_eq!(canonical_chapter_name("C2B.CAB",
+            Path::new("C2B/RTEXTU~1.ZBD"),"C_SKIES_FR_001").unwrap(),
+            PathBuf::from("C2B/rtexture2.zbd"));
+        assert_eq!(canonical_chapter_name("C2B.CAB",
+            Path::new("C2B/RT60AC~1.ZBD"),"C_SKIES_FR_001").unwrap(),
+            PathBuf::from("C2B/rtexture9.zbd"));
+        assert!(canonical_chapter_name("C2B.CAB",
+            Path::new("C2B/RT6C9C~1.ZBD"),"C_SKIES_FR_001").is_err());
+        assert!(canonical_chapter_name("C2B.CAB",
+            Path::new("C2B/RTEXTU~1.ZBD"),"UNKNOWN").is_err());
+    }
+    #[test]
+    fn c2b_archive_hashes_in_original_cd_profiles_prove_same_usa_de_source(){
+        fn cab_hash(profile:&str)->&str{
+            let record=profile.lines().find(|line|
+                line.starts_with("GAME/ZBD/C2B.CAB\t")).unwrap();
+            let parts=record.split('\t').collect::<Vec<_>>();
+            assert_eq!(parts.len(),3);
+            assert_eq!(parts[1],"10118868");
+            parts[2]
+        }
+        let us=cab_hash(include_str!("../profiles/c_skies_disc_001.tsv"));
+        let de=cab_hash(include_str!("../profiles/c_skies_de_001.tsv"));
+        let fr=cab_hash(include_str!("../profiles/c_skies_fr_001.tsv"));
+        assert_eq!(us,"59ee7b5eb79f1e53fc7c7a1b3b063fae44b1b1e438eb0273a61de1eb2ab2be5e");
+        assert_eq!(us,de);
+        assert_eq!(fr,"3d4c41d62658ff294dab3c11603092dd59719add039fd02fa990fe91df014968");
+        assert_ne!(fr,de);
     }
     #[test]
     fn compressed_8_3_alias_uses_original_retail_target_and_then_prunes_cab(){
@@ -769,7 +811,9 @@ mod tests{
         assert_eq!(expand(&root).unwrap().members,8);
         assert!(zbd.join("C1/RTEXTU~1.ZBD").is_file());
         assert!(zbd.join("C2B/RT60AC~1.ZBD").is_file());
-        let final_install=finalize_without_archives(&root,"C_SKIES_DE_001").unwrap();
+        // This synthetic CAB contains the FR-only RT60AC alias, not the
+        // authentic USA/DE RT6C9C member. Exercise the FR source profile.
+        let final_install=finalize_without_archives(&root,"C_SKIES_FR_001").unwrap();
         assert_eq!(final_install.short_name_candidates,0);
         assert!(zbd.join("C1/rtexture15.zbd").is_file());
         assert!(zbd.join("C2B/rtexture9.zbd").is_file());

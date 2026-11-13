@@ -220,6 +220,43 @@ pub fn preflight(mode:Mode,desktop_width:u32,desktop_height:u32,
     })
 }
 
+/// Select the actual source raster for a verified game's 3D epoch.
+/// 'auto' is the monitor's complete raster; '4:3' computes an exact
+/// integer-pixel 4:3 source. It never changes the physical desktop mode.
+/// Explicit 4:3 is limited to sufficiently large landscape monitors so
+/// it cannot be mistaken for the original 800x600 menu/movie mode.
+pub fn native_3d_dimensions(monitor:(u32,u32),four_by_three:bool)
+    ->Option<(u32,u32)>{
+    let (w,h)=monitor;
+    if w==0 || h==0{return None;}
+    if !four_by_three{return Some(monitor);}
+    let scale=(w/4).min(h/3);
+    let width=scale.checked_mul(4)?;
+    let height=scale.checked_mul(3)?;
+    if width<960 || height<600 || width>8192 || height>4320 ||
+       (width as u64)*(height as u64)>33_554_432{
+        return None;
+    }
+    Some((width,height))
+}
+
+/// Strict opt-in, native-resolution 4:3 3D contract. This is neither a
+/// scaled widescreen image nor a low-resolution 800x600 UI frame: the
+/// game renders RGB565+Z32 at its actual patched 4:3 dimensions.
+pub fn preflight_four_by_three_3d(mode:Mode,desktop_width:u32,desktop_height:u32,
+    chain:Chain)->Option<WindowedPresentationPlan>{
+    if !chain.three_d_ready() || mode.bpp!=16 ||
+       native_3d_dimensions((desktop_width,desktop_height),true)?
+           !=(mode.width,mode.height) {
+        return None;
+    }
+    Some(WindowedPresentationPlan{
+        internal:mode,desktop_width,desktop_height,
+        viewport:fit_viewport(mode.width,mode.height,desktop_width,desktop_height)?,
+        requires_surface_virtualization:true,
+    })
+}
+
 /// An opt-in widescreen-patched executable can request the monitor's
 /// physical landscape dimensions for 3D gameplay. The 640x480 and
 /// 800x600 menu/movie epochs remain strictly 4:3 and use preflight().
@@ -245,6 +282,48 @@ pub fn preflight_native_3d(mode:Mode,desktop_width:u32,desktop_height:u32,
         viewport:Viewport{x:0,y:0,width:desktop_width,height:desktop_height},
         requires_surface_virtualization:true,
     })
+}
+
+#[cfg(test)]
+mod aspect_four_by_three_tests{
+    use super::*;
+    fn chain()->Chain{Chain{front_to_back:true,back_to_depth:true,mipmaps:false}}
+    #[test]
+    fn internal_render_is_true_four_by_three_on_widescreen(){
+        for (monitor,expected,viewport) in [
+            ((1920,1080),(1440,1080),Viewport{x:240,y:0,width:1440,height:1080}),
+            ((2560,1440),(1920,1440),Viewport{x:320,y:0,width:1920,height:1440}),
+            ((3440,1440),(1920,1440),Viewport{x:760,y:0,width:1920,height:1440}),
+            ((1920,1200),(1600,1200),Viewport{x:160,y:0,width:1600,height:1200}),
+            ((1024,768),(1024,768),Viewport{x:0,y:0,width:1024,height:768}),
+        ]{
+            assert_eq!(native_3d_dimensions(monitor,false),Some(monitor));
+            assert_eq!(native_3d_dimensions(monitor,true),Some(expected));
+            let m=Mode{width:expected.0,height:expected.1,bpp:16};
+            let plan=preflight_four_by_three_3d(m,monitor.0,monitor.1,chain()).unwrap();
+            assert_eq!(plan.internal,m);
+            assert_eq!(plan.viewport,viewport);
+            assert_eq!((m.width as u64)*3,(m.height as u64)*4);
+        }
+        // Fractional monitors still produce exact 4:3 source dimensions.
+        assert_eq!(native_3d_dimensions((1280,800),true),Some((1064,798)));
+        assert_eq!(native_3d_dimensions((1366,768),true),Some((1024,768)));
+    }
+    #[test]
+    fn unsupported_game_modes_cannot_enter_four_by_three_3d(){
+        assert_eq!(native_3d_dimensions((800,600),true),None);
+        assert_eq!(native_3d_dimensions((0,1080),true),None);
+        for mode in [
+            Mode{width:1920,height:1080,bpp:16},
+            Mode{width:800,height:600,bpp:16},
+            Mode{width:1440,height:1080,bpp:32},
+            Mode{width:1400,height:1050,bpp:16},
+        ]{
+            assert!(preflight_four_by_three_3d(mode,1920,1080,chain()).is_none());
+        }
+        assert!(preflight_four_by_three_3d(
+            Mode{width:1440,height:1080,bpp:16},1920,1080,Chain::default()).is_none());
+    }
 }
 
 #[cfg(test)]

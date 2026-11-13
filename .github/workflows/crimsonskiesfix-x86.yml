@@ -117,32 +117,15 @@ jobs:
           if (-not (Test-Path 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')) {
             throw 'Missing non-overwriting INI template'
           }
+          # The user-facing INI must expose ONLY genuine optional controls.
+          # All mandatory verified game compatibility fixes are compiled
+          # default-on and tested by Rust; none is toggled in the template.
           $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
-          $defaults = @($template | Where-Object { $_.Trim() -eq 'Log=0' })
-          if ($defaults.Count -ne 1) { throw 'Default logging must be disabled' }
-          $roffileOff = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=0' })
-          $roffileOn = @($template | Where-Object { $_.Trim() -eq 'RoffileTerminatorFix=1' })
-          if ($roffileOff.Count -ne 0 -or $roffileOn.Count -ne 1) {
-            throw 'Verified Wine-only ROFFILE parser guard must be enabled by default on first run'
-          }
-          # Explicit project policy: native Video Graphics/Resolution
-          # lock and AskForVDev dialog bypass are enabled on first run.
-          $gosOn = @($template | Where-Object { $_.Trim() -eq 'GosVideoLock=on' })
-          $adapterOn = @($template | Where-Object { $_.Trim() -eq 'ExperimentalWindowedAdapter=1' })
-          $wideOn = @($template | Where-Object { $_.Trim() -eq 'Native3DWidescreen=1' })
-          $desktopOn = @($template | Where-Object { $_.Trim() -eq 'DesktopResolution=1' })
-          $imageFixOn = @($template | Where-Object { $_.Trim() -eq 'LegacyOffscreenRGB565=1' })
-          $focusOn = @($template | Where-Object { $_.Trim() -eq 'FocusRepaint=1' })
-          $eraseOn = @($template | Where-Object { $_.Trim() -eq 'WindowEraseGuard=1' })
-          if ($gosOn.Count -ne 1 -or $adapterOn.Count -ne 1 -or
-              $wideOn.Count -ne 1 -or $desktopOn.Count -ne 1 -or
-              $imageFixOn.Count -ne 1 -or $focusOn.Count -ne 1 -or $eraseOn.Count -ne 1) {
-            throw 'Default native graphics / first-image fix / focus recovery / erase guard are incomplete'
-          }
-          foreach ($invalid in @('GosVideoLock=off','ExperimentalWindowedAdapter=0','Native3DWidescreen=0','LegacyOffscreenRGB565=0','FocusRepaint=0','WindowEraseGuard=0')) {
-            if (@($template | Where-Object { $_.Trim() -eq $invalid }).Count -gt 0) {
-              throw "Conflicting disabled first-run option: $invalid"
-            }
+          $active = @($template | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith(';') -and -not $_.StartsWith('#') })
+          $expected = @('[Graphics]', 'AspectRatio=auto', 'FPSLimit=60', '[Debug]', 'Log=0')
+          if (@(Compare-Object -ReferenceObject $expected -DifferenceObject $active -SyncWindow 0).Count -ne 0) {
+            throw "Unexpected first-run INI switches: $($active -join ', ')"
           }
           $actualFiles = @(Get-ChildItem -Path dist -File -Recurse |
             ForEach-Object { $_.FullName.Substring((Resolve-Path dist).Path.Length + 1).Replace('\', '/') } |
@@ -236,6 +219,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import hashlib
           import struct
 
           files = sorted(path for path in Path("candidate").rglob("*") if path.is_file())
@@ -255,4 +239,6 @@ jobs:
           if machine != 0x14C or magic != 0x10B or not characteristics & 0x0002:
               raise SystemExit(f"Not an executable PE32 x86: {machine:#x} / {magic:#x} / {characteristics:#x}")
           print(f"Verified single PE32 x86 standalone artifact: {len(data)} bytes")
+          print(f"CrimsonSkiesFix.exe SHA-256: {hashlib.sha256(data).hexdigest()}")
+          print("Publish only this exact downloaded candidate for the recorded source commit.")
           PY

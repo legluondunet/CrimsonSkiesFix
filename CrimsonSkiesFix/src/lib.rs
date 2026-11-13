@@ -5,6 +5,7 @@ mod config;
 mod build_info;
 mod menu_scene;
 mod gos_video_lock; // experimental, backed-up native GOS Video .rof overlay
+mod gos_registry_diag; // opt-in retail UIAssetPath/EXE Path read-only provenance
 mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
@@ -215,6 +216,12 @@ static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
+// Separate from the installer's persistent report: a game session owns a
+// fresh log. Never append gameplay records across separate game launches.
+fn fresh_game_session_log(path:&std::path::Path)->std::io::Result<File>{
+    OpenOptions::new().create(true).write(true).truncate(true).open(path)
+}
+
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
         if let Ok(mut file)=log.lock(){let _=writeln!(file,"{message}");}
@@ -262,8 +269,12 @@ fn cfg()->Config {
             Some(win32::enable_native_system_dpi_experiment())
         }else{None};
         if parsed.log_enabled || parsed.experimental_windowed_adapter {
+            // The DLL owns its gameplay diagnostics exclusively. Every game
+            // session starts a fresh CrimsonSkiesFix.log, whether launched by
+            // the standalone installer or directly. Installer/repair records
+            // live independently in CrimsonSkiesFix_installer.log.
             if let Some(path)=win32::log_path() {
-                if let Ok(file)=OpenOptions::new().create(true).write(true).truncate(true).open(path) {
+                if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
                 }
             }
@@ -373,6 +384,9 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             config.native_3d_widescreen &&
             config.desktop_resolution
         );
+        // Compare the retail installation's original UI asset-path registration
+        // with our standalone game folder; do not modify registry state.
+        if config.log_enabled {gos_registry_diag::report();}
     });
     static ROF_ROUTING_EARLY_ONCE:Once=Once::new();
     ROF_ROUTING_EARLY_ONCE.call_once(native_rof_open_trace::probe);
@@ -420,12 +434,16 @@ unsafe fn symbol(name:&[u8])->*const c_void {
                     "WINDOWED-DIAG: physical early native probe logical={logical:?} physical={physical:?} native_windows={native_windows} selected={size:?} (read-only, no DPI changes)"
                 ));
             }
-            if let Some((w,h))=size {
-                log(&format!("WINDOWED-DIAG: early FOV/HUD patch begin target={}x{}",w,h));
+            let target=size.and_then(|monitor|
+                presentation::native_3d_dimensions(monitor,config.force_4_by_3));
+            if let Some((w,h))=target {
+                log(&format!(
+                    "WINDOWED-DIAG: early FOV/HUD patch begin target={}x{} aspect={} monitor={size:?}",
+                    w,h,if config.force_4_by_3{"4:3"}else{"auto"}));
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
                 log("WINDOWED-DIAG: early FOV/HUD patch returned");
             }else{
-                log("WINDOWED-WIDE: early patch deferred; no eligible launch monitor dimensions");
+                log("WINDOWED-WIDE: early patch deferred; no eligible native 3D dimensions for requested aspect");
             }
         });
     }
@@ -620,6 +638,28 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn fresh_game_log_does_not_erase_persistent_installer_report(){
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-dual-logs-{}-{now}",std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let installer=root.join("CrimsonSkiesFix_installer.log");
+        let game=root.join("CrimsonSkiesFix.log");
+        std::fs::write(&installer,b"Action=REPAIRED_FROM_CD_AND_LAUNCH\n").unwrap();
+        std::fs::write(&game,b"OldGameSession\n").unwrap();
+        for index in 1..=2{
+            let mut output=fresh_game_session_log(&game).unwrap();
+            writeln!(output,"Session={index}").unwrap();
+            drop(output);
+            let text=std::fs::read_to_string(&game).unwrap();
+            assert_eq!(text,format!("Session={index}\n"));
+            assert_eq!(std::fs::read(&installer).unwrap(),
+                b"Action=REPAIRED_FROM_CD_AND_LAUNCH\n");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn crash_blt_rolling_trace_keeps_logging_after_twenty_thousand_calls(){
         assert!(!crash_blt_rotation_needed(1));

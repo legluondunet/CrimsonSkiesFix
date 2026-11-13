@@ -1,83 +1,22 @@
 // Used only for first-run initialization. Never overwrite an existing
 // CrimsonSkiesFix.ini: it contains the user's persistent preferences.
+// First-run INI exposes user choices, not implementation toggles. Verified
+// display, FOV/HUD, GOS, first-image and platform compatibility fixes are
+// enabled by Config::default() without requiring an INI line. Previous user
+// INIs are never overwritten when upgrading.
 pub const DEFAULT_INI: &str = concat!(
-    "; CrimsonSkiesFix — user settings; created once. Safe to edit.\n",
+    "; CrimsonSkiesFix — optional user preferences (created once).\n",
+    "; Verified game compatibility fixes are built in and enabled automatically.\n",
+    "; Advanced diagnostics and GOS restoration are documented in README.md.\n",
     "[Graphics]\n",
-    "Borderless=1\n",
-    "DesktopResolution=1\n",
+    "; Game aspect ratio: auto (desktop) or 4:3 (centered pillarbox).\n",
+    "AspectRatio=auto\n",
+    "; Frame pacing target, 1-60 frames per second.\n",
     "FPSLimit=60\n",
-    "; Experimental: pace only primary-surface modern Flip (off by default).\n",
-    "ModernFPSPacing=0\n",
-    "; Verified Wine/Proton native DirectDraw4 3D adapter (on by default).\n",
-    "ExperimentalWindowedAdapter=1\n",
-    "; One-shot repaint after focus or exposed-window return; enabled by default.\n",
-    "FocusRepaint=1\n",
-    "; Prevent white background erase over native DirectDraw pixels; enabled by default.\n",
-    "WindowEraseGuard=1\n",
-    "; Legacy first-image color fix: force RGB565 on verified game-sized offscreen source (on by default).\n",
-    "LegacyOffscreenRGB565=1\n",
-    "; Native FOV/HUD and startup driver/resolution prompt bypass for verified 1.02 EXE (on by default).\n",
-    "Native3DWidescreen=1\n",
-    "; Native GOS Graphics/Resolution control lock (on | off | restore). On by default: writes backed-up small crimptch.rof.\n",
-    "GosVideoLock=on\n",
-    "\n",
-    "[Compatibility]\n",
-    "; Wine-only ROFFILE.DLL INI parser EOF guard. Enabled by default on supported DLLs.\n",
-    "RoffileTerminatorFix=1\n",
     "\n",
     "[Debug]\n",
+    "; Additional game diagnostics (0=off, 1=on).\n",
     "Log=0\n",
-    "; Diagnostic only: postpone the in-memory FOV/HUD patch until DD4 mode negotiation.\n",
-    "DeferEarlyNativePatch=0\n",
-    "; Native Windows uses physical monitor pixels automatically to avoid DPI scaling bugs.\n",
-    "; Diagnostic only: force the same physical-pixel probe on Wine/Proton.\n",
-    "EarlyNativePhysicalMode=0\n",
-    "; Diagnostic ONLY: opt into system-DPI awareness before the game's first HWND.\n",
-    "; Try this only under native Windows when UI/HUD is cropped at 125% DPI.\n",
-    "; May alter legacy game behavior; never default-on or apply under Wine.\n",
-    "NativeDpiAware=0\n",
-    "; Native Windows only: exact-game DD4 bootstrap with strict preflight; enabled by default, never Wine/Proton.\n",
-    "NativeDD4Bootstrap=1\n",
-    "; Native Win11/DirectShow A/B: match the original 32-bit XRGB movie\n",
-    "; backbuffer at 800x600 instead of the RGB565 conversion path.\n",
-    "; Requires NativeDD4Bootstrap=1.\n",
-    "; Enabled for verified native Windows 800x600 videos; never active under Wine/Proton.\n",
-    "NativeMovieRGB32=1\n",
-    "; Native Windows movie-only: bounded post-Flip message dispatch; enabled by default.\n",
-    "; Requires NativeMovieRGB32=1 and NativeDD4Bootstrap=1.\n",
-    "NativeMovieMessagePump=1\n",
-    "; Native Windows-only opt-in 4:3 menu mouse coordinate remap, 800x600 virtual movie graph.\n",
-    "; Disabled by default: original Win32 mouse messages remain unchanged.\n",
-    "NativeMenuMouseRemap=0\n",
-    "; Native Windows-only A/B: repair stale ClipCursor from pre-borderless small game window.\n",
-    "; Requires verified native DD4 game HWND; enabled by default but acts only on a proven stale clip.\n",
-    "NativeMouseClipRepair=1\n",
-    "; Native Windows 800x600 only: test visibility using standard OS arrow in MainMenu.\n",
-    "; Requires WindowEraseGuard; no virtual coordinate remap. Debug only, OFF by default.\n",
-    "NativeSystemCursorProbe=0\n",
-    "; Native Windows only: passive DirectInput mouse API tracing (off by default).\n",
-    "; Logs device acquisition, mouse state/buttons and errors; no input modification.\n",
-    "NativeDirectInputMouseTrace=0\n",
-    "; Native Win11 mouse compatibility experiment: replace invalid DINPUT\n",
-    "; exclusive+background (0x9) mouse mode with nonexclusive+foreground (0x6).\n",
-    "; Exact authenticated GUID_SysMouse only; requires native DD4 bootstrap, no debug logging.\n",
-    "; Enabled for native Windows only; NEVER used under Wine/Proton.\n",
-    "NativeDirectInputMouseCoopRepair=1\n",
-    "; Native Windows 800x600 MainMenu only: synchronize original GOS cursor\n",
-    "; with mouse position on centered 4:3 menu (DirectInput deltas only).\n",
-    "; Original buttons and game renderer preserved; enabled for verified native Windows menus.\n",
-    "NativeGosCursorBridge=1\n",
-    "; Windows-native RGB32 800x600 videos/menus: compose full window offscreen\n",
-    "; (black background + aspect-correct 4:3 frame), then one primary Blt.\n",
-    "; No separate sidebar rectangles/GDI; fallback if unsupported by driver.\n",
-    "; Native Windows 800x600 only, enabled by default with fail-closed Blt fallback; never 3D or Wine.\n",
-    "NativeFullFrameCompose=1\n",
-    "; Optional passive audit of DirectDraw surface methods (requires Log=1).\n",
-    "SurfaceUsageTrace=0\n",
-    "; Crash investigation only: trace every native DirectDraw Blt enter/exit (very verbose).\n",
-    "CrashBltTrace=0\n",
-    "; Diagnostic only: report 120 successive successful DD4 Flip frametimes, not on-screen display timestamps. Requires Log=1.\n",
-    "FrameTimeTrace=0\n",
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +24,8 @@ pub struct Config {
     pub borderless: bool,
     pub desktop_resolution: bool,
     pub fps_limit: u32,
+    /// Explicitly render 3D in true 4:3; never squash an already-wide image.
+    pub force_4_by_3: bool,
     pub modern_fps_pacing: bool,
     pub experimental_windowed_adapter: bool,
     pub focus_repaint: bool,
@@ -129,7 +70,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -182,6 +123,12 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.focus_repaint = v; },
             ("graphics", "modernfpspacing") =>
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
+            ("graphics", "aspectratio") =>
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "auto" => settings.force_4_by_3=false,
+                    "4:3" => settings.force_4_by_3=true,
+                    _ => {},
+                },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
             ("compatibility", "roffileterminatorfix") =>
@@ -251,18 +198,56 @@ fn ini_line_keys(content:&str)->Vec<Option<String>>{
 
 /// A known key with an invalid value is not a suitable survivor of a
 /// duplicate cleanup, even when the current default happens to match
-/// an earlier valid entry. Only FPSLimit and GosVideoLock are non-boolean.
+/// an earlier valid entry. FPSLimit, AspectRatio and GosVideoLock are
+/// not boolean.
 fn known_ini_value_valid(key:&str,line:&str)->bool{
     let clean=line.split([';', '#']).next().unwrap_or("").trim();
     let Some((_,value))=clean.split_once('=') else{return false;};
     match key {
         "graphics/fpslimit"=>value.trim().parse::<u32>().is_ok(),
+        "graphics/aspectratio"=>matches!(
+            value.trim().to_ascii_lowercase().as_str(),"auto"|"4:3"),
         "graphics/gosvideolock"=>
             matches!(value.trim().to_ascii_lowercase().as_str(),
                 "on"|"off"|"restore"|"1"|"0"|"true"|"false"),
         _=>enabled(value).is_some()
     }
 }
+
+// Canonical supported parser keys, including advanced/legacy overrides
+// absent from the first-run INI. Keep this in sync with parse().
+const KNOWN_INI_KEYS:&[&str]=&[
+    "graphics/borderless",
+    "graphics/desktopresolution",
+    "graphics/fpslimit",
+    "graphics/aspectratio",
+    "graphics/modernfpspacing",
+    "graphics/experimentalwindowedadapter",
+    "graphics/focusrepaint",
+    "graphics/windoweraseguard",
+    "graphics/legacyoffscreenrgb565",
+    "graphics/native3dwidescreen",
+    "graphics/gosvideolock",
+    "compatibility/roffileterminatorfix",
+    "debug/log",
+    "debug/deferearlynativepatch",
+    "debug/earlynativephysicalmode",
+    "debug/nativedpiaware",
+    "debug/nativedd4bootstrap",
+    "debug/nativemoviergb32",
+    "debug/nativemoviemessagepump",
+    "debug/nativemenumouseremap",
+    "debug/nativemousecliprepair",
+    "debug/nativesystemcursorprobe",
+    "debug/nativedirectinputmousetrace",
+    "debug/nativedirectinputmousecooprepair",
+    "debug/nativegoscursorbridge",
+    "debug/nativefullframecompose",
+    "debug/directdrawpassthrough",
+    "debug/surfaceusagetrace",
+    "debug/crashblttrace",
+    "debug/frametimetrace",
+];
 
 /// Normalize repeated known INI keys while preserving the EXACT effective
 /// parsed configuration, comments, unknown options and original line endings.
@@ -275,8 +260,11 @@ pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
     let lines:Vec<&str>=content.split_inclusive('\n').collect();
     let keys=ini_line_keys(content);
     if keys.len()!=lines.len(){return None;}
-    let recognized:BTreeSet<String>=ini_line_keys(DEFAULT_INI)
-        .into_iter().flatten().collect();
+    // Keep deduplication of supported LEGACY INI keys even when they are
+    // intentionally omitted from the newly generated minimal template.
+    // Upgrades never silently rewrite or drop a user's existing switches.
+    let recognized:BTreeSet<String>=KNOWN_INI_KEYS
+        .iter().map(|key|(*key).to_owned()).collect();
     let mut groups:BTreeMap<String,Vec<usize>>=BTreeMap::new();
     for (index,key) in keys.iter().enumerate(){
         if let Some(key)=key{
@@ -316,6 +304,46 @@ pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn minimal_first_run_ini_contains_only_user_choices(){
+        let generated:Vec<String>=ini_line_keys(DEFAULT_INI)
+            .into_iter().flatten().collect();
+        assert_eq!(generated,vec![
+            "graphics/aspectratio".to_owned(),
+            "graphics/fpslimit".to_owned(),
+            "debug/log".to_owned(),
+        ]);
+        assert_eq!(parse(DEFAULT_INI),Config::default());
+        assert!(Config::default().experimental_windowed_adapter);
+        assert!(Config::default().native_3d_widescreen);
+        assert!(Config::default().roffile_terminator_fix);
+        assert!(Config::default().focus_repaint);
+        assert!(Config::default().gos_video_lock==crate::gos_video_lock::Mode::On);
+        // Even with a minimal INI, a user can restore a verified GOS backup
+        // explicitly without weakening the normal default-on protection.
+        assert_eq!(
+            parse("[Graphics]\nFPSLimit=60\nGosVideoLock=restore\n").gos_video_lock,
+            crate::gos_video_lock::Mode::Restore);
+        // Legacy duplicated options remain recognized rather than silently
+        // escaping the guarded deduplication routine on upgrade.
+        assert!(KNOWN_INI_KEYS.contains(&"graphics/borderless"));
+        assert!(KNOWN_INI_KEYS.contains(&"compatibility/roffileterminatorfix"));
+    }
+    #[test]
+    fn four_by_three_is_opt_in_only_and_graphics_scoped(){
+        assert!(!Config::default().force_4_by_3);
+        assert!(!parse("[Graphics]\nAspectRatio=auto").force_4_by_3);
+        assert!(parse("[Graphics]\nAspectRatio=4:3").force_4_by_3);
+        assert!(parse("[GRAPHICS]\naspectratio=4:3").force_4_by_3);
+        assert!(!parse("[Debug]\nAspectRatio=4:3").force_4_by_3);
+        assert!(!parse("[Graphics]\nAspectRatio=4:3\nAspectRatio=auto").force_4_by_3);
+        assert!(parse("[Graphics]\nAspectRatio=4:3\nAspectRatio=invalid").force_4_by_3);
+        let ini="[Graphics]\nAspectRatio=auto\nAspectRatio=4:3\n[Debug]\nLog=0\n";
+        let (cleaned,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,1);
+        assert!(cleaned.contains("AspectRatio=4:3"));
+        assert_eq!(parse(&cleaned),parse(ini));
+    }
     #[test]
     fn no_duplicates_in_generated_or_shipped_ini(){
         assert!(deduplicate_known_ini(DEFAULT_INI).is_none());
@@ -381,7 +409,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){

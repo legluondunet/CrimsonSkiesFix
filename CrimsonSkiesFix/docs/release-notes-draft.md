@@ -1,50 +1,58 @@
-# CrimsonSkiesFix — release candidate notes (draft, not published)
+# CrimsonSkiesFix — release candidate notes (DRAFT — NOT PUBLISHED)
 
-**Build currently under preparation:** `0.1.90` (Windows x86 DirectDraw proxy).
-**Distribution policy:** experimental candidate, tested under Wine/GE-Proton; **Windows 11 gameplay NOT yet validated**.
-**Release status:** not tagged, not released. The final candidate commit and SHA-256 must come from the approved `main` build, not from a PR artifact that may later be squashed.
+**Candidate version:** `0.1.90` — experimental standalone Windows x86 build.
+**Tested runtime:** Manjaro Linux, GE-Proton11-12 / Wine 11.0.
+**Native Windows status:** an earlier DLL/opt-in configuration was tested, but **this standalone candidate and its in-memory GOS VIDEO.SCRIPT substitution have not undergone native Windows gameplay acceptance**.
+**Release state:** preparation only; no tag, GitHub Release or final public binary is authorized by this document.
 
-## Highlights
+## What's new
 
-- Native monitor-sized Crimson Skies 1.02 rendering, automatic FOV and HUD correction (including 1920×1080), preserving original 4:3 framing for videos and menus.
-- Removal of the obsolete DirectDraw startup resolution/driver selection prompt for the verified executable.
-- GameOS Video Preferences Graphics and Resolution controls locked using the game's native UI mechanism, preserving its mode/device tables; current native display resolution shown in the menu.
-- The CrimsonSkiesFix build label appears only on the original main menu, including after returning from Preferences/gameplay.
-- Native RGB565 first-image correction; focus repaint and `WM_ERASEBKGND` protection to reduce white-screen artifacts.
-- Exact-hash-gated Wine-only ROFFILE.DLL allocation padding to avoid a known out-of-bounds INI parser read.
-- Windows x86 DLL proxy with an independently verified PE32 DLL, three DirectDraw exports, and a downloaded-artifact integrity check.
-- A clean package with `ddraw.dll`, configuration example, usage guide, complete GPL license and a `build-info.txt` containing the source SHA and compiled DLL SHA-256.
+- **One-file installer and launcher:** the downloadable artifact contains only `CrimsonSkiesFix.exe` (Windows PE32 x86), which embeds the same build's strictly verified `ddraw.dll` DirectDraw proxy. The proxy exposes **all 22 original DirectDraw exports**; CI checks names, ordinals, and an x86 Windows loader smoke test.
+- **Verified original-disc installation:** use a user-owned FR or DE ISO/CUE-BIN image, the authentic official 1.02 updater, and the user's locally supplied **exact approved decrypted 1.02 executable**. The installer authenticates internal disc files by per-file SHA-256, expands eight authentic chapter CAB archives, recreates the retail installation filenames, checks their payloads and removes the temporary CABs after verification. The original protected EXE is preserved as `CRIMSON.EXE.protected.bak`. The original game, updater, and decrypted executable are **not distributed**.
+- **Safe repeated launches and repairs:** once installed, the launcher verifies the game and launches it without requiring the disc, patch, or decrypted EXE again. A full reconstruction occurs only when verification fails; saves, custom planes, and the active INI are preserved. An existing `CrimsonSkiesFix.previous` backup or abandoned `.rebuilding` / `.installing` directory is never overwritten or removed automatically.
+- **GOS Video Preferences lock:** Graphics and Resolution are rendered read-only through the game's native mechanism. The fix authenticates the original `CRIMSON.ROF` and `ROFFILE.DLL` and supplies the exact patched `VIDEO.SCRIPT` descriptor and compressed data **in game memory only**, without rewriting the large original archive. A verified, reversible small `CRIMPTCH.ROF` overlay/backup may be installed once; its managed state is checked on subsequent launches.
+- **Modern video presentation:** borderless desktop-sized graphics, corrected 3D field of view and HUD, preserved 4:3 menus/cutscenes, native-resolution menu label, removed legacy graphics-driver chooser, RGB565 opening-image correction, menu build signature, focus recovery and Wine-only authenticated ROFFILE allocation guard. **New opt-in `AspectRatio=4:3`: true 4:3 3D source raster and matching FOV/HUD, centered with black sidebars on widescreen monitors, without a physical resolution switch.** `AspectRatio=auto` retains existing desktop-native gameplay. Mandatory compatibility fixes remain built-in default-on.
+- **Two independent logs:** `CrimsonSkiesFix_installer.log` beside the launcher retains the latest installation, repair, explicit inspection or failure; a successful normal relaunch or successful `--verify-install` will not erase an earlier report. The DirectDraw DLL creates a **new `CrimsonSkiesFix.log` at every game launch**, without an environment handoff or shared append. On installation/repair, the launcher records the child's exit status in its installer log; on verified-only launches it prints the status to the terminal. `[Debug] Log=1` enables detailed gameplay traces; normal first-run settings use `Log=0`.
 
-## Compatibility
+## Installation and requirements
 
-Only a single validated **Crimson Skies 1.02** executable is accepted, size **2,580,480 bytes**, SHA-256:
+1. Download the **single `CrimsonSkiesFix.exe`** from the designated release candidate. It is an x86 Windows executable; launch under a compatible Wine/Proton environment or supported Windows installation. Keep it in a writable directory.
+2. For a new installation, place beside the launcher **one supported original ISO or CUE with BIN/IMG**, **the authentic official 1.02 updater**, and **your own approved decrypted 1.02 executable**. Run the launcher without arguments. It creates a separately verified `CrimsonSkiesFix/` game folder.
+3. For an existing, verified installation, run the same launcher again; the original source media are not required.
+4. The active options file is `CrimsonSkiesFix/CrimsonSkiesFix.ini` **inside the game folder**. The new generated INI and supplied `.ini.example` contain `[Graphics] AspectRatio=auto`, `FPSLimit=60` and `[Debug] Log=0`; 4:3 is optional and all mandatory compatibility fixes are compiled into defaults. An existing active INI is preserved, never overwritten.
+5. If you want the original GOS video screen back, set `[Graphics] GosVideoLock=restore` while the fix is still installed, launch once and confirm the verified restoration before uninstalling. `GosVideoLock=off` alone does **not** undo an existing managed overlay.
+6. Logs beside the launcher: `CrimsonSkiesFix_installer.log` (persistent installation/repair/error or inspection report) and `CrimsonSkiesFix.log` (fresh game DLL diagnostics). Installed `build-info.txt` records the full source commit, DLL SHA-256 and log identity. No source media, game files, third-party widescreen executable or SafeDisc removal utility is included.
 
-`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
+**Strict game executable requirement:** original approved unprotected version 1.02, size `2,580,480` bytes, SHA-256:
+`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
+The launcher does not decrypt or replace an unknown game executable.
 
-Other protected, modified, or unknown executable versions are deliberately rejected. The DLL does not distribute a copy of the game or modify the verified EXE on disk.
+## Compatibility and evidence (12 November 2026)
 
-**Verified in user gameplay tests:** Manjaro Linux with Wine 11.0 / Steam GE-Proton11-12 at 1920×1080, including in-game rendering, GOS menus, repeated resolution changes, return to menu/signature, and ROFFILE fix activation.
+| Edition / environment | Actual evidence | Status |
+| --- | --- | --- |
+| **FR**, Manjaro / GE-Proton11-12 | Owner tested initial verified CD install, game launch, Graphics/Resolution lock and successful game exit; these gameplay tests used the earlier unified logger, before this two-log release-candidate change | **Owner-validated** |
+| **DE**, Manjaro / GE-Proton11-12 | Owner tested initial CD install (including exact CAB aliases), native Graphics/Resolution lock, then `VERIFIED_EXISTING_AND_LAUNCH` with `GosOverlayState=VERIFIED_MANAGED` and exit code 0 | **Owner-validated** |
+| **USA/Europe** | Exact original-disc 112-file SHA-256 profile, alias-table and synthetic tests are implemented. The original disc is no longer available to the owner | **Implemented, not runtime-tested** |
+| **Native Windows (latest candidate)** | CI verifies that the x86 DLL loads and exports are correct; older manual Windows 11 tests were on a different runtime path | **Not game-tested with this candidate** |
 
-**Still pending:** real Windows 11 gameplay acceptance test (DLL loading in a GitHub Windows runner is not a game test); additional display/driver configurations; long-duration behavior and codec compatibility on Windows.
+The game data and supported executable must still be provided separately by the user. Unknown ISO/CD variants, unknown decryptions and third-party widescreen-modified executables are rejected. GPU, compositor, DPI, game video/audio codec, input and performance differences are not validated exhaustively. The GameOS graphics lock is deliberately limited to Graphics and Resolution; **other Video preference editability was not exhaustively retested**. The `Log=0` configuration can still include compatibility-adapter diagnostics; this does not imply that gameplay FPS measurements are enabled.
 
-## Install and upgrade
+## Maintainer release checklist (not a license to publish)
 
-1. Obtain the approved `CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL` artifact from its GitHub Actions build.
-2. Check `CrimsonSkiesFix/build-info.txt` against the included `ddraw.dll` using the offline verifier or `Get-FileHash`. This is an integrity check, **not** a signed binary.
-3. Back up any existing `ddraw.dll` and copy the archive layout next to the verified game executable. Preserve your existing `CrimsonSkiesFix/CrimsonSkiesFix.ini`.
-4. If you want a completely unmodified GOS Video archive, set `[Graphics] GosVideoLock=off` in a manually created active INI **before first launch**. Otherwise the default-on native lock backs up and modifies only the small original `GOSDATA/ASSETS/crimptch.rof` overlay.
-5. To uninstall an already-installed native GOS Video lock, use `GosVideoLock=restore` while the DLL remains installed and **confirm restoration** before removing the proxy. Simply setting `off` does not restore an installed overlay.
+- [x] FR and DE owner acceptance under GE-Proton; both `Log=0` and `Log=1` sessions observed on the prior unified-log version.
+- [ ] Two-log change passes CI and, ideally, a short owner runtime smoke test; CI-only is not real-game verification.
+- [x] USA edition remains explicitly marked **untested**; unavailable source media do not block an honestly labelled prerelease.
+- [x] One-file artifact only, GPL-3.0-or-later license and source/provenance records installed with the proxy.
+- [ ] Verify minimal three-option INI (AspectRatio, FPSLimit and Log), default-on compatibility features, and native 4:3 gameplay in the final candidate. Earlier owner game testing used the older generated INI and native aspect.
+- [ ] Approve and merge stacked PR **#26 first, then #27** (or reconcile their changes into one accepted branch), retaining the owner's control of merges.
+- [ ] Build exact final **main** commit and confirm the Windows x86 / Linux downloaded-artifact CI jobs both succeed.
+- [ ] Record the **final main source SHA, release artifact size and SHA-256** after its build. Old PR binaries cannot serve as the final release.
+- [ ] Verify the chosen `v0.1.90` tag name is unused and approve an explicitly labelled **experimental prerelease**, not a stable Windows release.
+- [ ] Only after explicit owner approval: publish tag, release notes and the single final `CrimsonSkiesFix.exe` artifact. Do not upload original game, official updater or decrypted binary.
 
-Consult the detailed `CrimsonSkiesFix/README.md` in the artifact for full instructions, log paths and limits. This project is GPL-3.0-or-later and requires preserving applicable license/source information when redistributing.
+**No native Windows gameplay claim and no stable release claim are permitted from this evidence alone.**
 
-## Release gates before publication
-
-- [ ] PR approval and merge by the owner; final source/tag name chosen.
-- [ ] GitHub Windows x86 build and downloaded-artifact verification green on **final** `main` SHA.
-- [ ] Final binary hash, source commit and version logged in the candidate's distributed `build-info.txt`.
-- [ ] Real gameplay session under Windows 11 with the exact candidate build, full scenario in `docs/windows11-acceptance-2026-11-04.md`.
-- [ ] Explicit owner authorization for creating a GitHub tag and publishing an appropriately labelled release.
-
-**Do not describe this draft as a published release or as proven stable under Windows.**
+Copyright for the original game and its data belongs to their respective owners; the project distributes original open-source patch code only, GPL-3.0-or-later.
 
 legluondunet assisted by ChatGPT (OpenAI)

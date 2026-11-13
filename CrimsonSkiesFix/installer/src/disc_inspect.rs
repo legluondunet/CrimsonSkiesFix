@@ -249,7 +249,7 @@ fn both_endian(bytes:&[u8])->Result<u32,String> {
 }
 #[derive(Clone)]
 struct Entry {
-    extent:u32,size:u32,flags:u8,name:String,is_directory:bool,multiextent:bool,
+    extent:u32,size:u32,name:String,is_directory:bool,multiextent:bool,
 }
 fn entry(record:&[u8],joliet:bool)->Result<Entry,String> {
     if record.len()<34 {return Err("truncated ISO9660 directory record".into());}
@@ -285,7 +285,7 @@ fn entry(record:&[u8],joliet:bool)->Result<Entry,String> {
     Ok(Entry{
         extent:both_endian(&record[2..10])?,
         size:both_endian(&record[10..18])?,
-        flags,name,is_directory:flags&2!=0,multiextent:flags&0x80!=0,
+        name,is_directory:flags&2!=0,multiextent:flags&0x80!=0,
     })
 }
 

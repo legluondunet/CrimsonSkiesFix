@@ -31,8 +31,16 @@ use std::{
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 use crate::{exe_gate, log};
 
+// Exactly pinned retail disc archive variants from the independently
+// verified original CD manifests. All on-disk source archives stay immutable.
+// USA and FR are known to share this VIDEO.SCRIPT; the German script must
+// ALSO match the independent original-script hash or we fail closed.
 const BASE_SIZE: usize = 60_236_221;
 const BASE_HASH: &str = "acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174";
+const FR_BASE_SIZE: usize = 62_745_707;
+const FR_BASE_HASH: &str = "99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f";
+const DE_BASE_SIZE: usize = 62_678_770;
+const DE_BASE_HASH: &str = "4ccc5d25c2635ea9ad042ff1e356408d504e4c616389084cb087b49ddb28cbc7";
 const ORIGINAL_VIDEO_HASH: &str = "f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9";
 const MODIFIED_VIDEO_HASH: &str = "a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d";
 const VIDEO_PATH: &str = "ASSETS/SCRIPTS/VIDEO.SCRIPT";
@@ -57,6 +65,10 @@ struct Entry {
     compressed: usize,
     expanded: usize,
     kind: u32,
+    // Offset of this exact member's 24-byte descriptor in the archive.
+    // Discovered while parsing the verified ROF directory tree, never
+    // guessed from a language-specific hard-coded address.
+    descriptor: usize,
 }
 
 fn u32_at(data: &[u8], off: usize) -> Result<usize, String> {
@@ -141,7 +153,8 @@ fn walk(data: &[u8], node: usize, prefix: &str, depth: usize,
                         return Err("ROF payload outside archive".into());
                     }
                     out.push(Entry {
-                        name: full, offset, compressed, expanded, kind
+                        name: full, offset, compressed, expanded, kind,
+                        descriptor: e
                     });
                 }
                 _ => return Err("unknown ROF member kind".into())
@@ -326,12 +339,22 @@ fn checked_patch(path: &Path) -> Result<Vec<u8>, String> {
     }
     fs::read(path).map_err(|e| e.to_string())
 }
-fn read_original_video(base: &Path) -> Result<Vec<u8>, String> {
-    if fs::metadata(base).map_err(|e| e.to_string())?.len() as usize != BASE_SIZE {
-        return Err("unsupported original crimson.rof size".into());
+// Reject every archive except the exact verified retail edition fingerprints.
+fn supported_base_archive_hash(size: u64) -> Option<&'static str> {
+    match size {
+        n if n == BASE_SIZE as u64 => Some(BASE_HASH),
+        n if n == FR_BASE_SIZE as u64 => Some(FR_BASE_HASH),
+        n if n == DE_BASE_SIZE as u64 => Some(DE_BASE_HASH),
+        _ => None,
     }
+}
+
+fn read_original_video(base: &Path) -> Result<Vec<u8>, String> {
+    let size = fs::metadata(base).map_err(|e| e.to_string())?.len();
+    let expected_hash = supported_base_archive_hash(size)
+        .ok_or("unsupported original crimson.rof size")?;
     let bytes = fs::read(base).map_err(|e| e.to_string())?;
-    if exe_gate::sha256(&bytes) != BASE_HASH {
+    if exe_gate::sha256(&bytes) != expected_hash {
         return Err("unsupported original crimson.rof SHA-256".into());
     }
     let entries = parse(&bytes)?;
@@ -374,6 +397,121 @@ pub(crate) fn installed_video_compressed_span() -> Option<(u64, u64)> {
     if !overlay_video_matches(&bytes).ok()? { return None; }
     let entries = parse(&bytes).ok()?;
     let video = named(&entries, VIDEO_PATH)?;
+    let end = video.offset.checked_add(video.compressed)?;
+    Some((video.offset as u64, end as u64))
+}
+/// Re-encode a *verified* script to exactly the stored member size.
+/// zlib allows empty non-final DEFLATE blocks of 5 or 6 bytes; this
+/// preserves all neighboring archive member offsets on every edition.
+/// If this exact-size representation is impossible, fail closed.
+fn encode_exact_zlib(script:&[u8], target_size:usize)->Option<Vec<u8>>{
+    for level in 1..=9{
+        let mut writer=ZlibEncoder::new(Vec::new(),Compression::new(level));
+        writer.write_all(script).ok()?;
+        let packed=writer.finish().ok()?;
+        if packed.len()<6 || packed.len()>target_size{continue;}
+        let padding=target_size-packed.len();
+        if padding>512{continue;}
+        let six=padding%5;
+        if six*6>padding{continue;}
+        let five=(padding-six*6)/5;
+        let mut result=Vec::with_capacity(target_size);
+        result.extend_from_slice(&packed[..2]);
+        for _ in 0..six{result.extend_from_slice(&[2,0,0,0,255,255]);}
+        for _ in 0..five{result.extend_from_slice(&[0,0,0,255,255]);}
+        result.extend_from_slice(&packed[2..]);
+        if result.len()!=target_size{continue;}
+        let mut checked=Vec::new();
+        if ZlibDecoder::new(result.as_slice())
+          .take(script.len() as u64+1).read_to_end(&mut checked).is_ok()
+          && checked==script {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Exact-identity, memory-only alternative when GameOS does not mount
+/// the installed CRIMPTCH.ROF. No original archive bytes are written.
+pub(crate) struct VirtualVideo {
+    pub size_field_at:u64,
+    pub data_at:u64,
+    pub replacement:Vec<u8>,
+    pub expanded_size:u32,
+}
+pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
+    let (base,overlay)=paths().ok()?;
+    // Require the owner's officially patched 1.02 original and our exact
+    // managed postimage together with its authenticated official backup.
+    let backup=overlay.with_file_name(format!("crimptch.rof{BACKUP_SUFFIX}"));
+    if !regular_file(&backup) || fs::metadata(&backup).ok()?.len()!=797{return None;}
+    let previous=checked_patch(&backup).ok()?;
+    if exe_gate::sha256(&previous)!=
+       "7ae28cfb65645a3e22aadc64a68badc23e2543bc56356d599fb59375d9ebbefe"{
+        return None;
+    }
+    let preserved=original_airframe(&previous).ok()?;
+    let installed=checked_patch(&overlay).ok()?;
+    if !overlay_video_matches(&installed).ok()?{return None;}
+    let patch_entries=parse(&installed).ok()?;
+    let air=named(&patch_entries,AIRFRAME_PATH)?;
+    if air.kind!=preserved.kind || air.expanded!=preserved.expanded ||
+       installed.get(air.offset..air.offset+air.compressed)?
+       !=preserved.compressed_bytes.as_slice(){return None;}
+    let modified=inflate(&installed,named(&patch_entries,VIDEO_PATH)?).ok()?;
+    if modified.len()!=VIDEO_MODIFIED_SIZE ||
+       exe_gate::sha256(&modified)!=MODIFIED_VIDEO_HASH{return None;}
+
+    let size=fs::metadata(&base).ok()?.len();
+    let digest=supported_base_archive_hash(size)?;
+    let bytes=fs::read(base).ok()?;
+    if bytes.len() as u64!=size || exe_gate::sha256(&bytes)!=digest{return None;}
+    let tree=parse(&bytes).ok()?;
+    let original=named(&tree,VIDEO_PATH)?;
+    if original.kind!=2 || original.expanded!=VIDEO_SIZE ||
+       original.compressed<6 || original.compressed>MAX_SCRIPT_BYTES ||
+       exe_gate::sha256(&inflate(&bytes,original).ok()?)!=ORIGINAL_VIDEO_HASH{
+        return None;
+    }
+    // Use the exact member descriptor found by the authenticated parser.
+    // A byte-pattern scan across compressed payloads is unnecessary and
+    // could produce a false-positive in another supported edition.
+    let header=original.descriptor;
+    for (i,expect) in [original.offset,original.expanded,original.compressed,2usize]
+        .iter().enumerate() {
+        if u32_at(&bytes,header.checked_add(i.checked_mul(4)?)?).ok()?!=*expect {
+            return None;
+        }
+    }
+    // Preserve the member's exact compressed length regardless of locale:
+    // the parser's other offsets and the ReadFile byte count remain intact.
+    let replacement=encode_exact_zlib(&modified,original.compressed)?;
+    Some(VirtualVideo{
+        size_field_at:header.checked_add(4)? as u64,
+        data_at:original.offset as u64,
+        replacement,
+        expanded_size:VIDEO_MODIFIED_SIZE as u32,
+    })
+}
+
+/// Read-only diagnostics: locate the original VIDEO.SCRIPT member in a
+/// fully authenticated source archive. Used only with [Debug] Log=1,
+/// never as a fallback to an unknown archive or an input modification.
+/// Seeing the compressed interval read does not establish script execution.
+pub(crate) fn original_video_compressed_span() -> Option<(u64, u64)> {
+    let (base, _) = paths().ok()?;
+    let size = fs::metadata(&base).ok()?.len();
+    let expected_hash = supported_base_archive_hash(size)?;
+    let bytes = fs::read(base).ok()?;
+    if bytes.len() as u64 != size || exe_gate::sha256(&bytes) != expected_hash {
+        return None;
+    }
+    let entries = parse(&bytes).ok()?;
+    let video = named(&entries, VIDEO_PATH)?;
+    if video.expanded != VIDEO_SIZE ||
+       exe_gate::sha256(&inflate(&bytes, video).ok()?) != ORIGINAL_VIDEO_HASH {
+        return None;
+    }
     let end = video.offset.checked_add(video.compressed)?;
     Some((video.offset as u64, end as u64))
 }
@@ -549,9 +687,63 @@ pub fn apply(mode: Mode, widescreen_ready: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_verified_base_archive_sizes_map_to_expected_hashes() {
+        assert_eq!(supported_base_archive_hash(BASE_SIZE as u64), Some(BASE_HASH));
+        assert_eq!(supported_base_archive_hash(FR_BASE_SIZE as u64), Some(FR_BASE_HASH));
+        assert_eq!(supported_base_archive_hash(DE_BASE_SIZE as u64), Some(DE_BASE_HASH));
+        assert_ne!(BASE_HASH, FR_BASE_HASH);
+        assert_ne!(DE_BASE_HASH, FR_BASE_HASH);
+        assert_ne!(BASE_HASH, DE_BASE_HASH);
+        for size in [BASE_SIZE,FR_BASE_SIZE,DE_BASE_SIZE] {
+            for unknown in [size as u64-1,size as u64+1] {
+                assert_eq!(supported_base_archive_hash(unknown), None);
+            }
+        }
+        assert_eq!(supported_base_archive_hash(0),None);
+    }
+    #[test]
+    fn pinned_variants_match_three_independent_retail_cd_manifests(){
+        for (profile,size,hash) in [
+            (include_str!("../installer/profiles/c_skies_disc_001.tsv"),BASE_SIZE,BASE_HASH),
+            (include_str!("../installer/profiles/c_skies_fr_001.tsv"),FR_BASE_SIZE,FR_BASE_HASH),
+            (include_str!("../installer/profiles/c_skies_de_001.tsv"),DE_BASE_SIZE,DE_BASE_HASH),
+        ] {
+            let record=format!("GAME/GOSDATA/ASSETS/CRIMSON.ROF\t{size}\t{hash}");
+            assert!(profile.lines().any(|line|line==record));
+        }
+    }
     fn fixture_archive(air: &[u8], video: &[u8]) -> Vec<u8> {
         write_overlay(&Payload { name:"AIRFRAME.SCRIPT", expanded:air.len(),
             compressed_bytes:air.to_vec(), kind:0 },video).unwrap()
+    }
+    #[test]
+    fn parsed_member_descriptor_is_authentic_and_unambiguous(){
+        let raw=fixture_archive(b"old airframe",b"sample video");
+        let items=parse(&raw).unwrap();
+        assert_eq!(items.len(),2);
+        for item in items{
+            assert_eq!(u32_at(&raw,item.descriptor).unwrap(),item.offset);
+            assert_eq!(u32_at(&raw,item.descriptor+4).unwrap(),item.expanded);
+            assert_eq!(u32_at(&raw,item.descriptor+8).unwrap(),item.compressed);
+            assert_eq!(u32_at(&raw,item.descriptor+12).unwrap(),item.kind as usize);
+        }
+    }
+    #[test]
+    fn different_edition_zlib_member_lengths_keep_contents_exact(){
+        let script=b"VIDEO.SCRIPT locale-independent test payload".repeat(80);
+        let mut encoder=ZlibEncoder::new(Vec::new(),Compression::new(2));
+        encoder.write_all(&script).unwrap();
+        let baseline=encoder.finish().unwrap().len();
+        for extra in [25,31,37,43,49]{
+            let stream=encode_exact_zlib(&script,baseline+extra)
+                .expect("synthetic edition stored length should be representable");
+            assert_eq!(stream.len(),baseline+extra);
+            let mut actual=Vec::new();
+            ZlibDecoder::new(stream.as_slice()).read_to_end(&mut actual).unwrap();
+            assert_eq!(actual,script);
+        }
+        assert!(encode_exact_zlib(&script,baseline+1024).is_none());
     }
     #[test]
     fn rof_roundtrip_preserves_uncompressed_airframe_and_zlib_video() {

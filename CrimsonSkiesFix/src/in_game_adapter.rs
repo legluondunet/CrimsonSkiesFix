@@ -339,6 +339,16 @@ struct Runtime {
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 
+// Match the game's actual patched internal 3D raster, not the monitor's
+// outer window. In 4:3 mode the renderer is narrower than the borderless HWND.
+fn matches_patched_gameplay_mode(
+    mode:Mode,monitor:(u32,u32),patched:bool,force_4_by_3:bool
+)->bool{
+    patched && mode.bpp==16 && mode.width>=960 && mode.height>=600 &&
+    crate::presentation::native_3d_dimensions(monitor,force_4_by_3)
+        ==Some((mode.width,mode.height))
+}
+
 // Shared DPI aspect tolerance: no need for an exclusive-video bootstrap.
 fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
     crate::presentation::dpi_output_matches(physical,logical)
@@ -484,16 +494,21 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
     // Fail closed for unrecognized EXEs; never patch an arbitrary image.
     // Geometry was checked above, including monitors with negative origins.
     let native_widescreen_ready=if crate::cfg().native_3d_widescreen{
-        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
-        let result=crate::native_widescreen::apply_or_reuse_early_patch(
-            render_client.0,render_client.1);
-        log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
-        log(&format!(
-            "WINDOWED-WIDE: verified unwrapped EXE; native resolution+FOV+HUD {}x{} result={result:?}",
-            render_client.0,render_client.1));
-        matches!(result,
-            crate::native_widescreen::PatchResult::Patched |
-            crate::native_widescreen::PatchResult::AlreadyNative)
+        if let Some((w,h))=crate::presentation::native_3d_dimensions(
+            render_client,crate::cfg().force_4_by_3){
+            log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch begin");
+            let result=crate::native_widescreen::apply_or_reuse_early_patch(w,h);
+            log("WINDOWED-DIAG: apply/reuse early native FOV/HUD patch returned");
+            log(&format!(
+                "WINDOWED-WIDE: verified unwrapped EXE; native 3D resolution+FOV+HUD {}x{} aspect={} physical_desktop={:?} result={result:?}",
+                w,h,if crate::cfg().force_4_by_3{"4:3"}else{"auto"},render_client));
+            matches!(result,
+                crate::native_widescreen::PatchResult::Patched |
+                crate::native_widescreen::PatchResult::AlreadyNative)
+        }else{
+            log("WINDOWED-4BY3: monitor does not support a verified true 4:3 gameplay raster; no EXE patch");
+            false
+        }
     }else{false};
     *guard=Some(Runtime{dd4:dd4 as usize,dd4_owner:Com(dd4 as usize),hwnd:hwnd as usize,
         monitor,render_client,generation:0,exposed:false,native_preparing:false,native_widescreen_ready,native_post_gameplay_ui:false,epoch:None});
@@ -527,15 +542,17 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         return Some(E_FAIL);
     }
     let mode=Mode{width:w,height:h,bpp};
-    let (mon_w,mon_h)=runtime.render_client;
-    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
-        w==mon_w && h==mon_h && w>=960 && h>=600;
+    let expected_3d=crate::presentation::native_3d_dimensions(
+        runtime.render_client,crate::cfg().force_4_by_3);
+    let native_3d=matches_patched_gameplay_mode(
+        mode,runtime.render_client,runtime.native_widescreen_ready,
+        crate::cfg().force_4_by_3);
     let supported=matches!((w,h,bpp),(640,480,16)|(800,600,16)) ||
         native_3d;
     if !supported{
         log(&format!("WINDOWED-GAME: unsupported mode {}x{}x{}, fail closed",w,h,bpp));
         if runtime.exposed{return Some(E_FAIL);}
-        if !allow_original_exclusive_fallback(){
+        if !allow_original_exclusive_fallback() || crate::cfg().force_4_by_3{
             log("NATIVE-STRICT-BORDERLESS: unsupported game mode rejected without original SetDisplayMode or DDSCL_EXCLUSIVE; physical desktop unchanged");
             return Some(E_FAIL);
         }
@@ -553,7 +570,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     // The opening 3D -> intro-movie 800x600 transition is excluded
     // because the original MainMenu has not been seen then.
     let previous_was_gameplay_3d=runtime.epoch.as_ref().is_some_and(|e|{
-        e.mode.width==mon_w && e.mode.height==mon_h && e.mode.bpp==16
+        expected_3d==Some((e.mode.width,e.mode.height)) && e.mode.bpp==16
     });
     let post_gameplay_ui=post_gameplay_ui_transition(
         mode,previous_was_gameplay_3d,
@@ -954,14 +971,22 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
         .map_err(|hr|format!("attach virtual Z32 {:#010x}",hr as u32))?;
 
     let chain=Chain{front_to_back:true,back_to_depth:true,mipmaps:false};
-    let mut contract=if native_3d{
+    let mut contract=if native_3d && crate::cfg().force_4_by_3{
+        AdapterContract::prepare_four_by_three_3d(mode,client,chain)
+    }else if native_3d{
         AdapterContract::prepare_native_3d(mode,client,chain)
     }else{
         AdapterContract::prepare(mode,client,chain)
     }.map_err(|e|format!("preflight: {e:?}"))?;
     if native_3d {
-        log(&format!(
-            "WINDOWED-WIDE: real D3D3 RGB565 color and Z32 surfaces allocated at native monitor {}x{}, viewport full, no 4:3 stretch",mode.width,mode.height));
+        if crate::cfg().force_4_by_3 {
+            log(&format!(
+                "WINDOWED-4BY3: real D3D3 RGB565 color and Z32 surfaces {}x{}; physical desktop {:?}; presentation centered at {:?}; game 3D FOV/HUD remains 4:3",
+                mode.width,mode.height,client,contract.plan.viewport));
+        }else{
+            log(&format!(
+                "WINDOWED-WIDE: real D3D3 RGB565 color and Z32 surfaces allocated at native monitor {}x{}, viewport full, no 4:3 stretch",mode.width,mode.height));
+        }
     }
     // Before exposure, the same physical backend from the standalone
     // probe must perform the actual black-clear + 4:3 stretch pair.
@@ -1097,6 +1122,22 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
 #[cfg(test)]
 mod shared_graph_presentation_tests{
     use super::*;
+    #[test]
+    fn true_four_by_three_gameplay_modes_are_not_mistaken_for_menu_epochs(){
+        let monitor=(1920,1080);
+        let game=Mode{width:1440,height:1080,bpp:16};
+        let menu=Mode{width:800,height:600,bpp:16};
+        let wide=Mode{width:1920,height:1080,bpp:16};
+        assert!(matches_patched_gameplay_mode(game,monitor,true,true));
+        assert!(!matches_patched_gameplay_mode(game,monitor,true,false));
+        assert!(!matches_patched_gameplay_mode(game,monitor,false,true));
+        assert!(!matches_patched_gameplay_mode(menu,monitor,true,true));
+        assert!(!matches_patched_gameplay_mode(wide,monitor,true,true));
+        assert!(matches_patched_gameplay_mode(wide,monitor,true,false));
+        // Actual 4:3 gameplay -> GOS pause transition must count as 3D.
+        assert!(post_gameplay_ui_transition(menu,true,true,false));
+        assert!(!post_gameplay_ui_transition(menu,false,false,false));
+    }
     #[test]
     fn menu_scratch_requires_verified_full_frame_composition_for_xrgb32(){
         let scratch=1usize as *mut c_void;

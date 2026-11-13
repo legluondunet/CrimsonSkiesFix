@@ -48,6 +48,12 @@ fn geometry_valid(mode:Mode,desktop:(u32,u32),viewport:Viewport)->bool{
         ||
         ((mode.width,mode.height)==desktop &&
          viewport==Viewport{x:0,y:0,width:desktop.0,height:desktop.1})
+        ||
+        // Never compress a wide image: this is the matching TRUE 4:3
+        // source size, rendered by the game into its own RGB565/Z32 graph.
+        (crate::presentation::native_3d_dimensions(desktop,true)
+            ==Some((mode.width,mode.height)) &&
+         fit_viewport(mode.width,mode.height,desktop.0,desktop.1)==Some(viewport))
     )
 }
 
@@ -333,6 +339,22 @@ mod tests {
         assert!(!geometry_valid(native,(2560,1440),full));
         assert!(!geometry_valid(native,(1920,1080),Viewport{
             x:240,y:0,width:1440,height:1080}));
+    }
+    #[test]
+    fn actual_four_by_three_gameplay_clears_bars_and_never_stretches_widescreen(){
+        let desktop=(1920,1080);
+        let four=Mode{width:1440,height:1080,bpp:16};
+        let viewport=Viewport{x:240,y:0,width:1440,height:1080};
+        let mut backend=FakeBlt::default();
+        assert_eq!(execute_windowed_blt_pair(
+            &mut backend,four,desktop,viewport),Ok(()));
+        assert_eq!(backend.events,vec![
+            Event::Black(1920,1080),Event::Stretch(four,viewport)
+        ]);
+        assert!(!geometry_valid(Mode{width:1920,height:1080,bpp:16},desktop,viewport));
+        assert!(!geometry_valid(Mode{width:1366,height:768,bpp:16},desktop,viewport));
+        assert!(!geometry_valid(four,desktop,Viewport{
+            x:0,y:0,width:1920,height:1080}));
     }
     #[test]
     fn eight_hundred_by_six_hundred_remains_fully_pillarboxed(){

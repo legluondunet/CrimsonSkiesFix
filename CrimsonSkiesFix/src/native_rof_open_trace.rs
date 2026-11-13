@@ -280,8 +280,10 @@ pub fn probe(){
             observe_a as usize,&ORIGINAL_A)};
         let w=unsafe{install_import(module,imports.wide,b"CreateFileW\0",
             observe_w as usize,&ORIGINAL_W)};
-        let read=crate::cfg().log_enabled &&
-            unsafe{crate::native_rof_read_trace::install(module,imports.read)};
+        // VIDEO.SCRIPT resource virtualization is a functional GOS lock,
+        // never dependent on [Debug] Log=1. The ReadFile wrapper remains
+        // strictly pass-through if authenticated virtual data is unavailable.
+        let read=unsafe{crate::native_rof_read_trace::install(module,imports.read)};
         log(&format!(
             "GOS-ROF-OPEN: shared Windows/Wine verified ROFFILE.DLL import_probe CreateFileA_present={} hook={} CreateFileW_present={} hook={} ReadFile_present={} read_hook={} CreateFileMappingA_import={} CreateFileMappingW_import={}; logging is optional, member execution unobserved",
             imports.ansi.is_some(),a,imports.wide.is_some(),w,imports.read.is_some(),read,imports.mapping_a,imports.mapping_w

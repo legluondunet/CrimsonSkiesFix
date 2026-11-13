@@ -18,6 +18,9 @@ static ORIGINAL:AtomicUsize=AtomicUsize::new(0);
 static PATCH_READS:AtomicUsize=AtomicUsize::new(0);
 static BASE_READS:AtomicUsize=AtomicUsize::new(0);
 static OVERLAPS:AtomicUsize=AtomicUsize::new(0);
+static VIRTUAL:OnceLock<Option<gos_video_lock::VirtualVideo>>=OnceLock::new();
+static VIRTUAL_HEADER_MASK:AtomicUsize=AtomicUsize::new(0);
+static VIRTUAL_PAYLOAD_READS:AtomicUsize=AtomicUsize::new(0);
 static REFERENCES:OnceLock<Option<References>>=OnceLock::new();
 
 #[repr(C)]
@@ -32,7 +35,12 @@ struct FileInfo{
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct FileId{volume:u32,index_hi:u32,index_lo:u32}
 #[derive(Clone,Copy)]
-struct References{overlay:FileId,base:FileId,video_span:Option<(u64,u64)>}
+struct References{
+    overlay:FileId,
+    base:FileId,
+    video_span:Option<(u64,u64)>,
+    base_video_span:Option<(u64,u64)>,
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum Archive{Overlay,Base}
 #[link(name="kernel32")]
@@ -66,7 +74,16 @@ fn reference_files()->Option<References>{
     let overlay=id_for_path(&folder.join("crimptch.rof"))?;
     let base=id_for_path(&folder.join("crimson.rof"))?;
     let video_span=gos_video_lock::installed_video_compressed_span();
-    Some(References{overlay,base,video_span})
+    // Authenticate the entire original retail ROF, the official 1.02
+    // backup and the owner-derived patched GOS script once before
+    // installing any in-memory resource substitution.
+    VIRTUAL.get_or_init(gos_video_lock::virtual_video_postimage);
+    // Only the opt-in diagnostic reads/authenticates the larger original
+    // archive. Normal [Debug] Log=0 startup remains unchanged.
+    let base_video_span=if crate::cfg().log_enabled {
+        gos_video_lock::original_video_compressed_span()
+    }else{None};
+    Some(References{overlay,base,video_span,base_video_span})
 }
 fn archive_for(id:FileId,refs:References)->Option<Archive>{
     if id==refs.overlay{Some(Archive::Overlay)}
@@ -247,6 +264,47 @@ pub fn references_ready()->bool{
 fn overlaps_read(start:u64,count:u32,span:(u64,u64))->bool{
     count>0 && start<span.1 && start.saturating_add(count as u64)>span.0
 }
+fn video_span_for_archive(archive:Archive,refs:Option<References>)->Option<(u64,u64)>{
+    let refs=refs?;
+    match archive {
+        Archive::Overlay=>refs.video_span,
+        Archive::Base=>refs.base_video_span,
+    }
+}
+// Splice a fixed-length virtual resource into the caller's already-read
+// buffer, NEVER into CRIMSON.ROF itself. Works for fragmented ReadFile calls.
+// The original Win32 result, byte count and file pointer remain unchanged.
+fn splice(start:u64,buf:&mut [u8],at:u64,part:&[u8])->Option<(usize,usize)>{
+    let read_end=start.checked_add(buf.len() as u64)?;
+    let patch_end=at.checked_add(part.len() as u64)?;
+    let from=start.max(at);
+    let to=read_end.min(patch_end);
+    if from>=to{return None;}
+    let destination=(from-start) as usize;
+    let source=(from-at) as usize;
+    let count=(to-from) as usize;
+    buf[destination..destination+count].copy_from_slice(&part[source..source+count]);
+    Some((source,count))
+}
+fn virtualize_base_read(start:u64,buffer:&mut [u8],post:&gos_video_lock::VirtualVideo){
+    let header=post.expanded_size.to_le_bytes();
+    if let Some((offset,size))=splice(start,buffer,post.size_field_at,&header){
+        let mut bits=0usize;
+        for i in offset..offset+size{bits |= 1usize<<i;}
+        let before=VIRTUAL_HEADER_MASK.fetch_or(bits,Ordering::AcqRel);
+        if before|bits==0x0f && before!=0x0f{
+            log("GOS-ROF-VIRTUAL: authenticated VIDEO.SCRIPT descriptor patched in game memory only; expanded_size=4413");
+        }
+    }
+    // Never feed a larger decompressed script unless the game first read
+    // all four bytes of its corrected expanded-size descriptor.
+    if VIRTUAL_HEADER_MASK.load(Ordering::Acquire)!=0x0f{return;}
+    if let Some((_offset,_size))=splice(start,buffer,post.data_at,&post.replacement){
+        if VIRTUAL_PAYLOAD_READS.fetch_add(1,Ordering::Relaxed)==0{
+            log("GOS-ROF-VIRTUAL: authenticated VIDEO.SCRIPT compressed bytes patched in game memory only; file unchanged");
+        }
+    }
+}
 unsafe extern "system" fn observe_read(
     handle:*mut c_void,buffer:*mut c_void,length:u32,
     bytes_read:*mut u32,overlapped:*mut c_void
@@ -271,8 +329,15 @@ unsafe extern "system" fn observe_read(
             Archive::Base=>BASE_READS.fetch_add(1,Ordering::Relaxed),
         };
         let got=if result!=0 && !bytes_read.is_null(){Some(*bytes_read)}else{None};
-        let span=refs.and_then(|r|r.video_span);
-        let overlap=archive==Archive::Overlay && has_start &&
+        if archive==Archive::Base && has_start && overlapped.is_null() &&
+           !buffer.is_null() && got.is_some_and(|bytes|bytes<=length){
+            if let (Some(post),Some(read))=(VIRTUAL.get().and_then(Option::as_ref),got){
+                let region=std::slice::from_raw_parts_mut(buffer as *mut u8,read as usize);
+                virtualize_base_read(start as u64,region,post);
+            }
+        }
+        let span=video_span_for_archive(archive,refs);
+        let overlap=has_start &&
             got.is_some_and(|n|span.is_some_and(|range|
                 overlaps_read(start as u64,n,range)));
         let extra=overlap && OVERLAPS.fetch_add(1,Ordering::Relaxed)<8;
@@ -281,7 +346,7 @@ unsafe extern "system" fn observe_read(
             let name=if archive==Archive::Overlay{"crimptch.rof"}else{"crimson.rof"};
             let offset=if has_start{Some(start as u64)}else{None};
             log(&format!(
-                "GOS-ROF-READ: verified_file={name} call={} requested={length} actual={got:?} offset={offset:?} video_compressed_span_overlap={overlap} success={} [pass-through; member execution unobserved]",
+                "GOS-ROF-READ: verified_file={name} call={} requested={length} actual={got:?} offset={offset:?} video_compressed_span_overlap={overlap} success={} [file handle/Win32 status preserved; exact VIDEO member may be virtualized]",
                 count+1,result!=0
             ));
         }
@@ -305,8 +370,9 @@ pub unsafe fn install(module:usize,rva:Option<usize>)->bool{
         return false;
     };
     log(&format!(
-        "GOS-ROF-READ: file ID references ready, patched_video_span_known={} [read-only; paths hidden]",
-        refs.video_span.is_some()
+        "GOS-ROF-READ: file ID references ready, patched_video_span_known={} original_video_span_known={} virtual_video_postimage_ready={} [paths hidden; resource virtualization limited to authenticated VIDEO.SCRIPT]",
+        refs.video_span.is_some(),refs.base_video_span.is_some(),
+        VIRTUAL.get().is_some_and(|value|value.is_some())
     ));
     if ORIGINAL.compare_exchange(0,previous,Ordering::AcqRel,Ordering::Acquire).is_err(){
         return false;
@@ -320,6 +386,16 @@ pub unsafe fn install(module:usize,rva:Option<usize>)->bool{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn splice_overlaps_only_requested_slice(){
+        let mut data=[0x11u8;12];
+        assert_eq!(splice(100,&mut data,104,&[2,3,4,5]),Some((0,4)));
+        assert_eq!(&data[4..8],&[2,3,4,5]);
+        assert_eq!(data[0],0x11);
+        assert_eq!(splice(100,&mut data,112,&[0]),None);
+        assert_eq!(splice(100,&mut data,98,&[8,9,10]),Some((2,1)));
+        assert_eq!(data[0],10);
+    }
     #[test]
     fn routing_is_shared_and_ignores_debug_log_flag(){
         let mut config=crate::config::Config::default();
@@ -348,10 +424,16 @@ mod tests{
         let a=FileId{volume:1,index_hi:2,index_lo:3};
         let b=FileId{volume:1,index_hi:2,index_lo:4};
         let foreign=FileId{volume:2,index_hi:2,index_lo:3};
-        let r=References{overlay:a,base:b,video_span:Some((100,200))};
+        let r=References{
+            overlay:a,base:b,video_span:Some((100,200)),
+            base_video_span:Some((300,400))
+        };
         assert_eq!(archive_for(a,r),Some(Archive::Overlay));
         assert_eq!(archive_for(b,r),Some(Archive::Base));
         assert_eq!(archive_for(foreign,r),None);
+        assert_eq!(video_span_for_archive(Archive::Overlay,Some(r)),Some((100,200)));
+        assert_eq!(video_span_for_archive(Archive::Base,Some(r)),Some((300,400)));
+        assert_eq!(video_span_for_archive(Archive::Base,None),None);
         assert!(overlaps_read(99,2,(100,200)));
         assert!(overlaps_read(199,2,(100,200)));
         assert!(!overlaps_read(200,1,(100,200)));

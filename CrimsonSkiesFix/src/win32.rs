@@ -418,23 +418,26 @@ fn dll_directory()->Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
 }
 
+fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
+    if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"){
+        return None;
+    }
+    let parent=dll_dir.parent()?;
+    if !safe_directory(parent,false) ||
+       !regular_file(&parent.join("CrimsonSkiesFix.exe")){return None;}
+    Some(parent.to_path_buf())
+}
+
 fn log_directory()->Option<PathBuf> {
     let dll_dir=dll_directory()?;
-    // Standalone layout: launcher sits immediately above game folder.
+    // Standalone layout: launcher sits immediately above the game folder.
     // Direct DLL installations continue writing beside ddraw.dll.
-    if dll_dir.file_name().map(|s|s.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"))
-        .unwrap_or(false) {
-        if let Some(parent)=dll_dir.parent() {
-            if safe_directory(parent,false) && regular_file(&parent.join("CrimsonSkiesFix.exe")) {
-                return Some(parent.to_path_buf());
-            }
-        }
-    }
-    Some(dll_dir)
+    Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
 }
 
 pub fn log_path()->Option<PathBuf> {
-    // Share the standalone launcher's root log when it is present.
+    // Only the DLL writes this fresh game log; the installer has a separate
+    // CrimsonSkiesFix_installer.log in the standalone launcher root.
     let path=log_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
@@ -790,6 +793,25 @@ mod early_monitor_tests{
 }
 
 #[cfg(test)]
+mod game_log_routing_tests {
+    use super::*;
+    #[test]
+    fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
+        let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-game-log-route-{}-{id}",std::process::id()));
+        let game=root.join("CrimsonSkiesFix");
+        let wrong=root.join("DifferentGame");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(&wrong).unwrap();
+        assert!(standalone_launcher_root(&game).is_none());
+        fs::write(root.join("CrimsonSkiesFix.exe"),b"test-only fake exe").unwrap();
+        assert_eq!(standalone_launcher_root(&game),Some(root.clone()));
+        assert!(standalone_launcher_root(&wrong).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+#[cfg(test)]
 mod persistent_ini_tests {
     use super::*;
     #[test]
@@ -823,10 +845,15 @@ mod persistent_ini_tests {
         let file=dir.join("CrimsonFix.ini");
         assert_eq!(create_ini_once(&file).unwrap(),true);
         let generated=fs::read_to_string(&file).unwrap();
-        assert!(generated.contains("[Debug]\nLog=0"));
+        assert!(generated.contains("[Debug]\n"));
+        assert!(generated.contains("Log=0\n"));
+        assert!(generated.contains("[Graphics]\n"));
+        assert!(generated.contains("FPSLimit=60\n"));
+        assert!(!generated.contains("ExperimentalWindowedAdapter="));
+        assert!(!generated.contains("RoffileTerminatorFix="));
         fs::write(&file,generated.replace("Log=0","Log=1")).unwrap();
         assert_eq!(create_ini_once(&file).unwrap(),false);
-        assert!(fs::read_to_string(&file).unwrap().contains("[Debug]\nLog=1"));
+        assert!(fs::read_to_string(&file).unwrap().contains("Log=1\n"));
         fs::remove_dir_all(dir).unwrap();
     }
 }

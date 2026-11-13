@@ -1,45 +1,36 @@
-# Windows 11 acceptance protocol — CrimsonSkiesFix (2026-11-04)
+# Native Windows 11 acceptance protocol — CrimsonSkiesFix (future test)
 
-**Status:** manual acceptance test **pending** a Windows 11 PC. This checklist is NOT evidence that Windows gameplay was already tested. The CI already checks only PE32 DLL loading/exports and the archive's integrity.
+**Status (12 November 2026): NOT validated for the current experimental standalone candidate.** Earlier native Windows 11 tests used an older DLL and explicit compatibility INI; those results do **not** establish that the current default-on in-memory GOS VIDEO.SCRIPT redirection or full auto-install works on Windows. The GitHub Windows CI validates PE32 loading and all 22 DLL export names/ordinals, **not gameplay**.
 
-## Preparation (do not overwrite the user's files)
+This protocol documents a later optional acceptance test; unavailability of a native Windows machine does not prevent preparing or publishing a **clearly labelled experimental, GE-Proton-tested prerelease** if the owner approves.
 
-- Use an unmodified, independently backed-up Crimson Skies 1.02 installation. Supported `CRIMSON.EXE`: **2,580,480 bytes**, SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
-- Work in a test copy of the game directory or back up at least `ddraw.dll`, `CrimsonSkiesFix/CrimsonSkiesFix.ini`, and `GOSDATA/ASSETS/crimptch.rof` plus any existing `*.original.bak`. Never delete an unknown GOS backup to force a patch.
-- Download the **final approved SHA's** Windows x86 DLL artifact, not an older PR build. It contains exactly five files: `ddraw.dll` and `CrimsonSkiesFix/{README.md,CrimsonSkiesFix.ini.example,LICENSE,build-info.txt}`.
-- Inspect the included manifest; compare `DllSha256` to the local DLL. In PowerShell, from the game root:
+## Preparation (safe and reversible)
 
-```powershell
-(Get-FileHash .\CRIMSON.EXE -Algorithm SHA256).Hash
-(Get-FileHash .\ddraw.dll -Algorithm SHA256).Hash
-Get-Content .\CrimsonSkiesFix\build-info.txt
-```
+- Back up the original game directory, especially `SavedGames/`, `Planes/`, the current `CrimsonSkiesFix.ini` and `GOSDATA/ASSETS/crimptch.rof` with any existing `*.original.bak`.
+- Use the **one-file** artifact `CrimsonSkiesFix.exe` from a successful CI run on the exact final source SHA, not an older five-file DLL download. The launcher embeds the tested x86 `ddraw.dll`, which it extracts into the game directory.
+- If installing from disc, put one supported genuine ISO/CUE-BIN (FR/DE verified under GE-Proton; USA remains untested in gameplay), the official 1.02 updater and your own exact approved decrypted 1.02 EXE next to the launcher. For a preinstalled verified game, the original media need not be present.
+- Supported unmodified decrypted `CRIMSON.EXE`: **2,580,480 bytes**, SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`. Do not supply third-party widescreen executables.
+- Use a test copy of the installation. Do not remove arbitrary `.rebuilding`, `.installing`, `.previous` or GOS `.bak` paths to bypass safety checks.
+- A completed run creates `CrimsonSkiesFix/CrimsonSkiesFix.ini` (active INI inside the game folder), `CrimsonSkiesFix/ddraw.dll`, `CrimsonSkiesFix/build-info.txt`, and **two independent logs** beside the standalone launcher: `CrimsonSkiesFix_installer.log` (latest meaningful installer/repair report) and `CrimsonSkiesFix.log` (fresh DLL game log per session). The downloadable archive itself contains only the launcher EXE. To request detailed gameplay logging, set `[Debug] Log=1` in that installed active INI.
 
-- Enable temporary diagnostics by editing the active `CrimsonSkiesFix/CrimsonSkiesFix.ini` (`[Debug] Log=1`). If the file doesn't exist yet, first create one with `[Debug]\nLog=1` and leave all other settings at their built-in defaults; the example file is not automatically read. The diagnostic file `CrimsonSkiesFix.log` is written beside `ddraw.dll`.
-- For a clean first-run GOS overlay test, use original unmodified assets only. The default `GosVideoLock=on` modifies `crimptch.rof` **after** an exclusive backup; never test installation over an unknown/previously patched archive.
+## End-to-end test — one launch and one repeat launch
 
-## One end-to-end game session
+1. **Installation / verification:** run `CrimsonSkiesFix.exe` without parameters. Confirm a first-time install reports `INSTALL_FROM_CD_AND_LAUNCH` or that an existing verified install reports `VERIFIED_EXISTING_AND_LAUNCH`; no unverified game may launch. Confirm the original protected EXE backup is preserved.
+2. **Startup:** no obsolete driver/resolution chooser, no unexpected DDRAW error, correct RGB565 opening image and properly framed video and audio.
+3. **Menu and GOS Video:** the brand signature appears only in MainMenu. Graphics and Resolution options are visibly unavailable; Resolution text reflects actual monitor size; unrelated Video settings can still be changed. Return to MainMenu and confirm signature restoration.
+4. **3D:** play several minutes in a mission. The 3D world must fill the monitor at the correct FOV with a properly proportioned HUD; visual colours, cursor/input and audio must work.
+5. **Mode transitions:** go into/out of missions and settings. The game may create virtual 1920×1080/800×600 surfaces, but the Windows desktop resolution must not change. Check for white sidebars, freeze, wrong scaling or lost input.
+6. **Alt+Tab:** from menu and from live gameplay, switch away and back twice, check repaint and foreground input. Verify cutscene transitions if encountered.
+7. **Exit and repeat:** exit normally; the installer report has `GAME_EXIT_CODE=0` on first install or repair, and the launcher prints the status to the console on subsequent verified-only launches. Relaunch using the same EXE and active INI; confirm it verifies the previous game without rewriting the GOS archive or re-extracting media, and that `CrimsonSkiesFix_installer.log` retains its previous successful install report. Exit cleanly again.
+8. **Optional GOS restore on a backed-up test copy:** use `GosVideoLock=restore` in the installed `[Graphics]` section, launch once to restore the original small overlay after verification, then deliberately choose `off` or `on`. Setting `off` alone does not restore the overlay.
 
-1. **Launch:** Start `CRIMSON.EXE` without Wine; verify the outdated driver/resolution chooser does not appear, there is no unexpected DirectDraw error, and the original first image has normal colours rather than magenta.
-2. **Movies/menu:** Watch or skip an opening movie and ensure correct video/audio playback with 4:3 proportions. On MainMenu, verify project signature is visible once in the intended location and not elsewhere.
-3. **Video Preferences:** Enter Preferences, confirm **Graphics** and **Resolution** are greyed out and unselectable, the Resolution text displays the actual monitor resolution (e.g. 1920×1080), and other settings can be accessed normally. The signature must be absent on this screen, then restored when returning to MainMenu.
-4. **Gameplay 3D:** Play several minutes in an actual mission. Check that the view fills the chosen monitor, the camera/FOV and HUD are not distorted, the image colours and game speed appear normal, and no random crashes or freezes occur.
-5. **Mode changes:** Return to menu, enter a different scenario/mission and return. In the log, confirm several 1920×1080/800×600 generation changes with retirement of old Surface4 chains; visually confirm a correct screen after each change. These are internal rendering modes; the Windows desktop should retain its original resolution.
-6. **Focus and Alt+Tab:** While in the menu and then during live gameplay, switch to another window and back **at least twice**. Check that the display repaints, input resumes, and there is no persistent white/black screen or crash. Give foreground focus time to settle before judging frame rate.
-7. **Exit/restart:** Quit normally, relaunch once using the same active INI, verify no repeated destructive modification to the GOS archive and no loss of preferences, then exit normally again.
-8. **GOS restoration (optional but recommended on a test copy):** If a native overlay was installed in this test and a valid original backup exists, set `GosVideoLock=restore`, relaunch to trigger restoration, and inspect that the original `crimptch.rof` was restored. Reset the setting to `off` or `on` intentionally afterward.
+## Evidence and decision
 
-## Evidence to retain
+- Keep the **full final source commit and `DllSha256`** from `CrimsonSkiesFix/build-info.txt`, and the matching game initialization entry in the **DLL-only** `CrimsonSkiesFix.log`. Read the separate `CrimsonSkiesFix_installer.log` for installation/repair data; an ordinary verified-only launch must not overwrite it.
+- Record the observed pass/fail conditions, operating system, screen resolution/DPI, GPU and launcher build label. Do not confuse internal API callback rates with actual display FPS.
+- Windows runner tests and previous Windows 11 gameplay sessions on older builds are not evidence for this exact candidate.
+- Native Windows runtime acceptance or a claim of stable Windows compatibility requires a real test of the same final binary. Any experimental prerelease published without this test must state the limitation prominently.
 
-- The exact source commit and `DllSha256` from `CrimsonSkiesFix/build-info.txt`, plus the first `CrimsonSkiesFix.log` line (version/short SHA).
-- A simple statement of **pass/fail for each stage**; for a failure, the precise user action and whether an application window or error message appeared. The log does not necessarily emit a clean-shutdown marker.
-- The complete log and optionally an image of any faulty display, **after reviewing/redacting local or identifying details**. The log may include hardware model, OS information and local path fragments.
-- If audio or codecs fail on native Windows, document the codecs/environment separately. Do not classify native Windows gameplay as validated solely because the DLL loaded successfully in CI.
-
-## Release decision
-
-A single passing Windows 11 session on a supported EXE is a useful release gate, but it does not prove every Windows driver or monitor will work. If any blocking regression is observed, document it and create a focused fix PR with its own checks before freezing the release build.
-
-The owner decides whether the result justifies a tagged **experimental prerelease** or a stable release. **No GitHub release, tag, merge or GOS archive manipulation is authorized by this document.**
+This document grants **no permission** to merge PRs, create tags, alter the user's game files or publish a release; those actions require the owner's explicit approval.
 
 legluondunet assisted by ChatGPT (OpenAI)
