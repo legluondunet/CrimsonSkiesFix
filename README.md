@@ -4,7 +4,7 @@
 
 The active project builds a 32-bit Rust `ddraw.dll` for one exact, verified Crimson Skies v1.02 SafeDisc-free executable. It does **not** modify the executable on disk.
 
-**Status: version 1.0 selected; publication pending.** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The original USA/Europe CUE/BIN has now been inspected (`C_SKIES_DISC_001`, 112/112 matching source file hashes) and successfully installed using `--install-only` under Wine/GE-Proton on candidate `0.1.90-59d81dd7`. **USA/Europe gameplay remains untested.** Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
+**Status: [CrimsonSkiesFix 1.0 published on 13 November 2026](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0).** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The original USA/Europe CUE/BIN has now been inspected (`C_SKIES_DISC_001`, 112/112 matching source file hashes) and successfully installed using `--install-only` under Wine/GE-Proton on candidate `0.1.90-59d81dd7`. **USA/Europe gameplay remains untested.** Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
 
 ## Supported executable
 
@@ -54,6 +54,6 @@ Current release scope and remaining checks are tracked in the [13 November relea
 
 ## License and contribution policy
 
-This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). The released installer installs an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; merging and publication of a stable release require explicit owner approval.
+This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). The released installer installs an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; version 1.0 was published with the owner's explicit approval.
 
 legluondunet assisted by ChatGPT (OpenAI)
