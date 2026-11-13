@@ -168,8 +168,14 @@ jobs:
           $pe = [BitConverter]::ToInt32($bytes, 0x3C)
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
-          & $exe --help
+          $usage = (& $exe --help) -join "`n"
           if ($LASTEXITCODE -ne 0) { throw '--help failed' }
+          foreach ($expected in @('--install-only', '--launch', '--install-cd', '--verify-install')) {
+            if (-not $usage.Contains($expected)) { throw "Help does not advertise $expected" }
+          }
+          foreach ($removed in @('--import', '--audit-shortnames', '--inspect-update', '--extract-update', '--into')) {
+            if ($usage.Contains($removed)) { throw "Removed CLI switch still advertised: $removed" }
+          }
           $version = & $exe --version
           if ($LASTEXITCODE -ne 0 -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) {
             throw 'Standalone launcher version/source SHA mismatch'
@@ -185,6 +191,36 @@ jobs:
           if ($LASTEXITCODE -ne 2) { throw 'Unverified executable must be rejected' }
           if (Test-Path 'installer-smoke/CrimsonSkiesFix') {
             throw 'Rejected original must never create an installed game'
+          }
+          # --launch intentionally skips the existence and SHA checks: the OS
+          # reports missing CRIMSON.EXE, and the existing installer report
+          # must remain completely untouched.
+          $installerLog = 'installer-smoke/CrimsonSkiesFix_installer.log'
+          $oldReport = [IO.File]::ReadAllText((Resolve-Path $installerLog))
+          & 'installer-smoke/CrimsonSkiesFix.exe' --launch
+          if ($LASTEXITCODE -ne 2) { throw '--launch missing game must report OS launch error' }
+          if ((Get-Content -Raw $installerLog) -ne $oldReport) {
+            throw '--launch must preserve prior install/repair log'
+          }
+          if (Test-Path 'installer-smoke/CrimsonSkiesFix') {
+            throw '--launch must not create a game directory'
+          }
+          # A dummy source image does not authorize extraction without an
+          # SHA-approved 1.02 game executable and authentic official updater.
+          [IO.File]::WriteAllBytes(
+            (Join-Path (Resolve-Path 'installer-smoke') 'disc.iso'),[byte[]](1,2,3,4))
+          & 'installer-smoke/CrimsonSkiesFix.exe' --install-only
+          if ($LASTEXITCODE -ne 2) { throw '--install-only must refuse missing authentic sources' }
+          foreach ($name in @('CrimsonSkiesFix', 'CrimsonSkiesFix.rebuilding',
+                              'CrimsonSkiesFix.rebuilding.installing', 'CrimsonSkiesFix.installing')) {
+            if (Test-Path "installer-smoke/$name") {
+              throw "--install-only extracted or created forbidden staging without prerequisites: $name"
+            }
+          }
+          $installReport = Get-Content -Raw $installerLog
+          if ($installReport -notmatch 'AUTO_INSTALL_RESULT=ERROR' -or
+              $installReport -match 'GAME_EXIT_CODE=') {
+            throw '--install-only prerequisite failure must be reported without launching the game'
           }
           New-Item -ItemType Directory -Force 'installer-dist' | Out-Null
           Copy-Item $exe 'installer-dist/CrimsonSkiesFix.exe'
