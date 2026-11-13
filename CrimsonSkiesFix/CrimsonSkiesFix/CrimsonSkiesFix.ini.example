@@ -2,6 +2,8 @@
 ; Verified game compatibility fixes are built in and enabled automatically.
 ; Advanced diagnostics and GOS restoration are documented in README.md.
 [Graphics]
+; Game aspect ratio: auto (desktop) or 4:3 (centered pillarbox).
+AspectRatio=auto
 ; Frame pacing target, 1-60 frames per second.
 FPSLimit=60
 
