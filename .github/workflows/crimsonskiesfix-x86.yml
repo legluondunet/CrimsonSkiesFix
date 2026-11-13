@@ -170,8 +170,11 @@ jobs:
           if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
           $usage = (& $exe --help) -join "`n"
           if ($LASTEXITCODE -ne 0) { throw '--help failed' }
-          foreach ($expected in @('--install-only', '--launch', '--install-cd', '--verify-install')) {
+          foreach ($expected in @('--install-only', '--launch-no-verify', '--install-cd', '--verify-install')) {
             if (-not $usage.Contains($expected)) { throw "Help does not advertise $expected" }
+          }
+          if ($usage -match '(?m)^\s*CrimsonSkiesFix\.exe --launch(?:\s|$)') {
+            throw 'Retired --launch alias must not be advertised'
           }
           foreach ($removed in @('--import', '--audit-shortnames', '--inspect-update', '--extract-update', '--into')) {
             if ($usage.Contains($removed)) { throw "Removed CLI switch still advertised: $removed" }
@@ -192,18 +195,18 @@ jobs:
           if (Test-Path 'installer-smoke/CrimsonSkiesFix') {
             throw 'Rejected original must never create an installed game'
           }
-          # --launch intentionally skips the existence and SHA checks: the OS
+          # --launch-no-verify intentionally skips the existence and SHA checks: the OS
           # reports missing CRIMSON.EXE, and the existing installer report
           # must remain completely untouched.
           $installerLog = 'installer-smoke/CrimsonSkiesFix_installer.log'
           $oldReport = [IO.File]::ReadAllText((Resolve-Path $installerLog))
-          & 'installer-smoke/CrimsonSkiesFix.exe' --launch
-          if ($LASTEXITCODE -ne 2) { throw '--launch missing game must report OS launch error' }
+          & 'installer-smoke/CrimsonSkiesFix.exe' --launch-no-verify
+          if ($LASTEXITCODE -ne 2) { throw '--launch-no-verify missing game must report OS launch error' }
           if ((Get-Content -Raw $installerLog) -ne $oldReport) {
-            throw '--launch must preserve prior install/repair log'
+            throw '--launch-no-verify must preserve prior install/repair log'
           }
           if (Test-Path 'installer-smoke/CrimsonSkiesFix') {
-            throw '--launch must not create a game directory'
+            throw '--launch-no-verify must not create a game directory'
           }
           # A dummy source image does not authorize extraction without an
           # SHA-approved 1.02 game executable and authentic official updater.
