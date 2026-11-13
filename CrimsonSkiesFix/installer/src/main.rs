@@ -315,21 +315,6 @@ fn test_install_destination(base:&Path,selector:&str)->Result<(&'static str,Path
     Ok((edition,base.join(format!("CrimsonSkiesFix.{suffix}"))))
 }
 
-struct DiscInstallation {
-    edition:&'static str,
-    file_count:usize,
-    byte_count:u64,
-    asset_status:&'static str,
-    chapter_members:usize,
-    chapter_zbd_files:usize,
-    chapter_bytes:u64,
-    chapter_short_aliases:usize,
-    retail_support_files:usize,
-    retail_support_bytes:u64,
-    retail_renamed_files:usize,
-    destination:PathBuf,
-}
-
 // The receipt records provenance, not proof: verify original GAME/ files
 // and the official overlay independently before trusting the installation.
 fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
@@ -418,11 +403,9 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     Ok((edition,count))
 }
 
-/// Complete the file-based installation without running the game or changing
-/// the CD's protected executable. The pending executable is a *last* stage.
-fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
-    expected_edition:Option<&str>)
-    ->Result<DiscInstallation,String> {
+/// Install authenticated retail files into a private stage without launching.
+/// The protected original EXE is preserved until the approved EXE activation step.
+fn install_from_cd(base:&Path,game:&Path)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -432,14 +415,9 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
         return Err(format!("previous incomplete installation exists; inspect it: {}",stage.display()));
     }
     // Fail before creating any output if the authentic updater is unavailable.
-    let updater=update102::find(base,patch)?;
+    let updater=update102::find(base,None)?;
     println!("Building original game installation from verified CD and official 1.02 updater...");
-    let extracted=disc_inspect::extract_for_install(base,disc,&stage)?;
-    if expected_edition.is_some_and(|expected|expected!=extracted.edition) {
-        return Err(format!(
-            "image edition {} does not match selected test installation edition {}; staging retained for inspection",
-            extracted.edition,expected_edition.unwrap()));
-    }
+    let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
     // expand all eight chapter CABs with edition-specific long ZBD names
@@ -447,7 +425,7 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
-    let asset=update102::apply_asset(base,&stage,extracted.edition,Some(&updater))?;
+    update102::apply_asset(base,&stage,extracted.edition,Some(&updater))?;
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
@@ -496,15 +474,7 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
     // The final name only appears when source, ROF, proxy and writable
     // directories have all been verified. Never delete an interrupted stage.
     fs::rename(&stage,game).map_err(error)?;
-    Ok(DiscInstallation{edition,file_count:extracted.file_count,
-        byte_count:extracted.bytes,asset_status:asset,
-        chapter_members:finalized.members,chapter_zbd_files:finalized.zbd_files,
-        chapter_bytes:finalized.payload_bytes,
-        chapter_short_aliases:finalized.short_name_candidates,
-        retail_support_files:extracted.retail_support_files,
-        retail_support_bytes:extracted.retail_support_bytes,
-        retail_renamed_files:renamed,
-        destination:game.to_path_buf()})
+    Ok(())
 }
 
 fn usage() {
@@ -762,7 +732,7 @@ mod tests {
         let dest=root.join("CrimsonSkiesFix");
         fs::create_dir(&dest).unwrap();
         fs::write(dest.join("user-save.dat"),b"keep").unwrap();
-        assert!(install_from_cd(&root,None,None,&dest,None).is_err());
+        assert!(install_from_cd(&root,&dest).is_err());
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }
