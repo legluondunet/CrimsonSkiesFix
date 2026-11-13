@@ -123,7 +123,7 @@ jobs:
           $template = @(Get-Content 'dist/CrimsonSkiesFix/CrimsonSkiesFix.ini.example')
           $active = @($template | ForEach-Object { $_.Trim() } |
             Where-Object { $_ -and -not $_.StartsWith(';') -and -not $_.StartsWith('#') })
-          $expected = @('[Graphics]', 'FPSLimit=60', '[Debug]', 'Log=0')
+          $expected = @('[Graphics]', 'AspectRatio=auto', 'FPSLimit=60', '[Debug]', 'Log=0')
           if (@(Compare-Object -ReferenceObject $expected -DifferenceObject $active -SyncWindow 0).Count -ne 0) {
             throw "Unexpected first-run INI switches: $($active -join ', ')"
           }
