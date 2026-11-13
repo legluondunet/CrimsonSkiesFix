@@ -1,6 +1,6 @@
-# CrimsonSkiesFix 0.1.90 — experimental prerelease acceptance checklist
+# CrimsonSkiesFix 1.0 — release checklist
 
-**13 November 2026.** Pre-release work only. No GitHub tag or published release. The approved runtime baseline is the source on `main`, which already includes merged PRs #26 and #27. The final CLI is in PR #28; release-oriented source cleanup is stacked on that branch and must be merged only after approval.
+**13 November 2026.** Release version selected: **1.0** (Cargo: `1.0.0`; planned Git tag: `v1.0`). No GitHub tag or published release. The owner has elected not to perform additional manual tests; untested cases are disclosed, not represented as passed. The approved runtime baseline is the source on `main`, which already includes merged PRs #26 and #27. The final CLI is in PR #28; release-oriented source cleanup is stacked on that branch and must be merged only after approval.
 
 ## User-facing commands
 
@@ -28,33 +28,45 @@ The removed `--verify-install`, `--inspect-cd`, `--extract-cd`, `--install-cd`, 
 
 ## Release gates
 
-- [x] Historical first-run FR and DE original-CD installs, routine relaunch and GE-Proton gameplay tested on older candidate builds.
-- [x] Windows x86 CI green on the last head of PR #28 (`a6481355`), including PE32 x86, 22 DDraw exports, Rust/Python tests, one-file artifact and basic CLI safety.
-- [x] Windows x86 and downloaded-artifact verification passed at source-cleanup head `59d81dd76cfa92a46b35118bbe9af532c68101b0` (two successful workflow runs).
-- [ ] Validate the single downloaded EXE really corresponds to the final merged `main` SHA (manifest and embedded DLL), not a PR's synthetic merge SHA.
-- [x] Real **USA/Europe** CUE/BIN `C_SKIES_DISC_001` on candidate `0.1.90-59d81dd7` under Wine/GE-Proton: `--install-only` extracted 45 GAME files and all 8 chapter CABs; installer log says `Action=INSTALL_FROM_CD_ONLY`, `VerifiedGameData=YES`, `ApprovedExecutable=SHA256_VERIFIED`, `OriginalProtectedBackup=PRESERVED`, `GosOverlayState=OFFICIAL_102`, `GameLaunch=SKIPPED`, and `AUTO_INSTALL_RESULT=READY`.
-- [ ] Re-test `--install-only` from **FR/DE** real original media on final candidate; `--install-only` USA test validates installation without launch, not gameplay.
-- [ ] Relaunch without ISO/CUE/updater present, then `--verify` and confirm the installer log is not overwritten on a successful routine launch.
-- [ ] Test `--launch-no-verify` separately; confirm no verification or repair, and that it does not change the installer report.
-- [x] `--inspect` with authentic USA/Europe `Crimson Skies (USA, Europe).cue`: `C_SKIES_DISC_001`, exact internal file manifest, 112/112 hashed, 0 suspect, `INSPECT_RESULT=COMPLETE` in `CrimsonSkiesFix_inspect.log`.
-- [ ] Test `--inspect` with unsupported media and verify the dedicated failure report doesn't modify the installed game or installer history (synthetic CI failure path already covered).
-- [ ] In-game Wine/Proton acceptance: 1920×1080 borderless fullscreen/FOV/HUD, 4:3 menus/videos and optional 4:3 mode, main-menu signature, no legacy chooser, Video Graphics/Resolution controls read-only, opening image, Alt-Tab, saves and clean exit.
-- [ ] Check default `CrimsonSkiesFix.ini` has exactly user-facing AspectRatio, FPSLimit and Log settings, and previous custom INIs are preserved.
-- [ ] Verify the gameplay `CrimsonSkiesFix.log` is new each session, separately from the persistent installer journal.
-- [ ] Confirm artifact retention is 30 days, downloadable payload is exactly one `CrimsonSkiesFix.exe`, and no commercial game files or decrypted executable are included.
-- [ ] Record final SHA-256, size and commit for that exact EXE after `main` CI succeeds.
-- [ ] Confirm the proposed tag `v0.1.90` is unused before any tag creation.
-- [ ] Obtain explicit owner approval for merges and for publishing an **experimental prerelease**. Do not create a public GitHub Release or tag as part of this cleanup.
+### Evidence already available
 
-## Tested vs. untested boundaries
+- [x] FR and DE original-CD installation, regular relaunch and GE-Proton gameplay on earlier candidate builds.
+- [x] Windows x86 Rust/PE/DirectDraw exports and independent downloaded-artifact CI passed on the old candidate `59d81dd7`. These checks are not claims about the new version-stamped binary.
+- [x] Real USA/Europe original CUE/BIN `C_SKIES_DISC_001` inspected on `0.1.90-59d81dd7`: 112 original-disc file hashes matched, none suspect.
+- [x] Real USA/Europe `--install-only` on `0.1.90-59d81dd7`: 45 original GAME files extracted, eight CAB archives expanded, installed game SHA checks passed, approved EXE authenticated, original protected EXE backed up, `GameLaunch=SKIPPED`, `AUTO_INSTALL_RESULT=READY`.
+- [x] Version 1.0 selected. Rust crates use SemVer `1.0.0`; the public release name is **CrimsonSkiesFix 1.0**, the proposed tag is **`v1.0`**, and CI's one-file artifact name is **`CrimsonSkiesFix-Windows-x86-1.0`**.
+- [x] Verified `v1.0` tag was not present on GitHub on 13 November 2026.
 
-- **FR/DE original CD + GE-Proton:** historical owner acceptance only, not yet an endorsement of the final CLI/dual-log binary.
-- **USA/Europe:** real original CUE/BIN authenticated and `--install-only` installation successful under Wine on `0.1.90-59d81dd7` (112/112 source file hashes, 45 GAME files, 8 CAB archives, approved EXE); **actual game launch, USA gameplay and USA GOS video behavior remain to be tested.**
-- **Native Windows 11:** DLL loader/exports CI checks, not the same as native game-session acceptance of the current candidate.
-- Keep the public release description appropriately scoped; do not claim a stable broadly tested Windows release.
+### Remaining publication operations — no additional manual test request
 
-## Suggested release title (only after approval)
+- [ ] Review and merge CLI PR #28, then the stacked release PR #31, after explicit owner approval.
+- [ ] Allow the repository's **existing** automatic Windows x86 and artifact jobs to run on final `main`; confirm they pass and correspond to the exact release source SHA.
+- [ ] Obtain the final `CrimsonSkiesFix.exe` from that run and record its SHA-256, byte size and full source commit SHA. Confirm the downloadable payload has exactly one launcher EXE, 30-day retention, and contains no copyrighted original game files.
+- [ ] Approve creation of the `v1.0` tag and publication of the **1.0 release** with the compatibility scope below. No tag or release is created during this preparation step.
 
-`CrimsonSkiesFix 0.1.90 — experimental standalone prerelease (FR/DE GE-Proton tested)`
+### Explicitly untested cases — accepted as release limitations
 
-The first downloadable artifact should be produced from the exact tagged source SHA after successful final tests, not borrowed from an earlier PR build.
+No additional user-side test is requested for version 1.0. The following outcomes are **not verified for the final build**, despite code-level tests or earlier gameplay evidence:
+
+- New `--install-only` pathway on real FR/DE sources with the exact final version-stamped binary.
+- `--launch-no-verify` on a real installed game and repeated-launch/dual-log behavior of the exact final binary. The automated CLI unit/smoke checks do not replace those real runs.
+- USA/Europe game execution, mission play, GOS Video lock, Alt-Tab and save behavior; only **USA source inspection and no-launch installation** were demonstrated.
+- Complete fresh native Windows 11 gameplay acceptance with the current DirectDraw/GOS runtime.
+
+## Public compatibility statement
+
+- **FR/DE + GE-Proton:** owner-tested game behavior on earlier candidate builds.
+- **USA/Europe + Wine/GE-Proton:** real original-disc inspection and no-launch installation verified on candidate `0.1.90-59d81dd7`; gameplay not yet validated.
+- **Native Windows:** x86 binaries built, loader and export checks performed by CI; current complete gameplay behavior not validated.
+- Do not present the lack of further manual testing as proof of cross-platform compatibility.
+
+## Planned release identity
+
+**CrimsonSkiesFix 1.0** — Windows x86 standalone launcher and DirectDraw compatibility patch.
+
+- Package versions: `1.0.0` (Rust SemVer)
+- Git tag: `v1.0`
+- CI artifact: `CrimsonSkiesFix-Windows-x86-1.0`
+- Release payload: a single `CrimsonSkiesFix.exe`
+
+The final downloadable executable must come from the exact final release source commit, not from a prior PR build or earlier version `0.1.90`.
