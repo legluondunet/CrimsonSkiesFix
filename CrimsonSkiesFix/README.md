@@ -106,7 +106,7 @@ CrimsonSkiesFix/
 
 **Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
 the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
-(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix.ini` in the installed game directory yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out of the backed-up GOS overlay **before first launch**, create `CrimsonSkiesFix.ini` in the installed game directory yourself and set `[Graphics] GosVideoLock=off`. All other required graphics fixes are enabled without any INI switches. The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
 The DLL must be **next to the game executable**, not inside a separate configuration subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix.ini` in the installed game directory after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
@@ -128,56 +128,64 @@ Get-Content .\build-info.txt
 ```
 
 Compare the computed hash with `DllSha256` and find the game's
-initialization line in `CrimsonSkiesFix.log`; it begins with `LogIdentity`
-and ends with ` - init; ...`. With the standalone launcher, the file begins
-with an auto-install result and the game initialization follows the
-`=== CrimsonSkiesFix GAME ===` separator. The `Commit` and `Source` fields identify the exact
+initialization line in the **DLL-only** `CrimsonSkiesFix.log`; it begins
+with `LogIdentity` and ends with ` - init; ...`. The standalone installer
+writes its independent report to `CrimsonSkiesFix_installer.log`, not to
+the beginning of the game log. The `Commit` and `Source` fields identify the exact
 repository state. The distributed `LICENSE` is copied verbatim from
 the repository and should be preserved when sharing the proxy DLL.
 The standalone artifact itself contains one EXE; these files are created inside the game directory.
 
 ## Settings
 
-All settings live in `CrimsonSkiesFix/CrimsonSkiesFix.ini`. Important graphics options:
+CrimsonSkiesFix automatically applies its verified compatibility fixes to
+supported game files. **The generated INI is intentionally minimal**:
+borderless fullscreen, desktop resolution, 3D widescreen FOV/HUD, the startup
+chooser bypass, first-image color correction, focus recovery, Wine-only ROFFILE
+protection, Windows-native compatibility fixes and GOS Graphics/Resolution
+lock are already active when the exact game/platform preflight succeeds.
+There are **no mandatory fix switches to enable**.
 
-| `[Graphics]` key | Default | Purpose |
-|---|---|---|
-| `Borderless` | `1` | Legacy DirectDraw window handling; by itself does not activate the modern windowed 3D adapter |
-| `DesktopResolution` | `1` | Preserve the desktop mode and use monitor geometry |
-| `FPSLimit` | `60` | Bounded frame-pacing target (1–60); API call counts are not a measured gameplay FPS |
-| `ExperimentalWindowedAdapter` | `1` | Native DirectDraw4 3D adapter; enabled by default to support the locked Video settings and native display handling |
-| `Native3DWidescreen` | `1` | Native monitor-sized FOV/HUD corrections **and suppression of startup driver/resolution chooser** |
-| `FocusRepaint` | `1` | One-shot full repaint after focus return or exposed-window transition; set `0` to opt out |
-| `WindowEraseGuard` | `1` | Prevent white background erasure over DirectDraw pixels on the verified game HWND; set `0` to opt out |
-| `LegacyOffscreenRGB565` | `1` | First-image and legacy artwork RGB565 color correction; exact matching offscreen surfaces only; set `0` to disable |
-| `ModernFPSPacing` | `0` | Optional modern Flip pacing experiment |
-| `GosVideoLock` | `on` | **Default-on** native Graphics/Resolution lock; writes a verified, backed-up GOS patch overlay |
-
-The Wine-validated native widescreen + GOS dropdown configuration is:
+The first-run `CrimsonSkiesFix.ini` and shipped `.ini.example` contain:
 
 ```ini
+; CrimsonSkiesFix — optional user preferences (created once).
+; Verified game compatibility fixes are built in and enabled automatically.
+; Advanced diagnostics and GOS restoration are documented in README.md.
 [Graphics]
-Borderless=1
-DesktopResolution=1
-ExperimentalWindowedAdapter=1
-Native3DWidescreen=1
-FocusRepaint=1
-WindowEraseGuard=1
-LegacyOffscreenRGB565=1
-GosVideoLock=on
+; Frame pacing target, 1-60 frames per second.
+FPSLimit=60
 
 [Debug]
-Log=1
+; Additional game diagnostics (0=off, 1=on).
+Log=0
 ```
 
-This is the **owner's previously validated configuration**. `LegacyOffscreenRGB565=1` is now enabled on a fresh install alongside `ExperimentalWindowedAdapter=1`, `Native3DWidescreen=1` and `GosVideoLock=on`. `FocusRepaint=1` and `WindowEraseGuard=1` are now enabled on fresh installs; only `Log=0` remains the default for ordinary diagnostics. The native GOS lock requires all three, including `DesktopResolution=1`; if any prerequisite is disabled by the user, installation is skipped safely.
+`FPSLimit` can be set from 1 to 60; `Log=1` enables detailed diagnostics.
+For specialized investigations, advanced optional legacy/diagnostic switches
+(for example `[Graphics] ModernFPSPacing=1`, `[Debug]
+FrameTimeTrace=1`, or `[Debug] CrashBltTrace=1`) remain accepted, but are
+not included in a normal first-run INI. They are not prerequisites for
+correct operation. Existing INIs are **never silently rewritten** and known
+legacy overrides are still read for compatibility. Delete or edit a
+previously disabled override deliberately if you want its default-on fix.
+A future cleanup can retire legacy overrides separately, after compatibility
+testing.
 
+The native GOS lock is default-on, but a deliberate `[Graphics]
+GosVideoLock=restore` operation remains supported so an authenticated
+original overlay can be restored safely. For an initial opt-out or to keep
+the restored original behavior, `GosVideoLock=off` remains supported.
+These maintenance values are intentionally **not written into the generated
+INI**.
 
-**Window visibility fixes:** `FocusRepaint=1` requests a bounded one-shot full redraw when returning to the game or exposing a previously obscured window. `WindowEraseGuard=1` suppresses `WM_ERASEBKGND` only on the authenticated game window, preventing white background erasure of DirectDraw contents. The owner previously validated the guard's white-window improvement under Wine. Neither switch is a general crash handler or proven fix for the separately reported 0.1.90 gameplay crash.
+**Built-in window visibility repairs:** focus return requests a bounded
+full repaint, and the verified game HWND ignores `WM_ERASEBKGND` erasure,
+avoiding white backgrounds. Neither is a general crash handler.
 
 ### GOS Video dropdown lock, backup and restoration
 
-The experimental `GosVideoLock=on` path identifies exactly three complete `crimson.rof` archives using the installer's original-CD SHA-256 profiles: USA (60,236,221 bytes, SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`), FR (62,745,707 bytes, SHA-256 `99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f`), and DE (62,678,770 bytes, SHA-256 `4ccc5d25c2635ea9ad042ff1e356408d504e4c616389084cb087b49ddb28cbc7`). The USA and FR copies contain the same independently verified `VIDEO.SCRIPT` (SHA-256 `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`). **DE has not yet been tested with its original archive bytes**: accepting its whole-archive hash does not imply that its script is identical. The runtime must also authenticate the extracted script's exact hash and length. If DE has a different script, the lock fails closed; other editions or modified archives are never guessed from their country names.
+The experimental `GosVideoLock=on` path identifies exactly three complete `crimson.rof` archives using the installer's original-CD SHA-256 profiles: USA (60,236,221 bytes, SHA-256 `acc9946874110e9741183384010bc02fd48923ae3d608fcf02a96498c3731174`), FR (62,745,707 bytes, SHA-256 `99074dbc39e27e65b6b49ea338fc501d747caa0ac97062f931ee6abdc9e7350f`), and DE (62,678,770 bytes, SHA-256 `4ccc5d25c2635ea9ad042ff1e356408d504e4c616389084cb087b49ddb28cbc7`). The USA and FR copies contain the same independently verified `VIDEO.SCRIPT` (SHA-256 `f0b0ae62dc582a55dfc6eaf4a8b2937ef2084a03596b8fa52542a5de4512afa9`). **DE was subsequently validated in-game by the owner under GE-Proton**, including the authenticated in-memory GOS lock. Accepting the whole-archive hash alone is not considered sufficient: The runtime must also authenticate the extracted script's exact hash and length. If DE has a different script, the lock fails closed; other editions or modified archives are never guessed from their country names.
 
 
 On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accepted executable and the original `crimson.rof` and `VIDEO.SCRIPT`, then create a small overlay containing the unchanged original `AIRFRAME.SCRIPT` patch and an edited, owner-derived `VIDEO.SCRIPT`. It modifies **only** the installed `GOSDATA/ASSETS/crimptch.rof`, saving a byte-for-byte original as:
@@ -186,7 +194,7 @@ On **first launch by default**, `GosVideoLock=on` makes the DLL verify the accep
 GOSDATA/ASSETS/crimptch.rof.CrimsonSkiesFix.original.bak
 ```
 
-The game engine may ignore the `VIDEO.SCRIPT` member placed in the small overlay archive. In the current experimental workaround, the SHA-256-verified `ROFFILE.DLL` read of the **original `CRIMSON.ROF`** receives the corrected, user-derived script **only in memory**. The parsed ROF member descriptor supplies its exact offset without a locale-specific constant; a standards-compliant zlib stream is regenerated to match that member's original compressed byte length, preserving every other member and file position. This needs the authentic original archive, the exact 797-byte official patch backup, and the managed modified overlay; any mismatch disables virtualization. The actual original `CRIMSON.ROF`, executable and DLL are not modified. A repeat launch recognizes the existing overlay and does not rewrite it. No original game script is distributed in the project. This method is **owner-validated under GE-Proton for FR, both with `Log=1` and `Log=0`**, but not yet validated in-game for USA, DE, or native Windows.
+The game engine may ignore the `VIDEO.SCRIPT` member placed in the small overlay archive. In the current experimental workaround, the SHA-256-verified `ROFFILE.DLL` read of the **original `CRIMSON.ROF`** receives the corrected, user-derived script **only in memory**. The parsed ROF member descriptor supplies its exact offset without a locale-specific constant; a standards-compliant zlib stream is regenerated to match that member's original compressed byte length, preserving every other member and file position. This needs the authentic original archive, the exact 797-byte official patch backup, and the managed modified overlay; any mismatch disables virtualization. The actual original `CRIMSON.ROF`, executable and DLL are not modified. A repeat launch recognizes the existing overlay and does not rewrite it. No original game script is distributed in the project. This method is **owner-validated under GE-Proton for FR and DE**, including FR with `Log=1` and `Log=0`; the original USA disc is unavailable and native Windows gameplay on this exact candidate remains unvalidated.
 
 | Setting | Effect |
 |---|---|
@@ -196,7 +204,7 @@ The game engine may ignore the `VIDEO.SCRIPT` member placed in the small overlay
 
 After restoring, change the setting back to `off` (or `on` to install it again). **Always use `restore` before removing the DLL if you want the original unmodified GOS Video screen.** The override is persistent across game exits and DLL removal.
 
-Historical GOS overlay installation, idempotence and restoration were validated under Wine/GE-Proton in early November 2026. Earlier native Windows tests used a different overlay-routing path; those tests do not validate this new read-buffer virtualization. The owner confirmed the native disabled **Graphics**/**Resolution** controls with the in-memory method on the original FR edition under GE-Proton on 12 November 2026, with and without diagnostic logging. USA/DE runtime acceptance and native Windows acceptance remain outstanding. For other media editions, the installer must supply only the exactly hashed original assets and official 1.02 update; fail-closed checks must not be bypassed.
+Historical GOS overlay installation, idempotence and restoration were validated under Wine/GE-Proton in early November 2026. Earlier native Windows tests used a different overlay-routing path; those tests do not validate this new read-buffer virtualization. The owner confirmed the native disabled **Graphics**/**Resolution** controls with the in-memory method on the original FR edition under GE-Proton on 12 November 2026, with and without diagnostic logging. USA runtime testing cannot be performed with the owner's unavailable media; DE owner tests succeeded. Native Windows acceptance of the current candidate remains outstanding. For other media editions, the installer must supply only the exactly hashed original assets and official 1.02 update; fail-closed checks must not be bypassed.
 
 ## Wine ROFFILE.DLL INI parser guard (enabled by default)
 
@@ -273,8 +281,9 @@ game file because the patch never writes to disk.
 
 ## Native Windows automatic compatibility
 
-For a **new installation**, seven previously validated native-Windows-only
-compatibility switches are now enabled in the generated INI: `NativeDD4Bootstrap`,
+For a **new installation**, seven native-Windows-only
+compatibility features are **enabled in the compiled defaults**, not listed
+in the generated INI: `NativeDD4Bootstrap`,
 `NativeMovieRGB32`, `NativeMovieMessagePump`, `NativeFullFrameCompose`,
 `NativeMouseClipRepair`, `NativeDirectInputMouseCoopRepair` and
 `NativeGosCursorBridge`. These keep their strict exact-game and runtime
@@ -283,9 +292,10 @@ preflight guards and do **not** run under Wine/Proton. They no longer require
 probes, frame-time profiling and other debug diagnostics stay disabled.
 
 Existing user INI files are **not overwritten or silently migrated**; previous
-explicit `=0` values remain respected. Under native Windows, these settings
-can still be disabled individually in `[Debug]` to isolate hardware/driver
-regressions. The initial Windows owner validation used an explicit test
+explicit `=0` legacy overrides remain respected until they are deliberately
+removed. Under native Windows, advanced debug overrides can still isolate
+hardware/driver regressions, but should never be required for first-run
+operation. The initial Windows owner validation used an explicit test
 configuration; a **new default-install Windows 11 runtime smoke test** is still
 needed before a public stable release. The Wine/GE-Proton path continues to use RGB565 game presentation.
 **Wine-only native Blt safety** from v0.1.55 now installs its minimal
@@ -296,7 +306,7 @@ surface sources before passing them to Wine's native DirectDraw Blt; it does
 not enable opt-in tracing, extra Flip interception, or FPS pacing. Previously
 this guard was accidentally tied to the logging/pacing switches, so the
 default INI could leave it inactive. A native Windows run with `Log=0`
-retains its previously validated hooks. `ExperimentalWindowedAdapter=0`
+retains its previously validated hooks. A legacy `ExperimentalWindowedAdapter=0` override
 intentionally disables the virtual graph and therefore does not exercise
 this specific source-unwrapping protection. This change requires owner
 runtime verification at the original reproducible Wine crash location.
