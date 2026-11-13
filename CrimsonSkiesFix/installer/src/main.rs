@@ -832,13 +832,16 @@ fn run() -> Result<i32, String> {
         println!("Verified: approved game EXE, game data and DirectDraw patch.");
         return Ok(0);
     }
-    if args.len()==2 {
+    let explicit_import=args.len()==2;
+    if explicit_import {
         if any_entry(&game) {
             return Err("CrimsonSkiesFix/ already exists; --import never overwrites it".into());
         }
+        // A successful import counts as an installation, not a routine
+        // verified relaunch; retain it in the installer-specific journal.
         install_from(&PathBuf::from(&args[1]),&game)?;
     }
-    auto_install::auto_run(base,&game)
+    auto_install::auto_run(base,&game,explicit_import)
 }
 
 fn main() {
