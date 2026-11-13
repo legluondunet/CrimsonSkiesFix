@@ -1,4 +1,4 @@
-use std::{ffi::{c_char, c_void, OsStr, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{ffi::{c_char, c_void, OsString}, fs, io::Write, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use crate::config::DEFAULT_INI;
 use std::sync::OnceLock;
 
@@ -435,20 +435,9 @@ fn log_directory()->Option<PathBuf> {
     Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
 }
 
-/// Only an EXE launched by our standalone installer is allowed to append
-/// gameplay diagnostics to the installer's newly written session report.
-/// A direct/manual game launch still resets its own gameplay log.
-pub fn append_to_launcher_session_log()->bool{
-    let marker=std::env::var_os("CRIMSONSKIESFIX_APPEND_LAUNCHER_LOG");
-    if marker.as_deref()!=Some(OsStr::new("1")){return false;}
-    dll_directory()
-        .as_deref()
-        .and_then(standalone_launcher_root)
-        .is_some()
-}
-
 pub fn log_path()->Option<PathBuf> {
-    // Share the standalone launcher's root log when it is present.
+    // Only the DLL writes this fresh game log; the installer has a separate
+    // CrimsonSkiesFix-installer.log in the standalone launcher root.
     let path=log_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
@@ -804,13 +793,13 @@ mod early_monitor_tests{
 }
 
 #[cfg(test)]
-mod unified_log_routing_tests {
+mod game_log_routing_tests {
     use super::*;
     #[test]
     fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
         let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let root=std::env::temp_dir().join(format!(
-            "crimson-merged-log-route-{}-{id}",std::process::id()));
+            "crimson-game-log-route-{}-{id}",std::process::id()));
         let game=root.join("CrimsonSkiesFix");
         let wrong=root.join("DifferentGame");
         fs::create_dir_all(&game).unwrap();
