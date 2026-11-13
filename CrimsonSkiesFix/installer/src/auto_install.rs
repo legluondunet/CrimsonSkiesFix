@@ -268,14 +268,13 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     }
     if old_present && !directory(game){return Err("unsafe existing game directory".into());}
     let source=approved_executable(base,game)?;
-    // Preflight a valid, user-supplied official update before extraction.
-    let _updater=update102::find(base,None)?;
+    // install_from_cd preflights the official update before any extraction.
     if old_present {
         println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
     }else{
         println!("Installing new game from original CD and verified official 1.02 patch...");
     }
-    let _installed=install_from_cd(base,None,None,&new,None)?;
+    install_from_cd(base,&new)?;
     if old_present {preserve_player_data(game,&new)?;}
     activate_verified_exe(&new,&source)?;
     verify_installed_cd_assets(&new)?;
