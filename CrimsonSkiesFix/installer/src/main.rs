@@ -420,12 +420,12 @@ fn install_from_cd(base:&Path,disc:Option<&Path>,patch:Option<&Path>,game:&Path,
 /// Never write to the installer report: a direct launch is not an installation.
 fn launch_without_verification(game:&Path)->Result<i32,String>{
     let exe=game.join("CRIMSON.EXE");
-    println!("--launch: skipping all integrity, existence and patch checks; starting {}",
+    println!("--launch-no-verify: skipping all integrity, existence and patch checks; starting {}",
         exe.display());
     let exit=Command::new(&exe).current_dir(game).status()
-        .map_err(|e|format!("--launch could not start {}: {e}",exe.display()))?;
+        .map_err(|e|format!("--launch-no-verify could not start {}: {e}",exe.display()))?;
     let code=exit.code().unwrap_or(2);
-    println!("--launch: game exited with code {code}");
+    println!("--launch-no-verify: game exited with code {code}");
     Ok(code)
 }
 
@@ -434,7 +434,7 @@ fn launch_without_verification(game:&Path)->Result<i32,String>{
 fn supported_command(args:&[OsString])->bool{
     let Some((name,rest))=args.split_first() else{return true;};
     match (name.to_str(),rest.len()){
-        (Some("--help"|"--version"|"--verify"|"--install-only"|"--launch"|
+        (Some("--help"|"--version"|"--verify"|"--install-only"|"--launch-no-verify"|
               "--inspect-cd"|"--extract-cd"|"--install-cd"|
               "--verify-install"),0)=>true,
         (Some("--inspect-cd"|"--extract-cd"|"--install-cd"|
@@ -451,7 +451,7 @@ fn usage() {
          \nUsage:\n\
          CrimsonSkiesFix.exe            verify, install from adjacent CD or repair, then play\n\
          CrimsonSkiesFix.exe --install-only   install/repair fully, do not launch the game\n\
-         CrimsonSkiesFix.exe --launch         start CRIMSON.EXE directly, no verification or repair\n\
+         CrimsonSkiesFix.exe --launch-no-verify         start CRIMSON.EXE directly, no verification or repair\n\
          CrimsonSkiesFix.exe --verify         verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix_installer.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
@@ -468,7 +468,7 @@ fn usage() {
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
          A full installation requires the approved 1.02 EXE, bundled ddraw.dll patch,\n\
          and official 1.02 updater BEFORE CD extraction starts.\n\
-         --launch bypasses verification by explicit user request; it never installs.\n\
+         --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
     );
@@ -493,7 +493,7 @@ fn run() -> Result<i32, String> {
     let game = base.join("CrimsonSkiesFix");
     // Explicit bypass must not inspect, hash, repair, migrate or extract game
     // files or modify an installer report. OS-level process launch only.
-    if args.len()==1 && args[0]=="--launch" {
+    if args.len()==1 && args[0]=="--launch-no-verify" {
         return launch_without_verification(&game);
     }
     // Preserve a previous launcher-generated hyphenated report across a
@@ -685,7 +685,7 @@ mod tests {
     fn cli_has_only_the_supported_commands(){
         for flags in [
             vec![],vec!["--help"],vec!["--version"],vec!["--verify"],
-            vec!["--install-only"],vec!["--launch"],
+            vec!["--install-only"],vec!["--launch-no-verify"],
             vec!["--inspect-cd"],vec!["--inspect-cd","disc.iso"],
             vec!["--extract-cd"],vec!["--extract-cd","disc.cue"],
             vec!["--install-cd"],vec!["--install-cd","disc.cue"],
@@ -696,13 +696,13 @@ mod tests {
             assert!(supported_command(&args),"expected supported: {flags:?}");
         }
         for flags in [
-            vec!["--import","original"],vec!["--audit-shortnames"],
+            vec!["--launch"],vec!["--import","original"],vec!["--audit-shortnames"],
             vec!["--audit-shortnames","FR"],vec!["--audit-shortnames","FR","ref.zbd"],
             vec!["--inspect-update"],vec!["--inspect-update","update.exe"],
             vec!["--extract-update","FR"],vec!["--extract-update","FR","update.exe"],
             vec!["--install-cd","disc.iso","patch.exe","--into","FR"],
-            vec!["--install-only","disc.iso"],vec!["--launch","--verify"],
-            vec!["--launch","missing.exe"],vec!["--verify","other"],
+            vec!["--install-only","disc.iso"],vec!["--launch-no-verify","--verify"],
+            vec!["--launch-no-verify","missing.exe"],vec!["--verify","other"],
             vec!["--unknown"],
         ]{
             let args=flags.iter().map(OsString::from).collect::<Vec<_>>();
