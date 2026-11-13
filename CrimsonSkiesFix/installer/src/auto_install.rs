@@ -128,6 +128,24 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
     }
 }
 
+/// Full installation prerequisite gate. Every source must be available
+/// and authenticated *before* a CD extraction transaction is started.
+/// The patch is embedded in the single-file launcher, not a separately
+/// distributed DLL. It must exist and be a plausible Windows PE image;
+/// CI independently verifies its entire 22-export PE32 layout.
+pub(super) fn preflight_install_sources(
+    base:&Path,existing:&Path,update:Option<&Path>,
+)->Result<(PathBuf,PathBuf),String>{
+    // Check the local owner-supplied approved game binary independently from
+    // the CD data, so corrupt original media cannot block source reuse.
+    let exe=approved_executable(base,existing)?;
+    if BUNDLED_DDRAW.len()<4096 || !BUNDLED_DDRAW.starts_with(b"MZ"){
+        return Err("embedded CrimsonSkiesFix DirectDraw patch is missing or invalid; extraction refused".into());
+    }
+    let updater=update102::find(base,update)?;
+    Ok((exe,updater))
+}
+
 /// Transactionally replace the original CD-protected entry *inside a newly
 /// staged directory*, preserving its original bytes under a deterministic
 /// backup name. The immutable CD-manifest verifier checks that backup.
@@ -267,9 +285,10 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
         return Err("previous game backup already exists; refusing to overwrite it".into());
     }
     if old_present && !directory(game){return Err("unsafe existing game directory".into());}
-    let source=approved_executable(base,game)?;
-    // Preflight a valid, user-supplied official update before extraction.
-    let _updater=update102::find(base,None)?;
+    // No new staging directory and no CD read/extraction unless all three
+    // prerequisites exist: approved unwrapped EXE, embedded patch and exact
+    // official 1.02 updater. Preserve this ordering for --install-only too.
+    let (source,_updater)=preflight_install_sources(base,game,None)?;
     if old_present {
         println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
     }else{
@@ -383,7 +402,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
 /// Entry point for no-argument execution. The installer keeps its last
 /// meaningful installation/repair/error report in the root installer log.
 /// The DLL writes an independent fresh gameplay log on every game start.
-pub(super) fn auto_run(base:&Path,game:&Path,explicit_import:bool)->Result<i32,String>{
+pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     // Refuse unsafe installer-log paths before modifying an installation.
     // A verified, no-op relaunch does not overwrite any existing report.
     let log=base.join(INSTALLER_LOG);
@@ -394,30 +413,36 @@ pub(super) fn auto_run(base:&Path,game:&Path,explicit_import:bool)->Result<i32,S
     let result=auto_prepare(base,game).and_then(|action|{
         if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
-        // An explicit --import is an installation action, even when the
-        // freshly imported legacy data verifies without a CD receipt.
-        let action=if explicit_import && action=="VERIFIED_LEGACY_IMPORT_AND_LAUNCH"{
-            "IMPORTED_LEGACY_AND_LAUNCH"
-        }else{action};
         Ok((action,exe))
     });
     let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
     let message=match &result{
-        Ok((action,_exe))=>format!(
-            "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n\
+        Ok((action,_exe))=>{
+            let result_action=if launch {(*action).to_owned()}else{
+                format!("{}_ONLY",action.strip_suffix("_AND_LAUNCH").unwrap_or(action))
+            };
+            let launch_line=if launch {""}else{"GameLaunch=SKIPPED\n"};
+            format!(
+            "CrimsonSkiesFix AUTO INSTALL v1\nAction={result_action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
-             OriginalProtectedBackup={}\nGosOverlayState={}\nAUTO_INSTALL_RESULT=READY\n",
+             OriginalProtectedBackup={}\nGosOverlayState={}\n{launch_line}AUTO_INSTALL_RESULT=READY\n",
             game.display(),if regular(&game.join(INSTALL_RECEIPT)){"YES"}else{"LEGACY_ONLY"},
             if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
             if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
             crate::managed_gos_patch::verify_game_overlay(game)
-                .map(|state|state.label()).unwrap_or("INVALID_OR_UNKNOWN")),
+                .map(|state|state.label()).unwrap_or("INVALID_OR_UNKNOWN"))
+        },
         Err(err)=>format!(
             "CrimsonSkiesFix AUTO INSTALL v1\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
             game.display()),
     };
     write_installer_report(base,&message,needed)?;
     let (action,exe)=result?;
+    if !launch{
+        println!("--install-only: installation verified and ready at {}; game NOT launched.",
+            game.display());
+        return Ok(0);
+    }
     println!("{action}: launching {}...",exe.display());
     // No environment-marker handoff: the DLL owns CrimsonSkiesFix.log and
     // truncates it at startup, while the installer report remains untouched.
@@ -533,8 +558,7 @@ mod tests{
             assert_eq!(fs::read(&log).unwrap(),install);
         }
         for action in ["INSTALL_FROM_CD_AND_LAUNCH","REPAIRED_FROM_CD_AND_LAUNCH",
-            "REPAIRED_BUNDLED_PROXY_AND_LAUNCH","ACTIVATE_APPROVED_EXE_AND_LAUNCH",
-            "IMPORTED_LEGACY_AND_LAUNCH"]{
+            "REPAIRED_BUNDLED_PROXY_AND_LAUNCH","ACTIVATE_APPROVED_EXE_AND_LAUNCH"]{
             assert!(report_needed(Some(action)));
         }
         assert!(report_needed(None)); // errors are always retained
@@ -619,6 +643,32 @@ mod tests{
         assert_eq!(fs::read(new.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
         assert_eq!(fs::read(new.join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
         assert_eq!(fs::read(old.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn install_only_without_sources_refuses_extraction_and_never_launches(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let err=auto_run(&root,&game,false).unwrap_err();
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        assert!(!any_entry(&game));
+        assert!(!any_entry(&root.join(REBUILT)));
+        assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
+        let report=fs::read_to_string(root.join(INSTALLER_LOG)).unwrap();
+        assert!(report.contains("AUTO_INSTALL_RESULT=ERROR"));
+        assert!(!report.contains("GAME_EXIT_CODE="));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn prerequisite_gate_rejects_unknown_executable_before_any_cd_extraction(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        fs::write(root.join("untrusted.exe"),b"not a valid Crimson Skies binary").unwrap();
+        let err=preflight_install_sources(&root,&game,None).unwrap_err();
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        assert!(!any_entry(&game));
+        assert!(!any_entry(&root.join(REBUILT)));
+        assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
