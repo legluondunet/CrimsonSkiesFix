@@ -22,17 +22,18 @@ For an already verified, fully playable installation, these three external files
 6. If there is no game installation, create and fully verify the same complete new game before publishing and launching.
 7. Launch only the approved executable, with the game directory as the current working directory.
 
-The launcher keeps **two independent log files** beside itself: `CrimsonSkiesFix_installer.log` contains the last meaningful install/repair/explicit diagnostics or error, and `CrimsonSkiesFix.log` is always a fresh DLL-generated game session. A verified normal relaunch does **not** overwrite the install log; `--verify-install` success also preserves any existing installer report (creating a report only when absent), while errors replace it. A first-time install or repair report receives `GAME_EXIT_CODE` after the child exits; a verified-only relaunch prints the child's exit code in the console and preserves the previous installer report. The DLL no longer uses any environment handoff or appends to the installer log. The prior hyphenated `CrimsonSkiesFix-installer.log` is safely renamed on startup only if its content identifies a generated report and the underscore target is absent; otherwise unknown/occupied paths are preserved. A legacy `CrimsonSkiesFix.installer.log` is removed **only after** the next real installer report is written and only if its small regular-file contents authenticate it as old launcher output; unknown files are preserved.
+The launcher keeps **two independent log files** beside itself: `CrimsonSkiesFix_installer.log` contains the last meaningful install/repair/explicit diagnostics or error, and `CrimsonSkiesFix.log` is always a fresh DLL-generated game session. A verified normal relaunch does **not** overwrite the install log. A first-time install or repair report receives `GAME_EXIT_CODE` after the child exits; a verified-only relaunch prints the child's exit code in the console and preserves the previous installer report. The DLL no longer uses any environment handoff or appends to the installer log. The prior hyphenated `CrimsonSkiesFix-installer.log` is safely renamed on startup only if its content identifies a generated report and the underscore target is absent; otherwise unknown/occupied paths are preserved. A legacy `CrimsonSkiesFix.installer.log` is removed **only after** the next real installer report is written and only if its small regular-file contents authenticate it as old launcher output; unknown files are preserved.
 
 Legacy imported games without the new original-CD receipt retain their existing EXE/DLL verification for backward compatibility. They do not receive a full original-CD hash audit unless rebuilt from exact original media.
 
 ## Diagnostic commands retained
 
---inspect-cd and --extract-cd operate on original disc images.
---inspect-update and --extract-update inspect the official patch.
---install-cd remains a manual data-installation diagnostic and may leave the original protected executable pending. Running the launcher without options then completes activation when an approved local EXE is present.
---verify-install and --verify perform explicit validation.
---import imports an existing user-owned installation with the pinned EXE.
+`--inspect-update` and `--extract-update` diagnose the official 1.02 patch.
+`--verify` explicitly validates the installed executable and files.
+`--audit-shortnames [ED] [REFERENCE_ZBD]` checks chapter CAB filename aliases.
+`--import DIR` imports an existing user-owned installation with the pinned EXE.
+
+Disc inspection, extraction, game installation and file validation are internal stages of the automatic installer, not separate commands.
 
 No original game or decrypted executable is shipped with CrimsonSkiesFix. No registry, DirectPlay, system DLL, shortcut, or uninstaller operations are introduced here. Those historical setup actions remain for separate verification.
 
