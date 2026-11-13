@@ -262,7 +262,7 @@ jobs:
       - name: Publish only standalone launcher for owner testing
         uses: actions/upload-artifact@v4
         with:
-          name: CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL
+          name: CrimsonSkiesFix-Windows-x86-1.0
           path: CrimsonSkiesFix/installer-dist/CrimsonSkiesFix.exe
           if-no-files-found: error
           retention-days: 30
@@ -280,7 +280,7 @@ jobs:
       - name: Download the only published standalone installer
         uses: actions/download-artifact@v4
         with:
-          name: CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL
+          name: CrimsonSkiesFix-Windows-x86-1.0
           path: candidate
       - name: Verify downloaded archive contains exactly one valid PE32 x86 executable
         run: |
