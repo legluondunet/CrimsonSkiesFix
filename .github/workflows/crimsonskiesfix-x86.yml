@@ -170,7 +170,7 @@ jobs:
           if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
           $usage = (& $exe --help) -join "`n"
           if ($LASTEXITCODE -ne 0) { throw '--help failed' }
-          foreach ($expected in @('--install-only', '--launch-no-verify', '--verify', '--version', '--help')) {
+          foreach ($expected in @('--install-only', '--launch-no-verify', '--inspect', '--verbose', '--verify', '--version', '--help', '-h')) {
             if (-not $usage.Contains($expected)) { throw "Help does not advertise $expected" }
           }
           if ($usage -match '(?m)^\s*CrimsonSkiesFix\.exe --launch(?:\s|$)') {
@@ -184,6 +184,8 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) {
             throw 'Standalone launcher version/source SHA mismatch'
           }
+          & $exe -h *> $null
+          if ($LASTEXITCODE -ne 0) { throw '-h help alias failed' }
           & $exe --verify
           if ($LASTEXITCODE -ne 2) { throw 'Missing installed game must be refused' }
           New-Item -ItemType Directory -Force 'installer-smoke/Crimson Skies' | Out-Null
@@ -219,6 +221,19 @@ jobs:
           if ($installReport -notmatch 'AUTO_INSTALL_RESULT=ERROR' -or
               $installReport -match 'GAME_EXIT_CODE=') {
             throw '--install-only prerequisite failure must be reported without launching the game'
+          }
+          # Explicit CD inspection has a dedicated report, even on invalid
+          # media. It must not install anything or overwrite installer history.
+          $beforeInspect = Get-Content -Raw $installerLog
+          & 'installer-smoke/CrimsonSkiesFix.exe' --inspect disc.iso *> $null
+          if ($LASTEXITCODE -ne 2) { throw 'Malformed ISO inspection must fail' }
+          $inspectionLog = 'installer-smoke/CrimsonSkiesFix_inspect.log'
+          if (!(Test-Path $inspectionLog) -or
+              (Get-Content -Raw $inspectionLog) -notmatch 'INSPECT FAILED') {
+            throw '--inspect failure did not create its own diagnostic report'
+          }
+          if ((Get-Content -Raw $installerLog) -ne $beforeInspect) {
+            throw '--inspect modified the unrelated installer report'
           }
           # The obsolete maintenance CLI options must be rejected by the
           # argument dispatcher and must not modify the installer report.
