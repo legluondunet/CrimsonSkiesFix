@@ -1,6 +1,6 @@
 //! Installation of the original disc's per-chapter CAB game data.
-//! Unlike --extract-cd, a retail installation must materialize the
-//! compressed chapter members in ZBD/ (183 on the user's classic retail tree).
+//! The retail installation materializes compressed chapter members in
+//! ZBD/ (183 total ZBD files on the classic retail tree).
 //! CAB bytes are authenticated by the full original-CD manifest before
 //! expansion, then the expanded files are sealed and the CABs deleted. No third-party game files are distributed.
 use crate::sha256;
