@@ -45,13 +45,13 @@ The game data and supported executable must still be provided separately by the 
 - [x] Final CLI/dual-log branch (`59d81dd7`) passed Windows x86 and downloaded-artifact CI. Owner supplied real USA `--install-only` and `--inspect` reports; complete gameplay/log-rotation re-test remains pending.
 - [x] Real USA/Europe CD inspection and installation without launch succeeded on `0.1.90-59d81dd7`; **gameplay remains untested** until a game session is accepted.
 - [x] One-file artifact only, GPL-3.0-or-later license and source/provenance records installed with the proxy.
-- [ ] Verify minimal three-option INI (AspectRatio, FPSLimit and Log), default-on compatibility features, and native 4:3 gameplay in the final candidate. Earlier owner game testing used the older generated INI and native aspect.
+- [x] Version 1.0 will use the existing tested first-run INI template (AspectRatio, FPSLimit, Log) and default-on compatibility code. No additional owner-side manual testing is planned; full 4:3 and native Windows runtime acceptance remain **unverified for the exact final binary**.
 - [x] Installer foundation PR #26 and GOS patch PR #27 were merged into `main` on 13 November 2026.
-- [ ] Review the unified CLI in PR #28 and its stacked pre-release cleanup, then merge in dependency order only after owner approval.
+- [ ] Review the unified CLI in PR #28 and its stacked 1.0 release cleanup PR #31, then merge in dependency order only after owner approval.
 - [ ] After approved merges of PR #28 and stacked PR #31, build exact final **main** commit and confirm Windows x86 / Linux downloaded-artifact CI jobs succeed. PR #31 head `59d81dd7` already passed both jobs.
 - [ ] Record the **final main source SHA, release artifact size and SHA-256** after its build. Old PR binaries cannot serve as the final release.
 - [x] Verified that the intended `v1.0` tag is currently unused (13 November 2026).
-- [ ] After approval and final `main` build, publish the **1.0 release** with its actual compatibility scope: FR/DE gameplay tested under GE-Proton, USA/Europe original-disc installation tested, no native Windows gameplay acceptance for this exact candidate.
+- [ ] After approval and final `main` build, publish the **1.0 release** without requesting more owner-side manual tests, with its actual compatibility scope: FR/DE gameplay tested under GE-Proton, USA/Europe original-disc installation tested, no native Windows gameplay acceptance for this exact candidate.
 - [ ] Only after explicit owner approval: publish the `v1.0` tag, 1.0 release notes and the single final `CrimsonSkiesFix.exe` artifact. Do not upload original game, official updater or decrypted binary.
 
 **Do not claim native Windows gameplay acceptance for this build or full game testing of USA/Europe.** The 1.0 release number does not expand the evidence. See the updated [13 November release checklist](release-checklist-2026-11-13.md) for the current PR sequence and test matrix.
