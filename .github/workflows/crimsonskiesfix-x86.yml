@@ -168,8 +168,17 @@ jobs:
           $pe = [BitConverter]::ToInt32($bytes, 0x3C)
           $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
           if ($machine -ne 0x014C) { throw 'Standalone launcher is not x86 PE32' }
-          & $exe --help
+          $helpText = & $exe --help
           if ($LASTEXITCODE -ne 0) { throw '--help failed' }
+          foreach ($retired in @('--verify-install', '--inspect-cd', '--extract-cd', '--install-cd')) {
+            if ($helpText -match [regex]::Escape($retired)) {
+              throw "Removed CLI option still advertised: $retired"
+            }
+            & $exe $retired *> $null
+            if ($LASTEXITCODE -ne 2) {
+              throw "Removed CLI option must be rejected: $retired"
+            }
+          }
           $version = & $exe --version
           if ($LASTEXITCODE -ne 0 -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) {
             throw 'Standalone launcher version/source SHA mismatch'
