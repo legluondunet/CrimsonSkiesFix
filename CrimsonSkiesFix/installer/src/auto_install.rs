@@ -1,0 +1,384 @@
+//! No-argument verified CD installer / repair / launcher.
+//! All game bytes originate from the owner's exact verified original disc,
+//! official 1.02 updater and local hash-pinned decrypted executable.
+//! Never redistribute them, and never overwrite a damaged install in place.
+use super::*;
+use std::ffi::OsStr;
+
+const REBUILT:&str="CrimsonSkiesFix.rebuilding";
+const PREVIOUS:&str="CrimsonSkiesFix.previous";
+const EXE_BACKUP:&str="CRIMSON.EXE.protected.bak";
+const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
+const AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
+
+/// Discover an external executable by its *full byte identity*, not its
+/// basename, because owners legitimately rename their decrypted file.
+fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
+    // A corrupt/missing ROF must not prevent reuse of a perfectly valid
+    // approved EXE that was already installed. Check the EXE's bytes
+    // separately from the game's asset verifier during repair preflight.
+    let mut installed_valid=Vec::<PathBuf>::new();
+    for name in ["CRIMSON.EXE","CRIMSON-UNWRAPPED.EXE"] {
+        let candidate=existing.join(name);
+        if regular(&candidate)
+            && fs::metadata(&candidate).map_err(error)?.len()==GAME_EXE_SIZE
+            && digest(&candidate)?==GAME_EXE_HASH {
+            installed_valid.push(candidate);
+        }
+    }
+    if installed_valid.len()>1 {
+        return Err("ambiguous approved game EXEs in existing installation".into());
+    }
+    if let Some(exe)=installed_valid.pop(){
+        // A protected-pending install can be activated only with an EXE
+        // outside its game directory: keeping an extra alternate candidate
+        // there would make validated_game_exe reject the final directory.
+        let pending=fs::read_to_string(existing.join(INSTALL_RECEIPT))
+            .map(|s|s.lines().any(|l|
+                l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"))
+            .unwrap_or(false);
+        if !pending || exe.file_name().is_some_and(|name|name==OsStr::new("CRIMSON.EXE")) {
+            return Ok(exe);
+        }
+    }
+    let mut valid=Vec::<PathBuf>::new();
+    for entry in fs::read_dir(base).map_err(error)?{
+        let entry=entry.map_err(error)?;
+        let candidate=entry.path();
+        // Do not read unknown full files, or follow links/junctions.
+        if !regular(&candidate) {continue;}
+        if candidate.extension().and_then(OsStr::to_str)
+            .map(|x|!x.eq_ignore_ascii_case("exe")).unwrap_or(true) {continue;}
+        if fs::metadata(&candidate).map_err(error)?.len()!=GAME_EXE_SIZE {continue;}
+        if digest(&candidate)?==GAME_EXE_HASH {valid.push(candidate);}
+    }
+    match valid.len(){
+        1=>Ok(valid.remove(0)),
+        0=>Err(format!(
+            "approved decrypted Crimson Skies 1.02 EXE not found beside launcher; \
+             provide a locally owned {}-byte EXE with SHA-256 {} \
+             (the original protected CD EXE is never run)",
+            GAME_EXE_SIZE,GAME_EXE_HASH)),
+        n=>Err(format!("{n} identical approved decrypted EXE candidates beside launcher; keep exactly one")),
+    }
+}
+
+/// Transactionally replace the original CD-protected entry *inside a newly
+/// staged directory*, preserving its original bytes under a deterministic
+/// backup name. The immutable CD-manifest verifier checks that backup.
+fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
+    if !directory(game){return Err("unsafe game stage for approved EXE activation".into());}
+    if !regular(source) || fs::metadata(source).map_err(error)?.len()!=GAME_EXE_SIZE
+        || digest(source)?!=GAME_EXE_HASH {
+        return Err("decrypted EXE did not match the only approved 1.02 size/SHA-256".into());
+    }
+    let receipt=game.join(INSTALL_RECEIPT);
+    let raw=fs::read_to_string(&receipt).map_err(error)?;
+    if !raw.lines().any(|l|l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"){
+        return Err("cannot activate an installation that is not verified protected/pending".into());
+    }
+    if raw.lines().filter(|l|l.starts_with("InstallState=")).count()!=1{
+        return Err("ambiguous installation state in receipt".into());
+    }
+    let active=game.join("CRIMSON.EXE");
+    let backup=game.join(EXE_BACKUP);
+    let pending=game.join(EXE_PENDING);
+    if !regular(&active) || any_entry(&backup) || any_entry(&pending)
+        || any_entry(&game.join("CRIMSON-UNWRAPPED.EXE")){
+        return Err("unsafe protected EXE activation target or abandoned transaction".into());
+    }
+    // The original protected EXE must match the authentic CD manifest
+    // immediately before backing it up. No unknown source is ever replaced.
+    verify_installed_cd_assets(game)?;
+    fs::copy(source,&pending).map_err(error)?;
+    if digest(&pending)?!=GAME_EXE_HASH{
+        let _=fs::remove_file(&pending);
+        return Err("approved EXE copy failed its SHA-256 check".into());
+    }
+    // Construct next receipt before any renames: this function is used only
+    // on a private reconstruction or on a fully verified pending install.
+    let new_receipt=raw
+        .replace("InstallState=GAME_FILES_READY_EXECUTABLE_PENDING","InstallState=GAME_READY")
+        .replace("ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED",
+                 "ExecutablePolicy=APPROVED_UNWRAPPED_102_ORIGINAL_BACKED_UP");
+    let receipt_pending=game.join("CrimsonSkiesFix.install-receipt.ready");
+    if any_entry(&receipt_pending){
+        let _=fs::remove_file(&pending);
+        return Err("abandoned ready receipt exists; refusing to replace it".into());
+    }
+    if let Err(err)=fs::write(&receipt_pending,new_receipt) {
+        let _=fs::remove_file(&pending);
+        return Err(format!("cannot stage ready installation receipt: {err}"));
+    }
+    if let Err(err)=fs::rename(&active,&backup){
+        let _=fs::remove_file(&pending);
+        let _=fs::remove_file(&receipt_pending);
+        return Err(format!("cannot save original protected EXE: {err}"));
+    }
+    if let Err(err)=fs::rename(&pending,&active){
+        let _=fs::rename(&backup,&active);
+        let _=fs::remove_file(&pending);
+        let _=fs::remove_file(&receipt_pending);
+        return Err(format!("cannot activate verified 1.02 EXE: {err}"));
+    }
+    // Windows does not always support replacing an existing file using
+    // rename. Keep a reversible receipt backup until completed.
+    let receipt_backup=game.join("CrimsonSkiesFix.install-receipt.pending.bak");
+    if any_entry(&receipt_backup){
+        return Err("abandoned pending receipt backup; leaving staged data for inspection".into());
+    }
+    fs::rename(&receipt,&receipt_backup).map_err(error)?;
+    if let Err(err)=fs::rename(&receipt_pending,&receipt){
+        let _=fs::rename(&receipt_backup,&receipt);
+        return Err(format!("cannot publish ready installation receipt: {err}"));
+    }
+    // Validate both *different* EXE identities (protected backup matches
+    // original CD, active matches hash-pinned decrypted 1.02 binary),
+    // every retail file, patch ROF and the canonical chapter manifest.
+    verify_installed_cd_assets(game)?;
+    verify(game)?;
+    fs::remove_file(&receipt_backup).map_err(error)?;
+    Ok(())
+}
+
+fn copy_player_files(src:&Path,dst:&Path)->Result<(),String>{
+    if !directory(src)||!directory(dst){
+        return Err("unsafe saved-data directory; repair refused".into());
+    }
+    for entry in fs::read_dir(src).map_err(error)?{
+        let entry=entry.map_err(error)?;
+        let from=entry.path();
+        let to=dst.join(entry.file_name());
+        if any_entry(&to){return Err(format!("player file would be overwritten: {}",to.display()));}
+        let ft=entry.file_type().map_err(error)?;
+        if ft.is_symlink(){return Err(format!("player data link refused: {}",from.display()));}
+        if ft.is_dir(){
+            fs::create_dir(&to).map_err(error)?;
+            copy_player_files(&from,&to)?;
+        }else if ft.is_file(){
+            fs::copy(&from,&to).map_err(error)?;
+        }else{return Err(format!("unsupported player file type: {}",from.display()));}
+    }
+    Ok(())
+}
+
+fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
+    for folder in ["SavedGames","Planes"] {
+        let from=old.join(folder);
+        if any_entry(&from){
+            copy_player_files(&from,&new.join(folder))?;
+        }
+    }
+    let ini=old.join("CrimsonSkiesFix.ini");
+    if any_entry(&ini){
+        if !regular(&ini){return Err("unsafe existing player INI; repair refused".into());}
+        let dest=new.join("CrimsonSkiesFix.ini");
+        if any_entry(&dest){return Err("refusing to overwrite active player INI".into());}
+        fs::copy(ini,dest).map_err(error)?;
+    }
+    Ok(())
+}
+
+/// Build a completely verified replacement alongside the old game, then
+/// perform a reversible directory swap. The old install, including any
+/// unknown/modded files, is left intact under CrimsonSkiesFix.previous.
+fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
+    let new=base.join(REBUILT);
+    let previous=base.join(PREVIOUS);
+    if any_entry(&new)||any_entry(&new.with_file_name(format!("{REBUILT}.installing"))){
+        return Err("incomplete rebuilt game exists; inspect it before another repair".into());
+    }
+    if old_present && any_entry(&previous){
+        return Err("previous game backup already exists; refusing to overwrite it".into());
+    }
+    if old_present && !directory(game){return Err("unsafe existing game directory".into());}
+    let source=approved_executable(base,game)?;
+    // Preflight a valid, user-supplied official update before extraction.
+    let _updater=update102::find(base,None)?;
+    println!("Rebuilding game from original CD and verified official 1.02 patch...");
+    let _installed=install_from_cd(base,None,None,&new,None)?;
+    if old_present {preserve_player_data(game,&new)?;}
+    activate_verified_exe(&new,&source)?;
+    verify_installed_cd_assets(&new)?;
+    verify(&new)?;
+    if old_present {
+        // Publish using a reversible directory swap. If the final
+        // post-publish SHA check fails, put the original directory back,
+        // leaving the candidate under the separate reconstruction name.
+        fs::rename(game,&previous).map_err(error)?;
+        if let Err(err)=fs::rename(&new,game){
+            let rollback=fs::rename(&previous,game);
+            return Err(format!("cannot publish rebuilt game: {err}; rollback={rollback:?}"));
+        }
+        let validated=verify_installed_cd_assets(game)
+            .and_then(|_|verify(game).map(|_|()));
+        if let Err(reason)=validated {
+            if let Err(err)=fs::rename(game,&new){
+                return Err(format!(
+                    "repaired installation failed final SHA verification ({reason});                      old installation is safe in {} but new game could not be moved: {err}",
+                    previous.display()));
+            }
+            if let Err(err)=fs::rename(&previous,game){
+                return Err(format!(
+                    "repaired installation failed final SHA verification ({reason});                      original game remains in {} because rollback failed: {err}",
+                    previous.display()));
+            }
+            return Err(format!(
+                "rebuilt game failed post-publication verification ({reason});                  previous game restored; failed rebuild retained at {}",new.display()));
+        }
+        println!("Previous installation preserved at {}.",previous.display());
+    }else{
+        if any_entry(game){return Err("game target appeared while installing; refusing overwrite".into());}
+        fs::rename(&new,game).map_err(error)?;
+        verify_installed_cd_assets(game)?;
+        verify(game)?;
+    }
+    Ok(())
+}
+
+fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
+    if !any_entry(game){
+        build_and_publish(base,game,false)?;
+        return Ok("INSTALL_FROM_CD_AND_LAUNCH");
+    }
+    if !directory(game){return Err("unsafe existing game path (not a real directory)".into());}
+    if any_entry(&game.join(INSTALL_RECEIPT)) && !regular(&game.join(INSTALL_RECEIPT)){
+        return Err("unsafe existing CD installation receipt; refusing to launch".into());
+    }
+    if regular(&game.join(INSTALL_RECEIPT)){
+        match verify_installed_cd_assets(game){
+            Ok((_edition,_count))=>{
+                if validated_game_exe(game).is_ok() {
+                    return Ok("VERIFIED_EXISTING_AND_LAUNCH");
+                }
+                // A fully verified original CD installation awaiting the
+                // approved EXE can be completed with no second CD extraction.
+                let source=approved_executable(base,game)?;
+                activate_verified_exe(game,&source)?;
+                return Ok("ACTIVATE_APPROVED_EXE_AND_LAUNCH");
+            }
+            Err(reason)=>{
+                println!("Installed CD files did not verify: {reason}");
+                // If just our bundled DLL changed across versions, repair
+                // that first without asking for the original disc again.
+                if let Ok(())=deploy_proxy(game) {
+                    if verify_installed_cd_assets(game).is_ok() {
+                        // Keep build-info.txt in sync with the newly installed
+                        // DLL. Otherwise --verify passes but reports the old
+                        // embedded DLL SHA and commit from the last launcher.
+                        deploy_documentation(game)?;
+                        if validated_game_exe(game).is_ok() {
+                            return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
+                        }
+                        // When the only other missing step is an approved
+                        // EXE, do not re-extract an already verified CD.
+                        let source=approved_executable(base,game)?;
+                        activate_verified_exe(game,&source)?;
+                        return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
+                    }
+                }
+                build_and_publish(base,game,true)?;
+                return Ok("REPAIRED_FROM_CD_AND_LAUNCH");
+            }
+        }
+    }
+    // Backwards compatibility: a validated manually imported installation
+    // may lack an original-CD receipt. Its old-format verification is less
+    // comprehensive than the new immutable CD file manifest.
+    if verify(game).is_ok(){
+        return Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH");
+    }
+    build_and_publish(base,game,true)?;
+    Ok("REBUILT_LEGACY_INSTALL_FROM_CD_AND_LAUNCH")
+}
+
+/// Entry point for no-argument execution. Always generate a separate
+/// installer log, because the DirectDraw DLL has its own gameplay log.
+pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
+    let result=auto_prepare(base,game);
+    let log=base.join(AUTO_LOG);
+    if any_entry(&log) && !regular(&log){
+        return Err("unsafe installer log path (not a regular file)".into());
+    }
+    let message=match &result{
+        Ok(action)=>format!(
+            "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n\
+             VerifiedGameData={}\nApprovedExecutable={}\n\
+             OriginalProtectedBackup={}\nGosOverlayState={}\nAUTO_INSTALL_RESULT=READY\n",
+            game.display(),if regular(&game.join(INSTALL_RECEIPT)){"YES"}else{"LEGACY_ONLY"},
+            if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
+            if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
+            crate::managed_gos_patch::verify_game_overlay(game)
+                .map(|state|state.label()).unwrap_or("INVALID_OR_UNKNOWN")),
+        Err(err)=>format!(
+            "CrimsonSkiesFix AUTO INSTALL v1\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
+            game.display()),
+    };
+    fs::write(&log,message).map_err(error)?;
+    let action=result?;
+    if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
+    let exe=verify(game)?;
+    println!("{action}: launching {}...",exe.display());
+    let status=Command::new(&exe).current_dir(game).status().map_err(error)?;
+    let code=status.code().unwrap_or(2);
+    println!("Game exited with status {code}.");
+    Ok(code)
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn temp()->PathBuf{
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let p=std::env::temp_dir().join(format!("crimson-auto-flow-{}-{n}",std::process::id()));
+        fs::create_dir(&p).unwrap();
+        p
+    }
+    #[test]
+    fn damaged_existing_install_is_left_intact_without_authentic_sources(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join("player-unique-file.txt"),b"must survive").unwrap();
+        fs::create_dir(game.join("SavedGames")).unwrap();
+        fs::write(game.join("SavedGames").join("pilot.dat"),b"pilot").unwrap();
+        assert!(auto_prepare(&root,&game).is_err());
+        assert_eq!(fs::read(game.join("player-unique-file.txt")).unwrap(),b"must survive");
+        assert_eq!(fs::read(game.join("SavedGames").join("pilot.dat")).unwrap(),b"pilot");
+        assert!(!root.join(REBUILT).exists());
+        assert!(!root.join(PREVIOUS).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn repaired_player_data_is_copied_without_modifying_original(){
+        let root=temp();
+        let old=root.join("old");
+        let new=root.join("new");
+        for game in [&old,&new]{
+            fs::create_dir(game).unwrap();
+            fs::create_dir(game.join("SavedGames")).unwrap();
+            fs::create_dir(game.join("Planes")).unwrap();
+        }
+        fs::create_dir(old.join("SavedGames").join("career")).unwrap();
+        fs::write(old.join("SavedGames").join("career").join("pilot.dat"),b"original save").unwrap();
+        fs::write(old.join("Planes").join("custom.pln"),b"custom plane").unwrap();
+        fs::write(old.join("CrimsonSkiesFix.ini"),b"[System]\nCustom=1").unwrap();
+        preserve_player_data(&old,&new).unwrap();
+        assert_eq!(fs::read(new.join("SavedGames").join("career").join("pilot.dat")).unwrap(),b"original save");
+        assert_eq!(fs::read(new.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
+        assert_eq!(fs::read(new.join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
+        assert_eq!(fs::read(old.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn authentic_executable_is_required_before_any_new_install(){
+        let root=temp();
+        let game=root.join("CrimsonSkiesFix");
+        let error=auto_prepare(&root,&game).unwrap_err();
+        assert!(error.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        assert!(!game.exists());
+        assert!(!root.join(REBUILT).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

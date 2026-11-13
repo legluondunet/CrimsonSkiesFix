@@ -40,47 +40,86 @@ Only the exact verified, unmodified SafeDisc-free **Crimson Skies 1.0.2.0** exec
 
 On a mismatch, the DLL reports the actual SHA-256 and refuses to launch; it never silently falls back to an unsupported executable.
 
+## Standalone automatic installation and repair (experimental PR #26)
+
+The separate Windows-x86 standalone launcher, **CrimsonSkiesFix.exe**, now
+automatically verifies the existing game and launches it when all pinned
+hashes match. When no game exists, it installs from an owner-provided
+authentic USA/Europe, FR or DE ISO/CUE and the official 1.02 update, then
+installs an exact-hash-approved, user-provided decrypted 1.02 game EXE and
+launches the game. The original protected EXE is preserved as
+CRIMSON.EXE.protected.bak.
+
+Place one original ISO or CUE with its BIN/IMG, the official 1.02
+updater, and your own **2,580,480-byte** decrypted EXE with SHA-256
+43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75
+beside the launcher; then run it without arguments. External originals
+are needed only for a fresh installation or repair. A fully verified
+installed game launches without media. The verifier recognizes the exact
+official 1.02 CRIMPTCH.ROF **or** CrimsonSkiesFix's authenticated GOS Video
+overlay with its independently verified official-original backup; a managed
+overlay is not CD damage and must not trigger extraction. A bundled-DLL-only
+version change is repaired by replacing ddraw.dll, without rebuilding the game.
+The installer log reports `GosOverlayState=OFFICIAL_102` or
+`GosOverlayState=VERIFIED_MANAGED` after a successful verification.
+
+If files are damaged, the launcher constructs a separate verified
+installation, migrates the player's SavedGames, Planes and active INI,
+and retains the old installation in CrimsonSkiesFix.previous rather
+than deleting it. If a required original source is absent, it refuses
+to overwrite the current directory. It writes a separate
+CrimsonSkiesFix.installer.log with the result.
+
+This is **not yet validated end to end on all three physical original
+editions**. The existing manual DLL installation described below remains
+available. The original game, decrypted executable and protected
+installer are **never bundled**.
+
+Detailed behavior and testing checklist:
+[automatic installer workflow](docs/automatic-installer-workflow.md).
+
 ## Installation
 
-Obtain the **CrimsonSkiesFix-ddraw-Windows-x86-EXPERIMENTAL** artifact from a successful [Windows x86 GitHub Actions build](https://github.com/legluondunet/CrimsonSkiesFix/actions). Copy the contents alongside your supported executable (back up any previous `ddraw.dll` first):
+Download **CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL** from a successful [Windows x86 GitHub Actions build](https://github.com/legluondunet/CrimsonSkiesFix/actions). The archive contains **one file**, `CrimsonSkiesFix.exe`. This launcher embeds the already verified Windows x86 `ddraw.dll`; no separate DLL download is published.
+
+For a fresh install, put an authentic supported ISO or CUE/BIN, the official 1.02 update and your own approved decrypted 1.02 EXE beside `CrimsonSkiesFix.exe`, then run it. Existing verified installations can launch without original media. The launcher installs the proxy beside `CRIMSON.EXE` and writes its documentation and template into the game directory. It never packages copyrighted original game files.
+
+After installation, the relevant files have this layout:
 
 ```text
-Crimson Skies/
-├── CRIMSON.EXE                     # supported SHA-256 (name may differ)
-├── ddraw.dll                       # CrimsonSkiesFix Windows x86 DLL
-├── GOSDATA/
-│   └── ASSETS/
-│       ├── crimson.rof             # original game content: DO NOT replace
-│       └── crimptch.rof            # small original GOS overlay
-└── CrimsonSkiesFix/
-    ├── CrimsonSkiesFix.ini.example # shipped with the build
-    ├── CrimsonSkiesFix.ini         # generated once; never shipped
-    ├── README.md
-    ├── LICENSE                     # GPL-3.0 full license text
-    └── build-info.txt              # source SHA and DLL SHA-256
+CrimsonSkiesFix.exe                 # standalone installer and launcher
+CrimsonSkiesFix/
+├── CRIMSON.EXE                     # validated user-provided 1.02 EXE
+├── ddraw.dll                       # extracted from the launcher
+├── GOSDATA/ASSETS/                 # user's original ROF assets
+├── CrimsonSkiesFix.ini.example    # generated template, not active
+├── CrimsonSkiesFix.ini            # generated on first game launch
+├── README.md
+├── LICENSE
+└── build-info.txt                 # exact source and installed DLL digest
 ```
 
 **Default-on behavior in 0.1.90:** a fresh install suppresses the obsolete startup driver/resolution dialog, uses the native 3D adapter and GOS Graphics/Resolution lock, enables the first-image RGB565 color correction, activates focus repaint plus
 the background-erase guard, and enables the Wine-only ROFFILE.DLL EOF guard
-(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix/CrimsonSkiesFix.ini` yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
+(subject to original DLL fingerprint verification). The **first game launch modifies only the small original** `GOSDATA/ASSETS/crimptch.rof` archive, after an exclusive backup. To opt out **before the first game launch**, create `CrimsonSkiesFix.ini` in the installed game directory yourself and set `[Graphics] GosVideoLock=off` (and optionally `Native3DWidescreen=0` / `ExperimentalWindowedAdapter=0`). The `.ini.example` file alone is not the active configuration. Existing user INIs always take precedence and are never overwritten.
 
-The DLL must be **next to the game executable**, not inside the `CrimsonSkiesFix` subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix/CrimsonSkiesFix.ini` after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
+The DLL must be **next to the game executable**, not inside a separate configuration subfolder or a system directory. The supplied `.ini.example` is not loaded; edit the generated `CrimsonSkiesFix.ini` in the installed game directory after launching once. Existing configurations are never overwritten by an update. Older `CrimsonFix` INI paths are imported only if the current INI does not already exist, without deleting the originals.
 
 Wine users may need `WINEDLLOVERRIDES="ddraw=n,b"` to force the native proxy. The same Windows x86 DLL is used under Wine/Proton; it is **not** a Linux shared object.
 
-## Verify the downloaded DLL
+## Verify the DLL installed by the launcher
 
-New CI artifacts include `CrimsonSkiesFix/build-info.txt` with the exact
+The standalone launcher installs `build-info.txt` beside the game EXE with the exact
 Git source commit, the expected version/short-SHA text logged at startup,
 and the SHA-256 and size of the corresponding `ddraw.dll`. This prevents
-confusing an older DLL with a newer PR build that has the same download name.
+confusing an older installed DLL with the one embedded in the current launcher.
 It is **not** a cryptographic signature by the project author.
 
 Under PowerShell, check the SHA-256 of the installed proxy:
 
 ```powershell
 (Get-FileHash .\ddraw.dll -Algorithm SHA256).Hash
-Get-Content .\CrimsonSkiesFix\build-info.txt
+Get-Content .\build-info.txt
 ```
 
 Compare the computed hash with `DllSha256` and check that the first line
@@ -88,7 +127,7 @@ of `CrimsonSkiesFix.log` begins with the `LogIdentity` value, followed
 by ` - init`. The `Commit` and `Source` fields identify the exact
 repository state. The distributed `LICENSE` is copied verbatim from
 the repository and should be preserved when sharing the proxy DLL.
-Older experimental archives may not contain these two files.
+The standalone artifact itself contains one EXE; these files are created inside the game directory.
 
 ## Settings
 

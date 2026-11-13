@@ -1,0 +1,21 @@
+[package]
+name = "crimsonskiesfix-launcher"
+version = "0.1.90"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Standalone Crimson Skies installer, verifier and launcher"
+
+[[bin]]
+name = "CrimsonSkiesFix"
+path = "src/main.rs"
+
+[dependencies]
+# MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
+cab = "=0.6.0"
+# Read-only verification of managed GOS VIDEO.SCRIPT zlib payload.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
