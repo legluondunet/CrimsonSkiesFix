@@ -21,7 +21,7 @@ different test workspaces. The user must opt into a named edition.
 
 ```sh
 WINEDEBUG=-all wine CrimsonSkiesFix.exe --install-cd "Crimson Skies (USA, Europe).cue" "Crimson_Skies_Patch_102.exe" --into USA
-cp CrimsonSkiesFix-installer.log install-cd-USA.log
+cp CrimsonSkiesFix_installer.log install-cd-USA.log
 
 WINEDEBUG=-all wine CrimsonSkiesFix.exe --verify-install USA
 # Successful --verify-install reports to the terminal and keeps the previous
@@ -36,7 +36,7 @@ explicitly state `Edition=C_SKIES_DISC_001`, the destination, and
 The separate verification, captured from standard output on success, must
 explicitly state the **USA edition** and the selected directory. A successful
 `--verify-install` intentionally **does not overwrite** an existing
-`CrimsonSkiesFix-installer.log`; an error does update it.
+`CrimsonSkiesFix_installer.log`; an error does update it.
 
 Other selectors are `FR` and `DE`. The new install-mode forms are:
 
