@@ -437,7 +437,7 @@ fn log_directory()->Option<PathBuf> {
 
 pub fn log_path()->Option<PathBuf> {
     // Only the DLL writes this fresh game log; the installer has a separate
-    // CrimsonSkiesFix-installer.log in the standalone launcher root.
+    // CrimsonSkiesFix_installer.log in the standalone launcher root.
     let path=log_directory()?.join("CrimsonSkiesFix.log");
     if fs::symlink_metadata(&path).is_ok() && !regular_file(&path){return None;}
     Some(path)
