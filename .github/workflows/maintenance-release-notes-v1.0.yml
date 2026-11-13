@@ -28,19 +28,16 @@ jobs:
           assert release["target_commitish"]=="5a9274d0af8018a346af2fa8e50e2e28dffc6d9d"
           assert not release["draft"]
           old=release["body"]
-          start=old.index("## Compatibility and known limitations\n")
-          end=old.index("\nThis is **version 1.0**",start)
+          start=old.index("## Compatibility\n")
+          end=old.index("**Source commit:**",start)
           new_section="""## Compatibility
 
           - **Platforms:** Tested on **Windows 11** and **GE-Proton** (Linux).
           - **Supported game editions:** Original **USA/Europe, French (FR) and German (DE)** retail CDs, with or without the **1.02 update resources** already present. For a new installation, the original official **1.02 updater is required** in both cases; CrimsonSkiesFix applies the required 1.02 game data and preserves already matching files.
-          - **Required game executable:** A separately supplied, unmodified **decrypted Crimson Skies 1.02 \`CRIMSON.EXE\`** is mandatory. CrimsonSkiesFix does not provide or decrypt it; original SafeDisc-protected and third-party modified executables are not supported.
+          - **Required game executable:** A separately supplied, unmodified **decrypted Crimson Skies 1.02 `CRIMSON.EXE`** is mandatory. CrimsonSkiesFix does not provide or decrypt it; original SafeDisc-protected and third-party modified executables are not supported.
           """
           new_section="\n".join(line[10:] if line.startswith("          ") else line for line in new_section.splitlines())
-          updated=old[:start]+new_section+old[end:]
-          old_sentence="This is **version 1.0**, published with the compatibility scope above; no additional owner-side manual test is claimed. The project is licensed **GPL-3.0-or-later**."
-          assert updated.count(old_sentence)==1
-          updated=updated.replace(old_sentence,"CrimsonSkiesFix 1.0 is licensed **GPL-3.0-or-later**.")
+          updated=old[:start]+new_section+"\n\nCrimsonSkiesFix 1.0 is licensed **GPL-3.0-or-later**.\n\n"+old[end:]
           assert "Compatibility and known limitations" not in updated
           assert updated.count("## Compatibility")==1
           Path("RELEASE_NOTES.md").write_text(updated)
