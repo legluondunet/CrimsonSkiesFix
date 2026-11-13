@@ -25,6 +25,8 @@ const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.in
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT: &str = env!("CRIMSONSKIESFIX_COMMIT");
+// Installer/diagnostic reports are never written into the DLL's gameplay log.
+const INSTALLER_LOG: &str = "CrimsonSkiesFix-installer.log";
 
 fn error(message: impl std::fmt::Display) -> String {
     message.to_string()
@@ -513,7 +515,7 @@ fn usage() {
          CrimsonSkiesFix.exe            verify, install from adjacent CD or repair, then play\n\
          CrimsonSkiesFix.exe --import DIR   import an existing installed game and play\n\
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
-         CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix.log\n\
+         CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix-installer.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
          CrimsonSkiesFix.exe --extract-cd         extract CD GAME/ into separate USA/FR/DE staging\n\
          CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
@@ -596,9 +598,9 @@ fn run() -> Result<i32, String> {
                 chapter_cabs::short_name_audit_legacy(target,reference.as_deref())
             }
         })();
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: refusing non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: refusing non-file".into());
         }
         fs::write(&log,match &report {
             Ok(text)=>text.clone(),
@@ -621,9 +623,9 @@ fn run() -> Result<i32, String> {
                 Err(format!("installed edition {edition} does not match requested test edition"))
             } else {Ok((edition,files))}
         });
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: refusing to replace non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: refusing to replace non-file".into());
         }
         let report=match &result {
             Ok((edition,files))=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
@@ -639,7 +641,12 @@ fn run() -> Result<i32, String> {
             Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
                 VerifiedDirectory={}\nVERIFY_INSTALL_RESULT=ERROR\nERROR={why}\n",verification_target.display()),
         };
-        fs::write(&log,report).map_err(error)?;
+        // A successful read-only verification must not erase the last
+        // installation/repair report. Record it only if no report exists;
+        // failures always replace it with the actionable verification error.
+        if result.is_err() || !any_entry(&log){
+            fs::write(&log,report).map_err(error)?;
+        }
         return match result {
             Ok((edition,files))=>{
                 println!("CD installation files verified: edition={edition}; original files={files}; official 1.02 asset and ddraw.dll verified.");
@@ -660,9 +667,9 @@ fn run() -> Result<i32, String> {
         let install_target=chosen.as_ref().map(|(_,path)|path).unwrap_or(&game);
         let expected=chosen.as_ref().map(|(edition,_)|*edition);
         let result=install_from_cd(base,disc.as_deref(),patch.as_deref(),install_target,expected);
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: cannot replace a non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: cannot replace a non-file".into());
         }
         let report=match &result {
             Ok(r)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
@@ -712,9 +719,9 @@ fn run() -> Result<i32, String> {
         // update to a staging directory left over from another CD.
         // Full file hash verification also rejects a renamed/mixed staging.
         let result=update102::apply_asset(base,&stage,edition,selected.as_deref());
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: cannot overwrite non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: cannot overwrite non-file".into());
         }
         let report=match &result {
             Ok(status)=>format!("CrimsonSkiesFix UPDATE102 EXTRACT v1\n\
@@ -749,9 +756,9 @@ fn run() -> Result<i32, String> {
         // The CD profile chooses a unique staging directory. The former
         // CrimsonSkiesFix.extract-test (without an edition) is left untouched.
         let result=disc_inspect::extract_game(base,selected.as_deref());
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: refusing a non-file log target".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: refusing a non-file log target".into());
         }
         let report=match &result {
             Ok(r)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
@@ -768,7 +775,7 @@ fn run() -> Result<i32, String> {
             Ok(r)=>{
                 println!("Verified extraction of {} files ({} bytes) for {} into {}.",
                     r.file_count,r.bytes,r.edition,r.destination.display());
-                println!("The original protected game is NOT launched. See CrimsonSkiesFix.log.");
+                println!("The original protected game is NOT launched. See CrimsonSkiesFix-installer.log.");
                 Ok(0)
             }
             Err(why)=>Err(format!("{why}; see {}",log.display())),
@@ -777,9 +784,9 @@ fn run() -> Result<i32, String> {
     if !args.is_empty() && args[0] == "--inspect-update" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))} else {None};
         let report=update102::inspect(base,selected.as_deref());
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: cannot replace non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: cannot replace non-file".into());
         }
         let content=match &report {
             Ok(content)=>content.clone(),
@@ -799,9 +806,9 @@ fn run() -> Result<i32, String> {
         // Explicit diagnostic scans always produce a log even with Log=0.
         // They never launch, install, patch or modify the disc image.
         let report=disc_inspect::inspect(base,selected.as_deref());
-        let log=base.join("CrimsonSkiesFix.log");
+        let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix.log: refusing to overwrite a non-file".into());
+            return Err("unsafe CrimsonSkiesFix-installer.log: refusing to overwrite a non-file".into());
         }
         let text=match &report {
             Ok(content)=>content.clone(),
