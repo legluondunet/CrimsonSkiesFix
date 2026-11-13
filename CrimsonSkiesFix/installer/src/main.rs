@@ -330,8 +330,8 @@ struct DiscInstallation {
     destination:PathBuf,
 }
 
-// The receipt records provenance, not proof: --verify-install must independently
-// hash every original GAME/ file and the official overlay before trusting it.
+// The receipt records provenance, not proof: verify original GAME/ files
+// and the official overlay independently before trusting the installation.
 fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
     let file=game.join(INSTALL_RECEIPT);
     if !regular(&file) {return Err("missing or unsafe CD installation receipt".into());}
@@ -515,16 +515,6 @@ fn usage() {
          CrimsonSkiesFix.exe            verify, install from adjacent CD or repair, then play\n\
          CrimsonSkiesFix.exe --import DIR   import an existing installed game and play\n\
          CrimsonSkiesFix.exe --verify   verify installed EXE and embedded ddraw.dll\n\
-         CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix_installer.log\n\
-         CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
-         CrimsonSkiesFix.exe --extract-cd         extract CD GAME/ into separate USA/FR/DE staging\n\
-         CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
-         CrimsonSkiesFix.exe --install-cd          install one adjacent CD with official 1.02 updater\n\
-         CrimsonSkiesFix.exe --install-cd IMAGE    install a specified ISO/CUE\n\
-         CrimsonSkiesFix.exe --install-cd IMAGE PATCH    specify the official updater\n\
-         CrimsonSkiesFix.exe --install-cd IMAGE PATCH --into ED    test alongside an existing install (ED=USA/FR/DE)\n\
-         CrimsonSkiesFix.exe --verify-install      verify default CD installation\n\
-         CrimsonSkiesFix.exe --verify-install ED   verify a named USA/FR/DE installation\n\
          CrimsonSkiesFix.exe --audit-shortnames [ED] [REFERENCE_ZBD]   inspect CAB 8.3 name aliases\n\
          CrimsonSkiesFix.exe --inspect-update       verify the original 1.02 updater (no execution)\n\
          CrimsonSkiesFix.exe --inspect-update FILE  inspect a specified updater (any filename)\n\
@@ -552,20 +542,10 @@ fn run() -> Result<i32, String> {
     }
     if !args.is_empty() && !(args.len() == 1 && args[0] == "--verify")
         && !(args.len() == 2 && args[0] == "--import")
-        && !(args.len() == 1 && args[0] == "--inspect-cd")
-        && !(args.len() == 2 && args[0] == "--inspect-cd")
-        && !(args.len() == 1 && args[0] == "--extract-cd")
-        && !(args.len() == 2 && args[0] == "--extract-cd")
         && !(args.len() == 1 && args[0] == "--inspect-update")
         && !(args.len() == 2 && args[0] == "--inspect-update")
         && !(args.len() == 2 && args[0] == "--extract-update")
         && !(args.len() == 3 && args[0] == "--extract-update")
-        && !(args.len() == 1 && args[0] == "--install-cd")
-        && !(args.len() == 2 && args[0] == "--install-cd")
-        && !(args.len() == 3 && args[0] == "--install-cd")
-        && !(args.len() == 5 && args[0] == "--install-cd" && args[3] == "--into")
-        && !(args.len() == 1 && args[0] == "--verify-install")
-        && !(args.len() == 2 && args[0] == "--verify-install")
         && !(args.len() == 1 && args[0] == "--audit-shortnames")
         && !(args.len() == 2 && args[0] == "--audit-shortnames")
         && !(args.len() == 3 && args[0] == "--audit-shortnames") {
@@ -615,103 +595,6 @@ fn run() -> Result<i32, String> {
             Err(why)=>Err(format!("{why}; see {}",log.display()))
         };
     }
-    if !args.is_empty() && args[0]=="--verify-install" {
-        let chosen=if args.len()==2 {
-            Some(test_install_destination(base,args[1].to_str()
-                .ok_or("edition selector must be text")?)?)
-        } else {None};
-        let verification_target=chosen.as_ref().map(|(_,path)|path).unwrap_or(&game);
-        let result=verify_installed_cd_assets(verification_target).and_then(|(edition,files)|{
-            if chosen.as_ref().is_some_and(|(expected,_)|*expected!=edition) {
-                Err(format!("installed edition {edition} does not match requested test edition"))
-            } else {Ok((edition,files))}
-        });
-        let log=base.join(INSTALLER_LOG);
-        if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix_installer.log: refusing to replace non-file".into());
-        }
-        let report=match &result {
-            Ok((edition,files))=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
-                VerifiedDirectory={}\n\
-                Edition={edition}\nOriginalFilesVerified={files}\n\
-                Official102Asset=SHA256_VERIFIED\nProxy=SHA256_VERIFIED\n\
-                ChapterManifest=SHA256_VERIFIED\nChapterPayloads=SHA256_VERIFIED\n\
-                ChapterCABsPruned=8\nRetailSupport=8_FILES_SHA256_VERIFIED\n\
-                RetailNames=VERIFIED\n\
-                WritableDirectories=SavedGames,Planes\nExecutableState={}\n\
-                VERIFY_INSTALL_RESULT=COMPLETE\n",verification_target.display(),
-                if validated_game_exe(verification_target).is_ok() {"APPROVED_READY"}else{"PROTECTED_PENDING"}),
-            Err(why)=>format!("CrimsonSkiesFix CD INSTALL VERIFY v1\n\
-                VerifiedDirectory={}\nVERIFY_INSTALL_RESULT=ERROR\nERROR={why}\n",verification_target.display()),
-        };
-        // A successful read-only verification must not erase the last
-        // installation/repair report. Record it only if no report exists;
-        // failures always replace it with the actionable verification error.
-        if result.is_err() || !any_entry(&log){
-            fs::write(&log,report).map_err(error)?;
-        }
-        return match result {
-            Ok((edition,files))=>{
-                println!("CD installation files verified: edition={edition}; original files={files}; official 1.02 asset and ddraw.dll verified.");
-                println!("Executable state: {}.",
-                    if validated_game_exe(verification_target).is_ok() {"approved 1.02 ready"}else{"protected pending"});
-                Ok(0)
-            }
-            Err(why)=>Err(format!("{why}; details: {}",log.display()))
-        };
-    }
-    if !args.is_empty() && args[0]=="--install-cd" {
-        let disc=if args.len()>=2 {Some(PathBuf::from(&args[1]))}else{None};
-        let patch=if args.len()>=3 {Some(PathBuf::from(&args[2]))}else{None};
-        let chosen=if args.len()==5 {
-            Some(test_install_destination(base,args[4].to_str()
-                .ok_or("test installation edition must be text")?)?)
-        } else {None};
-        let install_target=chosen.as_ref().map(|(_,path)|path).unwrap_or(&game);
-        let expected=chosen.as_ref().map(|(edition,_)|*edition);
-        let result=install_from_cd(base,disc.as_deref(),patch.as_deref(),install_target,expected);
-        let log=base.join(INSTALLER_LOG);
-        if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix_installer.log: cannot replace a non-file".into());
-        }
-        let report=match &result {
-            Ok(r)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
-                Edition={}\nFilesInstalled={}\nGamePayloadBytes={}\n\
-                Official102Asset={}\n\
-                Destination={}\nInstalledProxy=VERIFIED\n\
-                SavedGamesDirectory=CREATED\nPlanesDirectory=CREATED\n\
-                ChapterCabMembers={}\nChapterZbdFiles={}\nChapterPayloadBytes={}\n\
-                ChapterContentVerified=YES\n\
-                ChapterCABsPruned=8\nChapterShortAliasCandidates={}\n\
-                RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
-                GameFilesVerified=YES\nExecutableState=PROTECTED_PENDING\n\
-                INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING\n",
-                r.edition,r.file_count,r.byte_count,r.asset_status,r.destination.display(),
-                r.chapter_members,r.chapter_zbd_files,r.chapter_bytes,
-                r.chapter_short_aliases,
-                r.retail_support_files,r.retail_support_bytes,r.retail_renamed_files),
-            Err(why)=>format!("CrimsonSkiesFix CD INSTALL v1\n\
-                Destination={}\nINSTALL_RESULT=ERROR\nERROR={why}\n",
-                install_target.display()),
-        };
-        fs::write(&log,report).map_err(error)?;
-        return match result {
-            Ok(r)=>{
-                println!("Installed and verified {} original files ({}) for {} in {}.",
-                    r.file_count,r.byte_count,r.edition,r.destination.display());
-                println!("Expanded {} chapter CAB members, including {} ZBD files ({} bytes).",
-                    r.chapter_members,r.chapter_zbd_files,r.chapter_bytes);
-                println!("Pruned all 8 temporary chapter CABs after verification; {} filenames contain possible DOS 8.3 aliases.",
-                    r.chapter_short_aliases);
-                println!("Installed {} authenticated retail CD-root files and corrected {} installed game filenames.",
-                    r.retail_support_files,r.retail_renamed_files);
-                println!("Official 1.02 resource: {}. Bundled ddraw.dll and writable game folders installed.",r.asset_status);
-                println!("Installation data ready; protected game executable kept unchanged for the final step.");
-                Ok(0)
-            }
-            Err(why)=>Err(format!("{why}; see {}",log.display()))
-        };
-    }
     if !args.is_empty() && args[0] == "--extract-update" {
         let selector=args[1].to_str().ok_or("edition selector must be UTF-8")?;
         let edition=disc_inspect::edition_selector(selector)
@@ -754,36 +637,6 @@ fn run() -> Result<i32, String> {
             Err(err)=>Err(format!("{err}; see {}",log.display())),
         };
     }
-    if !args.is_empty() && args[0] == "--extract-cd" {
-        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
-        // The CD profile chooses a unique staging directory. The former
-        // CrimsonSkiesFix.extract-test (without an edition) is left untouched.
-        let result=disc_inspect::extract_game(base,selected.as_deref());
-        let log=base.join(INSTALLER_LOG);
-        if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix_installer.log: refusing a non-file log target".into());
-        }
-        let report=match &result {
-            Ok(r)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
-                Edition={}\nFilesExtracted={}\nBytesExtracted={}\n\
-                Destination={}\nProtectedGameExe=NOT_APPROVED\n\
-                InstallPublished=NO_STAGING_ONLY\nEXTRACT_RESULT=COMPLETE\n",
-                r.edition,r.file_count,r.bytes,r.destination.display()),
-            Err(why)=>format!("CrimsonSkiesFix CD EXTRACT v1\n\
-                Destination=NONE (edition-specific; extraction refused)\nInstallPublished=NO_STAGING_ONLY\n\
-                EXTRACT_RESULT=ERROR\nERROR={why}\n"),
-        };
-        fs::write(&log,report).map_err(error)?;
-        return match result {
-            Ok(r)=>{
-                println!("Verified extraction of {} files ({} bytes) for {} into {}.",
-                    r.file_count,r.bytes,r.edition,r.destination.display());
-                println!("The original protected game is NOT launched. See CrimsonSkiesFix_installer.log.");
-                Ok(0)
-            }
-            Err(why)=>Err(format!("{why}; see {}",log.display())),
-        };
-    }
     if !args.is_empty() && args[0] == "--inspect-update" {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))} else {None};
         let report=update102::inspect(base,selected.as_deref());
@@ -804,30 +657,7 @@ fn run() -> Result<i32, String> {
             Err(why)=>Err(format!("{why}; details: {}",log.display())),
         };
     }
-    if !args.is_empty() && args[0] == "--inspect-cd" {
-        let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
-        // Explicit diagnostic scans always produce a log even with Log=0.
-        // They never launch, install, patch or modify the disc image.
-        let report=disc_inspect::inspect(base,selected.as_deref());
-        let log=base.join(INSTALLER_LOG);
-        if any_entry(&log) && !regular(&log) {
-            return Err("unsafe CrimsonSkiesFix_installer.log: refusing to overwrite a non-file".into());
-        }
-        let text=match &report {
-            Ok(content)=>content.clone(),
-            Err(why)=>format!("CrimsonSkiesFix CD INSPECT v1\nINSPECT_RESULT=ERROR\nERROR={why}\n"),
-        };
-        fs::write(&log,text).map_err(error)?;
-        return match report {
-            Ok(content)=>{
-                let count=content.lines().find(|line|line.starts_with("FilesTotal="))
-                    .unwrap_or("FilesTotal=UNKNOWN");
-                println!("CD inspection complete ({count}); full internal-file manifest: {}",log.display());
-                Ok(0)
-            }
-            Err(why)=>Err(format!("{why}; details: {}",log.display())),
-        };
-    } else if args.len() == 1 && args[0] == "--verify" {
+    if args.len() == 1 && args[0] == "--verify" {
         if regular(&game.join(INSTALL_RECEIPT)){
             verify_installed_cd_assets(&game)?;
         }
