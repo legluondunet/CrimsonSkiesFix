@@ -34,7 +34,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     if let Some(path)=specified {
         let resolved=if path.is_absolute() {path.to_path_buf()} else {base.join(path)};
         if !has_ext(&resolved,"iso") && !has_ext(&resolved,"cue") {
-            return Err("--inspect-cd expects an .iso or .cue file (BIN is referenced by CUE)".into());
+            return Err("an original CD source must be an .iso or .cue file (BIN is referenced by CUE)".into());
         }
         safe_file(&resolved)?;
         return Ok(resolved);
@@ -53,7 +53,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
         1=>Ok(candidates.remove(0)),
         count=>Err(format!(
             "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}. \
-             Use --inspect-cd \"path.iso\" or --inspect-cd \"path.cue\" to select one."
+             Keep exactly one original ISO or CUE beside CrimsonSkiesFix.exe."
         ))
     }
 }
@@ -702,7 +702,7 @@ pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,Strin
     extract_game_to(base,specified,None)
 }
 
-/// Installation uses the same content-authenticated extractor as --extract-cd,
+/// Installation uses the content-authenticated original-CD extractor,
 /// but places files in its private transaction rather than a diagnostic folder.
 pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
     ->Result<Extraction,String> {
@@ -743,7 +743,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     }
     // Preflight also requires the eight files that the historical installer
     // copies from the disc ROOT to the installed game ROOT. They are absent
-    // from the GAME/ folder and were previously omitted by --install-cd.
+    // from the GAME/ folder and were previously omitted by the first CD-installer implementation.
     let additional=if target.is_some(){
         let mut selected=Vec::new();
         let readme=retail_readme(edition)?;
