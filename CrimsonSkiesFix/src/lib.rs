@@ -434,12 +434,16 @@ unsafe fn symbol(name:&[u8])->*const c_void {
                     "WINDOWED-DIAG: physical early native probe logical={logical:?} physical={physical:?} native_windows={native_windows} selected={size:?} (read-only, no DPI changes)"
                 ));
             }
-            if let Some((w,h))=size {
-                log(&format!("WINDOWED-DIAG: early FOV/HUD patch begin target={}x{}",w,h));
+            let target=size.and_then(|monitor|
+                presentation::native_3d_dimensions(monitor,config.force_4_by_3));
+            if let Some((w,h))=target {
+                log(&format!(
+                    "WINDOWED-DIAG: early FOV/HUD patch begin target={}x{} aspect={} monitor={size:?}",
+                    w,h,if config.force_4_by_3{"4:3"}else{"auto"}));
                 unsafe{native_widescreen::prime_native_widescreen_early(w,h);}
                 log("WINDOWED-DIAG: early FOV/HUD patch returned");
             }else{
-                log("WINDOWED-WIDE: early patch deferred; no eligible launch monitor dimensions");
+                log("WINDOWED-WIDE: early patch deferred; no eligible native 3D dimensions for requested aspect");
             }
         });
     }
