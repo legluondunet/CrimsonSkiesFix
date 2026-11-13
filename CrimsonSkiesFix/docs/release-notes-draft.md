@@ -12,7 +12,7 @@
 - **Safe repeated launches and repairs:** once installed, the launcher verifies the game and launches it without requiring the disc, patch, or decrypted EXE again. A full reconstruction occurs only when verification fails; saves, custom planes, and the active INI are preserved. An existing `CrimsonSkiesFix.previous` backup or abandoned `.rebuilding` / `.installing` directory is never overwritten or removed automatically.
 - **GOS Video Preferences lock:** Graphics and Resolution are rendered read-only through the game's native mechanism. The fix authenticates the original `CRIMSON.ROF` and `ROFFILE.DLL` and supplies the exact patched `VIDEO.SCRIPT` descriptor and compressed data **in game memory only**, without rewriting the large original archive. A verified, reversible small `CRIMPTCH.ROF` overlay/backup may be installed once; its managed state is checked on subsequent launches.
 - **Modern video presentation:** borderless desktop-sized graphics, corrected 3D field of view and HUD, preserved 4:3 menus/cutscenes, native-resolution menu label, removed legacy graphics-driver chooser, RGB565 opening-image correction, menu build signature, focus recovery and Wine-only authenticated ROFFILE allocation guard.
-- **One per-run log:** `CrimsonSkiesFix.log` beside the launcher combines installer/verification status, the game session, and the child exit code. The obsolete `CrimsonSkiesFix.installer.log` is retired with conservative cleanup. `[Debug] Log=1` enables additional detail; normal first-run settings use `Log=0`.
+- **Two independent logs:** `CrimsonSkiesFix-installer.log` beside the launcher retains the latest installation, repair, explicit inspection or failure; a successful normal relaunch or successful `--verify-install` will not erase an earlier report. The DirectDraw DLL creates a **new `CrimsonSkiesFix.log` at every game launch**, without an environment handoff or shared append. On installation/repair, the launcher records the child's exit status in its installer log; on verified-only launches it prints the status to the terminal. `[Debug] Log=1` enables detailed gameplay traces; normal first-run settings use `Log=0`.
 
 ## Installation and requirements
 
@@ -21,7 +21,7 @@
 3. For an existing, verified installation, run the same launcher again; the original source media are not required.
 4. The active options file is `CrimsonSkiesFix/CrimsonSkiesFix.ini` **inside the game folder**. The launcher supplies `CrimsonSkiesFix.ini.example`; an existing active INI is preserved, never overwritten.
 5. If you want the original GOS video screen back, set `[Graphics] GosVideoLock=restore` while the fix is still installed, launch once and confirm the verified restoration before uninstalling. `GosVideoLock=off` alone does **not** undo an existing managed overlay.
-6. The single run report is `CrimsonSkiesFix.log` beside the launcher; installed `build-info.txt` records the full source commit, DLL SHA-256 and log identity. No source media, game files, third-party widescreen executable or SafeDisc removal utility is included.
+6. Logs beside the launcher: `CrimsonSkiesFix-installer.log` (persistent installation/repair/error or inspection report) and `CrimsonSkiesFix.log` (fresh game DLL diagnostics). Installed `build-info.txt` records the full source commit, DLL SHA-256 and log identity. No source media, game files, third-party widescreen executable or SafeDisc removal utility is included.
 
 **Strict game executable requirement:** original approved unprotected version 1.02, size `2,580,480` bytes, SHA-256:
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
@@ -31,7 +31,7 @@ The launcher does not decrypt or replace an unknown game executable.
 
 | Edition / environment | Actual evidence | Status |
 | --- | --- | --- |
-| **FR**, Manjaro / GE-Proton11-12 | Owner tested initial verified CD install, game launch, Graphics/Resolution lock, unified logging and successful game exit | **Owner-validated** |
+| **FR**, Manjaro / GE-Proton11-12 | Owner tested initial verified CD install, game launch, Graphics/Resolution lock and successful game exit; these gameplay tests used the earlier unified logger, before this two-log release-candidate change | **Owner-validated** |
 | **DE**, Manjaro / GE-Proton11-12 | Owner tested initial CD install (including exact CAB aliases), native Graphics/Resolution lock, then `VERIFIED_EXISTING_AND_LAUNCH` with `GosOverlayState=VERIFIED_MANAGED` and exit code 0 | **Owner-validated** |
 | **USA/Europe** | Exact original-disc 112-file SHA-256 profile, alias-table and synthetic tests are implemented. The original disc is no longer available to the owner | **Implemented, not runtime-tested** |
 | **Native Windows (latest candidate)** | CI verifies that the x86 DLL loads and exports are correct; older manual Windows 11 tests were on a different runtime path | **Not game-tested with this candidate** |
@@ -40,7 +40,8 @@ The game data and supported executable must still be provided separately by the 
 
 ## Maintainer release checklist (not a license to publish)
 
-- [x] FR and DE owner acceptance under GE-Proton; both `Log=0` and `Log=1` sessions observed.
+- [x] FR and DE owner acceptance under GE-Proton; both `Log=0` and `Log=1` sessions observed on the prior unified-log version.
+- [ ] Two-log change passes CI and, ideally, a short owner runtime smoke test; CI-only is not real-game verification.
 - [x] USA edition remains explicitly marked **untested**; unavailable source media do not block an honestly labelled prerelease.
 - [x] One-file artifact only, GPL-3.0-or-later license and source/provenance records installed with the proxy.
 - [ ] Approve and merge stacked PR **#26 first, then #27** (or reconcile their changes into one accepted branch), retaining the owner's control of merges.
