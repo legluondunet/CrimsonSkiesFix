@@ -734,7 +734,7 @@ pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
 fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     ->Result<Extraction,String> {
     let media=select(base,specified)?;
-    let image=if has_ext(&media,"cue"){open_cue(&media)?} else {open_iso(&media)?};
+    let image=if has_ext(&media,"cue"){open_cue(&media,None)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
     let volume=parse_volume(&image,&mut file)?;
     let mut walker=Walker{image:&image,file,joliet:volume.filename_source=="Joliet",
