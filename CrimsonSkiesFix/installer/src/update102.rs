@@ -100,7 +100,7 @@ pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     match valid.len() {
         1=>Ok(valid.remove(0)),
         0=>Err("no exact verified Crimson Skies 1.02 updater found beside launcher; \
-                provide exactly one authentic updater (or pass its path to --install-cd)".into()),
+                place exactly one authentic updater beside CrimsonSkiesFix.exe".into()),
         n=>Err(format!("found {n} verified 1.02 updater copies; keep exactly one beside the launcher")),
     }
 }
