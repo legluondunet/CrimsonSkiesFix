@@ -1,10 +1,10 @@
 # Automatic verified install, repair and launch
 
-This experimental standalone installer is implemented in stacked PRs #26 and #27. The owner validated FR and DE installations and repeated launches under GE-Proton11-12 in November 2026. USA/Europe is identified by an exact CD manifest but lacks current owner runtime testing; native Windows validation of this candidate remains pending. Running the Windows-x86 `CrimsonSkiesFix.exe` without arguments verifies, installs, repairs when needed, and launches the approved game.
+This experimental standalone installer was integrated into `main` by merged PRs #26 and #27. A follow-up CLI simplification is proposed in PR #28. The owner validated FR and DE installations and repeated launches under GE-Proton11-12 in November 2026. USA/Europe is identified by an exact CD manifest but lacks current owner runtime testing; native Windows validation of this candidate remains pending. Running the Windows-x86 `CrimsonSkiesFix.exe` without arguments verifies, installs, repairs when needed, and launches the approved game.
 
 ## Local sources (no original files are bundled)
 
-For a fresh installation or a full repair, place these files beside the launcher:
+For a fresh installation or a full repair, place these files beside the launcher (and use the DirectDraw patch embedded in its executable):
 
 - Exactly one original and complete USA/Europe, FR or DE CD image: an ISO, or CUE with its referenced BIN/IMG file.
 - Exactly one official Microsoft Crimson Skies 1.02 updater. The original updater's size and SHA-256 are pinned; the name itself is not trusted.
@@ -19,20 +19,24 @@ For an already verified, fully playable installation, these three external files
 3. If only the bundled DirectDraw DLL differs, use the existing verified backup-and-replace mechanism and revalidate the whole game without rereading the CD.
 4. If the game data is corrupted, build a complete new installation alongside the old one, from an authenticated original CD, the authenticated official updater, and an authenticated decrypted executable. Preserve the original directory and copy SavedGames, Planes and CrimsonSkiesFix.ini into the verified new installation. Refuse unsafe links and collisions.
 5. Publish only after validating the rebuilt game, replacing the game directory through a reversible rename. Preserve the previous complete installation in CrimsonSkiesFix.previous. Never overwrite that backup, and never remove a partially completed staging directory automatically.
-6. If there is no game installation, create and fully verify the same complete new game before publishing and launching.
-7. Launch only the approved executable, with the game directory as the current working directory.
+6. If there is no game installation, create and fully verify the same complete new game before publishing. **Before reading/extracting a CD**, identify and authenticate the approved decrypted EXE, embedded DirectDraw patch and official updater; refuse extraction if any is missing or invalid.
+7. Normally launch only the approved executable, with the game directory as the current working directory. With `--install-only`, verify and publish but **do not launch**. With explicit `--launch`, only attempt to execute the installed `CRIMSON.EXE` without source, file-presence or integrity checks, repair or extraction (OS launch errors can still occur).
 
 The launcher keeps **two independent log files** beside itself: `CrimsonSkiesFix_installer.log` contains the last meaningful install/repair/explicit diagnostics or error, and `CrimsonSkiesFix.log` is always a fresh DLL-generated game session. A verified normal relaunch does **not** overwrite the install log; `--verify-install` success also preserves any existing installer report (creating a report only when absent), while errors replace it. A first-time install or repair report receives `GAME_EXIT_CODE` after the child exits; a verified-only relaunch prints the child's exit code in the console and preserves the previous installer report. The DLL no longer uses any environment handoff or appends to the installer log. The prior hyphenated `CrimsonSkiesFix-installer.log` is safely renamed on startup only if its content identifies a generated report and the underscore target is absent; otherwise unknown/occupied paths are preserved. A legacy `CrimsonSkiesFix.installer.log` is removed **only after** the next real installer report is written and only if its small regular-file contents authenticate it as old launcher output; unknown files are preserved.
 
 Legacy imported games without the new original-CD receipt retain their existing EXE/DLL verification for backward compatibility. They do not receive a full original-CD hash audit unless rebuilt from exact original media.
 
-## Diagnostic commands retained
+## Supported command-line interface
 
---inspect-cd and --extract-cd operate on original disc images.
---inspect-update and --extract-update inspect the official patch.
---install-cd remains a manual data-installation diagnostic and may leave the original protected executable pending. Running the launcher without options then completes activation when an approved local EXE is present.
---verify-install and --verify perform explicit validation.
---import imports an existing user-owned installation with the pinned EXE.
+- No arguments: automatically verify, install/repair if needed, and launch.
+- `--install-only`: same authenticated install/repair path without a game launch.
+- `--launch`: direct OS launch of `CrimsonSkiesFix/CRIMSON.EXE`, without any presence/hash/patch/source check or repair. Deliberate unchecked mode; do not confuse it with the normal launcher.
+- `--verify` and `--verify-install [USA|FR|DE]`: verify the installed game.
+- `--inspect-cd [IMAGE]` and `--extract-cd [IMAGE]`: read-only inspection or staged extraction of original ISO/CUE media.
+- `--install-cd [IMAGE] [PATCH]`: manual CD-data installation. Requires the same full install prerequisites **before extraction**; still preserves the original protected executable as pending. Launching normally or using `--install-only` subsequently activates it.
+- `--version` and `--help`: build identification and CLI usage.
+
+The commands `--import`, `--audit-shortnames`, `--inspect-update`, `--extract-update`, and the `--install-cd ... --into ED` variant are removed. The necessary updater/hash and retail-filename checks remain internal to authenticated installation and verification.
 
 No original game or decrypted executable is shipped with CrimsonSkiesFix. No registry, DirectPlay, system DLL, shortcut, or uninstaller operations are introduced here. Those historical setup actions remain for separate verification.
 
