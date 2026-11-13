@@ -4,7 +4,7 @@
 mod config;
 mod build_info;
 mod menu_scene;
-mod gos_video_lock; // experimental, backed-up native GOS Video .rof overlay
+mod gos_video_lock; // default-on, backed-up and verified native GOS Video .rof overlay
 mod gos_registry_diag; // opt-in retail UIAssetPath/EXE Path read-only provenance
 mod menu_video_probe;
 mod menu_mode_event;
