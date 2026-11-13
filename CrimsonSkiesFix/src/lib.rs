@@ -216,6 +216,12 @@ static SURFACE_USAGE_LOGS:AtomicUsize=AtomicUsize::new(0);
 static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature::Audit::new());
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
+// Separate from the installer's persistent report: a game session owns a
+// fresh log. Never append gameplay records across separate game launches.
+fn fresh_game_session_log(path:&std::path::Path)->std::io::Result<File>{
+    OpenOptions::new().create(true).write(true).truncate(true).open(path)
+}
+
 fn log(message:&str) {
     if let Some(log)=LOG.get() {
         if let Ok(mut file)=log.lock(){let _=writeln!(file,"{message}");}
@@ -268,8 +274,7 @@ fn cfg()->Config {
             // the standalone installer or directly. Installer/repair records
             // live independently in CrimsonSkiesFix-installer.log.
             if let Some(path)=win32::log_path() {
-                if let Ok(file)=OpenOptions::new()
-                    .create(true).write(true).truncate(true).open(path) {
+                if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
                 }
             }
@@ -629,6 +634,28 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn fresh_game_log_does_not_erase_persistent_installer_report(){
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-dual-logs-{}-{now}",std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let installer=root.join("CrimsonSkiesFix-installer.log");
+        let game=root.join("CrimsonSkiesFix.log");
+        std::fs::write(&installer,b"Action=REPAIRED_FROM_CD_AND_LAUNCH\n").unwrap();
+        std::fs::write(&game,b"OldGameSession\n").unwrap();
+        for index in 1..=2{
+            let mut output=fresh_game_session_log(&game).unwrap();
+            writeln!(output,"Session={index}").unwrap();
+            drop(output);
+            let text=std::fs::read_to_string(&game).unwrap();
+            assert_eq!(text,format!("Session={index}\n"));
+            assert_eq!(std::fs::read(&installer).unwrap(),
+                b"Action=REPAIRED_FROM_CD_AND_LAUNCH\n");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn crash_blt_rolling_trace_keeps_logging_after_twenty_thousand_calls(){
         assert!(!crash_blt_rotation_needed(1));
