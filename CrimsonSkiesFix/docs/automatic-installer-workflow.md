@@ -43,7 +43,7 @@ No original game or decrypted executable is shipped with CrimsonSkiesFix. No reg
 - **FR — accepted by owner under GE-Proton:** real-disc installation, automatic launch, and verified in-memory GOS VIDEO.SCRIPT lock (the owner's acceptance sessions predate the two-log change).
 - **DE — accepted by owner under GE-Proton:** real-disc installation including authenticated CAB 8.3→long filename mapping, repeat verified launch without re-extraction, managed GOS overlay, read-only Graphics/Resolution controls, and clean process exit.
 - **USA/Europe — implementation only:** exact 112-file original-CD profile and matching synthetic CAB assertions; **no owner original CD remains for actual runtime testing**. Do not advertise gameplay validation.
-- **Native Windows — outstanding for this candidate:** older DLL with an explicit compatibility INI was tested on Windows 11, but not the latest standalone package or native VIDEO.SCRIPT memory virtualization. Not a blocker for a clearly labelled experimental GE-Proton-tested prerelease if the owner elects to publish it.
+- **Native Windows — outstanding for this candidate:** older DLL with an explicit compatibility INI was tested on Windows 11, but not the latest standalone package or native VIDEO.SCRIPT memory virtualization. Document this limitation explicitly in the 1.0 release scope; the owner has decided against further manual testing.
 - **Safety checks enforced by CI:** missing sources do not overwrite the original installation, player data is preserved on rebuild, staged directories are not deleted automatically, and exactly one PE32 x86 launcher artifact is emitted.
 
 Do not claim all-edition or native-Windows gameplay acceptance from the Rust unit tests or the installer manifest alone.
