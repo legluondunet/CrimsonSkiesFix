@@ -1,6 +1,6 @@
 # CrimsonSkiesFix 1.0 — release checklist
 
-**13 November 2026.** Release version selected: **1.0** (Cargo: `1.0.0`; planned Git tag: `v1.0`). No GitHub tag or published release. The owner has elected not to perform additional manual tests; untested cases are disclosed, not represented as passed. The approved runtime baseline is the source on `main`, which already includes merged PRs #26 and #27. The final CLI is in PR #28; release-oriented source cleanup is stacked on that branch and must be merged only after approval.
+**13 November 2026.** **[CrimsonSkiesFix 1.0 published](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0)** (Cargo: `1.0.0`; Git tag: `v1.0`). Owner declined further manual tests; known limits remain disclosed. PRs #26, #27, #28 and #31 are merged. The exact release source is `5a9274d0af8018a346af2fa8e50e2e28dffc6d9d`; both automated CI jobs passed before publication.
 
 ## User-facing commands
 
@@ -39,10 +39,10 @@ The removed `--verify-install`, `--inspect-cd`, `--extract-cd`, `--install-cd`, 
 
 ### Remaining publication operations — no additional manual test request
 
-- [ ] Review and merge CLI PR #28, then the stacked release PR #31, after explicit owner approval.
-- [ ] Allow the repository's **existing** automatic Windows x86 and artifact jobs to run on final `main`; confirm they pass and correspond to the exact release source SHA.
-- [ ] Obtain the final `CrimsonSkiesFix.exe` from that run and record its SHA-256, byte size and full source commit SHA. Confirm the downloadable payload has exactly one launcher EXE, 30-day retention, and contains no copyrighted original game files.
-- [ ] Approve creation of the `v1.0` tag and publication of the **1.0 release** with the compatibility scope below. No tag or release is created during this preparation step.
+- [x] PR #28 and stacked PR #31 merged into `main` with the owner's approval.
+- [x] Both automatic Windows x86 and independent downloaded-artifact jobs passed on release SHA `5a9274d0af8018a346af2fa8e50e2e28dffc6d9d` (run [43485004103](https://github.com/legluondunet/CrimsonSkiesFix/actions/runs/43485004103)).
+- [x] Published only `CrimsonSkiesFix.exe` from the already-verified release CI artifact, PE32 x86, **1,455,104 bytes**, SHA-256 `897e0273ff506fe4545a94eb5d1b633847bc39657592af10e4bde414d442ac1f`, source `5a9274d0af8018a346af2fa8e50e2e28dffc6d9d`. The CI artifact retains 30 days; the GitHub Release asset is a durable release download.
+- [x] Owner approved; tag `v1.0` and public GitHub Release published, with compatibility limits disclosed. Windows issue #22 closed at owner's request with an explanatory comment.
 
 ### Explicitly untested cases — accepted as release limitations
 
@@ -69,4 +69,4 @@ No additional user-side test is requested for version 1.0. The following outcome
 - CI artifact: `CrimsonSkiesFix-Windows-x86-1.0`
 - Release payload: a single `CrimsonSkiesFix.exe`
 
-The final downloadable executable must come from the exact final release source commit, not from a prior PR build or earlier version `0.1.90`.
+The published executable comes from the verified final 1.0 release source commit `5a9274d0`, not from a prior PR build or earlier version `0.1.90`. [Download the official 1.0 EXE](https://github.com/legluondunet/CrimsonSkiesFix/releases/download/v1.0/CrimsonSkiesFix.exe).
