@@ -32,7 +32,7 @@ Legacy imported games without the new original-CD receipt retain their existing 
 - `--install-only`: same authenticated install/repair path without a game launch.
 - `--launch`: direct OS launch of `CrimsonSkiesFix/CRIMSON.EXE`, without any presence/hash/patch/source check or repair. Deliberate unchecked mode; do not confuse it with the normal launcher.
 - `--verify` and `--verify-install [USA|FR|DE]`: verify the installed game.
-- `--inspect-cd [IMAGE]` and `--extract-cd [IMAGE]`: read-only inspection or staged extraction of original ISO/CUE media.
+- `--inspect-cd [IMAGE]`: read-only inspection of original ISO/CUE media without needing the EXE or updater. `--extract-cd [IMAGE]`: staged extraction only after the approved game EXE, embedded DirectDraw patch and official updater pass the same preflight used for full installation.
 - `--install-cd [IMAGE] [PATCH]`: manual CD-data installation. Requires the same full install prerequisites **before extraction**; still preserves the original protected executable as pending. Launching normally or using `--install-only` subsequently activates it.
 - `--version` and `--help`: build identification and CLI usage.
 
