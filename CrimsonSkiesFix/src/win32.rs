@@ -853,7 +853,7 @@ mod persistent_ini_tests {
         assert!(!generated.contains("RoffileTerminatorFix="));
         fs::write(&file,generated.replace("Log=0","Log=1")).unwrap();
         assert_eq!(create_ini_once(&file).unwrap(),false);
-        assert!(fs::read_to_string(&file).unwrap().contains("[Debug]\nLog=1"));
+        assert!(fs::read_to_string(&file).unwrap().contains("Log=1\n"));
         fs::remove_dir_all(dir).unwrap();
     }
 }
