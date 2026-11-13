@@ -1,59 +1,143 @@
 # CrimsonSkiesFix
 
-**Windows x86 DirectDraw compatibility proxy** for *Crimson Skies (2000)* on Windows and Wine/Proton.
+**Crimson Skies (2000) on modern Windows and Wine/Proton.**
 
-The active project builds a 32-bit Rust `ddraw.dll` for one exact, verified Crimson Skies v1.02 SafeDisc-free executable. It does **not** modify the executable on disk.
+CrimsonSkiesFix 1.0 is a standalone Windows x86 installer, launcher and open-source DirectDraw compatibility patch for the original PC game. A single `CrimsonSkiesFix.exe` prepares the game, applies the official 1.02 data update, installs the integrated `ddraw.dll` patch and launches Crimson Skies.
 
-**Status: [CrimsonSkiesFix 1.0 published on 13 November 2026](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0).** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The original USA/Europe CUE/BIN has now been inspected (`C_SKIES_DISC_001`, 112/112 matching source file hashes) and successfully installed using `--install-only` under Wine/GE-Proton on candidate `0.1.90-59d81dd7`. **USA/Europe gameplay remains untested.** Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
+**[Download CrimsonSkiesFix 1.0](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0)** · [Report a problem](https://github.com/legluondunet/CrimsonSkiesFix/issues)
 
-## Supported executable
+## Main features
 
-Only the validated, unmodified, unwrapped **Crimson Skies 1.0.2.0** executable is accepted:
+- **Automatic installation and repair** from authenticated original CD images (USA/Europe, French and German editions) and the official 1.02 update.
+- **No disc required to play** once installed. Verified installations launch again without re-extracting the original CD.
+- **Borderless fullscreen** at desktop resolution, widescreen 3D with adapted field of view (FOV) and HUD.
+- **Original 4:3 menus and videos**, with an optional 4:3 gameplay mode and black sidebars.
+- **FPS limiting** (60 FPS by default), focus/Alt-Tab handling and display startup fixes.
+- **Simplified video options**, removing the old graphics selector and preventing incompatible in-game Graphics/Resolution changes.
+- **Integrated DirectDraw proxy**, version signature in the main menu and separate installer/game logs.
+- **Common Windows/Wine implementation**, including a targeted Wine-only ROFFILE.DLL compatibility fix.
 
-| Property | Required value |
-|---|---|
-| Size | `2,580,480` bytes |
-| SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
+## Files you must provide (not included)
 
-Other executables (including protected launchers and third-party patched versions) are rejected. The actual unsupported hash is logged when a file can be read and the log path is writable.
+For a **new installation** or full repair, put all three items below **beside `CrimsonSkiesFix.exe`**:
 
-If the installation is older than 1.02, the [official 1.02 updater](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102) may be required. It does **not** remove SafeDisc.
+| Required item | What you need |
+| --- | --- |
+| **Original game CD image** | Exactly one authentic supported `.iso`, or one `.cue` together with its referenced `.bin`/`.img` track file(s). Supported CD editions: USA/Europe, FR and DE. |
+| **Official Crimson Skies 1.02 update** | The original `crmsk102.exe`, [archived on ModDB](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102). The installer verifies and extracts its game data without running the updater. |
+| **Approved SafeDisc-free 1.02 executable** | Your own decrypted, unmodified `CRIMSON.EXE` version 1.0.2.0. **CrimsonSkiesFix does not decrypt, generate or supply this file.** |
 
-## Install
+Only the exact supported files are accepted. The updater and approved executable may be renamed, as they are identified by their contents, but keep just **one valid copy of each** beside the launcher.
 
-The build workflow publishes **one experimental artifact**: `CrimsonSkiesFix-Windows-x86-Standalone-EXPERIMENTAL`, containing only `CrimsonSkiesFix.exe`. Obtain it from a successful [Windows x86 GitHub Actions run](https://github.com/legluondunet/CrimsonSkiesFix/actions). The launcher embeds the exact x86 DLL verified during the same build and installs it beside the approved game executable. The obsolete standalone DLL archive is not published.
+**Required decrypted game executable:**
+- Size: `2,580,480` bytes
+- SHA-256: `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
 
-For a first installation, place one original supported ISO or CUE/BIN image, the official 1.02 updater, and your own SHA-256-approved decrypted 1.02 executable beside the launcher, then run `CrimsonSkiesFix.exe`. For an already verified installation, the launcher verifies and launches the game without requiring the original media. The bundled, CI-checked DirectDraw patch is embedded in the one-file launcher.
+**Required official 1.02 updater:**
+- Size: `2,315,728` bytes
+- SHA-256: `8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af`
 
-To **install completely without launching the game**, run `CrimsonSkiesFix.exe --install-only`. The approved decrypted EXE, embedded DirectDraw patch and authentic 1.02 updater are all checked **before** any automatic CD extraction begins. The retired manual CD diagnostics are no longer exposed as command-line options. For a verified installation, no original external sources are needed. To explicitly launch an existing game **without file-presence or SHA checks, repair, or extraction**, run `CrimsonSkiesFix.exe --launch-no-verify`; this tries only `CrimsonSkiesFix/CRIMSON.EXE`. It is an unsafe-by-design opt-in that cannot repair missing/modified files and will fail at the OS level if the game cannot start. The ordinary no-argument path remains verified.
+The original CD's SafeDisc-protected executable, other game versions and third-party modified or widescreen executables are not accepted as the playable EXE. The official update itself does **not** remove SafeDisc.
 
-The downloaded artifact contains **only the launcher**: it never distributes the original game, game assets or decrypted executable. The installed game receives its own `ddraw.dll`, documentation and `CrimsonSkiesFix.ini.example`; an active user INI is created on first game launch, never bundled. By default, `GosVideoLock=on` may modify the small original `GOSDATA/ASSETS/crimptch.rof` overlay after verifying and backing it up. Set `GosVideoLock=restore` to restore the original archive before removing the fix if desired.
+### Example folder before installing
 
-**The new first-run INI contains `[Graphics] AspectRatio=auto`, `FPSLimit=60` and `[Debug] Log=0`.** Choose `AspectRatio=4:3` for native-resolution 4:3 gameplay with centered black sidebars, 4:3 camera/HUD and the original 4:3 menus/videos, without changing the desktop resolution. Mandatory widescreen, fullscreen, GOS, Windows/Wine and first-image compatibility fixes are compiled in and applied automatically to authenticated games. Advanced diagnostic and `GosVideoLock=restore` options are accepted when explicitly added but are not cluttering the generated file. Existing personal INIs are preserved unchanged.
-
-The current build keeps **two independent operational logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit `--inspect` writes an additional separate `CrimsonSkiesFix_inspect.log`. `--launch-no-verify` does not touch that report; `--install-only` never creates a game process. See the [detailed installation guide](CrimsonSkiesFix/README.md).
-
-## Identify a build
-
-The launcher creates `CrimsonSkiesFix/build-info.txt` **inside the installed game folder** (not inside the one-file downloadable artifact). It records the full source commit, the expected eight-character build label, and the SHA-256 of the embedded `ddraw.dll`. Compare `LogIdentity` with the first game initialization line in `CrimsonSkiesFix.log`; separately consult `CrimsonSkiesFix_installer.log` for the last meaningful installation/repair report. Compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
-
-The original game's and ROFFILE.DLL's expected hashes are separate from the **proxy DLL** hash in this manifest.
-
-## Build and quality gates
-
-```powershell
-cd CrimsonSkiesFix
-rustup target add i686-pc-windows-msvc
-cargo test --locked --target i686-pc-windows-msvc
-cargo build --locked --release --target i686-pc-windows-msvc
+```text
+CrimsonSkies/
+├── CrimsonSkiesFix.exe          # Downloaded from the 1.0 release
+├── original-disc.cue            # Or a supported .iso instead
+├── original-disc.bin            # Required if referenced by the CUE
+├── crmsk102.exe                 # Official 1.02 updater
+└── CRIMSON-UNWRAPPED.EXE        # Your matching decrypted 1.02 EXE
 ```
 
-The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the PE32 DLL, runs Rust and Python regression checks, validates the clean distribution layout, and performs a native `LoadLibraryW` / `GetProcAddress` / `FreeLibrary` smoke test. The standalone `windowed_ddraw_probe.exe` remains in the repository for DirectDraw regression tests and its x86 build is checked by CI. It is **not** required to run the game and is no longer published as a downloadable artifact.
+Names are illustrative. A CUE file must reference the **actual filename** of its BIN/IMG track file. Keep only one ISO or CUE beside the launcher for automatic detection.
 
-Current release scope and remaining checks are tracked in the [13 November release checklist](CrimsonSkiesFix/docs/release-checklist-2026-11-13.md). The [12 November preparation](CrimsonSkiesFix/docs/release-preparation-2026-11-12.md) remains a historical snapshot. The [4 November readiness audit](CrimsonSkiesFix/docs/release-readiness-2026-11-04.md) is kept as a historical checkpoint. Native Windows gameplay with this exact candidate remains a separate, later test.
+## Install on Windows
 
-## License and contribution policy
+1. Download **[CrimsonSkiesFix.exe](https://github.com/legluondunet/CrimsonSkiesFix/releases/download/v1.0/CrimsonSkiesFix.exe)** from the version 1.0 release.
+2. Create a writable directory, such as `C:\Games\CrimsonSkies\`. Put the launcher and the required external files there.
+3. Double-click `CrimsonSkiesFix.exe`. It authenticates the original sources, installs the game and its DirectDraw patch, and launches Crimson Skies.
+4. For future sessions, run **the same launcher**. The CD image, updater and external decrypted EXE are no longer needed for an installation that verifies successfully; keep them available in case a full repair becomes necessary.
 
-This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). The released installer installs an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; version 1.0 was published with the owner's explicit approval.
+To **install without launching** the game, open PowerShell in the launcher directory:
+
+```powershell
+.\CrimsonSkiesFix.exe --install-only
+```
+
+You do **not** need to run the original game `setup.exe` or download a separate `ddraw.dll`.
+
+## Install on Linux with Wine or Proton
+
+1. Install Wine with **32-bit Windows application support**, or use a suitable Wine/Proton environment (for example Lutris with GE-Proton).
+2. Put the downloaded `CrimsonSkiesFix.exe` and the same three external items in a writable folder such as `~/Games/CrimsonSkies/`.
+3. Open a terminal and run:
+
+```bash
+cd ~/Games/CrimsonSkies
+wine CrimsonSkiesFix.exe
+```
+
+The same automatic installer runs under Wine. To install **without starting the game**:
+
+```bash
+wine CrimsonSkiesFix.exe --install-only
+```
+
+When using **Lutris, Proton or a custom Wine prefix**, launch `CrimsonSkiesFix.exe` in that environment and keep using **the same prefix** for subsequent launches. The launcher is a Windows x86 executable; there is no separate Linux binary.
+
+## After installation
+
+The game is installed in a new `CrimsonSkiesFix/` folder **next to the launcher**:
+
+```text
+CrimsonSkies/
+├── CrimsonSkiesFix.exe
+├── CrimsonSkiesFix_installer.log
+├── CrimsonSkiesFix.log
+└── CrimsonSkiesFix/
+    ├── CRIMSON.EXE              # Approved game executable
+    ├── ddraw.dll                # Integrated patch installed automatically
+    ├── GOSDATA/                 # Original game assets
+    └── CrimsonSkiesFix.ini      # Created on first game launch
+```
+
+The protected CD executable is preserved as `CRIMSON.EXE.protected.bak`. The repair workflow preserves player saves, custom planes and the active INI, and retains the former installation as a backup.
+
+The generated `CrimsonSkiesFix.ini` contains these basic settings:
+
+```ini
+[Graphics]
+AspectRatio=auto
+FPSLimit=60
+
+[Debug]
+Log=0
+```
+
+Set `AspectRatio=4:3` for 4:3 gameplay with black sidebars. An existing custom INI is not overwritten.
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `CrimsonSkiesFix.exe` | Verify, install/repair if necessary, then launch |
+| `--install-only` | Install/repair and verify without launching |
+| `--verify` | Check the installed game and DirectDraw patch |
+| `--launch-no-verify` | Launch directly, **without integrity checks or repair** |
+| `--inspect image.iso` | Inspect an original or unsupported ISO |
+| `--inspect image.cue [image.bin\|image.img]` | Inspect a CUE image; optional data-track override |
+| `--verbose` | Extra diagnostics, combinable with a command |
+| `--version`, `--help`, `-h` | Version and usage information |
+
+**Logs** are written next to the launcher: `CrimsonSkiesFix_installer.log` (last meaningful installation/repair/error), `CrimsonSkiesFix.log` (new game log for each session), and `CrimsonSkiesFix_inspect.log` (generated by `--inspect`).
+
+## Compatibility
+
+CrimsonSkiesFix is for the **original PC game**, not the Xbox title. Wine/GE-Proton has been used for gameplay testing. Native Windows 11 support is included, but the complete default graphics configuration has not been validated on every Windows GPU and DPI setup. See the [1.0 release notes](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0) for known limitations.
+
+## License
+
+CrimsonSkiesFix is licensed under **GPL-3.0-or-later** ([source license](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/LICENSE)). It does **not** distribute the original game, CD images, official updater or decrypted game executable.
 
 legluondunet assisted by ChatGPT (OpenAI)
