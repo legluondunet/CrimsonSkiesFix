@@ -455,16 +455,13 @@ fn usage() {
          CrimsonSkiesFix.exe --verify         verify installed EXE and embedded ddraw.dll\n\
          CrimsonSkiesFix.exe --inspect-cd          scan one adjacent ISO/CUE to CrimsonSkiesFix_installer.log\n\
          CrimsonSkiesFix.exe --inspect-cd IMAGE    scan a specified ISO/CUE image\n\
-         CrimsonSkiesFix.exe --extract-cd         extract CD GAME/ into separate USA/FR/DE staging\n\
-         CrimsonSkiesFix.exe --extract-cd IMAGE   extract a specified ISO/CUE (read-only source)\n\
+         CrimsonSkiesFix.exe --extract-cd         extract CD after prerequisite checks (USA/FR/DE staging)\n\
+         CrimsonSkiesFix.exe --extract-cd IMAGE   extract specified ISO/CUE after prerequisites\n\
          CrimsonSkiesFix.exe --install-cd          install one adjacent CD with official 1.02 updater\n\
          CrimsonSkiesFix.exe --install-cd IMAGE    install a specified ISO/CUE\n\
          CrimsonSkiesFix.exe --install-cd IMAGE PATCH    specify the official updater\n\
-
          CrimsonSkiesFix.exe --verify-install      verify default CD installation\n\
          CrimsonSkiesFix.exe --verify-install ED   verify a named USA/FR/DE installation\n\
-
-
          CrimsonSkiesFix.exe --version\n\
          CrimsonSkiesFix.exe --help\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
@@ -603,7 +600,12 @@ fn run() -> Result<i32, String> {
         let selected=if args.len()==2 {Some(PathBuf::from(&args[1]))}else{None};
         // The CD profile chooses a unique staging directory. The former
         // CrimsonSkiesFix.extract-test (without an edition) is left untouched.
-        let result=disc_inspect::extract_game(base,selected.as_deref());
+        // Explicit diagnostic extraction obeys the same prerequisite gate
+        // as full installation: do not create ANY CD staging folder until
+        // the approved 1.02 game EXE, bundled patch and official updater
+        // have all been authenticated.
+        let result=auto_install::preflight_install_sources(base,&game,None)
+            .and_then(|_|disc_inspect::extract_game(base,selected.as_deref()));
         let log=base.join(INSTALLER_LOG);
         if any_entry(&log) && !regular(&log) {
             return Err("unsafe CrimsonSkiesFix_installer.log: refusing a non-file log target".into());
@@ -707,6 +709,24 @@ mod tests {
             assert!(!supported_command(&args),"unexpected command accepted: {flags:?}");
         }
     }
+    #[test]
+    fn manual_cd_extraction_prerequisites_fail_without_creating_staging(){
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-extract-prerequisite-gate-{}-{id}",std::process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("disc.iso"),b"fake authenticated source").unwrap();
+        let game=root.join("CrimsonSkiesFix");
+        let err=auto_install::preflight_install_sources(&root,&game,None).unwrap_err();
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        assert!(!any_entry(&root.join("CrimsonSkiesFix")));
+        for edition in ["USA","FR","DE"] {
+            assert!(!any_entry(&root.join(format!("CrimsonSkiesFix.extract-{edition}"))));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn direct_launch_missing_game_makes_no_install_directory_or_report(){
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
