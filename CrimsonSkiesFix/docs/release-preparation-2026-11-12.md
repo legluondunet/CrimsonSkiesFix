@@ -32,6 +32,7 @@
 - [x] Replace obsolete experimental notes describing a five-file DLL artifact / only three exports with the current one-file launcher workflow.
 - [x] Restore two independently owned logs: persistent installer/repair report (only meaningful operations rewrite it) and fresh per-session DLL diagnostics; remove the old child environment append handoff. Previous owner gameplay logs used the old unified behavior.
 - [x] Correct stale FR/DE/USA test claims and 177-vs-178 chapter count.
+- [x] Reduce first-run INI and shipped template to `FPSLimit=60` and `Log=0`; built-in game fixes remain default-on, existing INIs are untouched, and legacy diagnostic overrides plus explicit GOS restoration remain parseable. This change follows previous FR/DE gameplay acceptance and therefore requires new CI and a runtime smoke test.
 - [ ] Green CI on the **last release-preparation branch SHA**, including new two-log persistence/regression tests (earlier FR/DE acceptance used the unified logger).
 - [ ] Owner-approved merge **PR #26** into `main`, followed by retarget/review/merge of **PR #27**. Draft status alone is not approval.
 - [ ] Green CI on the **final main SHA**, and verify the downloaded artifact is the one emitted by that exact build.
