@@ -9,6 +9,8 @@ pub const DEFAULT_INI: &str = concat!(
     "; Verified game compatibility fixes are built in and enabled automatically.\n",
     "; Advanced diagnostics and GOS restoration are documented in README.md.\n",
     "[Graphics]\n",
+    "; Game aspect ratio: auto (desktop) or 4:3 (centered pillarbox).\n",
+    "AspectRatio=auto\n",
     "; Frame pacing target, 1-60 frames per second.\n",
     "FPSLimit=60\n",
     "\n",
@@ -22,6 +24,8 @@ pub struct Config {
     pub borderless: bool,
     pub desktop_resolution: bool,
     pub fps_limit: u32,
+    /// Explicitly render 3D in true 4:3; never squash an already-wide image.
+    pub force_4_by_3: bool,
     pub modern_fps_pacing: bool,
     pub experimental_windowed_adapter: bool,
     pub focus_repaint: bool,
@@ -66,7 +70,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -119,6 +123,12 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.focus_repaint = v; },
             ("graphics", "modernfpspacing") =>
                 if let Some(v) = enabled(value) { settings.modern_fps_pacing = v; },
+            ("graphics", "aspectratio") =>
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "auto" => settings.force_4_by_3=false,
+                    "4:3" => settings.force_4_by_3=true,
+                    _ => {},
+                },
             ("graphics", "fpslimit") =>
                 if let Ok(v) = value.trim().parse::<u32>() { settings.fps_limit = v.clamp(1, 60); },
             ("compatibility", "roffileterminatorfix") =>
@@ -188,12 +198,15 @@ fn ini_line_keys(content:&str)->Vec<Option<String>>{
 
 /// A known key with an invalid value is not a suitable survivor of a
 /// duplicate cleanup, even when the current default happens to match
-/// an earlier valid entry. Only FPSLimit and GosVideoLock are non-boolean.
+/// an earlier valid entry. FPSLimit, AspectRatio and GosVideoLock are
+/// not boolean.
 fn known_ini_value_valid(key:&str,line:&str)->bool{
     let clean=line.split([';', '#']).next().unwrap_or("").trim();
     let Some((_,value))=clean.split_once('=') else{return false;};
     match key {
         "graphics/fpslimit"=>value.trim().parse::<u32>().is_ok(),
+        "graphics/aspectratio"=>matches!(
+            value.trim().to_ascii_lowercase().as_str(),"auto"|"4:3"),
         "graphics/gosvideolock"=>
             matches!(value.trim().to_ascii_lowercase().as_str(),
                 "on"|"off"|"restore"|"1"|"0"|"true"|"false"),
@@ -207,6 +220,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "graphics/borderless",
     "graphics/desktopresolution",
     "graphics/fpslimit",
+    "graphics/aspectratio",
     "graphics/modernfpspacing",
     "graphics/experimentalwindowedadapter",
     "graphics/focusrepaint",
@@ -295,6 +309,7 @@ mod tests {
         let generated:Vec<String>=ini_line_keys(DEFAULT_INI)
             .into_iter().flatten().collect();
         assert_eq!(generated,vec![
+            "graphics/aspectratio".to_owned(),
             "graphics/fpslimit".to_owned(),
             "debug/log".to_owned(),
         ]);
@@ -313,6 +328,21 @@ mod tests {
         // escaping the guarded deduplication routine on upgrade.
         assert!(KNOWN_INI_KEYS.contains(&"graphics/borderless"));
         assert!(KNOWN_INI_KEYS.contains(&"compatibility/roffileterminatorfix"));
+    }
+    #[test]
+    fn four_by_three_is_opt_in_only_and_graphics_scoped(){
+        assert!(!Config::default().force_4_by_3);
+        assert!(!parse("[Graphics]\nAspectRatio=auto").force_4_by_3);
+        assert!(parse("[Graphics]\nAspectRatio=4:3").force_4_by_3);
+        assert!(parse("[GRAPHICS]\naspectratio=4:3").force_4_by_3);
+        assert!(!parse("[Debug]\nAspectRatio=4:3").force_4_by_3);
+        assert!(!parse("[Graphics]\nAspectRatio=4:3\nAspectRatio=auto").force_4_by_3);
+        assert!(parse("[Graphics]\nAspectRatio=4:3\nAspectRatio=invalid").force_4_by_3);
+        let ini="[Graphics]\nAspectRatio=auto\nAspectRatio=4:3\n[Debug]\nLog=0\n";
+        let (cleaned,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,1);
+        assert!(cleaned.contains("AspectRatio=4:3"));
+        assert_eq!(parse(&cleaned),parse(ini));
     }
     #[test]
     fn no_duplicates_in_generated_or_shipped_ini(){
@@ -379,7 +409,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
