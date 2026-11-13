@@ -1,6 +1,6 @@
-//! Read-only ISO9660/Joliet ISO or CUE/BIN inspector.
-//! Edition identity is *file payloads*, not raw image length or image SHA-256.
-//! The full scan is emitted to CrimsonSkiesFix.log by the caller.
+//! Content-authenticated ISO9660/Joliet and CUE/BIN reader.
+//! Edition identity uses file payload hashes, not raw image lengths or SHA-256.
+//! Explicit --inspect scans are logged separately by the launcher.
 use crate::sha256;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -461,7 +461,8 @@ pub fn edition_selector(label:&str)->Option<&'static str> {
         _=>None,
     }
 }
-pub fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
+#[cfg(test)]
+fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
     let suffix=match edition {
         "C_SKIES_DISC_001"=>"USA",
         "C_SKIES_FR_001"=>"FR",
@@ -687,7 +688,6 @@ fn verify_original_files(game:&Path,edition:&str,skip_cabs:bool,activated:bool)-
 /// valid game executable until the separate strict 1.02 gate is satisfied.
 pub struct Extraction {
     pub edition:&'static str,
-    pub destination:PathBuf,
     pub file_count:usize,
     pub bytes:u64,
     pub retail_support_files:usize,
@@ -717,21 +717,14 @@ fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->R
     Ok(())
 }
 
-/// Extract files beneath GAME/ to a new directory, with per-file SHA-256
-/// checked against a previously *complete* recognized original-CD manifest.
-/// No image bytes or whole-image metadata are used in edition recognition.
-pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,String> {
-    extract_game_to(base,specified,None)
-}
-
-/// Installation uses the content-authenticated original-CD extractor,
-/// but places files in its private transaction rather than a diagnostic folder.
+/// The automatic installer extracts only into its own private transaction.
+/// SHA-256 and full retail-edition profile checks run before publishing.
 pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
     ->Result<Extraction,String> {
-    extract_game_to(base,specified,Some(transaction))
+    extract_game_to(base,specified,transaction)
 }
 
-fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
+fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
     ->Result<Extraction,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media,None)?} else {open_iso(&media)?};
@@ -746,10 +739,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     let [edition]=matches.as_slice() else {
         return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
     };
-    let dest=match target {
-        Some(path)=>path.to_path_buf(),
-        None=>stage_path(base,edition)?,
-    };
+    let dest=target.to_path_buf();
     if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} staging already exists; refusing to overwrite: {}",
             edition,dest.display()));
@@ -766,16 +756,13 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     // Preflight also requires the eight files that the historical installer
     // copies from the disc ROOT to the installed game ROOT. They are absent
     // from the GAME/ folder and were previously omitted by the first CD-installer implementation.
-    let additional=if target.is_some(){
-        let mut selected=Vec::new();
-        let readme=retail_readme(edition)?;
-        for (src,dst) in RETAIL_ROOT_SUPPORT.into_iter().chain(std::iter::once(readme)){
-            let entry=walker.results.get(&src.to_ascii_lowercase())
-                .ok_or(format!("verified CD missing expected root support: {src}"))?;
-            selected.push((entry,dst));
-        }
-        selected
-    }else{Vec::new()};
+    let mut additional=Vec::new();
+    let readme=retail_readme(edition)?;
+    for (src,dst) in RETAIL_ROOT_SUPPORT.into_iter().chain(std::iter::once(readme)){
+        let entry=walker.results.get(&src.to_ascii_lowercase())
+            .ok_or(format!("verified CD missing expected root support: {src}"))?;
+        additional.push((entry,dst));
+    }
     let retail_support_bytes=additional.iter().map(|(r,_)|r.size as u64).sum::<u64>();
     if bytes+retail_support_bytes>2_000_000_000 {
         return Err("CD extraction and retail support payload exceeds 2 GB".into());
@@ -798,7 +785,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     for (record,name) in &additional {
         extract_one(&image,&mut disc,record,&dest.join(name))?;
     }
-    Ok(Extraction{edition:*edition,destination:dest,file_count:files.len(),bytes,
+    Ok(Extraction{edition:*edition,file_count:files.len(),bytes,
         retail_support_files:additional.len(),retail_support_bytes})
 }
 
@@ -1061,8 +1048,9 @@ mod tests {
         let mut changed=r.clone();
         changed.sha="0".repeat(64);
         assert!(extract_one(&image,&mut src,&changed,&dir.join("invalid")).is_err());
-        assert!(extract_game(&dir,Some(&iso_file)).is_err());
-        assert!(!dir.join("CrimsonSkiesFix.extract-test.FR").exists());
+        let stage=dir.join("CrimsonSkiesFix.installing");
+        assert!(extract_for_install(&dir,Some(&iso_file),&stage).is_err());
+        assert!(!stage.exists());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
