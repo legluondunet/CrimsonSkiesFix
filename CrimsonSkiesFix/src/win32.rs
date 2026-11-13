@@ -845,7 +845,12 @@ mod persistent_ini_tests {
         let file=dir.join("CrimsonFix.ini");
         assert_eq!(create_ini_once(&file).unwrap(),true);
         let generated=fs::read_to_string(&file).unwrap();
-        assert!(generated.contains("[Debug]\nLog=0"));
+        assert!(generated.contains("[Debug]\n"));
+        assert!(generated.contains("Log=0\n"));
+        assert!(generated.contains("[Graphics]\n"));
+        assert!(generated.contains("FPSLimit=60\n"));
+        assert!(!generated.contains("ExperimentalWindowedAdapter="));
+        assert!(!generated.contains("RoffileTerminatorFix="));
         fs::write(&file,generated.replace("Log=0","Log=1")).unwrap();
         assert_eq!(create_ini_once(&file).unwrap(),false);
         assert!(fs::read_to_string(&file).unwrap().contains("[Debug]\nLog=1"));
