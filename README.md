@@ -27,6 +27,8 @@ For a first installation, place one original supported ISO or CUE/BIN image, the
 
 The downloaded artifact contains **only the launcher**: it never distributes the original game, game assets or decrypted executable. The installed game receives its own `ddraw.dll`, documentation and `CrimsonSkiesFix.ini.example`; an active user INI is created on first game launch, never bundled. By default, `GosVideoLock=on` may modify the small original `GOSDATA/ASSETS/crimptch.rof` overlay after verifying and backing it up. Set `GosVideoLock=restore` to restore the original archive before removing the fix if desired.
 
+**The new first-run INI contains only `[Graphics] FPSLimit=60` and `[Debug] Log=0`.** Mandatory widescreen, fullscreen, GOS, Windows/Wine and first-image compatibility fixes are compiled in and applied automatically to authenticated games. Advanced diagnostic and `GosVideoLock=restore` options are accepted when explicitly added but are not cluttering the generated file. Existing personal INIs are preserved unchanged.
+
 The current build keeps **two independent logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit CD/update inspection commands also use the installer log. See the [detailed installation guide](CrimsonSkiesFix/README.md).
 
 ## Identify a build
