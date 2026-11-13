@@ -721,9 +721,10 @@ mod tests {
         let err=auto_install::preflight_install_sources(&root,&game,None).unwrap_err();
         assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
         assert!(!any_entry(&root.join("CrimsonSkiesFix")));
-        for edition in ["USA","FR","DE"] {
-            assert!(!any_entry(&root.join(format!("CrimsonSkiesFix.extract-{edition}"))));
-        }
+        // The preflight must not create ANY directory, regardless of how
+        // future staging names are changed.
+        assert!(fs::read_dir(&root).unwrap().all(|entry|
+            !entry.unwrap().file_type().unwrap().is_dir()));
         fs::remove_dir_all(root).unwrap();
     }
 
