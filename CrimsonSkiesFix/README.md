@@ -53,7 +53,7 @@ CRIMSON.EXE.protected.bak.
 Place one original ISO or CUE with its BIN/IMG, the official 1.02
 updater, and your own **2,580,480-byte** decrypted EXE with SHA-256
 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75
-beside the launcher; then run it without arguments. To install/repair and verify **without launching**, use `CrimsonSkiesFix.exe --install-only`. Before any disc extraction the installer requires (1) an exact approved owner-provided 1.02 decrypted executable, (2) the integrated x86 DirectDraw patch, and (3) the authenticated official 1.02 updater. If any is absent or invalid, extraction is refused and any existing installation is preserved. The ordinary no-argument path continues to verify, repair and launch.
+beside the launcher; then run it without arguments. To install/repair and verify **without launching**, use `CrimsonSkiesFix.exe --install-only`. Before any disc extraction the installer requires (1) an exact approved owner-provided 1.02 decrypted executable, (2) the integrated x86 DirectDraw patch, and (3) the authenticated official 1.02 updater. If any is absent or invalid, extraction is refused and any existing installation is preserved. This also applies to explicit `--install-cd` and `--extract-cd`; read-only `--inspect-cd` remains available without these source prerequisites. The ordinary no-argument path continues to verify, repair and launch.
 
 External originals
 are needed only for a fresh installation or repair. A fully verified
