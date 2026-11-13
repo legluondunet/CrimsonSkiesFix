@@ -345,7 +345,7 @@ mod tests {
         let desktop=(1920,1080);
         let four=Mode{width:1440,height:1080,bpp:16};
         let viewport=Viewport{x:240,y:0,width:1440,height:1080};
-        let mut backend=MockBackend::default();
+        let mut backend=FakeBlt::default();
         assert_eq!(execute_windowed_blt_pair(
             &mut backend,four,desktop,viewport),Ok(()));
         assert_eq!(backend.events,vec![
