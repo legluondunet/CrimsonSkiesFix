@@ -29,7 +29,7 @@ The downloaded artifact contains **only the launcher**: it never distributes the
 
 **The new first-run INI contains `[Graphics] AspectRatio=auto`, `FPSLimit=60` and `[Debug] Log=0`.** Choose `AspectRatio=4:3` for native-resolution 4:3 gameplay with centered black sidebars, 4:3 camera/HUD and the original 4:3 menus/videos, without changing the desktop resolution. Mandatory widescreen, fullscreen, GOS, Windows/Wine and first-image compatibility fixes are compiled in and applied automatically to authenticated games. Advanced diagnostic and `GosVideoLock=restore` options are accepted when explicitly added but are not cluttering the generated file. Existing personal INIs are preserved unchanged.
 
-The current build keeps **two independent logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit CD/update inspection commands also use the installer log. See the [detailed installation guide](CrimsonSkiesFix/README.md).
+The current build keeps **two independent logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit update diagnostics also use the installer log. See the [detailed installation guide](CrimsonSkiesFix/README.md).
 
 ## Identify a build
 
