@@ -339,6 +339,16 @@ struct Runtime {
 }
 static RUNTIME:Mutex<Option<Runtime>>=Mutex::new(None);
 
+// Match the game's actual patched internal 3D raster, not the monitor's
+// outer window. In 4:3 mode the renderer is narrower than the borderless HWND.
+fn matches_patched_gameplay_mode(
+    mode:Mode,monitor:(u32,u32),patched:bool,force_4_by_3:bool
+)->bool{
+    patched && mode.bpp==16 && mode.width>=960 && mode.height>=600 &&
+    crate::presentation::native_3d_dimensions(monitor,force_4_by_3)
+        ==Some((mode.width,mode.height))
+}
+
 // Shared DPI aspect tolerance: no need for an exclusive-video bootstrap.
 fn same_aspect(logical:(u32,u32),physical:(u32,u32))->bool{
     crate::presentation::dpi_output_matches(physical,logical)
@@ -532,11 +542,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         return Some(E_FAIL);
     }
     let mode=Mode{width:w,height:h,bpp};
-    let (mon_w,mon_h)=runtime.render_client;
     let expected_3d=crate::presentation::native_3d_dimensions(
         runtime.render_client,crate::cfg().force_4_by_3);
-    let native_3d=runtime.native_widescreen_ready && bpp==16 &&
-        expected_3d==Some((w,h)) && w>=960 && h>=600;
+    let native_3d=matches_patched_gameplay_mode(
+        mode,runtime.render_client,runtime.native_widescreen_ready,
+        crate::cfg().force_4_by_3);
     let supported=matches!((w,h,bpp),(640,480,16)|(800,600,16)) ||
         native_3d;
     if !supported{
@@ -1112,6 +1122,22 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
 #[cfg(test)]
 mod shared_graph_presentation_tests{
     use super::*;
+    #[test]
+    fn true_four_by_three_gameplay_modes_are_not_mistaken_for_menu_epochs(){
+        let monitor=(1920,1080);
+        let game=Mode{width:1440,height:1080,bpp:16};
+        let menu=Mode{width:800,height:600,bpp:16};
+        let wide=Mode{width:1920,height:1080,bpp:16};
+        assert!(matches_patched_gameplay_mode(game,monitor,true,true));
+        assert!(!matches_patched_gameplay_mode(game,monitor,true,false));
+        assert!(!matches_patched_gameplay_mode(game,monitor,false,true));
+        assert!(!matches_patched_gameplay_mode(menu,monitor,true,true));
+        assert!(!matches_patched_gameplay_mode(wide,monitor,true,true));
+        assert!(matches_patched_gameplay_mode(wide,monitor,true,false));
+        // Actual 4:3 gameplay -> GOS pause transition must count as 3D.
+        assert!(post_gameplay_ui_transition(menu,true,true,false));
+        assert!(!post_gameplay_ui_transition(menu,false,false,false));
+    }
     #[test]
     fn menu_scratch_requires_verified_full_frame_composition_for_xrgb32(){
         let scratch=1usize as *mut c_void;
