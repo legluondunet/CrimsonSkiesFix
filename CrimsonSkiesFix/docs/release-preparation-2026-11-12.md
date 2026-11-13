@@ -13,7 +13,7 @@
 | Native **Windows 11** | Historical test of an earlier DLL/explicit INI, plus latest x86 GitHub runner's 22-export DLL load test | **Latest standalone build and memory-virtualization runtime UNTESTED** |
 | Renderer / graphics | Owner-tested under GE-Proton: borderless 1920×1080, wide 3D FOV/HUD, 4:3 menus, startup dialog bypass, RGB565 image fix, GameOS Graphics+Resolution read-only | **GE-Proton scope only** |
 | Restore and repair | Previous tests of reversible managed GOS overlay, strict hash checks, preserved player files and no automatic deletion of abandoned staging; tests of collisions and synthetic invalid assets | **Guards implemented; not a claim of every real-world repair scenario** |
-| Logs / packaging | Independent `CrimsonSkiesFix-installer.log` (retains last installation/repair/error across no-op relaunches) and fresh DLL `CrimsonSkiesFix.log` for every game session. CI regression tests cover separation. Earlier owner FR/DE runtime tests used the former unified log. | **Two-log candidate: CI tested; new owner runtime acceptance pending** |
+| Logs / packaging | Independent `CrimsonSkiesFix_installer.log` (retains last installation/repair/error across no-op relaunches) and fresh DLL `CrimsonSkiesFix.log` for every game session. CI regression tests cover separation. Earlier owner FR/DE runtime tests used the former unified log. | **Two-log candidate: CI tested; new owner runtime acceptance pending** |
 
 ### Exact authentication constraints
 
