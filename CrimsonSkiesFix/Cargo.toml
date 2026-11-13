@@ -3,7 +3,7 @@ name = "crimson-skies-fix"
 version = "1.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Experimental 32-bit DirectDraw proxy for Crimson Skies"
+description = "32-bit DirectDraw compatibility proxy for Crimson Skies"
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
