@@ -272,7 +272,7 @@ fn cfg()->Config {
             // The DLL owns its gameplay diagnostics exclusively. Every game
             // session starts a fresh CrimsonSkiesFix.log, whether launched by
             // the standalone installer or directly. Installer/repair records
-            // live independently in CrimsonSkiesFix-installer.log.
+            // live independently in CrimsonSkiesFix_installer.log.
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
@@ -641,7 +641,7 @@ mod trace_tests {
         let root=std::env::temp_dir().join(format!(
             "crimson-dual-logs-{}-{now}",std::process::id()));
         std::fs::create_dir(&root).unwrap();
-        let installer=root.join("CrimsonSkiesFix-installer.log");
+        let installer=root.join("CrimsonSkiesFix_installer.log");
         let game=root.join("CrimsonSkiesFix.log");
         std::fs::write(&installer,b"Action=REPAIRED_FROM_CD_AND_LAUNCH\n").unwrap();
         std::fs::write(&game,b"OldGameSession\n").unwrap();
