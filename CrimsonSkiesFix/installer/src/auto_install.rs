@@ -354,7 +354,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
 /// Entry point for no-argument execution. The installer keeps its last
 /// meaningful installation/repair/error report in the root installer log.
 /// The DLL writes an independent fresh gameplay log on every game start.
-pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
+pub(super) fn auto_run(base:&Path,game:&Path,explicit_import:bool)->Result<i32,String>{
     // Refuse unsafe installer-log paths before modifying an installation.
     // A verified, no-op relaunch does not overwrite any existing report.
     let log=base.join(INSTALLER_LOG);
@@ -365,6 +365,11 @@ pub(super) fn auto_run(base:&Path,game:&Path)->Result<i32,String>{
     let result=auto_prepare(base,game).and_then(|action|{
         if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
+        // An explicit --import is an installation action, even when the
+        // freshly imported legacy data verifies without a CD receipt.
+        let action=if explicit_import && action=="VERIFIED_LEGACY_IMPORT_AND_LAUNCH"{
+            "IMPORTED_LEGACY_AND_LAUNCH"
+        }else{action};
         Ok((action,exe))
     });
     let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
@@ -455,7 +460,8 @@ mod tests{
             assert_eq!(fs::read(&log).unwrap(),install);
         }
         for action in ["INSTALL_FROM_CD_AND_LAUNCH","REPAIRED_FROM_CD_AND_LAUNCH",
-            "REPAIRED_BUNDLED_PROXY_AND_LAUNCH","ACTIVATE_APPROVED_EXE_AND_LAUNCH"]{
+            "REPAIRED_BUNDLED_PROXY_AND_LAUNCH","ACTIVATE_APPROVED_EXE_AND_LAUNCH",
+            "IMPORTED_LEGACY_AND_LAUNCH"]{
             assert!(report_needed(Some(action)));
         }
         assert!(report_needed(None)); // errors are always retained
