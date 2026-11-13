@@ -1,9 +1,9 @@
-# CrimsonSkiesFix — release candidate notes (DRAFT — NOT PUBLISHED)
+# CrimsonSkiesFix 1.0 — release notes (DRAFT — NOT PUBLISHED)
 
-**Candidate version:** `0.1.90` — experimental standalone Windows x86 build.
+**Release version:** **1.0** (Cargo/SemVer `1.0.0`) — standalone Windows x86 installer and DirectDraw patch. Intended Git tag: `v1.0`.
 **Tested runtime:** Manjaro Linux, GE-Proton11-12 / Wine 11.0.
 **Native Windows status:** an earlier DLL/opt-in configuration was tested, but **this standalone candidate and its in-memory GOS VIDEO.SCRIPT substitution have not undergone native Windows gameplay acceptance**.
-**Release state:** preparation only; no tag, GitHub Release or final public binary is authorized by this document.
+**Release state:** version 1.0 selected; publication pending. No tag, GitHub Release or final public binary has been published. The release scope explicitly distinguishes Wine/Proton tests from native Windows gameplay not tested on this candidate.
 
 ## What's new
 
@@ -17,7 +17,7 @@
 
 ## Installation and requirements
 
-1. Download the **single `CrimsonSkiesFix.exe`** from the designated release candidate. It is an x86 Windows executable; launch under a compatible Wine/Proton environment or supported Windows installation. Keep it in a writable directory.
+1. Download the **single `CrimsonSkiesFix.exe`** from the version 1.0 release once published. It is an x86 Windows executable; launch under a compatible Wine/Proton environment or supported Windows installation. Keep it in a writable directory.
 2. For a new installation, place beside the launcher **one supported original ISO or CUE with BIN/IMG**, **the authentic official 1.02 updater**, and **your own approved decrypted 1.02 executable**. Run without arguments to install and play, or with `--install-only` to complete a verified installation **without launching**. All three prerequisites (including the embedded DirectDraw patch) must be authenticated **before** the CD is extracted; the game folder is published only after verification.
 3. For an existing, verified installation, run the same launcher again; the original source media are not required.
 4. The active options file is `CrimsonSkiesFix/CrimsonSkiesFix.ini` **inside the game folder**. The new generated INI and supplied `.ini.example` contain `[Graphics] AspectRatio=auto`, `FPSLimit=60` and `[Debug] Log=0`; 4:3 is optional and all mandatory compatibility fixes are compiled into defaults. An existing active INI is preserved, never overwritten.
@@ -50,10 +50,11 @@ The game data and supported executable must still be provided separately by the 
 - [ ] Review the unified CLI in PR #28 and its stacked pre-release cleanup, then merge in dependency order only after owner approval.
 - [ ] After approved merges of PR #28 and stacked PR #31, build exact final **main** commit and confirm Windows x86 / Linux downloaded-artifact CI jobs succeed. PR #31 head `59d81dd7` already passed both jobs.
 - [ ] Record the **final main source SHA, release artifact size and SHA-256** after its build. Old PR binaries cannot serve as the final release.
-- [ ] Verify the chosen `v0.1.90` tag name is unused and approve an explicitly labelled **experimental prerelease**, not a stable Windows release.
-- [ ] Only after explicit owner approval: publish tag, release notes and the single final `CrimsonSkiesFix.exe` artifact. Do not upload original game, official updater or decrypted binary.
+- [x] Verified that the intended `v1.0` tag is currently unused (13 November 2026).
+- [ ] After approval and final `main` build, publish the **1.0 release** with its actual compatibility scope: FR/DE gameplay tested under GE-Proton, USA/Europe original-disc installation tested, no native Windows gameplay acceptance for this exact candidate.
+- [ ] Only after explicit owner approval: publish the `v1.0` tag, 1.0 release notes and the single final `CrimsonSkiesFix.exe` artifact. Do not upload original game, official updater or decrypted binary.
 
-**No native Windows gameplay claim and no stable release claim are permitted from this evidence alone.** See the updated [13 November release checklist](release-checklist-2026-11-13.md) for the current PR sequence and test matrix.
+**Do not claim native Windows gameplay acceptance for this build or full game testing of USA/Europe.** The 1.0 release number does not expand the evidence. See the updated [13 November release checklist](release-checklist-2026-11-13.md) for the current PR sequence and test matrix.
 
 Copyright for the original game and its data belongs to their respective owners; the project distributes original open-source patch code only, GPL-3.0-or-later.
 
