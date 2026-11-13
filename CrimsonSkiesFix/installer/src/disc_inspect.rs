@@ -34,7 +34,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     if let Some(path)=specified {
         let resolved=if path.is_absolute() {path.to_path_buf()} else {base.join(path)};
         if !has_ext(&resolved,"iso") && !has_ext(&resolved,"cue") {
-            return Err("--inspect-cd expects an .iso or .cue file (BIN is referenced by CUE)".into());
+            return Err("an original CD source must be an .iso or .cue file (BIN is referenced by CUE)".into());
         }
         safe_file(&resolved)?;
         return Ok(resolved);
@@ -53,7 +53,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
         1=>Ok(candidates.remove(0)),
         count=>Err(format!(
             "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}. \
-             Use --inspect-cd \"path.iso\" or --inspect-cd \"path.cue\" to select one."
+             Keep exactly one original ISO or CUE beside CrimsonSkiesFix.exe."
         ))
     }
 }
@@ -144,7 +144,14 @@ fn open_iso(path:&Path)->Result<ImageSource,String> {
         first_byte:0,end_byte:size,format:"ISO/2048".into(),tracks:1
     })
 }
-fn open_cue(path:&Path)->Result<ImageSource,String> {
+fn open_cue(path:&Path,bin_override:Option<&Path>)->Result<ImageSource,String> {
+    let alternative=if let Some(path)=bin_override {
+        if !has_ext(path,"bin") && !has_ext(path,"img") {
+            return Err("CUE data override must be .bin or .img".into());
+        }
+        safe_file(path)?;
+        Some(path.to_path_buf())
+    } else {None};
     safe_file(path)?;
     let bytes=fs::read(path).map_err(err)?;
     let text=std::str::from_utf8(&bytes)
@@ -153,6 +160,7 @@ fn open_cue(path:&Path)->Result<ImageSource,String> {
     let base=path.parent().ok_or("CUE has no parent directory")?;
     let mut active_file:Option<(PathBuf,String)>=None;
     let mut tracks:Vec<CueTrack>=Vec::new();
+    let mut referenced_files=0usize;
     for (i,line) in text.lines().enumerate() {
         let line=line.trim();
         if line.is_empty() || line.starts_with(';') {continue;}
@@ -164,8 +172,22 @@ fn open_cue(path:&Path)->Result<ImageSource,String> {
             "FILE"=>{
                 let (name,format)=parse_cue_filename(val)
                     .map_err(|e|format!("CUE line {}: {e}",i+1))?;
-                let bin=resolve_cue_bin(base,&name)
-                    .map_err(|e|format!("CUE line {}: {e}",i+1))?;
+                referenced_files+=1;
+                if alternative.is_some() && referenced_files!=1 {
+                    return Err("Explicit BIN/IMG override requires a single CUE FILE declaration".into());
+                }
+                /* Still validate CUE's own source path against traversal
+                 * even when the user explicitly supplies the raw track. */
+                if name.contains(':') || name.starts_with('/') ||
+                   name.starts_with('\\') ||
+                   !Path::new(&name.replace('\\',"/")).components().all(
+                       |c|matches!(c,Component::Normal(_))) {
+                    return Err(format!("CUE line {}: unsafe source FILE name",i+1));
+                }
+                let bin=if let Some(ref selected)=alternative {selected.clone()} else {
+                    resolve_cue_bin(base,&name)
+                        .map_err(|e|format!("CUE line {}: {e}",i+1))?
+                };
                 active_file=Some((bin,format));
             }
             "TRACK"=>{
@@ -702,7 +724,7 @@ pub fn extract_game(base:&Path,specified:Option<&Path>)->Result<Extraction,Strin
     extract_game_to(base,specified,None)
 }
 
-/// Installation uses the same content-authenticated extractor as --extract-cd,
+/// Installation uses the content-authenticated original-CD extractor,
 /// but places files in its private transaction rather than a diagnostic folder.
 pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
     ->Result<Extraction,String> {
@@ -712,7 +734,7 @@ pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
 fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     ->Result<Extraction,String> {
     let media=select(base,specified)?;
-    let image=if has_ext(&media,"cue"){open_cue(&media)?} else {open_iso(&media)?};
+    let image=if has_ext(&media,"cue"){open_cue(&media,None)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
     let volume=parse_volume(&image,&mut file)?;
     let mut walker=Walker{image:&image,file,joliet:volume.filename_source=="Joliet",
@@ -743,7 +765,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
     }
     // Preflight also requires the eight files that the historical installer
     // copies from the disc ROOT to the installed game ROOT. They are absent
-    // from the GAME/ folder and were previously omitted by --install-cd.
+    // from the GAME/ folder and were previously omitted by the first CD-installer implementation.
     let additional=if target.is_some(){
         let mut selected=Vec::new();
         let readme=retail_readme(edition)?;
@@ -781,8 +803,19 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:Option<&Path>)
 }
 
 pub fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
+    inspect_with_override(base,specified,None)
+}
+pub fn inspect_with_override(base:&Path,specified:Option<&Path>,
+                             bin_override:Option<&Path>)->Result<String,String> {
     let media=select(base,specified)?;
-    let image=if has_ext(&media,"cue"){open_cue(&media)?}else{open_iso(&media)?};
+    let extra=if let Some(path)=bin_override {
+        if !has_ext(&media,"cue"){return Err("BIN/IMG override is only valid for CUE".into());}
+        let file=if path.is_absolute(){path.to_path_buf()}else{base.join(path)};
+        safe_file(&file)?;
+        Some(file)
+    } else {None};
+    let image=if has_ext(&media,"cue"){open_cue(&media,extra.as_deref())?}
+              else{open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
     let volume=parse_volume(&image,&mut file)?;
     let mut walk=Walker{
