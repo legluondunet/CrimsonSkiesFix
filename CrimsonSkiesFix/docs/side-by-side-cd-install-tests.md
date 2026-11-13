@@ -1,5 +1,7 @@
 # Safe side-by-side original CD installations for testing
 
+Historical test note: the original USA disc is no longer available to the owner,
+so these exact commands are archival examples, **not a remaining release gate**.
 The owner attempted `--install-cd "Crimson Skies (USA, Europe).cue"` after
 the German installation and supplied `install-cd-USA.log` plus
 `verify-install-USA.log`. The installation command **correctly refused**
@@ -19,18 +21,22 @@ different test workspaces. The user must opt into a named edition.
 
 ```sh
 WINEDEBUG=-all wine CrimsonSkiesFix.exe --install-cd "Crimson Skies (USA, Europe).cue" "Crimson_Skies_Patch_102.exe" --into USA
-cp CrimsonSkiesFix.log install-cd-USA.log
+cp CrimsonSkiesFix-installer.log install-cd-USA.log
 
 WINEDEBUG=-all wine CrimsonSkiesFix.exe --verify-install USA
-cp CrimsonSkiesFix.log verify-install-USA.log
+# Successful --verify-install reports to the terminal and keeps the previous
+# installer log untouched; capture this success explicitly if desired:
+# WINEDEBUG=-all wine CrimsonSkiesFix.exe --verify-install USA > verify-install-USA.log 2>&1
 ```
 
 These commands create/verify `CrimsonSkiesFix.USA/` while leaving
 the existing German `CrimsonSkiesFix/` intact. A successful log must
 explicitly state `Edition=C_SKIES_DISC_001`, the destination, and
 `INSTALL_RESULT=GAME_FILES_READY_EXECUTABLE_PENDING`.
-The separate verification must explicitly state the **USA edition**,
-the selected directory and `VERIFY_INSTALL_RESULT=COMPLETE`.
+The separate verification, captured from standard output on success, must
+explicitly state the **USA edition** and the selected directory. A successful
+`--verify-install` intentionally **does not overwrite** an existing
+`CrimsonSkiesFix-installer.log`; an error does update it.
 
 Other selectors are `FR` and `DE`. The new install-mode forms are:
 
