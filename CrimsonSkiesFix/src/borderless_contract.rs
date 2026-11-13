@@ -9,7 +9,8 @@
 
 #![allow(dead_code)]
 
-use crate::presentation::{preflight,preflight_native_3d,Chain,Mode,WindowedPresentationPlan};
+use crate::presentation::{preflight,preflight_native_3d,preflight_four_by_three_3d,
+    Chain,Mode,WindowedPresentationPlan};
 
 // Direct3D3::CreateDevice requires DDSCAPS_3DDEVICE on its real
 // IDirectDrawSurface4 render target (original DirectX 6 contract).
@@ -118,6 +119,19 @@ impl AdapterContract {
             return Err(ContractError::UnsupportedModeOrChain);
         }
         Ok(Self {plan,phase:Phase::Preparing})
+    }
+
+    /// The same authenticated game EXE may render its entire 3D scene in
+    /// exact native-resolution 4:3, centered inside the borderless desktop.
+    /// The UI/movie 800x600 planner and full-screen auto planner stay strict.
+    pub fn prepare_four_by_three_3d(mode:Mode,desktop:(u32,u32),chain:Chain)
+        ->Result<Self,ContractError>{
+        let plan=preflight_four_by_three_3d(mode,desktop.0,desktop.1,chain)
+            .ok_or(ContractError::UnsupportedModeOrChain)?;
+        if !plan.requires_surface_virtualization{
+            return Err(ContractError::UnsupportedModeOrChain);
+        }
+        Ok(Self{plan,phase:Phase::Preparing})
     }
 
     // A later real COM backend must validate the objects *before* calling
@@ -374,6 +388,21 @@ mod tests {
         assert_eq!(AdapterContract::prepare(Mode{width:1920,height:1080,bpp:16},
                    (1920,1080),chain()).unwrap_err(),
                    ContractError::UnsupportedModeOrChain);
+    }
+    #[test]
+    fn four_by_three_3d_contract_requires_exact_source_and_valid_graph(){
+        let chain=chain();
+        let mode=Mode{width:1440,height:1080,bpp:16};
+        let mut c=AdapterContract::prepare_four_by_three_3d(
+            mode,(1920,1080),chain).unwrap();
+        assert_eq!(c.plan.viewport,crate::presentation::Viewport{
+            x:240,y:0,width:1440,height:1080});
+        c.expose(evidence()).unwrap();
+        assert_eq!(c.phase,Phase::Exposed);
+        assert!(AdapterContract::prepare_native_3d(
+            mode,(1920,1080),chain).is_err());
+        assert!(AdapterContract::prepare_four_by_three_3d(
+            Mode{width:1920,height:1080,bpp:16},(1920,1080),chain).is_err());
     }
     #[test]
     fn incomplete_backend_aborts_before_any_surface_is_exposed(){
