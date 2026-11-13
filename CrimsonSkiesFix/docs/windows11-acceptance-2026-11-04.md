@@ -11,7 +11,7 @@ This protocol documents a later optional acceptance test; unavailability of a na
 - If installing from disc, put one supported genuine ISO/CUE-BIN (FR/DE verified under GE-Proton; USA remains untested in gameplay), the official 1.02 updater and your own exact approved decrypted 1.02 EXE next to the launcher. For a preinstalled verified game, the original media need not be present.
 - Supported unmodified decrypted `CRIMSON.EXE`: **2,580,480 bytes**, SHA-256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`. Do not supply third-party widescreen executables.
 - Use a test copy of the installation. Do not remove arbitrary `.rebuilding`, `.installing`, `.previous` or GOS `.bak` paths to bypass safety checks.
-- A completed run creates `CrimsonSkiesFix/CrimsonSkiesFix.ini` (active INI inside the game folder), `CrimsonSkiesFix/ddraw.dll`, `CrimsonSkiesFix/build-info.txt` and **one** `CrimsonSkiesFix.log` beside the standalone launcher. The downloadable archive itself contains only the launcher EXE. To request detailed gameplay logging, set `[Debug] Log=1` in that installed active INI.
+- A completed run creates `CrimsonSkiesFix/CrimsonSkiesFix.ini` (active INI inside the game folder), `CrimsonSkiesFix/ddraw.dll`, `CrimsonSkiesFix/build-info.txt`, and **two independent logs** beside the standalone launcher: `CrimsonSkiesFix-installer.log` (latest meaningful installer/repair report) and `CrimsonSkiesFix.log` (fresh DLL game log per session). The downloadable archive itself contains only the launcher EXE. To request detailed gameplay logging, set `[Debug] Log=1` in that installed active INI.
 
 ## End-to-end test — one launch and one repeat launch
 
@@ -21,12 +21,12 @@ This protocol documents a later optional acceptance test; unavailability of a na
 4. **3D:** play several minutes in a mission. The 3D world must fill the monitor at the correct FOV with a properly proportioned HUD; visual colours, cursor/input and audio must work.
 5. **Mode transitions:** go into/out of missions and settings. The game may create virtual 1920×1080/800×600 surfaces, but the Windows desktop resolution must not change. Check for white sidebars, freeze, wrong scaling or lost input.
 6. **Alt+Tab:** from menu and from live gameplay, switch away and back twice, check repaint and foreground input. Verify cutscene transitions if encountered.
-7. **Exit and repeat:** exit normally and confirm the unified report's `GAME_EXIT_CODE=0`. Relaunch using the same EXE and active INI; confirm it verifies the previous game and shows `GosOverlayState=VERIFIED_MANAGED` without rewriting the GOS archive or re-extracting media. Exit cleanly again.
+7. **Exit and repeat:** exit normally; the installer report has `GAME_EXIT_CODE=0` on first install or repair, and the launcher prints the status to the console on subsequent verified-only launches. Relaunch using the same EXE and active INI; confirm it verifies the previous game without rewriting the GOS archive or re-extracting media, and that `CrimsonSkiesFix-installer.log` retains its previous successful install report. Exit cleanly again.
 8. **Optional GOS restore on a backed-up test copy:** use `GosVideoLock=restore` in the installed `[Graphics]` section, launch once to restore the original small overlay after verification, then deliberately choose `off` or `on`. Setting `off` alone does not restore the overlay.
 
 ## Evidence and decision
 
-- Keep the **full final source commit and `DllSha256`** from `CrimsonSkiesFix/build-info.txt`, and the matching game initialization entry within the combined `CrimsonSkiesFix.log`. After an installer session, the game version is not the first log line.
+- Keep the **full final source commit and `DllSha256`** from `CrimsonSkiesFix/build-info.txt`, and the matching game initialization entry in the **DLL-only** `CrimsonSkiesFix.log`. Read the separate `CrimsonSkiesFix-installer.log` for installation/repair data; an ordinary verified-only launch must not overwrite it.
 - Record the observed pass/fail conditions, operating system, screen resolution/DPI, GPU and launcher build label. Do not confuse internal API callback rates with actual display FPS.
 - Windows runner tests and previous Windows 11 gameplay sessions on older builds are not evidence for this exact candidate.
 - Native Windows runtime acceptance or a claim of stable Windows compatibility requires a real test of the same final binary. Any experimental prerelease published without this test must state the limitation prominently.
