@@ -4,7 +4,7 @@
 
 The active project builds a 32-bit Rust `ddraw.dll` for one exact, verified Crimson Skies v1.02 SafeDisc-free executable. It does **not** modify the executable on disk.
 
-**Status: experimental release candidate, not yet published.** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The USA/Europe CD is recognized by strictly pinned file hashes and is covered by synthetic checks, but **no current original USA disc is available for an end-to-end test**. Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
+**Status: version 1.0 selected; publication pending.** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The original USA/Europe CUE/BIN has now been inspected (`C_SKIES_DISC_001`, 112/112 matching source file hashes) and successfully installed using `--install-only` under Wine/GE-Proton on candidate `0.1.90-59d81dd7`. **USA/Europe gameplay remains untested.** Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
 
 ## Supported executable
 
@@ -31,7 +31,7 @@ The downloaded artifact contains **only the launcher**: it never distributes the
 
 **The new first-run INI contains `[Graphics] AspectRatio=auto`, `FPSLimit=60` and `[Debug] Log=0`.** Choose `AspectRatio=4:3` for native-resolution 4:3 gameplay with centered black sidebars, 4:3 camera/HUD and the original 4:3 menus/videos, without changing the desktop resolution. Mandatory widescreen, fullscreen, GOS, Windows/Wine and first-image compatibility fixes are compiled in and applied automatically to authenticated games. Advanced diagnostic and `GosVideoLock=restore` options are accepted when explicitly added but are not cluttering the generated file. Existing personal INIs are preserved unchanged.
 
-The current build keeps **two independent logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). `--launch-no-verify` does not touch that report; `--install-only` never creates a game process. See the [detailed installation guide](CrimsonSkiesFix/README.md).
+The current build keeps **two independent operational logs** beside the launcher: `CrimsonSkiesFix_installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit `--inspect` writes an additional separate `CrimsonSkiesFix_inspect.log`. `--launch-no-verify` does not touch that report; `--install-only` never creates a game process. See the [detailed installation guide](CrimsonSkiesFix/README.md).
 
 ## Identify a build
 
@@ -50,10 +50,10 @@ cargo build --locked --release --target i686-pc-windows-msvc
 
 The [Windows x86 workflow](.github/workflows/crimsonskiesfix-x86.yml) compiles the PE32 DLL, runs Rust and Python regression checks, validates the clean distribution layout, and performs a native `LoadLibraryW` / `GetProcAddress` / `FreeLibrary` smoke test. The standalone `windowed_ddraw_probe.exe` remains in the repository for DirectDraw regression tests and its x86 build is checked by CI. It is **not** required to run the game and is no longer published as a downloadable artifact.
 
-Current release scope and remaining checks are tracked in the [12 November release preparation](CrimsonSkiesFix/docs/release-preparation-2026-11-12.md). The [4 November readiness audit](CrimsonSkiesFix/docs/release-readiness-2026-11-04.md) is kept as a historical checkpoint. Native Windows gameplay with this exact candidate remains a separate, later test.
+Current release scope and remaining checks are tracked in the [13 November release checklist](CrimsonSkiesFix/docs/release-checklist-2026-11-13.md). The [12 November preparation](CrimsonSkiesFix/docs/release-preparation-2026-11-12.md) remains a historical snapshot. The [4 November readiness audit](CrimsonSkiesFix/docs/release-readiness-2026-11-04.md) is kept as a historical checkpoint. Native Windows gameplay with this exact candidate remains a separate, later test.
 
 ## License and contribution policy
 
-This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). Experimental archives include an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; merging and publication of a stable release require explicit owner approval.
+This repository is licensed **GPL-3.0-or-later**; see [LICENSE](LICENSE). The released installer installs an identical copy in the `CrimsonSkiesFix` subfolder. Changes are proposed via pull requests; merging and publication of a stable release require explicit owner approval.
 
 legluondunet assisted by ChatGPT (OpenAI)

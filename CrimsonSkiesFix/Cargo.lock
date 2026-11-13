@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "crimson-skies-fix"
-version = "0.1.90"
+version = "1.0.0"
 dependencies = [
  "flate2",
 ]

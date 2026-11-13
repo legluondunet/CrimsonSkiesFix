@@ -1,6 +1,6 @@
 [package]
 name = "crimsonskiesfix-launcher"
-version = "0.1.90"
+version = "1.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Standalone Crimson Skies installer, verifier and launcher"
