@@ -419,7 +419,7 @@ fn launch_without_verification(game:&Path)->Result<i32,String>{
 fn supported_command(args:&[OsString])->bool{
     let Some((name,rest))=args.split_first() else{return true;};
     rest.is_empty() && matches!(name.to_str(),
-        Some("--help"|"--version"|"--verify"|"--install-only"|"--launch-no-verify"))
+        Some("--help"|"-h"|"--version"|"--verify"|"--install-only"|"--launch-no-verify"))
 }
 
 fn usage() {
@@ -432,8 +432,11 @@ fn usage() {
          CrimsonSkiesFix.exe --launch-no-verify         start CRIMSON.EXE directly, no verification or repair\n\
          CrimsonSkiesFix.exe --verify         verify installed EXE and embedded ddraw.dll\n\
 
+         CrimsonSkiesFix.exe --inspect image.iso   inspect unsupported CD, separate inspect log\n\
+         CrimsonSkiesFix.exe --inspect image.cue [track.bin|track.img]\n\
+         CrimsonSkiesFix.exe --verbose    detailed diagnostics, can combine with a command\n\
          CrimsonSkiesFix.exe --version\n\
-         CrimsonSkiesFix.exe --help\n\
+         CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
          A full installation requires the approved 1.02 EXE, bundled ddraw.dll patch,\n\
@@ -444,9 +447,30 @@ fn usage() {
     );
 }
 
+fn inspect_cd(base:&Path,image:&Path,track:Option<&Path>,verbose:bool)->Result<i32,String>{
+    let output=base.join("CrimsonSkiesFix_inspect.log");
+    if output.exists() && !regular(&output) {
+        return Err(format!("inspect log is not a regular file: {}",output.display()));
+    }
+    let outcome=disc_inspect::inspect_with_override(base,Some(image),track);
+    let report=match &outcome {
+        Ok(info)=>info.clone(),
+        Err(failure)=>format!("CrimsonSkiesFix INSPECT FAILED\nSource={}\nTrack={}\nError={failure}\n",
+            image.display(),track.map(|p|p.display().to_string()).unwrap_or_default())
+    };
+    fs::write(&output,report.as_bytes()).map_err(error)?;
+    println!("Inspection report: {}",output.display());
+    if verbose {println!("{report}");}
+    outcome.map(|_|0).map_err(|err|format!("CD inspection failed: {err}"))
+}
 fn run() -> Result<i32, String> {
-    let args: Vec<OsString> = env::args_os().skip(1).collect();
-    if args.len() == 1 && args[0] == "--help" {
+    let input: Vec<OsString> = env::args_os().skip(1).collect();
+    let verbose=input.iter().any(|arg|arg=="--verbose");
+    if input.iter().filter(|arg|*arg=="--verbose").count()>1 {
+        return Err("--verbose specified twice".into());
+    }
+    let args:Vec<OsString>=input.into_iter().filter(|arg|arg!="--verbose").collect();
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         usage();
         return Ok(0);
     }
@@ -454,13 +478,27 @@ fn run() -> Result<i32, String> {
         println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
         return Ok(0);
     }
-    if !supported_command(&args){
+    let inspect=args.first().is_some_and(|arg|arg=="--inspect");
+    if !inspect && !supported_command(&args){
         usage();
         return Err("unsupported command or number of arguments".into());
     }
     let launcher = env::current_exe().map_err(error)?;
     let base = launcher.parent().ok_or("cannot locate launcher directory")?;
+    if inspect {
+        if args.len()<2 || args.len()>3 {
+            usage();return Err("Usage: --inspect image.iso | image.cue [track.bin|track.img]".into());
+        }
+        let image=PathBuf::from(&args[1]);
+        let track=args.get(2).map(PathBuf::from);
+        return inspect_cd(base,&image,track.as_deref(),verbose);
+    }
     let game = base.join("CrimsonSkiesFix");
+    if verbose {
+        println!("VERBOSE: launcher={} game={} installed_exe={} runtime_dll={}",
+            launcher.display(),game.display(),
+            regular(&game.join("CRIMSON.EXE")),regular(&game.join("ddraw.dll")));
+    }
     // Explicit bypass must not inspect, hash, repair, migrate or extract game
     // files or modify an installer report. OS-level process launch only.
     if args.len()==1 && args[0]=="--launch-no-verify" {
@@ -499,7 +537,7 @@ mod tests {
     #[test]
     fn cli_has_only_the_supported_commands(){
         for flags in [
-            vec![],vec!["--help"],vec!["--version"],vec!["--verify"],
+            vec![],vec!["--help"],vec!["-h"],vec!["--version"],vec!["--verify"],
             vec!["--install-only"],vec!["--launch-no-verify"],
         ]{
             let args=flags.iter().map(OsString::from).collect::<Vec<_>>();
