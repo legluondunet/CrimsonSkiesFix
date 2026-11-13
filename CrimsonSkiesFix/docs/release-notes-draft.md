@@ -28,13 +28,13 @@
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`.
 The launcher does not decrypt or replace an unknown game executable.
 
-## Compatibility and evidence (12 November 2026)
+## Compatibility and evidence (updated 13 November 2026)
 
 | Edition / environment | Actual evidence | Status |
 | --- | --- | --- |
 | **FR**, Manjaro / GE-Proton11-12 | Owner tested initial verified CD install, game launch, Graphics/Resolution lock and successful game exit; these gameplay tests used the earlier unified logger, before this two-log release-candidate change | **Owner-validated** |
 | **DE**, Manjaro / GE-Proton11-12 | Owner tested initial CD install (including exact CAB aliases), native Graphics/Resolution lock, then `VERIFIED_EXISTING_AND_LAUNCH` with `GosOverlayState=VERIFIED_MANAGED` and exit code 0 | **Owner-validated** |
-| **USA/Europe** | Exact original-disc 112-file SHA-256 profile, alias-table and synthetic tests are implemented. The original disc is no longer available to the owner | **Implemented, not runtime-tested** |
+| **USA/Europe**, Wine / GE-Proton | Real original CUE/BIN identified as `C_SKIES_DISC_001` with 112/112 exact internal-file SHA-256 matches, 0 suspect. Candidate `0.1.90-59d81dd7` completed `--install-only`: 45 GAME files extracted, eight CABs expanded, installed data and approved EXE verified, original protected EXE retained, and `GameLaunch=SKIPPED` | **Real-disc inspection and installation accepted; USA gameplay untested** |
 | **Native Windows (latest candidate)** | CI verifies that the x86 DLL loads and exports are correct; older manual Windows 11 tests were on a different runtime path | **Not game-tested with this candidate** |
 
 The game data and supported executable must still be provided separately by the user. Unknown ISO/CD variants, unknown decryptions and third-party widescreen-modified executables are rejected. GPU, compositor, DPI, game video/audio codec, input and performance differences are not validated exhaustively. The GameOS graphics lock is deliberately limited to Graphics and Resolution; **other Video preference editability was not exhaustively retested**. The `Log=0` configuration can still include compatibility-adapter diagnostics; this does not imply that gameplay FPS measurements are enabled.
@@ -42,13 +42,13 @@ The game data and supported executable must still be provided separately by the 
 ## Maintainer release checklist (not a license to publish)
 
 - [x] FR and DE owner acceptance under GE-Proton; both `Log=0` and `Log=1` sessions observed on the prior unified-log version.
-- [ ] Two-log change passes CI and, ideally, a short owner runtime smoke test; CI-only is not real-game verification.
-- [x] USA edition remains explicitly marked **untested**; unavailable source media do not block an honestly labelled prerelease.
+- [x] Final CLI/dual-log branch (`59d81dd7`) passed Windows x86 and downloaded-artifact CI. Owner supplied real USA `--install-only` and `--inspect` reports; complete gameplay/log-rotation re-test remains pending.
+- [x] Real USA/Europe CD inspection and installation without launch succeeded on `0.1.90-59d81dd7`; **gameplay remains untested** until a game session is accepted.
 - [x] One-file artifact only, GPL-3.0-or-later license and source/provenance records installed with the proxy.
 - [ ] Verify minimal three-option INI (AspectRatio, FPSLimit and Log), default-on compatibility features, and native 4:3 gameplay in the final candidate. Earlier owner game testing used the older generated INI and native aspect.
 - [x] Installer foundation PR #26 and GOS patch PR #27 were merged into `main` on 13 November 2026.
 - [ ] Review the unified CLI in PR #28 and its stacked pre-release cleanup, then merge in dependency order only after owner approval.
-- [ ] Build exact final **main** commit and confirm the Windows x86 / Linux downloaded-artifact CI jobs both succeed.
+- [ ] After approved merges of PR #28 and stacked PR #31, build exact final **main** commit and confirm Windows x86 / Linux downloaded-artifact CI jobs succeed. PR #31 head `59d81dd7` already passed both jobs.
 - [ ] Record the **final main source SHA, release artifact size and SHA-256** after its build. Old PR binaries cannot serve as the final release.
 - [ ] Verify the chosen `v0.1.90` tag name is unused and approve an explicitly labelled **experimental prerelease**, not a stable Windows release.
 - [ ] Only after explicit owner approval: publish tag, release notes and the single final `CrimsonSkiesFix.exe` artifact. Do not upload original game, official updater or decrypted binary.
