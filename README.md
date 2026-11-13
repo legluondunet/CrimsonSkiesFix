@@ -4,7 +4,7 @@
 
 The active project builds a 32-bit Rust `ddraw.dll` for one exact, verified Crimson Skies v1.02 SafeDisc-free executable. It does **not** modify the executable on disk.
 
-**Status: experimental release candidate, not yet published.** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the unified log under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The USA/Europe CD is recognized by strictly pinned file hashes and is covered by synthetic checks, but **no current original USA disc is available for an end-to-end test**. Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
+**Status: experimental release candidate, not yet published.** The owner validated original **French and German CD installation**, first and repeat launch, native Graphics/Resolution lock and the earlier unified-log build under Manjaro / GE-Proton11-12, with 1920×1080 rendering. The USA/Europe CD is recognized by strictly pinned file hashes and is covered by synthetic checks, but **no current original USA disc is available for an end-to-end test**. Native Windows 11 was exercised with an earlier DLL/opt-in profile; **the latest standalone installer, default settings and in-memory GOS VIDEO.SCRIPT substitution have not been game-tested on native Windows**. The Windows CI loads the x86 DLL and verifies 22 exports; that is not a gameplay test.
 
 ## Supported executable
 
@@ -27,11 +27,11 @@ For a first installation, place one original supported ISO or CUE/BIN image, the
 
 The downloaded artifact contains **only the launcher**: it never distributes the original game, game assets or decrypted executable. The installed game receives its own `ddraw.dll`, documentation and `CrimsonSkiesFix.ini.example`; an active user INI is created on first game launch, never bundled. By default, `GosVideoLock=on` may modify the small original `GOSDATA/ASSETS/crimptch.rof` overlay after verifying and backing it up. Set `GosVideoLock=restore` to restore the original archive before removing the fix if desired.
 
-For the exact supported media and the installation/repair flow, see the [detailed installation guide](CrimsonSkiesFix/README.md).
+The current build keeps **two independent logs** beside the launcher: `CrimsonSkiesFix-installer.log` (last installation, repair or failure; unchanged on successful routine relaunches) and `CrimsonSkiesFix.log` (fresh DLL gameplay diagnostics for each game session). Explicit CD/update inspection commands also use the installer log. See the [detailed installation guide](CrimsonSkiesFix/README.md).
 
 ## Identify a build
 
-The launcher creates `CrimsonSkiesFix/build-info.txt` **inside the installed game folder** (not inside the one-file downloadable artifact). It records the full source commit, the expected eight-character build label, and the SHA-256 of the embedded `ddraw.dll`. Compare `LogIdentity` with the game initialization line of `CrimsonSkiesFix.log` while testing (after the installer section when started through the standalone launcher) and compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
+The launcher creates `CrimsonSkiesFix/build-info.txt` **inside the installed game folder** (not inside the one-file downloadable artifact). It records the full source commit, the expected eight-character build label, and the SHA-256 of the embedded `ddraw.dll`. Compare `LogIdentity` with the first game initialization line in `CrimsonSkiesFix.log`; separately consult `CrimsonSkiesFix-installer.log` for the last meaningful installation/repair report. Compare `DllSha256` with the installed DLL. These values identify a build and help catch accidental version mismatches; they are **not** a digital signature.
 
 The original game's and ROFFILE.DLL's expected hashes are separate from the **proxy DLL** hash in this manifest.
 
