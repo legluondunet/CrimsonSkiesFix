@@ -1,0 +1,70 @@
+name: Update CrimsonSkiesFix 1.0 release notes
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/maintenance-release-notes-v1.0.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update-release-notes:
+    if: github.repository == 'legluondunet/CrimsonSkiesFix'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Replace only the requested compatibility section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/v1.0" > release.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          release=json.loads(Path("release.json").read_text())
+          assert release["tag_name"]=="v1.0"
+          assert release["target_commitish"]=="5a9274d0af8018a346af2fa8e50e2e28dffc6d9d"
+          assert not release["draft"]
+          old=release["body"]
+          start=old.index("## Compatibility and known limitations\n")
+          end=old.index("\nThis is **version 1.0**",start)
+          new_section="""## Compatibility
+
+          - **Platforms:** Tested on **Windows 11** and **GE-Proton** (Linux).
+          - **Supported game editions:** Original **USA/Europe, French (FR) and German (DE)** retail CDs, with or without the **1.02 update resources** already present. For a new installation, the original official **1.02 updater is required** in both cases; CrimsonSkiesFix applies the required 1.02 game data and preserves already matching files.
+          - **Required game executable:** A separately supplied, unmodified **decrypted Crimson Skies 1.02 \`CRIMSON.EXE\`** is mandatory. CrimsonSkiesFix does not provide or decrypt it; original SafeDisc-protected and third-party modified executables are not supported.
+          """
+          new_section="\n".join(line[10:] if line.startswith("          ") else line for line in new_section.splitlines())
+          updated=old[:start]+new_section+old[end:]
+          old_sentence="This is **version 1.0**, published with the compatibility scope above; no additional owner-side manual test is claimed. The project is licensed **GPL-3.0-or-later**."
+          assert updated.count(old_sentence)==1
+          updated=updated.replace(old_sentence,"CrimsonSkiesFix 1.0 is licensed **GPL-3.0-or-later**.")
+          assert "Compatibility and known limitations" not in updated
+          assert updated.count("## Compatibility")==1
+          Path("RELEASE_NOTES.md").write_text(updated)
+          print("Replacement section:\n",new_section)
+          PY
+          gh release edit v1.0 --repo "$GITHUB_REPOSITORY" --notes-file RELEASE_NOTES.md
+
+      - name: Confirm the public release changed and the EXE stayed intact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/v1.0" > release-after.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          release=json.loads(Path("release-after.json").read_text())
+          expected=Path("RELEASE_NOTES.md").read_text()
+          assert release["body"].strip()==expected.strip(), "Release description does not match the requested change"
+          assets=release["assets"]
+          assert len(assets)==1 and assets[0]["name"]=="CrimsonSkiesFix.exe"
+          assert assets[0]["digest"]=="sha256:897e0273ff506fe4545a94eb5d1b633847bc39657592af10e4bde414d442ac1f"
+          assert release["tag_name"]=="v1.0"
+          print("Verified:",release["html_url"])
+          print("Published EXE unchanged:",assets[0]["digest"])
+          PY
