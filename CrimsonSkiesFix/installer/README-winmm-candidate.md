@@ -17,16 +17,23 @@ external DDraw wrapper compatibility tests have NOT been completed.
   Migration of known v1.0 proxy hashes and external graphics wrappers is
   deferred until separately tested.
 - Unknown existing `winmm.dll` files are never overwritten. The installer
-  recognizes **only** pinned SHA-256 digests of our own previously built
-  experimental WinMM DLLs: `6d358ba9`, `7395cd3c`, `65304a3e`,
-  `d2e45149`, `0bcc164b`, `39bb2e5d` and `f3ebbe51`, verified directly from their
-  original GitHub Windows x86 CI artifacts. It preserves the prior active DLL
-  as `winmm.dll.bak`; an existing backup name is never overwritten. All
-  other WinMM files (including third-party wrappers) require manual review.
+  recognizes **only** pinned SHA-256 digests of our previous experimental
+  WinMM DLLs: `6d358ba9`, `7395cd3c`, `65304a3e`, `d2e45149`,
+  `0bcc164b`, `39bb2e5d`, `f3ebbe51`, and `913271c4` (verified directly
+  from their original Windows x86 CI artifacts). On a **normal launch** of a
+  newer test installer, it automatically installs its matching bundled DLL
+  without requiring `--install-only`. The previous active DLL becomes
+  `winmm.dll.bak`; if an existing `.bak` is also one of our authenticated
+  experimental DLLs, that older backup is rotated away *after* installation
+  succeeds, leaving **exactly one previous DLL backup**. An unknown active
+  DLL or unknown pre-existing `.bak` is never overwritten, deleted or renamed.
+  A repeated launch with the same DLL is a no-op.
 - Game EXE and assets retain the existing hash verification. The exact supported
   decrypted 1.02 executable is required; no unprotected game files ship here.
-- `CrimsonSkiesFix.exe --launch-no-verify` remains the explicit **no repair**
-  launch path; `--verify` checks `winmm.dll`, not `ddraw.dll`.
+- `CrimsonSkiesFix-WinMM-1.1-TEST.exe --launch-no-verify` remains the
+  explicit **no repair** path; normal launch and `--install-only` perform
+  the automatic upgrade where safe. `--verify` checks `winmm.dll`, not
+  `ddraw.dll`.
 - Configuration remains `CrimsonSkiesFix/CrimsonSkiesFix.ini`. The DLL's
   gameplay log remains separate from `CrimsonSkiesFix_installer.log`.
 - No known or unknown user DLL is removed by this test installer.
@@ -151,6 +158,26 @@ If the second line never appears, the GOS controls use yet another
 rendering/text path, and the exact text source must be traced before any
 more intrusive intervention. Do not assume a visual fix from a green CI
 build alone.
+
+## Automatic one-backup WinMM upgrade behavior
+
+With the exact approved game and a clean DirectDraw provider slot, replacing
+the standalone TEST executable and **launching it normally** is sufficient.
+If its embedded `winmm.dll` has changed, the launcher hashes the installed
+DLL, permits an upgrade only from an authenticated prior project runtime,
+stages the new bytes, moves the previous `.bak` temporarily for rollback,
+renames the previously active DLL to `winmm.dll.bak`, then publishes the
+new DLL. After successful publication the older rollback copy is deleted.
+
+No `.bak.previous` is left on a successful transaction. If the installed
+DLL already matches the embedded hash, no file or backup is touched. An
+unknown `.bak` fails closed rather than losing unrelated user content.
+If the active DLL is missing, any known `.bak` remains intact while the new
+DLL is installed. Interrupted transactions are refused until inspected;
+failed rename operations attempt to restore original files. Original
+1.0 `ddraw.dll` installer behavior is unchanged.
+
+The launcher **does not** perform updates in `--launch-no-verify` mode.
 
 ## Manual use on an isolated copy
 
