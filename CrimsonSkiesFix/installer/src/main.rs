@@ -164,6 +164,17 @@ fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
     Ok(())
 }
 
+// Only our previous public *experimental* 1.1 WinMM test DLL may be
+// migrated in place. This digest was verified against the archived 735,232
+// byte PR #35 build (runtime identity 1.1.0-rc.1-6d358ba9).
+// An unknown WinMM DLL is never assumed to belong to CrimsonSkiesFix.
+const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&str=
+    "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a";
+fn recognized_previous_winmm_sha(digest:&str)->bool{
+    cfg!(feature="winmm-installer") &&
+    digest.eq_ignore_ascii_case(PREVIOUS_EXPERIMENTAL_WINMM_SHA256)
+}
+
 // Stage first. Keep exactly one previous DLL backup; never discard it before
 // the new DLL has been written and verified. Refuse abandoned transactions.
 fn deploy_runtime(game: &Path) -> Result<(), String> {
@@ -184,14 +195,25 @@ fn deploy_runtime(game: &Path) -> Result<(), String> {
         return Err(format!("unsafe existing {RUNTIME_DLL}.bak"));
     }
     let expected = sha256::hex(BUNDLED_RUNTIME);
-    // No prior released CrimsonSkiesFix WinMM runtime exists. A different
-    // app-local winmm.dll may belong to the user; do not back it up and
-    // silently replace it in this test-only installer.
-    if cfg!(feature="winmm-installer") && regular(&active) && digest(&active)? != expected {
-        return Err("WinMM candidate: unknown existing winmm.dll is preserved; manual inspection required before installing".into());
+    let existing_digest=if regular(&active){Some(digest(&active)?)}else{None};
+    let approved_previous=existing_digest.as_deref()
+        .map(recognized_previous_winmm_sha).unwrap_or(false);
+    if cfg!(feature="winmm-installer") &&
+       existing_digest.as_deref()!=Some(expected.as_str()) {
+        if existing_digest.is_some() && !approved_previous {
+            return Err("WinMM candidate: unknown existing winmm.dll is preserved; manual inspection required before installing".into());
+        }
+        // Never rotate/delete a user's pre-existing backup during an
+        // experimental upgrade; this path only handles an empty backup slot.
+        if approved_previous && any_entry(&backup) {
+            return Err("WinMM candidate: previous WinMM DLL is recognized, but winmm.dll.bak already exists; preserving both, inspect backup manually".into());
+        }
     }
-    if regular(&active) && digest(&active)? == expected {
+    if existing_digest.as_deref()==Some(expected.as_str()) {
         return Ok(());
+    }
+    if approved_previous {
+        println!("WinMM candidate: authenticated prior 6d358ba9 test DLL; upgrading with winmm.dll.bak backup");
     }
     {
         let mut f = OpenOptions::new().write(true).create_new(true)
@@ -631,6 +653,18 @@ mod tests {
         assert_eq!(fs::read(&foreign).unwrap(),b"owner graphics wrapper");
         assert_eq!(digest(&game.join("winmm.dll")).unwrap(),winmm_before);
         fs::remove_dir_all(&game).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn only_exact_prior_experimental_winmm_sha_is_upgradable() {
+        assert!(recognized_previous_winmm_sha(
+            "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a"));
+        assert!(!recognized_previous_winmm_sha(
+            "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
+        assert!(!recognized_previous_winmm_sha(
+            "1e3cec68bc564a27791cc09e1c83d371f8c8a09576b45d3de52adc85fb8cf07c"));
+        assert!(!recognized_previous_winmm_sha(""));
     }
 
     #[cfg(feature="winmm-installer")]
