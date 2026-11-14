@@ -38,6 +38,8 @@ const AFTER_CALL: [u8; 5] = [0x8B, 0x55, 0x08, 0x6A, 0x01];
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 const MAX_EVENTS: u32 = 4;
 static CHANGED_LABELS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature="winmm-bootstrap")]
+static NATIVE_WINMM_LABEL_CALLS: AtomicU32 = AtomicU32::new(0);
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -95,9 +97,19 @@ fn replacement(
 fn label_transaction_context(
     experimental: bool, native: bool, desktop: bool,
     menu_seen: bool, legacy_ui: bool, preferences_transaction: bool,
+    native_windows: bool, preferences_scene: bool,
 ) -> bool {
-    experimental && native && desktop &&
-        menu_seen && legacy_ui && preferences_transaction
+    let features_enabled=experimental && native && desktop && menu_seen;
+    // Historical Wine/Proton path: existing confirmed 4:3 virtual Flip
+    // and GOS command-13 transaction are deliberately unchanged.
+    let confirmed_virtual_ui=legacy_ui && preferences_transaction;
+    // Native Windows WinMM can reach the game's authenticated Preferences
+    // script before a virtual primary Flip is exposed. The missing Flip
+    // signal is NOT evidence the original GOS video label is absent.
+    // This fallback changes only the formatter's two numeric arguments
+    // at the EXACT vetted uiData(0x845) call site; NEVER the mode table.
+    let confirmed_native_preferences=native_windows && preferences_scene;
+    features_enabled && (confirmed_virtual_ui || confirmed_native_preferences)
 }
 
 fn active_video_page() -> bool {
@@ -114,6 +126,8 @@ fn active_video_page() -> bool {
         crate::menu_scene::main_menu_was_seen(),
         crate::menu_video_probe::legacy_ui_active(),
         crate::menu_gos_event::preferences_transaction_active(),
+        crate::diagnostics::is_native_windows(),
+        crate::menu_scene::preferences_active(),
     )
 }
 
@@ -132,11 +146,13 @@ unsafe extern "C" fn format_resolution(
             .and_then(|rect|rect.dimensions())
             .or_else(crate::win32::sole_primary_monitor_dimensions);
         let native=crate::diagnostics::is_native_windows();
-        // The same read-only EnumDisplaySettingsW physical monitor path is
-        // used by the validated native FOV/HUD patch. Do not set DPI
-        // awareness, change the desktop or guess a secondary monitor.
+        // The previously validated native FOV/HUD patch captured physical
+        // desktop pixels BEFORE any real or virtual game-mode switch.
+        // Windows' current mode might now be 640x480 or 800x600; never
+        // mislabel that transient rendering mode as the desktop target.
+        // A failed or unsupported early EXE patch cannot authorize a guess.
         let physical=if native{
-            crate::win32::physical_primary_monitor_dimensions()
+            crate::native_widescreen::verified_launch_widescreen_dimensions()
         }else{None};
         monitor_pixels_for_label(native,logical,physical)
     }else{None};
@@ -157,6 +173,18 @@ unsafe extern "C" fn format_resolution(
         log(&format!(
             "MENU-RESOLUTION-LABEL: GOS formatter 0x845 native label={}x{} original={}x{} resource=0x206; mode index/table unchanged",
             w, h, original_width, original_height,
+        ));
+    }
+    #[cfg(feature="winmm-bootstrap")]
+    if crate::diagnostics::is_native_windows() &&
+       NATIVE_WINMM_LABEL_CALLS.fetch_add(1,Ordering::Relaxed)<8 {
+        log(&format!(
+            "MENU-RESOLUTION-LABEL: WinMM native formatter invoked format={format_id:#x} original={}x{} shown={}x{} preferences_scene={} legacy_ui={} gos_transaction={} main_seen={} text_only=true",
+            original_width,original_height,w,h,
+            crate::menu_scene::preferences_active(),
+            crate::menu_video_probe::legacy_ui_active(),
+            crate::menu_gos_event::preferences_transaction_active(),
+            crate::menu_scene::main_menu_was_seen(),
         ));
     }
     result
@@ -243,7 +271,7 @@ mod tests {
         // The original text-only GOS 0x845 handler can run after
         // Campaign-art detection clears the *branding* visibility hint.
         // A confirmed Preferences data transaction is the correct gate.
-        assert!(label_transaction_context(true,true,true,true,true,true));
+        assert!(label_transaction_context(true,true,true,true,true,true,false,false));
         for flags in [
             (false,true,true,true,true,true),
             (true,false,true,true,true,true),
@@ -253,9 +281,20 @@ mod tests {
             (true,true,true,true,true,false),
         ] {
             assert!(!label_transaction_context(
-                flags.0,flags.1,flags.2,flags.3,flags.4,flags.5
+                flags.0,flags.1,flags.2,flags.3,flags.4,flags.5,false,false
             ));
         }
+        // The user's Windows 11 log shows a successfully authenticated
+        // Preferences script but no virtual primary Flip signal. Label
+        // text should still show the verified native desktop pixels.
+        assert!(label_transaction_context(true,true,true,true,false,false,true,true));
+        assert!(label_transaction_context(true,true,true,true,false,true,true,true));
+        // A mere Windows host, without the exact Preferences script, cannot
+        // relax the proven video-page scope. Wine keeps its old strict gate.
+        assert!(!label_transaction_context(true,true,true,true,false,false,true,false));
+        assert!(!label_transaction_context(true,true,true,true,false,false,false,true));
+        assert!(!label_transaction_context(true,true,true,false,false,false,true,true));
+        assert!(!label_transaction_context(false,true,true,true,false,false,true,true));
     }
     #[test]
     fn native_windows_dpi_virtualization_uses_real_screen_pixels(){
