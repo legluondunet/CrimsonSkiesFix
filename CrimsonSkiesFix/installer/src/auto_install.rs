@@ -346,11 +346,8 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         }
         let current_digest=if regular(&runtime){Some(digest(&runtime)?)}else{None};
         let expected=sha256::hex(BUNDLED_RUNTIME);
-        if let Some(ref digest)=current_digest {
-            if digest!=&expected && !recognized_previous_winmm_sha(digest) {
-                return Err(format!("WinMM candidate: existing winmm.dll SHA-256={digest} is not an approved experimental upgrade; preserved. Back up this file manually before installing the new WinMM"));
-            }
-        }
+        // Any existing regular winmm.dll can be backed up automatically.
+        // deploy_runtime handles transactional replacement and one .bak.
         // Existing verified manually imported game: install or upgrade the
         // complete WinMM-only runtime without CD rebuild, EXE replacement or
         // edits to save data. A CD receipt still uses strict verification.
