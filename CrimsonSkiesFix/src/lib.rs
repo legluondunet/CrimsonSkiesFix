@@ -286,7 +286,11 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
+                #[cfg(feature = "winmm-bootstrap")]
+                let bootstrap_kind="WinMM IAT bootstrap";
+                #[cfg(not(feature = "winmm-bootstrap"))]
+                let bootstrap_kind="DirectDraw proxy";
+                log(&format!("{} x86 - init; configuration={parsed:?}; {bootstrap_kind}",build_info::label()));
                 if let Some(ref status)=ini_dedup_status{log(status);}
                 if parsed.gos_video_lock==gos_video_lock::Mode::Off &&
                    parsed.experimental_windowed_adapter &&
