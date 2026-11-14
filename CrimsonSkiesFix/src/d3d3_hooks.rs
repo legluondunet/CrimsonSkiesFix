@@ -4,6 +4,48 @@
 //! The game proxy still owns the shared COM registry and counters.
 use super::*;
 
+// Read-only projection telemetry for the WinMM 1.1 widescreen investigation.
+// Direct3DDevice3::GetTransform is vtable slot 26 in the DirectX 6 ABI;
+// D3DTRANSFORMSTATE_PROJECTION = 3. No matrix is written back to the game.
+#[cfg(feature="winmm-bootstrap")]
+const D3D3_DEVICE_GET_TRANSFORM:usize=26;
+#[cfg(feature="winmm-bootstrap")]
+const D3DTRANSFORMSTATE_PROJECTION:u32=3;
+#[cfg(feature="winmm-bootstrap")]
+static PROJECTION_SAMPLE_CALLS:AtomicUsize=AtomicUsize::new(0);
+
+#[cfg(feature="winmm-bootstrap")]
+fn projection_aspect(m:&[f32;16])->Option<f32>{
+    let (horizontal,vertical)=(m[0],m[5]);
+    if !horizontal.is_finite() || !vertical.is_finite() ||
+       horizontal.abs()<0.00001 || vertical.abs()<0.00001 {return None;}
+    let aspect=(vertical/horizontal).abs();
+    (aspect.is_finite() && (0.2..=6.0).contains(&aspect)).then_some(aspect)
+}
+
+#[cfg(feature="winmm-bootstrap")]
+unsafe fn sample_game_projection(this:*mut c_void,when:&str){
+    if !cfg().log_enabled{return;}
+    let count=PROJECTION_SAMPLE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+    // Capture startup, menu, and subsequent gameplay, but cap the log.
+    if count>48 && !count.is_multiple_of(480){return;}
+    if count>7680{return;}
+    let slot=method(this,D3D3_DEVICE_GET_TRANSFORM);
+    if slot==0 {return;}
+    type GetTransform=unsafe extern "system" fn(*mut c_void,u32,*mut f32)->Hr;
+    let call:GetTransform=std::mem::transmute(slot);
+    let mut matrix=[0.0f32;16];
+    let hr=call(this,D3DTRANSFORMSTATE_PROJECTION,matrix.as_mut_ptr());
+    if hr<0 {
+        if count<=3 {log(&format!("D3D3-PROJECTION: sample={count} phase={when} GetTransform returned {:#010x}; observation only",hr as u32));}
+        return;
+    }
+    let aspect=projection_aspect(&matrix);
+    log(&format!(
+        "D3D3-PROJECTION: sample={count} phase={when} state=3 m11={:.6} m22={:.6} matrix_aspect={} target_screen_aspect=1.777778; observation only, FOV not modified",
+        matrix[0],matrix[5],aspect.map(|v|format!("{v:.6}")).unwrap_or_else(||"unavailable".into())));
+}
+
 // Crimson Skies' IDirectDraw4::QueryInterface successfully requests
 // IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
 // The attached device's legacy Direct3D3 interface is traced only after
@@ -14,6 +56,8 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
     let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
     let hr=original(this);
+    #[cfg(feature="winmm-bootstrap")]
+    if hr>=0 {sample_game_projection(this,"BeginScene");}
     if cfg().log_enabled && hr>=0 {
         FIRST_D3D3_SCENE.call_once(||log(
             "D3D3-DEVICE: first successful BeginScene; game 3D rendering active"));
@@ -26,6 +70,8 @@ unsafe extern "system" fn d3d3_device_end_scene(this:*mut c_void)->Hr {
     let Some(addr)=orig(this,D3D3_DEVICE_END_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
     let hr=original(this);
+    #[cfg(feature="winmm-bootstrap")]
+    if hr>=0 {sample_game_projection(this,"EndScene");}
     if cfg().log_enabled && hr>=0 {
         sample_render_calls("D3D3.EndScene",&D3D3_END_EVENTS,&D3D3_END_START,&D3D3_END_WINDOW);
     }
@@ -125,6 +171,23 @@ pub(super) unsafe fn observe_d3d3(object:*mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn projection_probe_reports_aspect_without_mutation() {
+        let mut matrix=[0.0f32;16];
+        matrix[0]=0.75;matrix[5]=1.0;
+        assert_eq!(projection_aspect(&matrix),Some(4.0/3.0));
+        matrix[0]=0.5625;
+        assert_eq!(projection_aspect(&matrix),Some(16.0/9.0));
+        matrix[0]=0.0;
+        assert_eq!(projection_aspect(&matrix),None);
+        matrix[0]=f32::NAN;
+        assert_eq!(projection_aspect(&matrix),None);
+        // Do not modify or hook SetTransform; GetTransform is read-only.
+        assert_eq!(D3D3_DEVICE_GET_TRANSFORM,26);
+        assert_eq!(D3DTRANSFORMSTATE_PROJECTION,3);
+    }
 
     #[test]
     fn callbacks_keep_original_win32_x86_abi() {
