@@ -45,6 +45,47 @@ WinMM imports, delay imports, or practical load order. The binary is not
 included in this repository. We must not claim WinMM is viable based only on
 other Windows games or search results.
 
+## Verified original 1.02 PE32 — static import audit (14 November 2026)
+
+The owner supplied `testme(1).exe` for **read-only** local static inspection.
+The file **was not committed to the repository, executed, patched or redistributed**.
+
+- SHA-256: `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
+- File size: **2,580,480 bytes**; format: **PE32 Intel i386**; matches the one hash-approved decrypted 1.02 executable.
+- The PE import directory includes **21 distinct DLLs**.
+- **`WINMM.dll` is a regular/static import**, descriptor RVA `0x61F014`, IAT RVA `0x620498` (14 named functions).
+- **`DDRAW.dll` is also a regular/static import**, descriptor RVA `0x61F118`, IAT RVA `0x61FBA4` (2 named functions).
+- The PE **delay-import directory is empty**, so these are ordinary loader imports rather than delay-loaded imports.
+- The WinMM descriptor occurs earlier in the import directory than DirectDraw, **but descriptor order by itself is not a reliable cross-platform initialization or first-call guarantee**.
+
+### Exact imports to preserve in a future WinMM proxy (14)
+
+```text
+mixerGetLineInfoA
+mixerOpen
+mciGetErrorStringA
+mixerGetLineControlsA
+mixerClose
+auxSetVolume
+auxGetVolume
+mciSendCommandA
+auxGetNumDevs
+auxGetDevCapsA
+mixerSetControlDetails
+mixerGetControlDetailsA
+mixerGetNumDevs
+timeGetTime
+```
+
+DirectDraw functions imported from `DDRAW.dll`:
+
+```text
+DirectDrawCreate
+DirectDrawEnumerateA
+```
+
+**Feasibility decision:** WinMM is a **credible early-loading bootstrap candidate** for this exact game EXE. However, a DLL's static import only ensures the operating system resolves the dependency as part of normal process loader initialization. It does **not** justify installing game hooks under the Windows loader lock, and it does not show that any WinMM export is invoked before `DirectDrawCreate`. The next prototype must demonstrate **safe first-use or explicit launcher bootstrap initialization** and preserve all 14 WinMM functions under both Windows and Wine. No automatic migration should be enabled until that proof is available.
+
 ## Inspect the locally owned approved executable
 
 On Linux or Windows (Python 3; no extra packages required):
