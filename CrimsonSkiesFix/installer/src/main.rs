@@ -173,6 +173,8 @@ const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&[&str]=&[
     "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a",
     // The exact 7395cd3c runtime from GitHub Windows CI artifact 14119065695:
     "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e",
+    // The owner's verified 65304a3e Windows experiment from CI artifact 14118718667:
+    "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a",
 ];
 fn recognized_previous_winmm_sha(digest:&str)->bool{
     cfg!(feature="winmm-installer") &&
@@ -676,6 +678,8 @@ mod tests {
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a"));
         assert!(recognized_previous_winmm_sha(
             "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e"));
+        assert!(recognized_previous_winmm_sha(
+            "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a"));
         assert!(!recognized_previous_winmm_sha(
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
         assert!(!recognized_previous_winmm_sha(
