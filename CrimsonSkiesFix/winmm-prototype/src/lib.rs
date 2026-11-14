@@ -282,4 +282,4 @@ _crimson_winmm_forward_13:
     popal
     jmp *%eax
 
-"#, resolve = sym resolve_target);
+"#, resolve = sym resolve_target, options(att_syntax));
