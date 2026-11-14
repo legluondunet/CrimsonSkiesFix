@@ -19,7 +19,7 @@ external DDraw wrapper compatibility tests have NOT been completed.
 - Unknown existing `winmm.dll` files are never overwritten. The installer
   recognizes **only** pinned SHA-256 digests of our own previously built
   experimental WinMM DLLs: `6d358ba9`, `7395cd3c`, `65304a3e`,
-  `d2e45149`, `0bcc164b` and `39bb2e5d`, verified directly from their
+  `d2e45149`, `0bcc164b`, `39bb2e5d` and `f3ebbe51`, verified directly from their
   original GitHub Windows x86 CI artifacts. It preserves the prior active DLL
   as `winmm.dll.bak`; an existing backup name is never overwritten. All
   other WinMM files (including third-party wrappers) require manual review.
@@ -81,6 +81,34 @@ The installer also **refuses to rotate or delete an existing
 using `winmm.dll.bak` as your manual archival filename. The `--verify`
 command must always be run with **`CrimsonSkiesFix-WinMM-1.1-TEST.exe`**,
 not with the unchanged v1.0 `CrimsonSkiesFix.exe`.
+
+## Native Windows DD4 owner diagnostics after 1920x1200 flight screenshot
+
+The real f3ebbe51 Windows 11 run reached in-flight gameplay, but two formerly
+circular HUD gauges measured ~179x149 and ~180x152 pixels (1.20/1.18
+horizontal stretch), matching 4:3 content spread across a 16:10 output.
+The log showed native 1920x1200 FOV patch and DD4 owner recognition but
+did not record the windowed DD4 cooperative/mode/preflight callbacks.
+
+This version adds a **read-only, native-WinMM-only** owner-vtable check at
+the already verified game mode-setup entry. The log may include:
+
+```text
+NATIVE-WINMM-DD4-SLOTS: verified_game_owner=true cooperative=active display_mode=active
+```
+
+Other possible values include `not-installed` and
+`registered-but-displaced`. This distinguishes an actual
+missing/overwritten DirectDraw4 callback from a missing *game call*.
+No rendering, mode, hook installation policy, COM call or graphics menu is
+modified by this diagnosis. The existing GOS text hook still needs actual
+Preferences-page confirmation.
+
+The exact f3ebbe51 WinMM DLL from runtime artifact `14123386745`
+(745,984 bytes, SHA-256
+`fca524dc8805ad439a755d81eca84e7ade95b6e57b10843ba4963bd61d74ac67`)
+is an approved, previous experimental upgrade source. Unknown DLLs remain
+protected; a pre-existing backup name is never overwritten.
 
 ## Prototype: native Windows Graphics Preferences label fallback
 
