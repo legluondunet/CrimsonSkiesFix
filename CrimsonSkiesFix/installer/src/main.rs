@@ -164,45 +164,12 @@ fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
     Ok(())
 }
 
-// Only our previous public *experimental* 1.1 WinMM test DLL may be
-// migrated in place. This digest was verified against the archived 735,232
-// byte PR #35 build (runtime identity 1.1.0-rc.1-6d358ba9).
-// An unknown WinMM DLL is never assumed to belong to CrimsonSkiesFix.
-const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&[&str]=&[
-    // Known PR #35 early bootstrap test binary:
-    "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a",
-    // The exact 7395cd3c runtime from GitHub Windows CI artifact 14119065695:
-    "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e",
-    // The owner's verified 65304a3e Windows experiment from CI artifact 14118718667:
-    "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a",
-    // Native-Windows 11 build d2e45149, CI artifact 14121224859, 740352 bytes:
-    "f4b01f8c8a9adf0770760c4966d16dd4dc5c977369cbabbf02b0b600bae21525",
-    // Previous 0bcc164b WinMM labels candidate, CI artifact 14122512130:
-    "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f",
-    // Immediately previous 39bb2e5d native text bridge candidate, CI artifact 14123095601:
-    "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb",
-    // Authenticated f3ebbe51 Windows x86 runtime from CI artifact 14123386745 (745,984 bytes):
-    "fca524dc8805ad439a755d81eca84e7ade95b6e57b10843ba4963bd61d74ac67",
-    // Authenticated 913271c4 Windows x86 runtime from CI artifact 14124048841 (747,008 bytes):
-    "a1f639c080aeecd964f2194eca3d1eaa3a0506142dcb8b44dffd1c244cf75812",
-];
-fn recognized_previous_winmm_sha(digest:&str)->bool{
-    cfg!(feature="winmm-installer") &&
-    PREVIOUS_EXPERIMENTAL_WINMM_SHA256.iter()
-        .any(|known|digest.eq_ignore_ascii_case(known))
-}
-
 // Stage the verified new DLL first, then rotate exactly one .bak.
 // The former .bak is held temporarily for rollback and discarded only
-// after the replacement DLL is successfully published. Unknown backups
-// are *never* deleted or rotated on the WinMM candidate.
-fn deploy_runtime(game: &Path) -> Result<(), String> {
-    deploy_runtime_with_recognizer(game,recognized_previous_winmm_sha)
-}
-
-fn deploy_runtime_with_recognizer(
-    game:&Path,recognized:impl Fn(&str)->bool
-)->Result<(),String>{
+// after the replacement DLL is successfully published. This intentionally
+// accepts any pre-existing regular runtime DLL, regardless of provenance.
+// If active and .bak both exist, the older .bak is replaced by active.
+fn deploy_runtime(game:&Path)->Result<(),String>{
     if cfg!(feature="winmm-installer") {
         ensure_no_local_ddraw(game)?;
     }
@@ -221,31 +188,14 @@ fn deploy_runtime_with_recognizer(
     }
     let expected=sha256::hex(BUNDLED_RUNTIME);
     let existing_digest=if regular(&active){Some(digest(&active)?)}else{None};
-    let approved_previous=existing_digest.as_deref()
-        .map(&recognized).unwrap_or(false);
-
-    // An already installed matching DLL must not touch even a user's
-    // unrelated .bak. A second launch is fully idempotent.
+    // Same bundled runtime: no copy and no rotation even if .bak exists.
     if existing_digest.as_deref()==Some(expected.as_str()) {
         return Ok(());
     }
-    if cfg!(feature="winmm-installer") {
-        if existing_digest.is_some() && !approved_previous {
-            return Err(format!(
-                "WinMM candidate: existing winmm.dll SHA-256={} is not a recognized upgrade source; original preserved",
-                existing_digest.as_deref().unwrap_or("unavailable")));
-        }
-        if regular(&backup) {
-            let previous_backup_hash=digest(&backup)?;
-            if !recognized(&previous_backup_hash) &&
-               !previous_backup_hash.eq_ignore_ascii_case(&expected) {
-                return Err(format!(
-                    "WinMM candidate: existing winmm.dll.bak SHA-256={previous_backup_hash} is unknown; refusing to overwrite a non-project backup"));
-            }
-        }
-    }
-    if approved_previous {
-        println!("WinMM candidate: authenticated previous runtime found; automatically upgrading, preserving one winmm.dll.bak");
+    if cfg!(feature="winmm-installer") && existing_digest.is_some() {
+        // The user explicitly requested an unconditional one-backup rotation.
+        // Unknown but regular DLLs follow the same reversible transaction.
+        println!("WinMM candidate: replacing existing winmm.dll (regardless of SHA-256); keeping the previous active file as winmm.dll.bak");
     }
     {
         let mut f=OpenOptions::new().write(true).create_new(true)
@@ -260,7 +210,7 @@ fn deploy_runtime_with_recognizer(
     // Keep the older backup until the new active DLL is atomically
     // published; rollback restores BOTH prior names if a rename fails.
     // Without an active DLL there is nothing to back up. Keep an existing
-    // authenticated .bak in its place rather than deleting the last rollback.
+    // .bak in its place rather than deleting the only recovery copy.
     let backup_moved=if regular(&backup) && regular(&active) {
         if let Err(err)=fs::rename(&backup,&old_backup) {
             let _=fs::remove_file(&pending);
@@ -693,91 +643,41 @@ mod tests {
 
     #[cfg(feature="winmm-installer")]
     #[test]
-    fn only_exact_prior_experimental_winmm_sha_is_upgradable() {
-        assert!(recognized_previous_winmm_sha(
-            "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a"));
-        assert!(recognized_previous_winmm_sha(
-            "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e"));
-        assert!(recognized_previous_winmm_sha(
-            "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a"));
-        assert!(recognized_previous_winmm_sha(
-            "f4b01f8c8a9adf0770760c4966d16dd4dc5c977369cbabbf02b0b600bae21525"));
-        assert!(recognized_previous_winmm_sha(
-            "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f"));
-        assert!(recognized_previous_winmm_sha(
-            "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb"));
-        assert!(recognized_previous_winmm_sha(
-            "fca524dc8805ad439a755d81eca84e7ade95b6e57b10843ba4963bd61d74ac67"));
-        assert!(recognized_previous_winmm_sha(
-            "a1f639c080aeecd964f2194eca3d1eaa3a0506142dcb8b44dffd1c244cf75812"));
-        assert!(!recognized_previous_winmm_sha(
-            "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
-        assert!(!recognized_previous_winmm_sha(
-            "1e3cec68bc564a27791cc09e1c83d371f8c8a09576b45d3de52adc85fb8cf07c"));
-        assert!(!recognized_previous_winmm_sha(""));
-    }
-
-    #[cfg(feature="winmm-installer")]
-    #[test]
-    fn preexisting_winmm_backup_is_never_rotated_or_deleted() {
-        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap().as_nanos();
-        let game=std::env::temp_dir().join(format!(
-            "crimson-winmm-preserve-backup-{}-{id}",std::process::id()));
-        fs::create_dir(&game).unwrap();
-        let backup=game.join("winmm.dll.bak");
-        fs::write(&backup,b"prior user backup - must never be removed").unwrap();
-        assert!(deploy_runtime(&game).is_err());
-        assert_eq!(fs::read(&backup).unwrap(),
-                   b"prior user backup - must never be removed");
-        assert!(!any_entry(&game.join("winmm.dll")));
-        assert!(!any_entry(&game.join("winmm.dll.bak.previous")));
-        assert!(!any_entry(&game.join("winmm.dll.installing")));
-        fs::remove_dir_all(&game).unwrap();
-    }
-
-    #[cfg(feature="winmm-installer")]
-    #[test]
-    fn successive_verified_upgrades_rotate_only_one_backup_and_are_idempotent() {
+    fn unknown_active_and_old_backup_are_replaced_with_one_rollback_copy() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!(
-            "crimson-winmm-rotate-{}-{n}",std::process::id()));
+            "crimson-winmm-unconditional-{}-{n}",std::process::id()));
         fs::create_dir(&dir).unwrap();
         let active=dir.join("winmm.dll");
         let backup=dir.join("winmm.dll.bak");
-        let prev=b"known winmm candidate A";
-        let earlier=b"known winmm candidate B";
-        let a_hash=sha256::hex(prev);
-        let b_hash=sha256::hex(earlier);
-        fs::write(&active,prev).unwrap();
-        fs::write(&backup,earlier).unwrap();
-        let is_known=|s:&str|s==a_hash || s==b_hash;
-        deploy_runtime_with_recognizer(&dir,is_known).unwrap();
+        let unknown=b"unknown third-party active winmm";
+        let old=b"older third-party backup";
+        fs::write(&active,unknown).unwrap();
+        fs::write(&backup,old).unwrap();
+        deploy_runtime(&dir).unwrap();
         assert_eq!(fs::read(&active).unwrap(),BUNDLED_RUNTIME);
-        assert_eq!(fs::read(&backup).unwrap(),prev);
+        assert_eq!(fs::read(&backup).unwrap(),unknown);
         assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
         assert!(!any_entry(&dir.join("winmm.dll.installing")));
-        // A repeated start must not replace the previous-DLL backup.
-        deploy_runtime_with_recognizer(&dir,is_known).unwrap();
-        assert_eq!(fs::read(&backup).unwrap(),prev);
+        // Launching the exact same build again must not rotate .bak.
+        deploy_runtime(&dir).unwrap();
         assert_eq!(fs::read(&active).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(&backup).unwrap(),unknown);
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(feature="winmm-installer")]
     #[test]
-    fn missing_active_dll_does_not_discard_existing_project_backup() {
+    fn unknown_active_without_backup_creates_one_rollback_copy() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!(
-            "crimson-winmm-no-active-{}-{n}",std::process::id()));
+            "crimson-winmm-new-backup-{}-{n}",std::process::id()));
         fs::create_dir(&dir).unwrap();
-        let prior=b"known recovery backup";
-        let prior_hash=sha256::hex(prior);
-        fs::write(dir.join("winmm.dll.bak"),prior).unwrap();
-        deploy_runtime_with_recognizer(
-            &dir,|digest|digest==prior_hash).unwrap();
+        let prior=b"unrecognized winmm binary";
+        fs::write(dir.join("winmm.dll"),prior).unwrap();
+        deploy_runtime(&dir).unwrap();
         assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),BUNDLED_RUNTIME);
         assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),prior);
         assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
@@ -786,44 +686,54 @@ mod tests {
 
     #[cfg(feature="winmm-installer")]
     #[test]
-    fn unknown_existing_backup_blocks_upgrade_and_preserves_all_bytes() {
+    fn no_active_dll_keeps_existing_backup_regardless_of_provenance() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!(
-            "crimson-winmm-foreign-backup-{}-{n}",std::process::id()));
+            "crimson-winmm-preserve-only-{}-{n}",std::process::id()));
         fs::create_dir(&dir).unwrap();
-        let active=dir.join("winmm.dll");
-        let backup=dir.join("winmm.dll.bak");
-        let owned=b"known winmm active";
-        let foreign=b"third-party dll preserved";
-        let known_digest=sha256::hex(owned);
-        fs::write(&active,owned).unwrap();
-        fs::write(&backup,foreign).unwrap();
-        let result=deploy_runtime_with_recognizer(
-            &dir,|digest|digest==known_digest);
-        assert!(result.unwrap_err().contains("backup"));
-        assert_eq!(fs::read(&active).unwrap(),owned);
-        assert_eq!(fs::read(&backup).unwrap(),foreign);
-        assert!(!any_entry(&dir.join("winmm.dll.installing")));
+        let old=b"sole backup without active DLL";
+        fs::write(dir.join("winmm.dll.bak"),old).unwrap();
+        deploy_runtime(&dir).unwrap();
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),old);
         assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(feature="winmm-installer")]
     #[test]
-    fn unknown_winmm_is_refused_without_renaming_or_backup() {
-        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+    fn unsafe_backup_path_still_fails_without_touching_active_dll() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
-        let game=std::env::temp_dir().join(format!(
-            "crimson-winmm-unknown-test-{}-{id}",std::process::id()));
-        fs::create_dir(&game).unwrap();
-        fs::write(game.join("winmm.dll"),b"owner multimedia wrapper").unwrap();
-        assert!(deploy_runtime(&game).is_err());
-        assert_eq!(fs::read(game.join("winmm.dll")).unwrap(),
-                   b"owner multimedia wrapper");
-        assert!(!any_entry(&game.join("winmm.dll.bak")));
-        assert!(!any_entry(&game.join("winmm.dll.installing")));
-        fs::remove_dir_all(&game).unwrap();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-unsafe-backup-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let old=b"unrecognized active DLL";
+        fs::write(dir.join("winmm.dll"),old).unwrap();
+        fs::create_dir(dir.join("winmm.dll.bak")).unwrap();
+        assert!(deploy_runtime(&dir).is_err());
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),old);
+        assert!(!any_entry(&dir.join("winmm.dll.installing")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn abandoned_rotation_marker_blocks_update_without_data_loss() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-abandoned-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("winmm.dll"),b"active").unwrap();
+        fs::write(dir.join("winmm.dll.bak"),b"backup").unwrap();
+        fs::write(dir.join("winmm.dll.bak.previous"),b"interrupted").unwrap();
+        assert!(deploy_runtime(&dir).is_err());
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),b"active");
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),b"backup");
+        assert_eq!(fs::read(dir.join("winmm.dll.bak.previous")).unwrap(),b"interrupted");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
