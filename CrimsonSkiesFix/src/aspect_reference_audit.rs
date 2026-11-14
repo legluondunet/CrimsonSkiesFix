@@ -52,6 +52,33 @@ fn find_references(bytes:&[u8],section_rva:usize,needle:u32)->Vec<Reference>{
     matches
 }
 
+// Exact byte context for the three already observed candidate instruction
+// starts. This is bounded to the mapped executable section and is emitted
+// only under [Debug] Log=1. The bytes are evidence for offline x86 disassembly,
+// not a claim that the candidate executed or belongs to HUD rather than FOV.
+fn hex_window(bytes:&[u8],section_rva:usize,instruction_rva:usize)
+    ->Option<(String,String)>{
+    let offset=instruction_rva.checked_sub(section_rva)?;
+    if offset>=bytes.len(){return None;}
+    let pre=bytes.get(offset.saturating_sub(32)..offset)?;
+    let after=bytes.get(offset..offset.saturating_add(64).min(bytes.len()))?;
+    let encode=|data:&[u8]|->String{
+        let mut s=String::with_capacity(data.len()*2);
+        for byte in data {use std::fmt::Write as _;let _=write!(&mut s,"{byte:02x}");}
+        s
+    };
+    Some((encode(pre),encode(after)))
+}
+
+fn is_known_aspect_xref(r:&Reference)->bool{
+    matches!(
+        (r.instruction_rva,r.kind),
+        (0x02B58F,"x87-read-candidate")|
+        (0x0603FC,"x87-write-candidate")|
+        (0x2024C9,"x87-write-candidate")
+    )
+}
+
 fn read_u16(bytes:&[u8],at:usize)->Option<u16>{
     Some(u16::from_le_bytes(bytes.get(at..at+2)?.try_into().ok()?))
 }
@@ -100,6 +127,15 @@ pub(super) unsafe fn audit_verified_loaded_exe(){
                     "HUD-ASPECT-XREF: candidate_rva=0x{:06X} kind={} address=0x{:08X} read_only=true",
                     r.instruction_rva,r.kind,HUD_ASPECT_GLOBAL
                 ));
+                if is_known_aspect_xref(&r){
+                    if let Some((before,after))=
+                        hex_window(code,virtual_address,r.instruction_rva){
+                        crate::log(&format!(
+                            "HUD-ASPECT-CONTEXT: instruction_rva=0x{:06X} before32={} from_instruction64={} interpretation=offline-only",
+                            r.instruction_rva,before,after
+                        ));
+                    }
+                }
             }
         }
     }
@@ -128,6 +164,23 @@ mod tests{
             Reference{instruction_rva:0x2024CF,kind:"x87-read-candidate"},
             Reference{instruction_rva:0x2024D5,kind:"integer-read-candidate"}
         ]);
+    }
+    #[test]
+    fn bounded_context_is_only_extracted_from_known_instructions(){
+        let data:(Vec<u8>,usize)=((0u8..100).collect(),0x2000);
+        let (before,after)=hex_window(&data.0,data.1,0x2010).unwrap();
+        assert_eq!(before.len(),16*2);
+        assert_eq!(after.len(),64*2);
+        assert!(before.starts_with("00010203"));
+        assert!(after.starts_with("10111213"));
+        assert!(hex_window(&data.0,data.1,0x1fff).is_none());
+        assert!(hex_window(&data.0,data.1,0x2064).is_none());
+        assert!(is_known_aspect_xref(&Reference{
+            instruction_rva:0x02B58F,kind:"x87-read-candidate"
+        }));
+        assert!(!is_known_aspect_xref(&Reference{
+            instruction_rva:0x02B58F,kind:"x87-write-candidate"
+        }));
     }
     #[test]
     fn unrelated_floats_and_non_address_operands_do_not_look_like_xrefs(){
