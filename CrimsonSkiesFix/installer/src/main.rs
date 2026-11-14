@@ -168,11 +168,16 @@ fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
 // migrated in place. This digest was verified against the archived 735,232
 // byte PR #35 build (runtime identity 1.1.0-rc.1-6d358ba9).
 // An unknown WinMM DLL is never assumed to belong to CrimsonSkiesFix.
-const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&str=
-    "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a";
+const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&[&str]=&[
+    // Known PR #35 early bootstrap test binary:
+    "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a",
+    // The exact 7395cd3c runtime from GitHub Windows CI artifact 14119065695:
+    "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e",
+];
 fn recognized_previous_winmm_sha(digest:&str)->bool{
     cfg!(feature="winmm-installer") &&
-    digest.eq_ignore_ascii_case(PREVIOUS_EXPERIMENTAL_WINMM_SHA256)
+    PREVIOUS_EXPERIMENTAL_WINMM_SHA256.iter()
+        .any(|known|digest.eq_ignore_ascii_case(known))
 }
 
 // Stage first. Keep exactly one previous DLL backup; never discard it before
@@ -222,7 +227,7 @@ fn deploy_runtime(game: &Path) -> Result<(), String> {
         return Err("WinMM candidate: existing winmm.dll.bak is preserved; move it to a separately named safe archive before installing".into());
     }
     if approved_previous {
-        println!("WinMM candidate: authenticated prior 6d358ba9 test DLL; upgrading with winmm.dll.bak backup");
+        println!("WinMM candidate: authenticated prior experimental WinMM DLL; upgrading with winmm.dll.bak backup");
     }
     {
         let mut f = OpenOptions::new().write(true).create_new(true)
@@ -669,6 +674,8 @@ mod tests {
     fn only_exact_prior_experimental_winmm_sha_is_upgradable() {
         assert!(recognized_previous_winmm_sha(
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a"));
+        assert!(recognized_previous_winmm_sha(
+            "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e"));
         assert!(!recognized_previous_winmm_sha(
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
         assert!(!recognized_previous_winmm_sha(
