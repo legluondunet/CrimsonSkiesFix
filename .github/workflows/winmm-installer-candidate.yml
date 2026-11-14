@@ -1,0 +1,109 @@
+name: Experimental WinMM-only standalone installer x86
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/winmm-installer-candidate.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/winmm-installer-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  winmm-installer-x86:
+    name: WinMM-only installer candidate — Windows x86
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust Windows x86 target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Test full shared WinMM runtime and IAT interception
+        run: cargo test --manifest-path runtime-winmm/Cargo.toml --target i686-pc-windows-msvc
+      - name: Build standalone WinMM runtime
+        run: cargo build --manifest-path runtime-winmm/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Audit compiled WinMM x86 PE exports
+        run: python runtime-winmm/tools/verify_runtime_exports.py runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Unit tests of isolated v1.1 WinMM installer
+        run: cargo test --manifest-path installer/Cargo.toml --features winmm-installer --target i686-pc-windows-msvc
+      - name: Build WinMM-only installer (old installer remains unchanged)
+        run: cargo build --manifest-path installer/Cargo.toml --features winmm-installer --release --target i686-pc-windows-msvc
+      - name: Verify x86 CLI and preserve unknown user DLLs
+        shell: pwsh
+        run: |
+          $exe = 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $dll = 'runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll'
+          if (!(Test-Path $exe) -or !(Test-Path $dll)) { throw 'Missing test candidate' }
+          foreach ($path in @($exe, $dll)) {
+            $bytes=[IO.File]::ReadAllBytes((Resolve-Path $path))
+            $pe=[BitConverter]::ToInt32($bytes,0x3c)
+            $machine=[BitConverter]::ToUInt16($bytes,$pe+4)
+            if ($machine -ne 0x14c) { throw "Not PE32 x86: $path" }
+          }
+          $help = (& $exe --help) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $help -notmatch 'embedded winmm\.dll') {
+            throw 'WinMM candidate did not advertise its WinMM backend'
+          }
+          $version = (& $exe --version) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\.1\.0-rc\.1') {
+            throw 'WinMM candidate missing isolated version identity'
+          }
+          $root='winmm-installer-smoke'
+          New-Item -ItemType Directory -Force "$root/CrimsonSkiesFix" | Out-Null
+          Copy-Item $exe "$root/CrimsonSkiesFix.exe"
+          $ddraw="$root/CrimsonSkiesFix/ddraw.dll"
+          [IO.File]::WriteAllText($ddraw,'USER GRAPHICS WRAPPER: NEVER OVERWRITE')
+          $before=(Get-FileHash $ddraw -Algorithm SHA256).Hash
+          & "$root/CrimsonSkiesFix.exe" --install-only
+          if ($LASTEXITCODE -ne 2) { throw 'Existing graphics wrapper must block experimental migration' }
+          if ((Get-FileHash $ddraw -Algorithm SHA256).Hash -ne $before) { throw 'User ddraw.dll was modified' }
+          if (Test-Path "$root/CrimsonSkiesFix/winmm.dll") { throw 'winmm.dll was installed despite conflict' }
+          Remove-Item -LiteralPath $ddraw
+          $winmm="$root/CrimsonSkiesFix/winmm.dll"
+          [IO.File]::WriteAllText($winmm,'UNKNOWN MULTIMEDIA WRAPPER: NEVER OVERWRITE')
+          $before=(Get-FileHash $winmm -Algorithm SHA256).Hash
+          & "$root/CrimsonSkiesFix.exe" --install-only
+          if ($LASTEXITCODE -ne 2) { throw 'Unknown WinMM wrapper must block experimental migration' }
+          if ((Get-FileHash $winmm -Algorithm SHA256).Hash -ne $before) { throw 'User winmm.dll was modified' }
+          if (Test-Path "$root/CrimsonSkiesFix.rebuilding") {throw 'Candidate must not start full CD reconstruction on conflict'}
+          Remove-Item -LiteralPath $winmm
+          & "$root/CrimsonSkiesFix.exe" --launch-no-verify
+          if ($LASTEXITCODE -ne 2) {throw 'Absent game EXE must fail harmlessly'}
+          if (Test-Path $winmm) {throw '--launch-no-verify must not deploy WinMM'}
+          Write-Host 'WINMM-INSTALLER-SMOKE PASS: no unknown DLL replacement, no CD rebuild, no unchecked deployment'
+          # The deliberately failed launches above leave an expected exit code 2.
+          # Mark the smoke job itself successful only after all assertions pass.
+          $global:LASTEXITCODE = 0
+      - name: Package test-only single executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-installer-dist' | Out-Null
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' 'winmm-installer-dist/CrimsonSkiesFix.exe'
+          $sha=(Get-FileHash 'winmm-installer-dist/CrimsonSkiesFix.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'winmm-installer-dist/CrimsonSkiesFix.sha256'
+          Copy-Item 'installer/README-winmm-candidate.md' 'winmm-installer-dist/README-EXPERIMENTAL.md'
+          if (Test-Path 'winmm-installer-dist/ddraw.dll') {throw 'Never publish ddraw.dll with this candidate'}
+      - name: Upload explicitly experimental candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-installer-x86-EXPERIMENTAL-NOT-RELEASE
+          path: CrimsonSkiesFix/winmm-installer-dist/*
+          retention-days: 14
+          if-no-files-found: error
