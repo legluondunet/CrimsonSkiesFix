@@ -180,6 +180,31 @@ mod tests {
     }
 
     #[test]
+    fn read_only_slot_status_distinguishes_active_and_displaced_hooks() {
+        let mut slots=[0x9876usize,0x4567usize];
+        let mut vtable=slots.as_mut_ptr();
+        let object=(&mut vtable as *mut *mut usize).cast::<c_void>();
+        let key=(slots.as_ptr() as usize,0usize);
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"not-installed");
+            assert_eq!(hook_slot_status(object,1,0xabcd),"not-installed");
+        }
+        assert!(originals().lock().unwrap().insert(key,0x1111).is_none());
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"registered-but-displaced");
+        }
+        slots[0]=0xabcd;
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"active");
+        }
+        assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"hook-present-unregistered");
+            assert_eq!(hook_slot_status(std::ptr::null_mut(),0,0xabcd),"null-object");
+        }
+    }
+
+    #[test]
     fn zero_slot_fails_closed_without_touching_registry() {
         let slots=[0usize;2];
         let mut table=slots.as_ptr();
