@@ -77,6 +77,12 @@ fn own_module() -> Option<*mut c_void> {
     (ok != 0 && !own.is_null()).then_some(own)
 }
 
+// The integrated runtime must not touch the filesystem from an early WinMM
+// export: an imported DLL may call timeGetTime while the loader lock is held.
+#[cfg(feature = "winmm-bootstrap")]
+fn write_first_call(_: usize, _: *mut c_void) {}
+
+#[cfg(not(feature = "winmm-bootstrap"))]
 fn write_first_call(index: usize, system: *mut c_void) {
     if FIRST_CALL.swap(true, Ordering::AcqRel) { return; }
     let Some(exe) = module_path(ptr::null_mut()) else { return; };
