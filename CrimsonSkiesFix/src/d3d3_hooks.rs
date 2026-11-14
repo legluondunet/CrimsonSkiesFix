@@ -15,6 +15,72 @@ const D3DTRANSFORMSTATE_PROJECTION:u32=3;
 static PROJECTION_SAMPLE_CALLS:AtomicUsize=AtomicUsize::new(0);
 
 #[cfg(feature="winmm-bootstrap")]
+const D3D3_DEVICE_DRAW_PRIMITIVE:usize=28;
+#[cfg(feature="winmm-bootstrap")]
+const D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE:usize=29;
+#[cfg(feature="winmm-bootstrap")]
+static PRIMITIVE_DRAW_CALLS:AtomicUsize=AtomicUsize::new(0);
+#[cfg(feature="winmm-bootstrap")]
+static INDEXED_DRAW_CALLS:AtomicUsize=AtomicUsize::new(0);
+
+// DirectX 6 D3DFVF_XYZRHW=0x004: vertices are already transformed into
+// screen/viewport space, so GetTransform(PROJECTION) need not affect them.
+// Classify only the FVF bits; never read or rewrite caller vertex memory.
+#[cfg(feature="winmm-bootstrap")]
+fn vertex_position_mode(fvf:u32)->&'static str{
+    match fvf & 0x0e {
+        0x04=>"XYZRHW-pretransformed-screen",
+        0x02=>"XYZ-model-space",
+        _=>"other-or-blended",
+    }
+}
+
+#[cfg(feature="winmm-bootstrap")]
+fn log_vertex_call(api:&str,ordinal:usize,primitive:u32,fvf:u32,vertices:u32,hr:Hr) {
+    // Repeated full per-primitive logs would overwhelm the game. Keep a
+    // bounded prefix and periodic samples over a long mission.
+    if ordinal<=12 || (ordinal<=32768 && ordinal%4096==0) {
+        log(&format!(
+            "D3D3-VERTEX: method={api} call={ordinal} primitive_type={primitive} fvf={fvf:#010x} position={} vertex_count={vertices} hr={hr:#010x}; observation only",
+            vertex_position_mode(fvf)));
+    }
+}
+
+#[cfg(feature="winmm-bootstrap")]
+unsafe extern "system" fn d3d3_device_draw_primitive(
+    this:*mut c_void,primitive:u32,fvf:u32,vertices:*const c_void,
+    vertex_count:u32,flags:u32
+)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_DRAW_PRIMITIVE) else{return DDERR_GENERIC};
+    type DrawPrimitive=unsafe extern "system" fn(*mut c_void,u32,u32,*const c_void,u32,u32)->Hr;
+    let original:DrawPrimitive=std::mem::transmute(addr);
+    let hr=original(this,primitive,fvf,vertices,vertex_count,flags);
+    if cfg().log_enabled {
+        let ordinal=PRIMITIVE_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        log_vertex_call("DrawPrimitive",ordinal,primitive,fvf,vertex_count,hr);
+    }
+    hr
+}
+
+#[cfg(feature="winmm-bootstrap")]
+unsafe extern "system" fn d3d3_device_draw_indexed_primitive(
+    this:*mut c_void,primitive:u32,fvf:u32,vertices:*const c_void,
+    vertex_count:u32,indices:*const u16,index_count:u32,flags:u32
+)->Hr {
+    let Some(addr)=orig(this,D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE) else{return DDERR_GENERIC};
+    type DrawIndexedPrimitive=unsafe extern "system" fn(
+        *mut c_void,u32,u32,*const c_void,u32,*const u16,u32,u32)->Hr;
+    let original:DrawIndexedPrimitive=std::mem::transmute(addr);
+    let hr=original(this,primitive,fvf,vertices,vertex_count,indices,index_count,flags);
+    if cfg().log_enabled {
+        let ordinal=INDEXED_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        log_vertex_call("DrawIndexedPrimitive",ordinal,primitive,fvf,vertex_count,hr);
+    }
+    hr
+}
+
+
+#[cfg(feature="winmm-bootstrap")]
 fn projection_aspect(m:&[f32;16])->Option<f32>{
     let (horizontal,vertical)=(m[0],m[5]);
     if !horizontal.is_finite() || !vertical.is_finite() ||
@@ -42,8 +108,10 @@ unsafe fn sample_game_projection(this:*mut c_void,when:&str){
     }
     let aspect=projection_aspect(&matrix);
     log(&format!(
-        "D3D3-PROJECTION: sample={count} phase={when} state=3 m11={:.6} m22={:.6} matrix_aspect={} target_screen_aspect=1.777778; observation only, FOV not modified",
-        matrix[0],matrix[5],aspect.map(|v|format!("{v:.6}")).unwrap_or_else(||"unavailable".into())));
+        "D3D3-PROJECTION: sample={count} phase={when} state=3 m11={:.6} m22={:.6} matrix_aspect={} target_screen_aspect=1.777778 draw_primitive_calls={} indexed_draw_calls={}; observation only, FOV not modified",
+        matrix[0],matrix[5],aspect.map(|v|format!("{v:.6}")).unwrap_or_else(||"unavailable".into()),
+        PRIMITIVE_DRAW_CALLS.load(Ordering::Relaxed),
+        INDEXED_DRAW_CALLS.load(Ordering::Relaxed)));
 }
 
 // Crimson Skies' IDirectDraw4::QueryInterface successfully requests
@@ -121,6 +189,16 @@ unsafe fn observe_d3d3_device(device:*mut c_void){
     let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as *const () as usize);
     let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as *const () as usize);
     let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as *const () as usize);
+    #[cfg(feature="winmm-bootstrap")]
+    if cfg().log_enabled {
+        let draw=replace_method(device,D3D3_DEVICE_DRAW_PRIMITIVE,
+            d3d3_device_draw_primitive as *const () as usize);
+        let indexed=replace_method(device,D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE,
+            d3d3_device_draw_indexed_primitive as *const () as usize);
+        if D3D3_DEVICE_HOOK_TRACE_COUNT.load(Ordering::Relaxed)<12 {
+            log(&format!("D3D3-VERTEX: hooks DrawPrimitive={draw} DrawIndexedPrimitive={indexed} (pass-through read-only telemetry)"));
+        }
+    }
     if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!(
             "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
@@ -171,6 +249,23 @@ pub(super) unsafe fn observe_d3d3(object:*mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn draw_primitive_fvf_probe_is_read_only_and_abi_correct() {
+        assert_eq!(D3D3_DEVICE_DRAW_PRIMITIVE,28);
+        assert_eq!(D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE,29);
+        assert_eq!(vertex_position_mode(0x004),"XYZRHW-pretransformed-screen");
+        assert_eq!(vertex_position_mode(0x144),"XYZRHW-pretransformed-screen");
+        assert_eq!(vertex_position_mode(0x002),"XYZ-model-space");
+        assert_eq!(vertex_position_mode(0x006),"other-or-blended");
+        let _:unsafe extern "system" fn(
+            *mut c_void,u32,u32,*const c_void,u32,u32)->Hr
+            =d3d3_device_draw_primitive;
+        let _:unsafe extern "system" fn(
+            *mut c_void,u32,u32,*const c_void,u32,*const u16,u32,u32)->Hr
+            =d3d3_device_draw_indexed_primitive;
+    }
 
     #[cfg(feature="winmm-bootstrap")]
     #[test]
