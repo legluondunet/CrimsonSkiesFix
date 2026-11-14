@@ -64,7 +64,7 @@ def check(dll:Path):
     missing=sorted(set(wanted)-set(exports))
     extra=sorted(set(exports)-set(wanted))
     wrong=sorted(n for n in set(wanted)&set(exports) if wanted[n]!=exports[n])
-    if missing or set(extra)-{"DllMain"} or wrong:
+    if missing or set(extra)-{"DllMain","CrimsonSkiesFixBootstrapStatus"} or wrong:
         raise AssertionError(f"missing={missing}; extra={extra}; wrong_ordinals={wrong}")
     print(f"WINMM-RUNTIME-EXPORTS PASS: {len(wanted)} named functions; optional={extra}")
     return exports
