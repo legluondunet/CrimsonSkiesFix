@@ -472,7 +472,11 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
+        if cfg!(feature="winmm-installer") {
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL", &COMMIT[..8]);
+        } else {
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
+        }
         return Ok(0);
     }
     let inspect=args.first().is_some_and(|arg|arg=="--inspect");
