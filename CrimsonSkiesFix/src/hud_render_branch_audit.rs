@@ -22,7 +22,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicUsize,Ordering},
 };
-use super::{GetModuleHandleW,IMAGE_BASE,PatchResult};
+use super::{GetModuleHandleW,IMAGE_BASE};
 
 const RENDERER_MODE_PTR:usize=0x009B_E708;
 const REPLICATE_CVAR_PTR:usize=0x0064_F748;
