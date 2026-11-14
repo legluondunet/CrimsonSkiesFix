@@ -1,0 +1,19 @@
+[package]
+name = "crimson-winmm-prototype"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "winmm"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "winmm_loader_smoke"
+path = "src/bin/winmm_loader_smoke.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
