@@ -139,8 +139,8 @@ pub(super) fn preflight_install_sources(
     // Check the local owner-supplied approved game binary independently from
     // the CD data, so corrupt original media cannot block source reuse.
     let exe=approved_executable(base,existing)?;
-    if BUNDLED_DDRAW.len()<4096 || !BUNDLED_DDRAW.starts_with(b"MZ"){
-        return Err("embedded CrimsonSkiesFix DirectDraw patch is missing or invalid; extraction refused".into());
+    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
+        return Err(format!("embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"));
     }
     let updater=update102::find(base,update)?;
     Ok((exe,updater))
@@ -335,6 +335,30 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
 }
 
 fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
+    // The v1.1 WinMM candidate must never mistake an old CrimsonSkiesFix
+    // ddraw.dll (or a third-party wrapper) for a missing file to repair.
+    // Refuse *before* CD extraction, installer staging or player-data writes.
+    ensure_no_local_ddraw(game)?;
+    if cfg!(feature="winmm-installer") && directory(game) {
+        let runtime=game.join(RUNTIME_DLL);
+        if any_entry(&runtime) && !regular(&runtime) {
+            return Err("WinMM candidate: unsafe winmm.dll filesystem object; refusing installation".into());
+        }
+        if regular(&runtime) && digest(&runtime)? != sha256::hex(BUNDLED_RUNTIME) {
+            return Err("WinMM candidate: unknown existing winmm.dll preserved; manual inspection required".into());
+        }
+        // Existing verified manually imported game: install the new WinMM
+        // runtime only, with no CD rebuild, no EXE replacement and no game
+        // data changes. A CD-receipt install still takes the strict asset
+        // verification path below.
+        if !any_entry(&game.join(INSTALL_RECEIPT)) &&
+            validated_game_exe(game).is_ok() &&
+            !regular(&runtime) {
+            deploy_runtime(game)?;
+            deploy_documentation(game)?;
+            return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
+        }
+    }
     if !any_entry(game){
         build_and_publish(base,game,false)?;
         return Ok("INSTALL_FROM_CD_AND_LAUNCH");
@@ -361,7 +385,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // previous launcher's log lost this evidence when a later
                 // stale staging directory blocked the reconstruction.
                 // If only the bundled DLL changed, repair that first.
-                let followup=match deploy_proxy(game){
+                let followup=match deploy_runtime(game){
                     Ok(())=>match verify_installed_cd_assets(game){
                         Ok(_)=>{
                             // Keep build-info.txt in sync with the DLL.
