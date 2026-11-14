@@ -502,12 +502,25 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    use std::sync::atomic::{AtomicU64,Ordering};
+    // Windows SystemTime can have coarse precision even though as_nanos()
+    // is used, and Rust tests execute concurrently within one process.
+    // Use a monotonic per-process nonce and retry existing test directories.
+    static NEXT_TEMP:AtomicU64=AtomicU64::new(0);
     fn temp()->PathBuf{
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
-        let p=std::env::temp_dir().join(format!("crimson-auto-flow-{}-{n}",std::process::id()));
-        fs::create_dir(&p).unwrap();
-        p
+        for _ in 0..64{
+            let seq=NEXT_TEMP.fetch_add(1,Ordering::Relaxed);
+            let p=std::env::temp_dir().join(format!(
+                "crimson-auto-flow-{}-{n}-{seq}",std::process::id()));
+            match fs::create_dir(&p){
+                Ok(())=>return p,
+                Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue,
+                Err(e)=>panic!("cannot create isolated test directory: {e}"),
+            }
+        }
+        panic!("could not reserve distinct auto-install test directory")
     }
     #[test]
     fn old_generated_installer_log_removed_only_when_replaced(){
