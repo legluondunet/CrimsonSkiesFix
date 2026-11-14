@@ -60,6 +60,27 @@ The new candidate has a different executable name and prints
 Do not rename it to the old v1.0 executable name or overwrite the original
 installer; keep it beside the copied `CrimsonSkiesFix/` game directory.
 
+## Existing experimental WinMM DLLs not recognized by SHA
+
+The 1.1 test installer deliberately does not replace an unknown existing
+`winmm.dll` even when a game log reports a familiar CrimsonSkiesFix commit:
+different builds can share the **same log identity** but have **different
+SHA-256 digests**. Always use the actual DLL digest, not the version in the
+log, to decide whether a DLL is an approved upgrade source.
+
+If `--install-only` returns
+`existing winmm.dll SHA-256=... is not an approved experimental upgrade`,
+**keep the file**. On a separate copy of the working game, move the existing
+`winmm.dll` to an archival filename such as `winmm.dll.previous-test`,
+first checking that destination does not already exist. Do not copy it back
+as an active `winmm.dll` until returning to the previous test.
+
+The installer also **refuses to rotate or delete an existing
+`winmm.dll.bak`**. Archive that file separately if it is present. Avoid
+using `winmm.dll.bak` as your manual archival filename. The `--verify`
+command must always be run with **`CrimsonSkiesFix-WinMM-1.1-TEST.exe`**,
+not with the unchanged v1.0 `CrimsonSkiesFix.exe`.
+
 ## Manual use on an isolated copy
 
 Once a backed-up test folder has **no app-local `ddraw.dll`** and contains
