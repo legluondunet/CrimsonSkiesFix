@@ -62,8 +62,9 @@ jobs:
             throw 'WinMM candidate did not advertise its WinMM backend'
           }
           $version = (& $exe --version) -join "`n"
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\.1\.0-rc\.1') {
-            throw 'WinMM candidate missing isolated version identity'
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\.1\.0-rc\.1' -or
+              $version -notmatch 'runtime=winmm\.dll EXPERIMENTAL') {
+            throw "WinMM candidate version/backend mismatch: $version"
           }
           $root='winmm-installer-smoke'
           New-Item -ItemType Directory -Force "$root/CrimsonSkiesFix" | Out-Null
@@ -95,15 +96,29 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force 'winmm-installer-dist' | Out-Null
-          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' 'winmm-installer-dist/CrimsonSkiesFix.exe'
-          $sha=(Get-FileHash 'winmm-installer-dist/CrimsonSkiesFix.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          "SHA256=$sha" | Set-Content 'winmm-installer-dist/CrimsonSkiesFix.sha256'
+          # Never publish a second, ambiguous CrimsonSkiesFix.exe that can be
+          # confused with the simultaneously built v1.0 DirectDraw installer.
+          $candidate = 'winmm-installer-dist/CrimsonSkiesFix-WinMM-1.1-TEST.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $candidate
+          $version = (& $candidate --version) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\.1\.0-rc\.1' -or
+              $version -notmatch 'runtime=winmm\.dll EXPERIMENTAL') {
+            throw "Packaged binary is not the WinMM-only candidate: $version"
+          }
+          if ($version -match '1\.0\.0' -or $version -match 'runtime=ddraw\.dll') {
+            throw 'A legacy DirectDraw launcher was packaged in the WinMM artifact'
+          }
+          $sha=(Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'winmm-installer-dist/CrimsonSkiesFix-WinMM-1.1-TEST.sha256'
           Copy-Item 'installer/README-winmm-candidate.md' 'winmm-installer-dist/README-EXPERIMENTAL.md'
           if (Test-Path 'winmm-installer-dist/ddraw.dll') {throw 'Never publish ddraw.dll with this candidate'}
+          if (Test-Path 'winmm-installer-dist/CrimsonSkiesFix.exe') {throw 'Ambiguous v1.0 launcher filename in WinMM artifact'}
+          Write-Host "WINMM-PACKAGE-IDENTITY PASS: $version sha256=$sha"
+          $global:LASTEXITCODE=0
       - name: Upload explicitly experimental candidate
         uses: actions/upload-artifact@v4
         with:
-          name: CrimsonSkiesFix-WinMM-installer-x86-EXPERIMENTAL-NOT-RELEASE
+          name: CrimsonSkiesFix-WinMM-1.1-TEST-ONLY-NOT-RELEASE
           path: CrimsonSkiesFix/winmm-installer-dist/*
           retention-days: 14
           if-no-files-found: error
