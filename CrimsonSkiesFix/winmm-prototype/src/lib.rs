@@ -84,14 +84,18 @@ fn write_first_call(index: usize, system: *mut c_void) {
     let ddraw_name: Vec<u16> = "ddraw.dll".encode_utf16().chain(Some(0)).collect();
     let ddraw = unsafe { GetModuleHandleW(ddraw_name.as_ptr()) };
     let api = std::str::from_utf8(EXPORT_NAMES[index]).unwrap_or("?").trim_end_matches('\0');
+    #[cfg(feature = "winmm-bootstrap")]
+    let iat_status = crate::winmm_bootstrap::status();
+    #[cfg(not(feature = "winmm-bootstrap"))]
+    let iat_status = 0u32;
     if let Ok(mut log) = OpenOptions::new().create(true).append(true)
         .open(base.join("CrimsonSkiesFix_winmm_probe.log")) {
         let _ = writeln!(log,
-            "WINMM-PROBE first_call={} tick_ms={} proxy={} native_winmm={} ddraw={}; test_only=true",
+            "WINMM-PROBE first_call={} tick_ms={} proxy={} native_winmm={} ddraw={} bootstrap_iat_status={}; test_only=true",
             api, unsafe { GetTickCount() },
             own_module().and_then(module_path).map(|p| p.display().to_string()).unwrap_or_default(),
             module_path(system).map(|p| p.display().to_string()).unwrap_or_default(),
-            module_path(ddraw).map(|p| p.display().to_string()).unwrap_or_default());
+            module_path(ddraw).map(|p| p.display().to_string()).unwrap_or_default(),iat_status);
     }
 }
 
