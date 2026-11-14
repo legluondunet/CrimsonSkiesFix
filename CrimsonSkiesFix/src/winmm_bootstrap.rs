@@ -3,19 +3,24 @@
 //! no logging, and no game fix initialization during DLL_PROCESS_ATTACH.
 //! Runtime verification and the existing compatibility hooks execute later,
 //! when the game's DirectDrawCreate or DirectDrawEnumerateA is actually called.
-use core::{ffi::{c_char,c_void},ptr};
-use std::sync::atomic::{AtomicU32,Ordering};
+use core::{ffi::c_void,ptr};
+use std::sync::atomic::{AtomicU32,AtomicUsize,Ordering};
 
 #[link(name="kernel32")]
 extern "system" {
     fn GetModuleHandleW(name:*const u16)->*mut c_void;
-    fn GetProcAddress(module:*mut c_void,name:*const c_char)->*const c_void;
     fn LoadLibraryW(name:*const u16)->*mut c_void;
     fn VirtualProtect(address:*mut c_void,size:usize,new_protection:u32,old_protection:*mut u32)->i32;
 }
 
 const DDRAW:[u16;10]=[100,100,114,97,119,46,100,108,108,0];
 const PAGE_READWRITE:u32=0x04;
+// Resolved IAT targets are captured before replacement. They are the actual
+// backend functions the PE loader selected (native DirectDraw or a wrapper).
+static ORIGINAL_CREATE:AtomicUsize=AtomicUsize::new(0);
+static ORIGINAL_ENUMERATE:AtomicUsize=AtomicUsize::new(0);
+pub(crate) fn original_create()->usize {ORIGINAL_CREATE.load(Ordering::Acquire)}
+pub(crate) fn original_enumerate()->usize {ORIGINAL_ENUMERATE.load(Ordering::Acquire)}
 const IAT_CREATE:usize=0x61_FBA4;
 const IAT_ENUMERATE:usize=0x61_FBA8;
 const IMAGE_SIZE:u32=0x65_2000;
@@ -79,24 +84,35 @@ unsafe fn recognized_image(base:*const u8)->bool {
 unsafe fn install_exe_iat()->u32 {
     let base=unsafe{GetModuleHandleW(ptr::null())}.cast::<u8>();
     if !unsafe{recognized_image(base)} {return 1;} // Not our exact PE layout.
-    let ddraw=unsafe{GetModuleHandleW(DDRAW.as_ptr())};
-    if ddraw.is_null(){return 2;} // DDRAW may still be awaiting loader initialization.
-    unsafe{install_recognized_iat(base,ddraw)}
+    // Unlike the earlier implementation, do NOT assume ddraw.dll is already
+    // visible through GetModuleHandleW during WINMM's DLL_PROCESS_ATTACH.
+    // The PE loader resolves these ordinary game imports before game entry.
+    // Capture the actual resolved IAT addresses, then let the existing
+    // DirectDraw hooks execute later, outside the loader lock.
+    unsafe{install_recognized_iat(base)}
 }
 
 // Called only after the exact preimage is authenticated, either by process
-// attach or by a synthetic Win32 unit test. No loader/API initialization here.
-unsafe fn install_recognized_iat(base:*mut u8,ddraw:*mut c_void)->u32 {
-    let original_create=unsafe{GetProcAddress(ddraw,c"DirectDrawCreate".as_ptr())} as usize;
-    let original_enum=unsafe{GetProcAddress(ddraw,c"DirectDrawEnumerateA".as_ptr())} as usize;
-    if original_create==0 || original_enum==0 {return 3;}
+// attach or by a synthetic Win32 unit test. No file IO/LoadLibrary/heap work.
+unsafe fn install_recognized_iat(base:*mut u8)->u32 {
     let create=unsafe{base.add(IAT_CREATE)}.cast::<u32>();
     let enumerate=unsafe{base.add(IAT_ENUMERATE)}.cast::<u32>();
-    if unsafe{ptr::read_volatile(create)}!=original_create as u32 ||
-       unsafe{ptr::read_volatile(enumerate)}!=original_enum as u32 {return 4;}
+    let original_create=unsafe{ptr::read_volatile(create)} as usize;
+    let original_enum=unsafe{ptr::read_volatile(enumerate)} as usize;
+    // Reject missing/unresolved imports, import thunks pointing back into
+    // CRIMSON.EXE, and any IAT that is already hooked by this module.
+    let image_start=base as usize;
+    let Some(image_end)=image_start.checked_add(IMAGE_SIZE as usize) else {return 4};
+    let invalid=|p:usize|p<0x10000 || (image_start..image_end).contains(&p);
+    if invalid(original_create) || invalid(original_enum) ||
+       original_create==crate::DirectDrawCreate as usize ||
+       original_enum==crate::DirectDrawEnumerateA as usize {return 4;}
     // Both pointers occupy a single page; no other image or DLL is modified.
     let mut previous=0u32;
     if unsafe{VirtualProtect(create.cast(),8,PAGE_READWRITE,&mut previous)}==0 {return 5;}
+    // Publish the real provider pointers before activating our hooks.
+    ORIGINAL_CREATE.store(original_create,Ordering::Release);
+    ORIGINAL_ENUMERATE.store(original_enum,Ordering::Release);
     unsafe{
         ptr::write_volatile(create,crate::DirectDrawCreate as usize as u32);
         ptr::write_volatile(enumerate,crate::DirectDrawEnumerateA as usize as u32);
@@ -167,21 +183,21 @@ mod tests {
                 ptr::copy_nonoverlapping(name.as_ptr(),base.add(off),name.len());
             }
             assert!(recognized_image(base));
-            // The test itself loads the provider outside loader lock. The
-            // production loader never calls LoadLibrary during its DllMain.
-            let ddraw=LoadLibraryW(DDRAW.as_ptr());
-            assert!(!ddraw.is_null(),"Windows DirectDraw provider missing");
-            let original_create=GetProcAddress(ddraw,c"DirectDrawCreate".as_ptr()) as usize as u32;
-            let original_enum=GetProcAddress(ddraw,c"DirectDrawEnumerateA".as_ptr()) as usize as u32;
-            assert_ne!(original_create,0);
-            assert_ne!(original_enum,0);
-            put32(IAT_CREATE,original_create);put32(IAT_ENUMERATE,original_enum);
-            assert_eq!(install_recognized_iat(base,ddraw),7);
+            // Deliberately do not load ddraw.dll. The loader may have filled
+            // the import table even before GetModuleHandleW sees the provider.
+            // These fake pointers model an already-resolved foreign DLL.
+            const FAKE_CREATE:u32=0x7000_1234;
+            const FAKE_ENUMERATE:u32=0x7000_5678;
+            assert_eq!(install_recognized_iat(base),4); // unresolved thunks
+            put32(IAT_CREATE,FAKE_CREATE);put32(IAT_ENUMERATE,FAKE_ENUMERATE);
+            assert_eq!(install_recognized_iat(base),7);
+            assert_eq!(original_create(),FAKE_CREATE as usize);
+            assert_eq!(original_enumerate(),FAKE_ENUMERATE as usize);
             assert_eq!(u32_at(base,IAT_CREATE),crate::DirectDrawCreate as usize as u32);
             assert_eq!(u32_at(base,IAT_ENUMERATE),crate::DirectDrawEnumerateA as usize as u32);
             assert_eq!(u32_at(base,IAT_ENUMERATE+4),0); // Third thunk remains untouched
             // A second attempt must fail without overwriting the installed hooks.
-            assert_eq!(install_recognized_iat(base,ddraw),4);
+            assert_eq!(install_recognized_iat(base),4);
             assert_ne!(VirtualFree(memory,0,0x8000),0); // MEM_RELEASE
         }
     }
