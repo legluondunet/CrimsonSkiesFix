@@ -320,6 +320,25 @@ rendering/presentation integration**. Do not assert which until a
 matched native-render comparison is available. Do not add a fourth
 speculative EXE patch as though the reference contains some unseen bytes.
 
+**Additional owner-binary audit:** `CRIMSON(1).EXE` and `CRIMSON(6).EXE`
+are **byte-for-byte identical** to `CRIMSON(7).EXE` (1920x1200
+reference). `CRIMSON(5).EXE`, `crimson(8).exe` and the separately
+named `CRIMSON_1920x1080_FOVFIX.EXE` are the **same** 1920x1080
+reference SHA-256; `Crimson(9).exe` and `Crimson(10).exe` are
+identical to the decrypted original. None contains a **second
+alternate HUD scale correction**. There is also an early `crimson.exe`
+that differs from the decrypted original by only ten bytes in two
+locations, unrelated to this 38-region 1920x1200 patch.
+
+Public game-compatibility documentation distinguishes a
+**stretched/enlarged HUD variant** from a regular variant where HUD
+elements stay **small**:
+https://www.myabandonware.com/game/crimson-skies-be7 .
+Consequently the label `No HUD Stretch` does not, by itself, prove
+that the round gauges retain geometric 4:3 proportions. A matched
+screenshot of the original reference renderer is still needed to
+establish that narrower visual claim.
+
 **Next investigation**: compare the 1920x1200 reference executable's HUD
 and FOV under a separate pristine rendering setup to the exact same
 mission under the WinMM adapter, or isolate the HUD coordinate mapping
