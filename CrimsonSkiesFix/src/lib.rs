@@ -345,6 +345,14 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    #[cfg(feature = "winmm-bootstrap")]
+    {
+        static WINMM_LOG_ONCE:Once=Once::new();
+        WINMM_LOG_ONCE.call_once(||{
+            log(&format!("WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status={} (7=two imports redirected, 1=unrecognized image, 2=ddraw absent, 4=IAT mismatch)",
+                winmm_bootstrap::status()));
+        });
+    }
     // Preserve the native opening-screen initialization order from the
     // previously validated Windows 488a5180 build: register the original
     // loader observer before applying the managed archive patch.
