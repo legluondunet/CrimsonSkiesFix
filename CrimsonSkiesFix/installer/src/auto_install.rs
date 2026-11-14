@@ -348,7 +348,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         let expected=sha256::hex(BUNDLED_RUNTIME);
         if let Some(ref digest)=current_digest {
             if digest!=&expected && !recognized_previous_winmm_sha(digest) {
-                return Err("WinMM candidate: unknown existing winmm.dll preserved; manual inspection required".into());
+                return Err(format!("WinMM candidate: existing winmm.dll SHA-256={digest} is not an approved experimental upgrade; preserved. Back up this file manually before installing the new WinMM"));
             }
         }
         // Existing verified manually imported game: install or upgrade the
