@@ -53,6 +53,21 @@ unsafe extern "C" fn on_game_mode_setup()->u32{
                 modern_ddraw_hooks::observe_modern_ddraw(dd4,"IDirectDraw4");
                 if count<12{
                     log("NATIVE-BOOTSTRAP: game DD4 owner intercepted before SetCooperativeLevel and SetDisplayMode; windowed adapter eligible (not yet exposed)");
+                    #[cfg(feature="winmm-bootstrap")]
+                    {
+                        // Owner's real native Win11 session can render while
+                        // repeating all-false COM hook installation results.
+                        // Distinguish a truly unpatched owner from a vtable
+                        // slot displaced after prior registration. No pointer
+                        // addresses, COM calls, or rendering mutations.
+                        let coop=crate::com_vtable::hook_slot_status(
+                            dd4,20,modern_ddraw_hooks::modern_set_cooperative as usize);
+                        let mode=crate::com_vtable::hook_slot_status(
+                            dd4,21,modern_ddraw_hooks::modern_set_display_mode as usize);
+                        log(&format!(
+                            "NATIVE-WINMM-DD4-SLOTS: verified_game_owner=true cooperative={coop} display_mode={mode} (read-only vtable status; no mode change)"
+                        ));
+                    }
                 }
             }else if count<12{
                 log("NATIVE-BOOTSTRAP: game DD4 pointer version/identity unexpected; original game mode setup preserved");
