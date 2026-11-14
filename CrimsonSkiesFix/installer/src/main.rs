@@ -259,7 +259,9 @@ fn deploy_runtime_with_recognizer(
     }
     // Keep the older backup until the new active DLL is atomically
     // published; rollback restores BOTH prior names if a rename fails.
-    let backup_moved=if regular(&backup) {
+    // Without an active DLL there is nothing to back up. Keep an existing
+    // authenticated .bak in its place rather than deleting the last rollback.
+    let backup_moved=if regular(&backup) && regular(&active) {
         if let Err(err)=fs::rename(&backup,&old_backup) {
             let _=fs::remove_file(&pending);
             return Err(format!("cannot stage previous DLL backup: {err}"));
@@ -760,6 +762,25 @@ mod tests {
         deploy_runtime_with_recognizer(&dir,is_known).unwrap();
         assert_eq!(fs::read(&backup).unwrap(),prev);
         assert_eq!(fs::read(&active).unwrap(),BUNDLED_RUNTIME);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn missing_active_dll_does_not_discard_existing_project_backup() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-no-active-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let prior=b"known recovery backup";
+        let prior_hash=sha256::hex(prior);
+        fs::write(dir.join("winmm.dll.bak"),prior).unwrap();
+        deploy_runtime_with_recognizer(
+            &dir,|digest|digest==prior_hash).unwrap();
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),prior);
+        assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
         fs::remove_dir_all(dir).unwrap();
     }
 
