@@ -4,7 +4,7 @@ fn main(){
     assert_eq!(target,"i686-pc-windows-msvc",
         "WinMM runtime is only built for i686-pc-windows-msvc");
     let root=PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("Cargo root"));
-    let def=root.join("../winmm-prototype/src/winmm_exports.def");
+    let def=root.join("src/winmm_full_exports.def");
     println!("cargo:rerun-if-changed={}",def.display());
     println!("cargo:rustc-cdylib-link-arg=/DEF:{}",def.display());
     let sha=env::var("CRIMSONSKIESFIX_COMMIT").ok()
