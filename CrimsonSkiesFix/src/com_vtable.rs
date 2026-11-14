@@ -55,6 +55,29 @@ pub(crate) unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->
 }
 
 
+
+/// Read-only diagnosis of a *known, authenticated* COM object's vtable slot.
+/// A successful call to replace_method() is not proof that a later COM
+/// object still uses the same callback. This reports why a re-attach failed,
+/// without mutating the vtable or trusting a stale original function pointer.
+pub(crate) unsafe fn hook_slot_status(object:*mut c_void,index:usize,hook:usize)->&'static str {
+    if object.is_null(){return "null-object";}
+    let table=*(object as *const *const usize);
+    if table.is_null(){return "null-vtable";}
+    let current=*table.add(index);
+    if current==0{return "null-method";}
+    let Ok(map)=originals().lock() else{return "registry-unavailable"};
+    match map.get(&(table as usize,index)) {
+        Some(&original) if original!=0 && original!=hook => {
+            if current==hook {"active"}else{"registered-but-displaced"}
+        },
+        Some(_)=>"registry-invalid",
+        None if current==hook=>"hook-present-unregistered",
+        None=>"not-installed",
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
