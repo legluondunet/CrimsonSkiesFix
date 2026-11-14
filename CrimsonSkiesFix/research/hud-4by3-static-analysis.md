@@ -138,3 +138,47 @@ must not be reverted without demonstrating their layer/caller context.
    3D world/cinematics.
 
 Do not merge/release PR #36 on the basis of static inspection alone.
+
+
+## Native WinMM debug camera normalization A/B
+
+The original 1.02 EXE confirms two patched x87 operand references in the
+camera-entity normalization helper at VA 0x00455BE0. The game's scene
+loop calls this helper from VA 0x0049FCC3.
+
+- RVA 0x55C01 / VA 0x455C01: original 3-byte memory address
+  9C 40 60 (0x0060409C, 60-degree reference) was replaced by
+  F0 EF A1 (0x00A1EFF0, dynamic wide-FOV reference).
+- RVA 0x55C0E / VA 0x455C0E: original 90 40 60 (0x00604090,
+  original 30-degree half-angle reference) was replaced by
+  F4 EF A1 (0x00A1EFF4, dynamic wide-FOV half-angle reference).
+
+This code is part of a scene-camera/entity pass. **It is not yet proven
+that the call exclusively affects the HUD**; changes to scene scale/FOV
+must be checked and not accepted merely because gauges become circular.
+
+Experimental WinMM build has a disabled-by-default, exact two-site
+reversible startup A/B test, enabled ONLY by the debug switch below:
+
+    [Graphics]
+    AspectRatio=auto
+
+    [Debug]
+    Log=1
+    ExperimentalHudFov43Probe=1
+
+The normal baseline is ExperimentalHudFov43Probe=0. On native Windows
+widescreen only, AFTER the complete byte-verified EXE patch succeeds,
+the prototype changes only those 2 operand addresses back to the
+verified original 4:3 references. It never changes the game EXE on disk,
+and does not patch DirectDraw, WinMM, movie compositing, or render
+surfaces. It refuses unexpected byte preimages and attempts rollback
+on any write/protection failure.
+
+Look for the log line beginning HUD-FOV-A-B: enabled=1. Compare
+same-mission gauge circularity, HUD edge anchors, plane and world FOV,
+menus and cinematics. A failure or unrelated 3D distortion means
+restore ExperimentalHudFov43Probe=0 and return to the proven baseline.
+
+**Experimental only:** without native visual proof this is a hypothesis
+test, not a completed HUD-only correction.
