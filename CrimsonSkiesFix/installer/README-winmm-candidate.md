@@ -19,8 +19,11 @@ external DDraw wrapper compatibility tests have NOT been completed.
 - An unknown existing `winmm.dll` still blocks replacement; its bytes are
   preserved. Exactly one earlier **verified experimental** WinMM build
   (735,232 bytes, SHA-256 `ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a`,
-  log identity `6d358ba9`) may be upgraded in place. Its bytes are preserved
-  as `winmm.dll.bak`. If that backup name already exists, the installer
+  log identity `6d358ba9`), **or** the exact `7395cd3c` runtime
+  (737,280 bytes, SHA-256
+  `bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e`,
+  authenticated from the original CI artifact) may be upgraded in place.
+  Its bytes are preserved as `winmm.dll.bak`. If that backup name already exists, the installer
   refuses to overwrite it. Other previous builds require manual inspection.
 - Game EXE and assets retain the existing hash verification. The exact supported
   decrypted 1.02 executable is required; no unprotected game files ship here.
