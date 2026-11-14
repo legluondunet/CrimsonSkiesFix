@@ -16,15 +16,13 @@ external DDraw wrapper compatibility tests have NOT been completed.
   installation and auto-repair. Nothing deletes or renames that file.
   Migration of known v1.0 proxy hashes and external graphics wrappers is
   deferred until separately tested.
-- An unknown existing `winmm.dll` still blocks replacement; its bytes are
-  preserved. Exactly one earlier **verified experimental** WinMM build
-  (735,232 bytes, SHA-256 `ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a`,
-  log identity `6d358ba9`), **or** the exact `7395cd3c` runtime
-  (737,280 bytes, SHA-256
-  `bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e`,
-  authenticated from the original CI artifact) may be upgraded in place.
-  Its bytes are preserved as `winmm.dll.bak`. If that backup name already exists, the installer
-  refuses to overwrite it. Other previous builds require manual inspection.
+- Unknown existing `winmm.dll` files are never overwritten. The installer
+  recognizes **only** pinned SHA-256 digests of our own previously built
+  experimental WinMM DLLs: `6d358ba9`, `7395cd3c`, `65304a3e`,
+  `d2e45149`, `0bcc164b` and `39bb2e5d`, verified directly from their
+  original GitHub Windows x86 CI artifacts. It preserves the prior active DLL
+  as `winmm.dll.bak`; an existing backup name is never overwritten. All
+  other WinMM files (including third-party wrappers) require manual review.
 - Game EXE and assets retain the existing hash verification. The exact supported
   decrypted 1.02 executable is required; no unprotected game files ship here.
 - `CrimsonSkiesFix.exe --launch-no-verify` remains the explicit **no repair**
