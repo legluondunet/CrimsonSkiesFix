@@ -73,6 +73,7 @@ fn classify_path(renderer:Option<u32>,replicate:Option<u32>)->&'static str{
             Some(_)=>"legacy-replicate-on-canvas-setter",
             None=>"legacy-replicate-unavailable",
         },
+        Some(_)=>"accelerated-no-legacy-canvas",
         None=>"renderer-unavailable",
     }
 }
