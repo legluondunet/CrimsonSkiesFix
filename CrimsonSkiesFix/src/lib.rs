@@ -368,11 +368,24 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
     }
     if diagnostics::is_native_windows() && !config.directdraw_passthrough {
+        // Historical Windows #22 fix: the game may obtain its IDirectDraw4
+        // from dynamically resolved DDRAW!DirectDrawCreateEx, not from one
+        // of the two static DDRAW imports we intercepted in DllMain.
+        // When the runtime moved to WinMM, that dynamic provider lookup
+        // once again bypassed our hooks. Restore the original game's
+        // provider-specific resolution path without taking over ddraw.dll.
+        // This must run after exe_gate and even with Log=0.
+        #[cfg(feature="winmm-bootstrap")]
+        {
+            static NATIVE_WINMM_GETPROC_ONCE:Once=Once::new();
+            NATIVE_WINMM_GETPROC_ONCE.call_once(native_getproc_trace::install);
+        }
         if config.log_enabled {
             NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
-                // Diagnostics must never be required to activate an actual
-                // Windows-only compatibility fix.
                 native_video_imports::report();
+                // The v1.0 DirectDraw backend preserves its original
+                // diagnostic-only GetProcAddress observer unchanged.
+                #[cfg(not(feature="winmm-bootstrap"))]
                 native_getproc_trace::install();
             });
         }
