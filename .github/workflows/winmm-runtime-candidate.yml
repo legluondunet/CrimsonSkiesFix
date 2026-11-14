@@ -37,24 +37,8 @@ jobs:
         run: cargo test --manifest-path runtime-winmm/Cargo.toml --target i686-pc-windows-msvc
       - name: Compile shared runtime into standalone x86 winmm.dll
         run: cargo build --manifest-path runtime-winmm/Cargo.toml --release --target i686-pc-windows-msvc
-      - name: Verify PE x86 and all 14 WinMM function names
-        shell: pwsh
-        run: |
-          $file='runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll'
-          $data=[System.IO.File]::ReadAllBytes($file)
-          $pe=[BitConverter]::ToUInt32($data,0x3c)
-          if ([BitConverter]::ToUInt16($data,$pe+4) -ne 0x14C) {throw 'Not Windows x86 PE'}
-          $output = & dumpbin /exports $file | Out-String
-          foreach ($name in @(
-             'mixerGetLineInfoA','mixerOpen','mciGetErrorStringA','mixerGetLineControlsA',
-             'mixerClose','auxSetVolume','auxGetVolume','mciSendCommandA','auxGetNumDevs',
-             'auxGetDevCapsA','mixerSetControlDetails','mixerGetControlDetailsA',
-             'mixerGetNumDevs','timeGetTime')) {
-            if ($output -notmatch "(?m)^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+$name(?:\s|$)") {
-              throw "WinMM runtime missing named PE export $name"
-            }
-          }
-          Write-Host 'WINMM-RUNTIME: PASS 14 expected named x86 exports'
+      - name: Independently verify PE32 WinMM exports
+        run: python runtime-winmm/tools/verify_runtime_exports.py runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll
       - name: Build standalone WinMM smoke host
         run: cargo build --manifest-path winmm-prototype/Cargo.toml --release --target i686-pc-windows-msvc --bin winmm_loader_smoke
       - name: Smoke-test real Windows native WinMM forwarding
