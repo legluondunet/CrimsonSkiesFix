@@ -344,16 +344,19 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         if any_entry(&runtime) && !regular(&runtime) {
             return Err("WinMM candidate: unsafe winmm.dll filesystem object; refusing installation".into());
         }
-        if regular(&runtime) && digest(&runtime)? != sha256::hex(BUNDLED_RUNTIME) {
-            return Err("WinMM candidate: unknown existing winmm.dll preserved; manual inspection required".into());
+        let current_digest=if regular(&runtime){Some(digest(&runtime)?)}else{None};
+        let expected=sha256::hex(BUNDLED_RUNTIME);
+        if let Some(ref digest)=current_digest {
+            if digest!=&expected && !recognized_previous_winmm_sha(digest) {
+                return Err("WinMM candidate: unknown existing winmm.dll preserved; manual inspection required".into());
+            }
         }
-        // Existing verified manually imported game: install the new WinMM
-        // runtime only, with no CD rebuild, no EXE replacement and no game
-        // data changes. A CD-receipt install still takes the strict asset
-        // verification path below.
+        // Existing verified manually imported game: install or upgrade the
+        // complete WinMM-only runtime without CD rebuild, EXE replacement or
+        // edits to save data. A CD receipt still uses strict verification.
         if !any_entry(&game.join(INSTALL_RECEIPT)) &&
             validated_game_exe(game).is_ok() &&
-            !regular(&runtime) {
+            current_digest.as_deref()!=Some(expected.as_str()) {
             deploy_runtime(game)?;
             deploy_documentation(game)?;
             return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
