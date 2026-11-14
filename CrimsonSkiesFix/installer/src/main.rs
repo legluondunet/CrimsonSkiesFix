@@ -201,7 +201,9 @@ fn deploy_runtime(game: &Path) -> Result<(), String> {
     if cfg!(feature="winmm-installer") &&
        existing_digest.as_deref()!=Some(expected.as_str()) {
         if existing_digest.is_some() && !approved_previous {
-            return Err("WinMM candidate: unknown existing winmm.dll is preserved; manual inspection required before installing".into());
+            return Err(format!(
+                "WinMM candidate: existing winmm.dll SHA-256={} is not a recognized upgrade source; original preserved. Inspect with sha256sum and keep a manual backup before retrying",
+                existing_digest.as_deref().unwrap_or("unavailable")));
         }
         // Never rotate/delete a user's pre-existing backup during an
         // experimental upgrade; this path only handles an empty backup slot.
@@ -211,6 +213,13 @@ fn deploy_runtime(game: &Path) -> Result<(), String> {
     }
     if existing_digest.as_deref()==Some(expected.as_str()) {
         return Ok(());
+    }
+    // This is a test-only migrator: preserving a user's existing backup is
+    // more important than rotating it. The original generic transaction
+    // discarded the old backup after publishing the new DLL. Refuse that
+    // destructive path for WinMM. A separate, deliberate backup is required.
+    if cfg!(feature="winmm-installer") && any_entry(&backup) {
+        return Err("WinMM candidate: existing winmm.dll.bak is preserved; move it to a separately named safe archive before installing".into());
     }
     if approved_previous {
         println!("WinMM candidate: authenticated prior 6d358ba9 test DLL; upgrading with winmm.dll.bak backup");
@@ -665,6 +674,25 @@ mod tests {
         assert!(!recognized_previous_winmm_sha(
             "1e3cec68bc564a27791cc09e1c83d371f8c8a09576b45d3de52adc85fb8cf07c"));
         assert!(!recognized_previous_winmm_sha(""));
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn preexisting_winmm_backup_is_never_rotated_or_deleted() {
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-winmm-preserve-backup-{}-{id}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        let backup=game.join("winmm.dll.bak");
+        fs::write(&backup,b"prior user backup - must never be removed").unwrap();
+        assert!(deploy_runtime(&game).is_err());
+        assert_eq!(fs::read(&backup).unwrap(),
+                   b"prior user backup - must never be removed");
+        assert!(!any_entry(&game.join("winmm.dll")));
+        assert!(!any_entry(&game.join("winmm.dll.bak.previous")));
+        assert!(!any_entry(&game.join("winmm.dll.installing")));
+        fs::remove_dir_all(&game).unwrap();
     }
 
     #[cfg(feature="winmm-installer")]
