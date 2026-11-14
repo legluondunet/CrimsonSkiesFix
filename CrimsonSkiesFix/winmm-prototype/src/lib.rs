@@ -114,6 +114,17 @@ extern "C" fn resolve_target(index: u32) -> usize {
     target
 }
 
+// Used by the extended WinMM compatibility surface. Name-based delegation
+// avoids guessing multimedia API arguments or x86 return conventions.
+#[cfg(feature = "winmm-bootstrap")]
+pub(crate) fn resolve_external(name:&[u8])->usize {
+    let Some(system)=system_winmm() else {std::process::abort();};
+    if own_module()==Some(system) {std::process::abort();}
+    let target=unsafe{GetProcAddress(system,name.as_ptr().cast())} as usize;
+    if target==0 {std::process::abort();}
+    target
+}
+
 // ABI-preserving x86 tail jumps. Calls retain the original arguments, stack
 // and return address; EAX alone carries the resolved export address.
 global_asm!(r#"
