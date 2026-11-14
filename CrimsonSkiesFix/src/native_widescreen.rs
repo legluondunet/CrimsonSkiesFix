@@ -31,6 +31,16 @@ mod hud_entity_y43_probe;
 mod hud_canvas43_probe;
 
 #[cfg(feature="winmm-bootstrap")]
+#[path="hud_render_branch_audit.rs"]
+mod hud_render_branch_audit;
+
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) fn sample_hud_render_branch_on_game_flip(w:u32,h:u32){
+    let authenticated=verified_launch_widescreen_dimensions().is_some();
+    unsafe{hud_render_branch_audit::sample((w,h),authenticated);}
+}
+
+#[cfg(feature="winmm-bootstrap")]
 fn audit_aspect_xrefs_once(result:PatchResult){
     if !crate::cfg().log_enabled ||
        !matches!(result,PatchResult::Patched|PatchResult::AlreadyNative){
