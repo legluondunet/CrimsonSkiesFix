@@ -729,16 +729,39 @@ unsafe fn real_vtable(real:SurfaceThis)->&'static Surface4VTable{
     &**real.cast::<*const Surface4VTable>()
 }
 
-/// Compatibility probe for a verified native Windows WinMM 3D graph.
-/// The original game requests IDirectDrawSurface (v1) from its *Surface4
-/// virtual backbuffer* immediately after completing the 1920x1200 native
-/// HAL preflight. A v4 façade pointer cannot truthfully be returned as a
-/// v1 object: method slots/argument ABIs differ. Instead ask the actual
-/// owned native RGB565 backbuffer for the precise requested IID and
-/// return that genuine native COM interface with the ref supplied by QI.
-/// No arbitrary IID, synthetic primary, Z surface, Wine or legacy DLL
-/// is eligible. The physical 3D render target was already deliberately
-/// supplied to the HAL. This experiment is not a general v1 facade.
+/// Native Windows WinMM compatibility probe for precisely the two native
+/// game-owned Surface4 backbuffer types actually observed in game logs:
+/// 1920x1200 RGB565 widescreen 3D, and 800x600 XRGB8888 movie/menu.
+/// Both have already passed the real native HAL, Z32, size and pixel-format
+/// preflight before their virtual graph is exposed to the game.
+/// The original game asks IID_IDirectDrawSurface (v1) on both modes.
+/// A Surface4 façade cannot be returned as a v1 object: its method slots
+/// and calling conventions differ. Request the genuine v1 interface from
+/// the graph-owned native backbuffer instead, retaining QI ref ownership.
+/// Never expose the synthetic Primary/Depth, a 640x480 legacy surface,
+/// unsupported pixel formats or unknown IIDs. This narrow bridge is not a
+/// general versioned COM façade; next native run must validate it in game.
+#[cfg(feature="winmm-bootstrap")]
+fn native_backbuffer_surface1_eligible(node:VirtualGraphNode)->bool {
+    if node.role!=SurfaceRole::Backbuffer || node.mode.bpp!=16 {
+        return false;
+    }
+    // Exact game modes verified on native Win11. Normal 16-bit D3D render
+    // backbuffers are permitted only in supported desktop widescreen modes.
+    // 800x600 is eligible ONLY when its physical native backing is the
+    // separately verified XRGB8888 movie path; no other 2D path is widened.
+    let m=node.mode;
+    let widescreen=!node.native_movie_rgb32 &&
+        m.width>=960 && m.height>=600 &&
+        m.width<=8192 && m.height<=4320 &&
+        (m.width as u64)*(m.height as u64)<=33_554_432 &&
+        (m.width as u64)*3>=(m.height as u64)*4 &&
+        (m.width as u64)<=(m.height as u64)*4;
+    let verified_movie=node.native_movie_rgb32 &&
+        (m.width,m.height,m.bpp)==(800,600,16);
+    widescreen || verified_movie
+}
+
 #[cfg(feature="winmm-bootstrap")]
 unsafe fn native_game_backbuffer_surface1(
     this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
@@ -746,9 +769,7 @@ unsafe fn native_game_backbuffer_surface1(
     if !crate::diagnostics::is_native_windows() ||
        !same_guid(&*iid,&IID_SURFACE1) {return None;}
     let node=graph_node(this)?;
-    if node.role!=SurfaceRole::Backbuffer ||
-       node.mode.width<960 || node.mode.height<600 ||
-       node.native_movie_rgb32 ||
+    if !native_backbuffer_surface1_eligible(node) ||
        (*this.cast::<Surface4Forwarder>()).retired.load(Ordering::Acquire) {
         return None;
     }
@@ -764,7 +785,9 @@ unsafe fn native_game_backbuffer_surface1(
     }
     if NATIVE_BACKBUFFER_SURFACE1_QI.fetch_add(1,Ordering::Relaxed)<12 {
         crate::log(&format!(
-            "NATIVE-WINMM-SURFACE1: exact game virtual Backbuffer QI forwarded to native RGB565 IDirectDrawSurface1 hr={:#010x} valid_interface={} physical_backbuffer_only=true",
+            "NATIVE-WINMM-SURFACE1: exact game virtual Backbuffer QI forwarded to native IDirectDrawSurface1 mode={}x{}x{} physical_format={} hr={:#010x} valid_interface={} physical_backbuffer_only=true",
+            node.mode.width,node.mode.height,node.mode.bpp,
+            if node.native_movie_rgb32{"XRGB8888"}else{"RGB565"},
             hr as u32,valid));
     }
     Some(if valid{hr}else if hr>=0{E_NOINTERFACE}else{hr})
@@ -2028,6 +2051,67 @@ mod tests{
         RealMock{vtable:table,refs:AtomicU32::new(1),
                  blts:AtomicU32::new(0),flips:AtomicU32::new(0)}
     }
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn native_surface1_eligibility_is_limited_to_verified_3d_and_800x600_movie(){
+        let m3=Mode{width:1920,height:1200,bpp:16};
+        let movie=Mode{width:800,height:600,bpp:16};
+        let legacy=Mode{width:640,height:480,bpp:16};
+        let node=|role,mode,native_movie_rgb32|VirtualGraphNode{
+            role,mode,native_movie_rgb32,
+        };
+        assert!(native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,m3,false)));
+        assert!(native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,movie,true)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,movie,false)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,m3,true)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,legacy,false)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Primary,movie,true)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Depth,movie,true)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,Mode{width:800,height:600,bpp:32},true)));
+    }
+
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn native_800x600_xrgb_movie_surface1_query_preserves_real_qi_reference(){
+        static MOVIE_QI_CALLS:AtomicUsize=AtomicUsize::new(0);
+        unsafe extern "system" fn native_qi(
+            this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
+        )->i32{
+            if out.is_null(){return E_POINTER;}
+            *out=ptr::null_mut();
+            if iid.is_null() || !same_guid(&*iid,&IID_SURFACE1){return E_NOINTERFACE;}
+            MOVIE_QI_CALLS.fetch_add(1,Ordering::SeqCst);
+            *out=this;
+            real_add_ref(this);
+            S_OK
+        }
+        let mut vt=mock_table();
+        vt.query_interface=native_qi;
+        let mut real=real_mock(&vt);
+        let ptr=(&mut real as *mut RealMock).cast::<c_void>();
+        unsafe{
+            let movie=new_graph_surface4_opt_in_movie_rgb32(
+                ptr,SurfaceRole::Backbuffer,
+                Mode{width:800,height:600,bpp:16},false,true).unwrap();
+            let table=&**movie.cast::<*const Surface4VTable>();
+            let mut qi=ptr::null_mut();
+            assert_eq!((table.query_interface)(movie,&IID_SURFACE1,&mut qi),S_OK);
+            assert_eq!(qi,ptr);
+            assert_eq!(MOVIE_QI_CALLS.load(Ordering::SeqCst),1);
+            assert_eq!((vt.release)(qi),2);
+            assert_eq!((table.release)(movie),0);
+            assert_eq!(real.refs.load(Ordering::SeqCst),1);
+        }
+    }
+
     #[cfg(feature="winmm-bootstrap")]
     #[test]
     fn native_surface1_bridge_returns_native_qi_owned_reference_only_for_real_3d_backbuffer(){
