@@ -1387,6 +1387,14 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Accept only a NULL target or this primary's own virtual backbuffer.
         if back.is_null(){return E_NOTIMPL;} // incomplete graph is unarmed
         if !p1.is_null()&&p1!=back{return E_INVALIDARG;}
+        // Passive diagnostic only: the game can bypass the 640x480 HUD
+        // canvas block entirely in its accelerated renderer mode.
+        // Observe the exact verified game globals before acquiring the
+        // per-primary COM flip mutex. No display or render-state changes.
+        #[cfg(feature="winmm-bootstrap")]
+        crate::native_widescreen::sample_hud_render_branch_on_game_flip(
+            node.mode.width,node.mode.height
+        );
         let movie=graph_node(back).is_some_and(|n|n.native_movie_rgb32);
         let movie_call=if movie{
             let count=NATIVE_MOVIE_RGB32_FLIP_CALLS.fetch_add(1,Ordering::Relaxed)+1;
