@@ -81,6 +81,12 @@ unsafe fn install_exe_iat()->u32 {
     if !unsafe{recognized_image(base)} {return 1;} // Not our exact PE layout.
     let ddraw=unsafe{GetModuleHandleW(DDRAW.as_ptr())};
     if ddraw.is_null(){return 2;} // DDRAW may still be awaiting loader initialization.
+    unsafe{install_recognized_iat(base,ddraw)}
+}
+
+// Called only after the exact preimage is authenticated, either by process
+// attach or by a synthetic Win32 unit test. No loader/API initialization here.
+unsafe fn install_recognized_iat(base:*mut u8,ddraw:*mut c_void)->u32 {
     let original_create=unsafe{GetProcAddress(ddraw,c"DirectDrawCreate".as_ptr())} as usize;
     let original_enum=unsafe{GetProcAddress(ddraw,c"DirectDrawEnumerateA".as_ptr())} as usize;
     if original_create==0 || original_enum==0 {return 3;}
@@ -124,6 +130,62 @@ mod tests {
         let data=vec![0u8;0x200];
         assert!(!unsafe{recognized_image(data.as_ptr())});
     }
+
+    // Test the actual VirtualProtect/IAT replacement logic independently of
+    // the copyrighted game's EXE, using private committed Win32 memory.
+    // This is deliberately not a gameplay or Windows/Wine load-order test.
+    #[test]
+    fn synthetic_game_iat_patches_both_directdraw_entries() {
+        #[link(name="kernel32")]
+        extern "system" {
+            fn VirtualAlloc(addr:*mut c_void,size:usize,allocation:u32,protect:u32)->*mut c_void;
+            fn VirtualFree(addr:*mut c_void,size:usize,free_type:u32)->i32;
+        }
+        unsafe {
+            // MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE
+            let memory=VirtualAlloc(ptr::null_mut(),IMAGE_SIZE as usize,0x3000,PAGE_READWRITE);
+            assert!(!memory.is_null(),"cannot allocate isolated PE fixture");
+            let base=memory.cast::<u8>();
+            let put16=|off:usize,val:u16|ptr::write_unaligned(base.add(off).cast::<u16>(),val);
+            let put32=|off:usize,val:u32|ptr::write_unaligned(base.add(off).cast::<u32>(),val);
+            put16(0,0x5A4D);put32(0x3C,0xF8);
+            put32(0xF8,0x4550);put16(0xF8+4,0x14C);
+            put16(0xF8+6,6);put16(0xF8+24,0x10B);
+            put32(0xF8+24+56,IMAGE_SIZE);
+            put32(0xF8+24+104,0x61_F000);
+            for (off,val) in [
+                (0x61_F014,0x61_FAF0),(0x61_F020,0x62_0534),
+                (0x61_F024,0x62_0498),(0x61_F118,0x61_F1FC),
+                (0x61_F124,0x62_234C),(0x61_F128,IAT_CREATE as u32),
+                (0x61_F1FC,0x62_2320),(0x61_F200,0x62_2334)] {
+                put32(off,val);
+            }
+            for (off,name) in [(0x62_0534,b"WINMM.dll".as_slice()),
+                               (0x62_234C,b"DDRAW.dll"),
+                               (0x62_2322,b"DirectDrawCreate"),
+                               (0x62_2336,b"DirectDrawEnumerateA")] {
+                ptr::copy_nonoverlapping(name.as_ptr(),base.add(off),name.len());
+            }
+            assert!(recognized_image(base));
+            // The test itself loads the provider outside loader lock. The
+            // production loader never calls LoadLibrary during its DllMain.
+            let ddraw=LoadLibraryW(DDRAW.as_ptr());
+            assert!(!ddraw.is_null(),"Windows DirectDraw provider missing");
+            let original_create=GetProcAddress(ddraw,c"DirectDrawCreate".as_ptr()) as usize as u32;
+            let original_enum=GetProcAddress(ddraw,c"DirectDrawEnumerateA".as_ptr()) as usize as u32;
+            assert_ne!(original_create,0);
+            assert_ne!(original_enum,0);
+            put32(IAT_CREATE,original_create);put32(IAT_ENUMERATE,original_enum);
+            assert_eq!(install_recognized_iat(base,ddraw),7);
+            assert_eq!(u32_at(base,IAT_CREATE),crate::DirectDrawCreate as usize as u32);
+            assert_eq!(u32_at(base,IAT_ENUMERATE),crate::DirectDrawEnumerateA as usize as u32);
+            assert_eq!(u32_at(base,IAT_ENUMERATE+4),0); // Third thunk remains untouched
+            // A second attempt must fail without overwriting the installed hooks.
+            assert_eq!(install_recognized_iat(base,ddraw),4);
+            assert_ne!(VirtualFree(memory,0,0x8000),0); // MEM_RELEASE
+        }
+    }
+
     #[test]
     fn approved_image_descriptor_shape() {
         let mut data=vec![0u8;IMAGE_SIZE as usize];
