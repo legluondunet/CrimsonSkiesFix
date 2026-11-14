@@ -131,6 +131,13 @@ const IID_SURFACE4:Guid=Guid{
     d1:0x0b2b8630,d2:0xad35,d3:0x11d0,
     d4:[0x8e,0xa6,0x00,0x60,0x97,0x97,0xea,0x5b]
 };
+#[cfg(feature="winmm-bootstrap")]
+const IID_SURFACE1:Guid=Guid{
+    d1:0x6c14db81,d2:0xa733,d3:0x11ce,
+    d4:[0xa5,0x21,0x00,0x20,0xaf,0x0b,0xe5,0x60]
+};
+#[cfg(feature="winmm-bootstrap")]
+static NATIVE_BACKBUFFER_SURFACE1_QI:AtomicUsize=AtomicUsize::new(0);
 fn same_guid(a:&Guid,b:&Guid)->bool{
     a.d1==b.d1&&a.d2==b.d2&&a.d3==b.d3&&a.d4==b.d4
 }
@@ -722,6 +729,47 @@ unsafe fn real_vtable(real:SurfaceThis)->&'static Surface4VTable{
     &**real.cast::<*const Surface4VTable>()
 }
 
+/// Compatibility probe for a verified native Windows WinMM 3D graph.
+/// The original game requests IDirectDrawSurface (v1) from its *Surface4
+/// virtual backbuffer* immediately after completing the 1920x1200 native
+/// HAL preflight. A v4 façade pointer cannot truthfully be returned as a
+/// v1 object: method slots/argument ABIs differ. Instead ask the actual
+/// owned native RGB565 backbuffer for the precise requested IID and
+/// return that genuine native COM interface with the ref supplied by QI.
+/// No arbitrary IID, synthetic primary, Z surface, Wine or legacy DLL
+/// is eligible. The physical 3D render target was already deliberately
+/// supplied to the HAL. This experiment is not a general v1 facade.
+#[cfg(feature="winmm-bootstrap")]
+unsafe fn native_game_backbuffer_surface1(
+    this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
+)->Option<i32>{
+    if !crate::diagnostics::is_native_windows() ||
+       !same_guid(&*iid,&IID_SURFACE1) {return None;}
+    let node=graph_node(this)?;
+    if node.role!=SurfaceRole::Backbuffer ||
+       node.mode.width<960 || node.mode.height<600 ||
+       node.native_movie_rgb32 ||
+       (*this.cast::<Surface4Forwarder>()).retired.load(Ordering::Acquire) {
+        return None;
+    }
+    let real=borrowed_real(this);
+    if real.is_null(){return Some(E_FAIL);}
+    let hr=(real_vtable(real).query_interface)(real,iid,out);
+    let valid=hr>=0 && !(*out).is_null();
+    if !valid && !(*out).is_null(){
+        // A failed COM query must not expose a stray object pointer.
+        // The underlying provider violates the expected QI contract;
+        // do not attempt to release an object whose ABI is unknown.
+        *out=ptr::null_mut();
+    }
+    if NATIVE_BACKBUFFER_SURFACE1_QI.fetch_add(1,Ordering::Relaxed)<12 {
+        crate::log(&format!(
+            "NATIVE-WINMM-SURFACE1: exact game virtual Backbuffer QI forwarded to native RGB565 IDirectDrawSurface1 hr={:#010x} valid_interface={} physical_backbuffer_only=true",
+            hr as u32,valid));
+    }
+    Some(if valid{hr}else if hr>=0{E_NOINTERFACE}else{hr})
+}
+
 unsafe extern "system" fn facade_query_interface(
     this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
 )->i32{
@@ -729,6 +777,10 @@ unsafe extern "system" fn facade_query_interface(
     *out=ptr::null_mut();
     if this.is_null()||iid.is_null(){return E_POINTER;}
     if !same_guid(&*iid,&IID_IUNKNOWN)&&!same_guid(&*iid,&IID_SURFACE4){
+        #[cfg(feature="winmm-bootstrap")]
+        if let Some(hr)=native_game_backbuffer_surface1(this,iid,out){
+            return hr;
+        }
         if let Some(node)=graph_node(this){
             crate::log(&format!("WINDOWED-GAME: virtual Surface4 QueryInterface unsupported role={:?} iid={:08x}-{:04x}-{:04x}",
                 node.role,(*iid).d1,(*iid).d2,(*iid).d3));
@@ -1976,6 +2028,52 @@ mod tests{
         RealMock{vtable:table,refs:AtomicU32::new(1),
                  blts:AtomicU32::new(0),flips:AtomicU32::new(0)}
     }
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn native_surface1_bridge_returns_native_qi_owned_reference_only_for_real_3d_backbuffer(){
+        static HITS:AtomicUsize=AtomicUsize::new(0);
+        unsafe extern "system" fn real_legacy_qi(
+            this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
+        )->i32{
+            if out.is_null(){return E_POINTER;}
+            *out=ptr::null_mut();
+            if iid.is_null() || !same_guid(&*iid,&IID_SURFACE1){return E_NOINTERFACE;}
+            HITS.fetch_add(1,Ordering::SeqCst);
+            *out=this;
+            real_add_ref(this);
+            S_OK
+        }
+        let mut table=mock_table();
+        table.query_interface=real_legacy_qi;
+        let mut real=real_mock(&table);
+        let native=(&mut real as *mut RealMock).cast::<c_void>();
+        unsafe{
+            let back=new_graph_surface4_opt_in(native,SurfaceRole::Backbuffer,
+                Mode{width:1920,height:1200,bpp:16},true).unwrap();
+            let primary=new_graph_surface4_opt_in(native,SurfaceRole::Primary,
+                Mode{width:1920,height:1200,bpp:16},true).unwrap();
+            let vback=&**back.cast::<*const Surface4VTable>();
+            let vprimary=&**primary.cast::<*const Surface4VTable>();
+            let mut out=ptr::null_mut();
+            assert_eq!((vback.query_interface)(back,&IID_SURFACE1,&mut out),S_OK);
+            assert_eq!(out,native);
+            assert_eq!(HITS.load(Ordering::SeqCst),1);
+            // Release the native QI's independent reference.
+            assert_eq!((table.release)(out),3);
+            let mut wrong=back;
+            assert_eq!((vprimary.query_interface)(primary,&IID_SURFACE1,&mut wrong),E_NOINTERFACE);
+            assert!(wrong.is_null());
+            assert_eq!(HITS.load(Ordering::SeqCst),1);
+            let mut unsupported=back;
+            assert_eq!((vback.query_interface)(back,&IID_IUNKNOWN,&mut unsupported),S_OK);
+            assert_eq!(unsupported,back);
+            assert_eq!((vback.release)(unsupported),1);
+            assert_eq!((vback.release)(back),0);
+            assert_eq!((vprimary.release)(primary),0);
+        }
+        assert_eq!(real.refs.load(Ordering::SeqCst),1);
+    }
+
     #[test]
     fn native_destination_blt_never_forwards_a_synthetic_graph_source(){
         let table=mock_table();
