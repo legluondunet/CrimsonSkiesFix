@@ -88,6 +88,9 @@ jobs:
           if ($LASTEXITCODE -ne 2) {throw 'Absent game EXE must fail harmlessly'}
           if (Test-Path $winmm) {throw '--launch-no-verify must not deploy WinMM'}
           Write-Host 'WINMM-INSTALLER-SMOKE PASS: no unknown DLL replacement, no CD rebuild, no unchecked deployment'
+          # The deliberately failed launches above leave an expected exit code 2.
+          # Mark the smoke job itself successful only after all assertions pass.
+          $global:LASTEXITCODE = 0
       - name: Package test-only single executable
         shell: pwsh
         run: |
