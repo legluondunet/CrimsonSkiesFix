@@ -23,6 +23,11 @@ const IMAGE_SIZE:u32=0x65_2000;
 static STATUS:AtomicU32=AtomicU32::new(0);
 pub(crate) fn status()->u32 {STATUS.load(Ordering::Acquire)}
 
+// Diagnostic access point for the x86 app-local loader smoke test.
+// Read-only and never used to bypass the real game executable hash gate.
+#[no_mangle]
+pub extern "system" fn CrimsonSkiesFixBootstrapStatus()->u32 {status()}
+
 #[inline]
 unsafe fn u16_at(base:*const u8,off:usize)->u16 {
     unsafe{ptr::read_unaligned(base.add(off).cast::<u16>())}
