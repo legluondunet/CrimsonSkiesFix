@@ -12,6 +12,8 @@ mod menu_gos_event;
 mod menu_ui_trace;
 mod menu_ui_list_probe;
 mod menu_resolution_label;
+#[cfg(feature="winmm-bootstrap")]
+mod native_winmm_resolution_text;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
@@ -571,6 +573,15 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
             log("WINDOWED-DIAG: menu_resolution_label hook install begin");
             let installed=unsafe{menu_resolution_label::install()};
             log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
+            // Windows WinMM regression: some GOS Preferences sessions display
+            // a cached 640x480 label without invoking the 0x845 formatter.
+            // Keep the original 0x845 hook. Intercept only the separately
+            // verified game text-assignment routine as a last-mile fallback.
+            #[cfg(feature="winmm-bootstrap")]
+            if diagnostics::is_native_windows(){
+                let text_bridge=unsafe{native_winmm_resolution_text::install()};
+                log(&format!("MENU-WINMM-TEXT: hook_available={text_bridge}"));
+            }
         }
     });
     // Passive GOS UI tracing is off with Log=0; unlike the verified
