@@ -1,0 +1,63 @@
+name: WinMM x86 bootstrap prototype (experimental)
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - '.github/workflows/winmm-bootstrap-prototype.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - '.github/workflows/winmm-bootstrap-prototype.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x86-winmm-probe:
+    name: Experimental WinMM forwarding x86
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix/winmm-prototype
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install MSVC x86 target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Verify exact 14 export names and ABI trampolines (no game required)
+        run: python tools/verify_winmm_exports.py
+      - name: Test x86 Rust crate
+        run: cargo test --locked --target i686-pc-windows-msvc
+      - name: Build experimental WinMM proxy and host
+        run: cargo build --locked --release --target i686-pc-windows-msvc
+      - name: Verify compiled Windows x86 PE exports
+        run: python tools/verify_winmm_exports.py --dll target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Smoke-test actual Windows x86 DLL load and forwarding
+        shell: pwsh
+        run: |
+          & 'target/i686-pc-windows-msvc/release/winmm_loader_smoke.exe' 'target/i686-pc-windows-msvc/release/winmm.dll'
+          if ($LASTEXITCODE -ne 0) { throw 'WinMM x86 loader/forwarding smoke failed' }
+          $report = 'target/i686-pc-windows-msvc/release/CrimsonSkiesFix_winmm_probe.log'
+          if (!(Test-Path $report)) { throw 'WinMM first call log was not created' }
+          $body = Get-Content -Raw $report
+          if ($body -notmatch 'first_call=timeGetTime' -or $body -notmatch 'test_only=true') {
+            throw 'WinMM first-call report is malformed'
+          }
+      - name: Package separate prototype-only binary (never the production installer)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'experimental' | Out-Null
+          Copy-Item 'target/i686-pc-windows-msvc/release/winmm.dll' 'experimental/winmm.dll'
+          Copy-Item 'README.md' 'experimental/PROTOTYPE-NOT-FOR-RELEASE.md'
+          $digest = (Get-FileHash 'experimental/winmm.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA-256=$digest" | Set-Content 'experimental/winmm-sha256.txt'
+      - name: Upload temporary experimental artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-x86-PROTOTYPE-NOT-RELEASE
+          path: CrimsonSkiesFix/winmm-prototype/experimental/*
+          if-no-files-found: error
+          retention-days: 7
