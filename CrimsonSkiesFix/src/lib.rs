@@ -1,5 +1,5 @@
-//! Experimental x86 DirectDraw proxy for the locally unpacked Crimson Skies 1.0.2.0.
-//! Place this built DLL under the name ddraw.dll beside CRIMSON.EXE.
+//! Shared CrimsonSkiesFix runtime for either legacy DDRAW proxy or independent WinMM bootstrap.
+//! WinMM mode redirects only authenticated game imports; the external ddraw.dll remains untouched.
 #![cfg(windows)]
 mod config;
 mod build_info;
@@ -16,8 +16,13 @@ mod menu_ui_pages;
 mod menu_brand;
 mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
-#[cfg(all(target_arch = "x86", target_env = "msvc"))]
+#[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]
 mod ddraw_forward;
+#[cfg(feature = "winmm-bootstrap")]
+#[path = "../winmm-prototype/src/lib.rs"]
+mod winmm_proxy;
+#[cfg(feature = "winmm-bootstrap")]
+mod winmm_bootstrap;
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
@@ -312,7 +317,12 @@ fn cfg()->Config {
 }
 
 fn real_module()->Option<*mut c_void> {
-    let result=(*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
+    let result=(*REAL_DLL.get_or_init(|| unsafe {
+        #[cfg(feature = "winmm-bootstrap")]
+        { winmm_bootstrap::loaded_ddraw().map(|x|x as usize) }
+        #[cfg(not(feature = "winmm-bootstrap"))]
+        { win32::real_ddraw().map(|x|x as usize) }
+    }))
         .map(|x|x as *mut c_void);
     // Resolve the proxy module from our own function address, not from a
     // user-defined exported DllMain. The latter adds an unwanted 23rd PE
@@ -486,7 +496,7 @@ fn trace_game_windows(stage:&str) {
     }
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
     // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
@@ -593,7 +603,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     hr
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
     let function=symbol(b"DirectDrawEnumerateA\0");
     let trace=cfg().log_enabled &&
@@ -614,7 +624,7 @@ pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:
     hr
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr {
     let function=symbol(b"DirectDrawCreateEx\0");
     if function.is_null(){return DDERR_GENERIC;}
