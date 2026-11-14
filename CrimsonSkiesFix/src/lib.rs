@@ -499,7 +499,20 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             log(&format!("MENU-SCENE: hook_available={installed}"));
         });
     }
-    let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
+    #[cfg(feature = "winmm-bootstrap")]
+    {
+        // Preserve exactly the provider function pointers resolved by the PE
+        // loader before our IAT interception. This respects third-party video
+        // wrappers and does not depend on GetModuleHandleW's initialization
+        // order during WinMM process attachment.
+        let original=match name {
+            b"DirectDrawCreate\0" => winmm_bootstrap::original_create(),
+            b"DirectDrawEnumerateA\0" => winmm_bootstrap::original_enumerate(),
+            _ => 0,
+        };
+        if original!=0 {return original as *const c_void;}
+    }
+    let Some(real)=real_module() else {log("ERROR: loaded DirectDraw backend unavailable");return ptr::null()};
     win32::system_export(real,name)
 }
 
