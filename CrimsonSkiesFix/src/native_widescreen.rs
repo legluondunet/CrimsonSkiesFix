@@ -12,6 +12,22 @@ pub unsafe fn suppress_video_selector()->bool{startup_selector::apply()}
 #[path="native_widescreen_full.rs"]
 mod full_patch;
 
+// Static x86 operand reference scan; debug-log-only WinMM diagnosis.
+// Does not modify the verified image or hook any game entrypoint.
+#[cfg(feature="winmm-bootstrap")]
+#[path="aspect_reference_audit.rs"]
+mod aspect_reference_audit;
+
+#[cfg(feature="winmm-bootstrap")]
+fn audit_aspect_xrefs_once(result:PatchResult){
+    if !crate::cfg().log_enabled ||
+       !matches!(result,PatchResult::Patched|PatchResult::AlreadyNative){
+        return;
+    }
+    static ONCE:std::sync::Once=std::sync::Once::new();
+    ONCE.call_once(||unsafe{aspect_reference_audit::audit_verified_loaded_exe()});
+}
+
 use std::sync::OnceLock;
 
 // The historical prepatched EXE had the FOV/HUD code present when the
@@ -41,6 +57,8 @@ pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     // and performs fail-closed memory protection and rollback.
     let result=full_patch::apply(w,h);
     let _=EARLY_NATIVE_PATCH.set((w,h,result));
+    #[cfg(feature="winmm-bootstrap")]
+    audit_aspect_xrefs_once(result);
     crate::log(&format!(
         "WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor={}x{} result={result:?}",
         w,h
@@ -60,7 +78,10 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
         return result; // NEVER apply a second time to already-patched bytes.
     }
     // Multi-monitor fallback retains the previous, late HWND-specific path.
-    full_patch::apply(w,h)
+    let result=full_patch::apply(w,h);
+    #[cfg(feature="winmm-bootstrap")]
+    audit_aspect_xrefs_once(result);
+    result
 }
 
 const IMAGE_BASE:usize=0x0040_0000;
