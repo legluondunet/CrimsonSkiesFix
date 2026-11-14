@@ -21,8 +21,10 @@ hook setup is **deferred until the game itself calls DirectDraw**.
 
 The original `CrimsonSkiesFix` runtime and renderer interception code is
 shared; the bootstrapping filename changes, not the game's gameplay fixes.
-External DirectDraw is resolved from the **already-loaded** `ddraw.dll`
-module, not forced from `System32`.
+The two game-imported DirectDraw functions forward to the **original IAT
+function pointers captured at bootstrap**, preserving the renderer chosen by
+the Windows/Wine loader (including external wrappers). Additional DirectDraw
+exports, if needed, resolve from the loaded backend outside `DllMain`.
 
 ## Current proof and limitations
 
@@ -84,7 +86,11 @@ double-click `CRIMSON.EXE` in the **copied** game folder instead.
 
 ### What to report
 
-Open the fresh `CrimsonSkiesFix.log` from the copied folder. Look for:
+Look for `CrimsonSkiesFix.ini` **next to `CRIMSON.EXE`**. The runtime creates it on its first intercepted DirectDraw call, without overwriting an existing file.
+
+The `CrimsonSkiesFix.log` is written next to the DLL **unless** the game directory is named `CrimsonSkiesFix` and its parent contains `CrimsonSkiesFix.exe`; in that standalone layout the game log belongs to the **parent directory**, beside the launcher. With the current default windowed adapter, a baseline log is created even when `[Debug] Log=0`; `Log=1` enables extra diagnostics.
+
+In that log, look for:
 
 ```text
 WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7
@@ -93,8 +99,7 @@ WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7
 Status **7** indicates the two game IAT entries were redirected to the
 CrimsonSkiesFix runtime. It does **not** prove that a menu or mission rendered
 correctly. Other values mean the bootstrap was rejected or incomplete
-(`1`=EXE shape mismatch, `2`=DirectDraw module absent, `3`=missing
-DirectDraw API, `4`=IAT address mismatch, `5/6`=IAT protection failure).
+(`1`=EXE shape mismatch, `4`=unresolved/already-hooked game IAT pointers, `5/6`=IAT protection failure). With the revised bootstrap, the two real DirectDraw function pointers are captured from the game's already-resolved import table; no `ddraw.dll` module lookup is required inside `DllMain`.
 
 Check startup, menu, mission, video, audio, resolution/FOV, borderless
 Alt+Tab and clean exit. Save the log and describe any missing features.
