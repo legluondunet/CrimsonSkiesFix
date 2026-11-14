@@ -264,3 +264,67 @@ visually verify circular gauge rings, unchanged horizontal anchors,
 correct vertical edge placement AND no camera, aircraft, terrain,
 cinematic or menu changes. Restore option=0 immediately if wrong.
 Do not merge or release the prototype based only on CI.
+
+
+## Audit of the owner-supplied prepatched 1920x1200 FOV/HUD executable
+
+**2026-11-14**, after the owner reiterated that an already patched 1920x1200
+FOV executable was available, we recovered the actual old uploads from their
+library and compared them *byte for byte*, rather than relying on the names
+or historical summaries alone.
+
+| Binary supplied by owner | SHA-256 | Size |
+| --- | --- | --- |
+| \`CRIMSON-UNWRAPPED.EXE\`, unprotected 1.02 | \`43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75\` | 2,580,480 |
+| \`CRIMSON(7).EXE\`, 1920x1200 FOV-fixed reference | \`612c5a9b45a8dbc9d22c78154a995a77d956d5faf90b90b5c31102b4843c8a8d\` | 2,580,480 |
+| \`CRIMSON_1920x1080_FOVFIX.EXE\` | \`5578a15ce072d09655be43419829a7530ed6c71fa5a8770b39d67\` | 2,580,480 |
+| \`CRIMSON_2560x1080_FOVFIX.EXE\` | \`694863c23282d295382ba12f1a2e2c64e5c4b8e7eb766f7b7a6ebc1d936acb92\` | 2,580,480 |
+
+Bytewise comparisons prove:
+
+1. \`CRIMSON(7).EXE\` differs from the owner-supplied decrypted 1.02
+   executable at **exactly 314 individual bytes in 38 disjoint groups**.
+   These are the **same 38 regions** encoded in
+   \`native_widescreen_full.rs\`, which already says it was derived from
+   this owner-provided FOV/HUD reference. Thus the original reference
+   was **not ignored or missing from the in-memory widescreen patch**.
+2. Comparing the 1920x1080 patched executable against \`CRIMSON(7).EXE\`
+   yields **one changed byte at file offset \`0x20254F\`**, the low
+   bytes of the injected height. Comparing 2560x1080 against
+   \`CRIMSON(7).EXE\` yields **three changed bytes at \`0x20254B\`,
+   \`0x20254C\` and \`0x20254F\`**, the injected width and height. The
+   code of the FOV patch is otherwise the same across these supplied
+   resolutions.
+3. Both HUD canvas calls at VA \`0x00455CA5\` and \`0x00455CF2\` are
+   **byte-for-byte unchanged** between original \`CRIMSON-UNWRAPPED.EXE\`
+   and 1920x1200 patched \`CRIMSON(7).EXE\`:
+   \`640x480\` and \`320x240\` remain their original values.
+   Therefore, \`ExperimentalHudCanvas43Probe\`, which experiments
+   with those two heights, is **a new unproven change**—it does *not*
+   reproduce an extra fix found in the owner-supplied prepatched EXE.
+4. References to the 60° / 30° FOV constants are redirected by the
+   supplied 1920x1200 patched executable (three-byte operand changes
+   at RVA \`0x55C01\` and \`0x55C0E\`). Our old camera-FOV A/B deliberately
+   reversed those references and failed visual validation; this does
+   not imply the original reference missed an additional HUD patch.
+
+**Interpretation and important limitation:** the reference archive's label
+"Resolution Hack and FOV Fix - No HUD Stretch" is useful evidence of the
+**intended** rendering behavior, but it is not a substitute for a native
+screenshot of that original executable running with an original/compatible
+rendering backend. We currently know our running WinMM build uses the exact
+38-region reference widescreen delta but shows elliptical HUD gauges
+(~147x125 vs native true-4:3 ~147x150). That discrepancy could involve
+the original reference patch's own limitations or the **WinMM virtual
+rendering/presentation integration**. Do not assert which until a
+matched native-render comparison is available. Do not add a fourth
+speculative EXE patch as though the reference contains some unseen bytes.
+
+**Next investigation**: compare the 1920x1200 reference executable's HUD
+and FOV under a separate pristine rendering setup to the exact same
+mission under the WinMM adapter, or isolate the HUD coordinate mapping
+from static drawing code. Leave the already functioning DD4/Surface1
+runtime unchanged. Retain the canvas probe OFF until that cause is
+established; do not merge it as a production feature without A/B
+confirmation. These proprietary executables were inspected locally
+only and are **not** added to this repository.
