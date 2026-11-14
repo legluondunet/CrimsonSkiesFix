@@ -21,6 +21,20 @@ use std::sync::OnceLock;
 // before DirectDraw setup, never in DllMain. Defer on multi-monitor hosts.
 static EARLY_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
 
+// The game can switch the actual monitor to 640x480/800x600 while in
+// Preferences, even though its native target was captured at first DDRAW use.
+// Share the byte-verified, frozen launch resolution with the resolution text
+// formatter. Never re-read a transient current display mode for that label.
+fn confirmed_early_pixels(entry:Option<(u32,u32,PatchResult)>)->Option<(u32,u32)>{
+    match entry {
+        Some((w,h,PatchResult::Patched|PatchResult::AlreadyNative))=>Some((w,h)),
+        _=>None,
+    }
+}
+pub fn verified_launch_widescreen_dimensions()->Option<(u32,u32)>{
+    confirmed_early_pixels(EARLY_NATIVE_PATCH.get().copied())
+}
+
 pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     if EARLY_NATIVE_PATCH.get().is_some(){return;}
     // apply() itself verifies exact PE headers and every original byte,
@@ -85,6 +99,18 @@ pub enum PatchResult{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn frozen_native_pixels_require_authenticated_successful_patch(){
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::Patched))),
+                   Some((1920,1200)));
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::AlreadyNative))),
+                   Some((1920,1200)));
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::UnsupportedExecutable))),
+                   None);
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::InvalidMonitor))),None);
+        assert_eq!(confirmed_early_pixels(None),None);
+    }
+
     #[test]
     fn valid_landscape_resolution_bounds(){
         for (w,h) in [(1280,720),(1680,1050),(1920,1080),(1920,1200),
