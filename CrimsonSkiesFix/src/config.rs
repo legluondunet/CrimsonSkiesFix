@@ -66,11 +66,14 @@ pub struct Config {
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
     pub frame_time_trace: bool,
+    // Debug A/B: restore only two original 4:3 camera-entity normalization
+    // operands after the strictly verified widescreen patch; OFF by default.
+    pub experimental_hud_fov43_probe: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, experimental_hud_fov43_probe: false, }
     }
 }
 
@@ -137,6 +140,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
             ("debug", "frametimetrace") =>
                 if let Some(v) = enabled(value) { settings.frame_time_trace = v; },
+            ("debug", "experimentalhudfov43probe") =>
+                if let Some(v) = enabled(value) { settings.experimental_hud_fov43_probe = v; },
             ("debug", "surfaceusagetrace") =>
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
@@ -247,6 +252,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "debug/surfaceusagetrace",
     "debug/crashblttrace",
     "debug/frametimetrace",
+    "debug/experimentalhudfov43probe",
 ];
 
 /// Normalize repeated known INI keys while preserving the EXACT effective
@@ -410,6 +416,13 @@ mod tests {
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
                    Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
+    }
+    #[test]
+    fn experimental_hud_fov43_probe_is_debug_only_and_off_by_default(){
+        assert!(!Config::default().experimental_hud_fov43_probe);
+        assert!(parse("[Debug]\nExperimentalHudFov43Probe=1").experimental_hud_fov43_probe);
+        assert!(!parse("[Debug]\nExperimentalHudFov43Probe=0").experimental_hud_fov43_probe);
+        assert!(!parse("[Graphics]\nExperimentalHudFov43Probe=1").experimental_hud_fov43_probe);
     }
     #[test]
     fn directdraw_passthrough_is_explicit_debug_only_and_default_off(){
