@@ -181,6 +181,8 @@ const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&[&str]=&[
     "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f",
     // Immediately previous 39bb2e5d native text bridge candidate, CI artifact 14123095601:
     "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb",
+    // Authenticated f3ebbe51 Windows x86 runtime from CI artifact 14123386745 (745,984 bytes):
+    "fca524dc8805ad439a755d81eca84e7ade95b6e57b10843ba4963bd61d74ac67",
 ];
 fn recognized_previous_winmm_sha(digest:&str)->bool{
     cfg!(feature="winmm-installer") &&
@@ -692,6 +694,8 @@ mod tests {
             "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f"));
         assert!(recognized_previous_winmm_sha(
             "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb"));
+        assert!(recognized_previous_winmm_sha(
+            "fca524dc8805ad439a755d81eca84e7ade95b6e57b10843ba4963bd61d74ac67"));
         assert!(!recognized_previous_winmm_sha(
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
         assert!(!recognized_previous_winmm_sha(
