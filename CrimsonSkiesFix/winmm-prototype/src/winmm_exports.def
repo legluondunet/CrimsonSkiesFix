@@ -1,0 +1,19 @@
+; Experimental: names imported by the known 1.02 game EXE only.
+; These @1..@14 test ordinals are NOT canonical system WinMM ordinals.
+; Never install this incomplete proxy automatically in release builds.
+LIBRARY winmm.dll
+EXPORTS
+    mixerGetLineInfoA=crimson_winmm_forward_0 @1
+    mixerOpen=crimson_winmm_forward_1 @2
+    mciGetErrorStringA=crimson_winmm_forward_2 @3
+    mixerGetLineControlsA=crimson_winmm_forward_3 @4
+    mixerClose=crimson_winmm_forward_4 @5
+    auxSetVolume=crimson_winmm_forward_5 @6
+    auxGetVolume=crimson_winmm_forward_6 @7
+    mciSendCommandA=crimson_winmm_forward_7 @8
+    auxGetNumDevs=crimson_winmm_forward_8 @9
+    auxGetDevCapsA=crimson_winmm_forward_9 @10
+    mixerSetControlDetails=crimson_winmm_forward_10 @11
+    mixerGetControlDetailsA=crimson_winmm_forward_11 @12
+    mixerGetNumDevs=crimson_winmm_forward_12 @13
+    timeGetTime=crimson_winmm_forward_13 @14

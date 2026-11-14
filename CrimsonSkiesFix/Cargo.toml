@@ -5,6 +5,9 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 description = "32-bit DirectDraw compatibility proxy for Crimson Skies"
 
+[features]
+winmm-bootstrap = []
+
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
