@@ -182,3 +182,85 @@ restore ExperimentalHudFov43Probe=0 and return to the proven baseline.
 
 **Experimental only:** without native visual proof this is a hypothesis
 test, not a completed HUD-only correction.
+
+
+## 2026-11-14 camera-FOV A/B result and entity-Y prototype
+
+Owner's Windows 11 A/B: \`image(20261114-213421).png\` (test off,
+\`CrimsonSkiesFix(20261114-213454).log\`) versus
+\`image(20261114-214205).png\` (test on,
+\`CrimsonSkiesFix(20261114-214239).log\`). Both use authenticated
+\`1.1.0-rc.1-5a4fd204\`, 1920x1200, WinMM. The latter log confirms
+\`experimental_hud_fov43_probe: true\` and
+\`HUD-FOV-A-B: enabled=1 ... sites=2\`.
+
+Threshold-based connected-component outer-bezel bounds on original
+1920x1200 PNGs:
+
+| Instrument | FOV A/B off | FOV A/B on |
+|---|---|---|
+| left upper | x=175,y=677,147x125 | x=17,y=692,177x151 |
+| left middle | x=175,y=806,147x125 | x=17,y=847,179x150 |
+| right upper | x=1600,y=677,148x126 | x=1727,y=692,178x151 |
+| right middle | x=1599,y=806,149x125 | x=1727,y=847,179x151 |
+
+The FOV A/B **increases both axes by ~1.2** and pushes gauges outwards;
+their horizontal/vertical ratio stays ~1.18. **Reject this A/B as a HUD
+aspect fix**, keep \`ExperimentalHudFov43Probe=0\` by default. It may also
+change other scene geometry. Runtime's DD4/Surface1 and 3D transitions
+continue to work in both screenshots/logs.
+
+Further original-EXE static disassembly established that the same
+game scene-camera entity loop (VA \`0x0049FCC3\`) calls \`0x00455BE0\`,
+whose two CDECL calls separately set the X/Y/Z scale and position of
+the entity:
+
+- \`0x00455C40\` (\`e8 0b c1 07 00\`): calls \`0x004D1D50\` with
+  object pointer and scale \`(x,y,z)\` from offsets \`+0x20,+0x24,+0x28\`.
+- \`0x00455C54\` (\`e8 d7 bd 07 00\`): calls \`0x004D1A30\` with
+  object pointer and position \`(x,y,z)\` from offsets \`+0x2c,+0x30,+0x34\`.
+
+These two exact call sites offer a narrow falsifiable hypothesis: the
+2D overlay entity can recover its genuine 4:3 vertical size and vertical
+anchor without altering X geometry or the world-camera FOV. The required
+Y-only factor at the physical widescreen raster is
+\`factor = 3*width/(4*height)\` (1.2 at 1920x1200, 4/3 at
+1920x1080). The original A/B with actual 1600x1200 4:3 proved the
+required vertical pixel difference, with X positions unchanged.
+
+**Opt-in debug-only experimental WinMM site:** new switch
+
+\`\`\`ini
+[Graphics]
+AspectRatio=auto
+
+[Debug]
+Log=1
+ExperimentalHudFov43Probe=0
+ExperimentalHudEntityY43Probe=1
+\`\`\`
+
+This prototype patches **only the two exact 5-byte call operands**
+after the original hash/preimage-gated 38-region widescreen patch
+succeeds. The new CDECL forwarding wrappers apply Y*factor to **the
+call arguments only**, preserving all X/Z arguments, the underlying
+object fields, the 3D FOV variable and on-disk EXE. Exact original
+call-site byte checks are enforced; partial write failures attempt
+rollback. Native Windows and widescreen only, **OFF by default**.
+The old FOV A/B switch must be off; simultaneous activation refused.
+
+Log markers:
+
+\`\`\`text
+HUD-ENTITY-Y43: enabled=1 sites=2 vertical_factor=1.200000 ...
+HUD-ENTITY-Y43: call=SetScale original_y=... new_y=...
+HUD-ENTITY-Y43: call=SetPosition original_y=... new_y=...
+\`\`\`
+
+**Risk:** the scene-camera entity list at 0x49FCC3 may contain 3D
+world objects in addition to overlays. This is **still a controlled
+hypothesis test, not a confirmed HUD-only fix**. Native test must
+visually verify circular gauge rings, unchanged horizontal anchors,
+correct vertical edge placement AND no camera, aircraft, terrain,
+cinematic or menu changes. Restore option=0 immediately if wrong.
+Do not merge or release the prototype based only on CI.
