@@ -79,8 +79,8 @@ unsafe fn install_exe_iat()->u32 {
     let original_create=unsafe{GetProcAddress(ddraw,c"DirectDrawCreate".as_ptr())} as usize;
     let original_enum=unsafe{GetProcAddress(ddraw,c"DirectDrawEnumerateA".as_ptr())} as usize;
     if original_create==0 || original_enum==0 {return 3;}
-    let create=unsafe{base.add(IAT_CREATE)}.cast::<u32>().cast_mut();
-    let enumerate=unsafe{base.add(IAT_ENUMERATE)}.cast::<u32>().cast_mut();
+    let create=unsafe{base.add(IAT_CREATE)}.cast::<u32>();
+    let enumerate=unsafe{base.add(IAT_ENUMERATE)}.cast::<u32>();
     if unsafe{ptr::read_volatile(create)}!=original_create as u32 ||
        unsafe{ptr::read_volatile(enumerate)}!=original_enum as u32 {return 4;}
     // Both pointers occupy a single page; no other image or DLL is modified.
