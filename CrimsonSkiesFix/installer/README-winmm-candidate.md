@@ -16,18 +16,19 @@ external DDraw wrapper compatibility tests have NOT been completed.
   installation and auto-repair. Nothing deletes or renames that file.
   Migration of known v1.0 proxy hashes and external graphics wrappers is
   deferred until separately tested.
-- Unknown existing `winmm.dll` files are never overwritten. The installer
-  recognizes **only** pinned SHA-256 digests of our previous experimental
-  WinMM DLLs: `6d358ba9`, `7395cd3c`, `65304a3e`, `d2e45149`,
-  `0bcc164b`, `39bb2e5d`, `f3ebbe51`, and `913271c4` (verified directly
-  from their original Windows x86 CI artifacts). On a **normal launch** of a
-  newer test installer, it automatically installs its matching bundled DLL
-  without requiring `--install-only`. The previous active DLL becomes
-  `winmm.dll.bak`; if an existing `.bak` is also one of our authenticated
-  experimental DLLs, that older backup is rotated away *after* installation
-  succeeds, leaving **exactly one previous DLL backup**. An unknown active
-  DLL or unknown pre-existing `.bak` is never overwritten, deleted or renamed.
-  A repeated launch with the same DLL is a no-op.
+- Any **regular existing** `winmm.dll` is replaced by the bundled runtime,
+  **even if its SHA-256 is unknown**. Its exact previous bytes become
+  `winmm.dll.bak`. When `.bak` already exists, it is replaced by that
+  previous active DLL, irrespective of the old backup's origin.
+- The old backup is temporarily parked as `winmm.dll.bak.previous` while
+  publishing the new DLL, permitting rollback if installation fails. It is
+  deleted after successful publication; never retain multiple backups.
+  An orphaned `.installing` or `.bak.previous` indicates an interrupted
+  transaction and blocks a new install for inspection.
+- If the current `winmm.dll` already matches the embedded DLL, launching
+  again is a no-op: neither the DLL nor `.bak` is touched. If the active
+  DLL is absent, an existing backup is kept rather than pointlessly deleted.
+  Directories and unsafe filesystem objects are still rejected.
 - Game EXE and assets retain the existing hash verification. The exact supported
   decrypted 1.02 executable is required; no unprotected game files ship here.
 - `CrimsonSkiesFix-WinMM-1.1-TEST.exe --launch-no-verify` remains the
@@ -36,7 +37,7 @@ external DDraw wrapper compatibility tests have NOT been completed.
   `ddraw.dll`.
 - Configuration remains `CrimsonSkiesFix/CrimsonSkiesFix.ini`. The DLL's
   gameplay log remains separate from `CrimsonSkiesFix_installer.log`.
-- No known or unknown user DLL is removed by this test installer.
+- An older `winmm.dll.bak` **is intentionally overwritten** during upgrades; preserve an independent copy first if you want a longer history.
 
 ## Compile (Windows x86 CI)
 
@@ -68,26 +69,15 @@ The new candidate has a different executable name and prints
 Do not rename it to the old v1.0 executable name or overwrite the original
 installer; keep it beside the copied `CrimsonSkiesFix/` game directory.
 
-## Existing experimental WinMM DLLs not recognized by SHA
+## Previously unknown WinMM DLLs
 
-The 1.1 test installer deliberately does not replace an unknown existing
-`winmm.dll` even when a game log reports a familiar CrimsonSkiesFix commit:
-different builds can share the **same log identity** but have **different
-SHA-256 digests**. Always use the actual DLL digest, not the version in the
-log, to decide whether a DLL is an approved upgrade source.
-
-If `--install-only` returns
-`existing winmm.dll SHA-256=... is not an approved experimental upgrade`,
-**keep the file**. On a separate copy of the working game, move the existing
-`winmm.dll` to an archival filename such as `winmm.dll.previous-test`,
-first checking that destination does not already exist. Do not copy it back
-as an active `winmm.dll` until returning to the previous test.
-
-The installer also **refuses to rotate or delete an existing
-`winmm.dll.bak`**. Archive that file separately if it is present. Avoid
-using `winmm.dll.bak` as your manual archival filename. The `--verify`
-command must always be run with **`CrimsonSkiesFix-WinMM-1.1-TEST.exe`**,
-not with the unchanged v1.0 `CrimsonSkiesFix.exe`.
+SHA-256 authentication is no longer a prerequisite for updating an already
+installed `winmm.dll`. When the embedded DLL differs, the user-approved
+policy is to move the existing regular file to `winmm.dll.bak`, overwriting
+the previous backup transactionally. Thus older experimental builds and
+third-party WinMM files are treated identically for this **test installer**.
+A regular file with unexpected content is not executed by the installer.
+The installed game EXE and game assets remain strictly verified.
 
 ## Native Windows DD4 owner diagnostics after 1920x1200 flight screenshot
 
@@ -161,31 +151,30 @@ build alone.
 
 ## Automatic one-backup WinMM upgrade behavior
 
-With the exact approved game and a clean DirectDraw provider slot, replacing
-the standalone TEST executable and **launching it normally** is sufficient.
-If its embedded `winmm.dll` has changed, the launcher hashes the installed
-DLL, permits an upgrade only from an authenticated prior project runtime,
-stages the new bytes, moves the previous `.bak` temporarily for rollback,
-renames the previously active DLL to `winmm.dll.bak`, then publishes the
-new DLL. After successful publication the older rollback copy is deleted.
+With the exact approved game and no app-local `ddraw.dll`, replacing the
+standalone TEST executable and **launching it normally** is sufficient.
+The installer hashes the existing `winmm.dll` and stages the embedded
+new DLL if the hashes differ, regardless of the old DLL's origin. It
+temporarily moves an existing `.bak` out of the way for rollback,
+renames the previous active DLL to `winmm.dll.bak`, and installs the
+verified replacement. On success it deletes the older backup.
 
-No `.bak.previous` is left on a successful transaction. If the installed
-DLL already matches the embedded hash, no file or backup is touched. An
-unknown `.bak` fails closed rather than losing unrelated user content.
-If the active DLL is missing, any known `.bak` remains intact while the new
-DLL is installed. Interrupted transactions are refused until inspected;
-failed rename operations attempt to restore original files. Original
-1.0 `ddraw.dll` installer behavior is unchanged.
+Only **one** `winmm.dll.bak` remains; it always contains the previous
+active DLL, even if that DLL was unknown. If the installed DLL already
+matches the embedded hash, nothing changes. If there is no active DLL,
+a pre-existing `.bak` is preserved. If a rename or publication fails,
+the transaction attempts to restore the original active and backup paths;
+an interrupted transaction requires inspection before retrying.
+The original 1.0 `ddraw.dll` installer behavior is unchanged.
 
 The launcher **does not** perform updates in `--launch-no-verify` mode.
 
 ## Manual use on an isolated copy
 
-Once a backed-up test folder has **no app-local `ddraw.dll`** and contains
-either no `winmm.dll`, the embedded WinMM, or the exact SHA-approved earlier
-experimental WinMM listed above, run the commands below. **If the installer
-refuses an unrecognized DLL, leave it untouched** and perform a manual
-inspection before renaming anything:
+On an isolated test copy with **no app-local `ddraw.dll`**, the launcher
+will upgrade an existing regular `winmm.dll` regardless of its hash.
+The following optional commands allow manual verification, but a normal
+launch performs the installation and backup rotation automatically:
 
 ```sh
 WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --version
