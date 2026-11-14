@@ -175,6 +175,12 @@ const PREVIOUS_EXPERIMENTAL_WINMM_SHA256:&[&str]=&[
     "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e",
     // The owner's verified 65304a3e Windows experiment from CI artifact 14118718667:
     "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a",
+    // Native-Windows 11 build d2e45149, CI artifact 14121224859, 740352 bytes:
+    "f4b01f8c8a9adf0770760c4966d16dd4dc5c977369cbabbf02b0b600bae21525",
+    // Previous 0bcc164b WinMM labels candidate, CI artifact 14122512130:
+    "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f",
+    // Immediately previous 39bb2e5d native text bridge candidate, CI artifact 14123095601:
+    "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb",
 ];
 fn recognized_previous_winmm_sha(digest:&str)->bool{
     cfg!(feature="winmm-installer") &&
@@ -680,6 +686,12 @@ mod tests {
             "bec010d352aaf2dc16836d3f99fb8c104e61e1a98c3f5980736f933b112bb54e"));
         assert!(recognized_previous_winmm_sha(
             "8ffc94ae53286d2795fa26d086c20a64269663e01ce8cd123ab44e911cdaf44a"));
+        assert!(recognized_previous_winmm_sha(
+            "f4b01f8c8a9adf0770760c4966d16dd4dc5c977369cbabbf02b0b600bae21525"));
+        assert!(recognized_previous_winmm_sha(
+            "0f4150246f047388734fa84f4675f334f216de9ec26647d90ac0cb76fb41d60f"));
+        assert!(recognized_previous_winmm_sha(
+            "21f7d39f66685b4bbacb77c5ad2bc6eda693b9797b57364e8c1b181bb71890fb"));
         assert!(!recognized_previous_winmm_sha(
             "ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86b"));
         assert!(!recognized_previous_winmm_sha(
