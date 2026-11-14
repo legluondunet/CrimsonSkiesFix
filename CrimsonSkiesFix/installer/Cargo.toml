@@ -9,6 +9,11 @@ description = "Standalone Crimson Skies installer, verifier and launcher"
 name = "CrimsonSkiesFix"
 path = "src/main.rs"
 
+[features]
+default = []
+# Separate v1.1 test installer; never enabled by the v1.0 release workflow.
+winmm-installer = []
+
 [dependencies]
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
 cab = "=0.6.0"
