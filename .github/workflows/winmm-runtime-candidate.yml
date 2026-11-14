@@ -48,12 +48,12 @@ jobs:
           $hostExe='winmm-prototype/target/i686-pc-windows-msvc/release/winmm_loader_smoke.exe'
           & $hostExe $dll
           if ($LASTEXITCODE -ne 0) {throw 'WinMM-only runtime failed real x86 forwarding smoke'}
-          $log='winmm-prototype/target/i686-pc-windows-msvc/release/CrimsonSkiesFix_winmm_probe.log'
-          if (!(Test-Path $log)) {throw 'First-call probe did not write a log'}
-          $text=Get-Content $log -Raw
-          if ($text -notmatch 'first_call=timeGetTime' -or $text -notmatch 'bootstrap_iat_status=1') {
-            throw "Bootstrap status/probe not expected in the synthetic host: $text"
-          }
+      - name: Smoke-test real app-local WinMM static import and DllMain
+        shell: pwsh
+        run: |
+          $exe='runtime-winmm/target/i686-pc-windows-msvc/release/app_local_winmm_smoke.exe'
+          & $exe
+          if ($LASTEXITCODE -ne 0) {throw 'App-local WinMM static import / early bootstrap smoke failed'}
       - name: Package WinMM-only game test candidate (NOT release)
         shell: pwsh
         run: |
