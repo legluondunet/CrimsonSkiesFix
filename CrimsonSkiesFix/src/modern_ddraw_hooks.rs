@@ -170,6 +170,34 @@ unsafe extern "system" fn modern_create_surface(
     hr
 }
 
+// Native WinMM only: the exact game-owned DD4 vtable sometimes no longer
+// contains our earlier hooks by the time the verified mode-setup function
+// runs. Re-arm ONLY where the actual slot still equals the original pointer
+// saved when we first installed that same callback. Never chain a foreign
+// pointer, probe speculative COM objects, or apply this to Wine/v1.0.
+#[cfg(feature="winmm-bootstrap")]
+pub(super) unsafe fn try_rearm_native_game_dd4(
+    object:*mut c_void
+)->Result<usize,&'static str>{
+    if !diagnostics::is_native_windows() ||
+       !cfg().native_dd4_bootstrap ||
+       !cfg().experimental_windowed_adapter ||
+       cfg().directdraw_passthrough {
+        return Err("native-winmm-guard-disabled");
+    }
+    let mut hooks:Vec<(usize,usize)>=vec![
+        (COM_QUERY_INTERFACE,ddraw_query_interface as usize),
+        (DD_SET_COOPERATIVE,modern_set_cooperative as usize),
+        (DD_SET_DISPLAY_MODE,modern_set_display_mode as usize),
+        (DD_CREATE_SURFACE,modern_create_surface as usize),
+        (DD_GET_DISPLAY_MODE,modern_get_display_mode as usize),
+    ];
+    if cfg().log_enabled {
+        hooks.push((DD_RESTORE_DISPLAY_MODE,restore_display_mode as usize));
+    }
+    crate::com_vtable::rearm_exact_registered_originals(object,&hooks)
+}
+
 // A single hook can be used on all newer surface versions because these
 // specific method ABIs (and vtable indices) are stable, per ddraw.h.
 // Unlike legacy v1 pacing, this instrumentation NEVER sleeps or edits frames.
