@@ -23,6 +23,8 @@ mod ddraw_forward;
 mod winmm_proxy;
 #[cfg(feature = "winmm-bootstrap")]
 mod winmm_bootstrap;
+#[cfg(feature = "winmm-bootstrap")]
+mod winmm_compat;
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
