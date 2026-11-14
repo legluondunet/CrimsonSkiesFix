@@ -19,6 +19,10 @@ mod full_patch;
 mod aspect_reference_audit;
 
 #[cfg(feature="winmm-bootstrap")]
+#[path="hud_fov43_probe.rs"]
+mod hud_fov43_probe;
+
+#[cfg(feature="winmm-bootstrap")]
 fn audit_aspect_xrefs_once(result:PatchResult){
     if !crate::cfg().log_enabled ||
        !matches!(result,PatchResult::Patched|PatchResult::AlreadyNative){
@@ -59,6 +63,8 @@ pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     let _=EARLY_NATIVE_PATCH.set((w,h,result));
     #[cfg(feature="winmm-bootstrap")]
     audit_aspect_xrefs_once(result);
+    #[cfg(feature="winmm-bootstrap")]
+    hud_fov43_probe::apply(w,h,result);
     crate::log(&format!(
         "WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor={}x{} result={result:?}",
         w,h
@@ -81,6 +87,8 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
     let result=full_patch::apply(w,h);
     #[cfg(feature="winmm-bootstrap")]
     audit_aspect_xrefs_once(result);
+    #[cfg(feature="winmm-bootstrap")]
+    hud_fov43_probe::apply(w,h,result);
     result
 }
 
