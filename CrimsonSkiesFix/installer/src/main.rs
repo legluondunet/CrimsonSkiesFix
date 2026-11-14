@@ -23,7 +23,10 @@ const GAME_EXE_SIZE: u64 = 2_580_480;
 // installer, with a distinct bundled runtime and version identity.
 const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
 const RUNTIME_DLL: &str = if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
+#[cfg(not(feature="winmm-installer"))]
 const README: &str = include_str!("../../README.md");
+#[cfg(feature="winmm-installer")]
+const README: &str = include_str!("../README-winmm-candidate.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -600,6 +603,49 @@ mod tests {
         assert!(!BUNDLED_RUNTIME.is_empty());
         assert_eq!(sha256::hex(BUNDLED_RUNTIME).len(), 64);
     }
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn standalone_winmm_install_is_non_destructive_and_idempotent() {
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-winmm-install-test-{}-{id}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        assert_eq!(RUNTIME_DLL,"winmm.dll");
+        // The experimental candidate never creates or removes ddraw.dll.
+        deploy_runtime(&game).unwrap();
+        assert!(!any_entry(&game.join("ddraw.dll")));
+        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),
+                   sha256::hex(BUNDLED_RUNTIME));
+        deploy_runtime(&game).unwrap();
+        assert!(!any_entry(&game.join("winmm.dll.bak")));
+        assert!(!any_entry(&game.join("winmm.dll.installing")));
+        let foreign=game.join("ddraw.dll");
+        fs::write(&foreign,b"owner graphics wrapper").unwrap();
+        let winmm_before=digest(&game.join("winmm.dll")).unwrap();
+        assert!(deploy_runtime(&game).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(),b"owner graphics wrapper");
+        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),winmm_before);
+        fs::remove_dir_all(&game).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn unknown_winmm_is_refused_without_renaming_or_backup() {
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-winmm-unknown-test-{}-{id}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join("winmm.dll"),b"owner multimedia wrapper").unwrap();
+        assert!(deploy_runtime(&game).is_err());
+        assert_eq!(fs::read(game.join("winmm.dll")).unwrap(),
+                   b"owner multimedia wrapper");
+        assert!(!any_entry(&game.join("winmm.dll.bak")));
+        assert!(!any_entry(&game.join("winmm.dll.installing")));
+        fs::remove_dir_all(&game).unwrap();
+    }
+
     #[test]
     fn installed_cd_requires_receipt_and_never_treats_empty_data_as_installed() {
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
