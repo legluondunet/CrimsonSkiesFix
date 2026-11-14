@@ -84,6 +84,48 @@ using `winmm.dll.bak` as your manual archival filename. The `--verify`
 command must always be run with **`CrimsonSkiesFix-WinMM-1.1-TEST.exe`**,
 not with the unchanged v1.0 `CrimsonSkiesFix.exe`.
 
+## Prototype: native Windows Graphics Preferences label fallback
+
+This prototype adds an **experimental text-only fix** for the confirmed
+native Windows bug where Graphics Preferences still displays `640x480`
+even though the authenticated physical monitor/3D target is `1920x1200`
+at 125% Windows DPI scaling.
+
+The existing byte-exact `uiData(0x845)` formatter remains intact. Because
+the owner logs show that formatter hook installing without any observed
+invocation, the WinMM-only native Windows build now also intercepts the
+verified original EXE's GOS ANSI **text assignment** routine at
+`0x00403350`. It substitutes **only** the exact `640x480` / `640 x 480`
+string, after the original MainMenu has been observed, with the physical
+screen dimensions captured and verified by the early in-memory widescreen
+patch. For the known Windows host that is `1920x1200`. Other text is passed
+to the original function verbatim.
+
+This intervention **does not** alter GOS display-mode entries, graphics
+indices, driver enumeration, input/disabled widget state, game resources
+on disk, 4:3 menu surfaces, or real monitor modes. The COM/DirectDraw
+backend fix is tracked independently in issue #39. The text issue is #40.
+
+The x86 trampoline uses exact instructions from the SHA-approved EXE,
+preserves the original CDECL 3-argument return and original allocator,
+and installs only after the executable hash gate; native Windows
+`winmm-bootstrap` is the only eligible build. It cannot install on Wine
+or the v1.0 DirectDraw proxy. The output is **not yet accepted in real
+Windows gameplay**: unit tests/CI verify the replacement contract and x86
+build, not actual visibility of the GUI text on the owner's machine.
+
+With `[Debug] Log=1` the game log should contain:
+
+```
+MENU-WINMM-TEXT: validated native GOS 0x403350 text writer hooked
+MENU-WINMM-TEXT: original=640x480 shown=1920x1200 ... text-only
+```
+
+If the second line never appears, the GOS controls use yet another
+rendering/text path, and the exact text source must be traced before any
+more intrusive intervention. Do not assume a visual fix from a green CI
+build alone.
+
 ## Manual use on an isolated copy
 
 Once a backed-up test folder has **no app-local `ddraw.dll`** and contains
