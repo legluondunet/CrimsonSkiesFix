@@ -16,9 +16,12 @@ external DDraw wrapper compatibility tests have NOT been completed.
   installation and auto-repair. Nothing deletes or renames that file.
   Migration of known v1.0 proxy hashes and external graphics wrappers is
   deferred until separately tested.
-- An unknown existing `winmm.dll` also blocks replacement; its bytes are
-  preserved. The only accepted installed WinMM is a bit-identical copy of
-  the embedded candidate runtime.
+- An unknown existing `winmm.dll` still blocks replacement; its bytes are
+  preserved. Exactly one earlier **verified experimental** WinMM build
+  (735,232 bytes, SHA-256 `ffab4bfbc76b8aa9b22799b04242eb5f2ac18fc7016d534bf59fcdeb51c8f86a`,
+  log identity `6d358ba9`) may be upgraded in place. Its bytes are preserved
+  as `winmm.dll.bak`. If that backup name already exists, the installer
+  refuses to overwrite it. Other previous builds require manual inspection.
 - Game EXE and assets retain the existing hash verification. The exact supported
   decrypted 1.02 executable is required; no unprotected game files ship here.
 - `CrimsonSkiesFix.exe --launch-no-verify` remains the explicit **no repair**
@@ -59,8 +62,11 @@ installer; keep it beside the copied `CrimsonSkiesFix/` game directory.
 
 ## Manual use on an isolated copy
 
-Once a backed-up test folder has **no app-local `ddraw.dll`** and does not
-contain an unknown `winmm.dll`:
+Once a backed-up test folder has **no app-local `ddraw.dll`** and contains
+either no `winmm.dll`, the embedded WinMM, or the exact SHA-approved earlier
+experimental WinMM listed above, run the commands below. **If the installer
+refuses an unrecognized DLL, leave it untouched** and perform a manual
+inspection before renaming anything:
 
 ```sh
 WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --version
