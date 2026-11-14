@@ -35,9 +35,27 @@ It builds and hashes `runtime-winmm/target/.../winmm.dll`, sets
 `installer/Cargo.toml --features winmm-installer` and runs tests.
 
 The GitHub Actions artifact is labeled
-`CrimsonSkiesFix-WinMM-installer-x86-EXPERIMENTAL-NOT-RELEASE`.
+`CrimsonSkiesFix-WinMM-1.1-TEST-ONLY-NOT-RELEASE`. Its executable is
+**`CrimsonSkiesFix-WinMM-1.1-TEST.exe`**, not `CrimsonSkiesFix.exe`, so it
+cannot be confused with the parallel v1.0 installer.
+The `--version` output **must** contain both `1.1.0-rc.1` and
+`runtime=winmm.dll EXPERIMENTAL`. If it prints `1.0.0` or mentions
+`ddraw.dll`, stop: that is the old installer, not this candidate.
 Do not use `main`'s v1.0 installer to verify or automatically repair a WinMM
 game installation; it is designed to restore the old `ddraw.dll`.
+
+## Identifying the correct file
+
+**Two CI workflows can execute on the same commit:** one builds the unchanged
+v1.0 DirectDraw installer, and the other builds this opt-in WinMM candidate.
+The source commit suffix alone cannot identify which variant you downloaded.
+Do not use a binary reporting `CrimsonSkiesFix 1.0.0-...` to validate WinMM;
+it will fail `--verify` because it still requires `ddraw.dll`.
+
+The new candidate has a different executable name and prints
+`runtime=winmm.dll EXPERIMENTAL` with `--version`.
+Do not rename it to the old v1.0 executable name or overwrite the original
+installer; keep it beside the copied `CrimsonSkiesFix/` game directory.
 
 ## Manual use on an isolated copy
 
@@ -45,8 +63,10 @@ Once a backed-up test folder has **no app-local `ddraw.dll`** and does not
 contain an unknown `winmm.dll`:
 
 ```sh
-WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix.exe --install-only
-WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix.exe --launch-no-verify
+WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --version
+WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --install-only
+WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --verify
+WINEDLLOVERRIDES='winmm=n,b' wine CrimsonSkiesFix-WinMM-1.1-TEST.exe --launch-no-verify
 ```
 
 The native/builtin Wine override is **per process** and is not persisted into
