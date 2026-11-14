@@ -50,6 +50,24 @@ unsafe extern "C" fn on_game_mode_setup()->u32{
         let dd4=owner.read();
         if !dd4.is_null() {
             if native_owner_mode_trace::classify(dd4)==Some(OwnerVersion::DirectDraw4){
+                // This is the exact, SHA-gated game-owned DD4 at its native
+                // mode-setup entrypoint. On WinMM alone, try to recover hooks
+                // only if the native vtable slots still contain the originals
+                // we recorded earlier. Any foreign or recycled table is left
+                // untouched; the usual observer will then fail closed.
+                #[cfg(feature="winmm-bootstrap")]
+                let rearm=modern_ddraw_hooks::try_rearm_native_game_dd4(dd4);
+                #[cfg(feature="winmm-bootstrap")]
+                if count<12 {
+                    match rearm {
+                        Ok(n)=>log(&format!(
+                            "NATIVE-WINMM-DD4-REARM: exact-original-preimages=true restored_slots={n} (game owner only)"
+                        )),
+                        Err(reason)=>log(&format!(
+                            "NATIVE-WINMM-DD4-REARM: refused={reason} (game owner unchanged)"
+                        )),
+                    }
+                }
                 modern_ddraw_hooks::observe_modern_ddraw(dd4,"IDirectDraw4");
                 if count<12{
                     log("NATIVE-BOOTSTRAP: game DD4 owner intercepted before SetCooperativeLevel and SetDisplayMode; windowed adapter eligible (not yet exposed)");
