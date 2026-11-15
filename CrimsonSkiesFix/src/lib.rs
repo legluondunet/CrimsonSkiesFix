@@ -27,6 +27,8 @@ mod winmm_proxy;
 mod winmm_bootstrap;
 #[cfg(feature = "winmm-bootstrap")]
 mod winmm_compat;
+#[cfg(feature = "winmm-ordinal-bridge")]
+mod winmm_ordinal_bridge;
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
