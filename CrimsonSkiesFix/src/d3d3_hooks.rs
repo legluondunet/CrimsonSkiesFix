@@ -8,6 +8,10 @@ use super::*;
 #[path="projected_y43_probe.rs"]
 mod projected_y43_probe;
 
+#[cfg(feature="winmm-bootstrap")]
+#[path="d3d3_path_coverage.rs"]
+mod d3d3_path_coverage;
+
 // Read-only projection telemetry for the WinMM 1.1 widescreen investigation.
 // Direct3DDevice3::GetTransform is vtable slot 26 in the DirectX 6 ABI;
 // D3DTRANSFORMSTATE_PROJECTION = 3. No matrix is written back to the game.
@@ -68,6 +72,7 @@ unsafe extern "system" fn d3d3_device_draw_primitive(
     let hr=original(this,primitive,fvf,payload,vertex_count,flags);
     if cfg().log_enabled {
         let ordinal=PRIMITIVE_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        d3d3_path_coverage::observe_plain(false,primitive,fvf,vertex_count);
         log_vertex_call("DrawPrimitive",ordinal,primitive,fvf,vertex_count,hr);
     }
     hr
@@ -89,6 +94,7 @@ unsafe extern "system" fn d3d3_device_draw_indexed_primitive(
     let hr=original(this,primitive,fvf,payload,vertex_count,indices,index_count,flags);
     if cfg().log_enabled {
         let ordinal=INDEXED_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+        d3d3_path_coverage::observe_plain(true,primitive,fvf,vertex_count);
         log_vertex_call("DrawIndexedPrimitive",ordinal,primitive,fvf,vertex_count,hr);
     }
     hr
@@ -108,6 +114,7 @@ fn projection_aspect(m:&[f32;16])->Option<f32>{
 unsafe fn sample_game_projection(this:*mut c_void,when:&str){
     if !cfg().log_enabled{return;}
     let count=PROJECTION_SAMPLE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
+    d3d3_path_coverage::periodic_summary(count);
     // Capture startup, menu, and subsequent gameplay, but cap the log.
     if count>48 && !count.is_multiple_of(480){return;}
     if count>7680{return;}
@@ -210,6 +217,9 @@ unsafe fn observe_d3d3_device(device:*mut c_void){
             d3d3_device_draw_primitive as *const () as usize);
         let indexed=replace_method(device,D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE,
             d3d3_device_draw_indexed_primitive as *const () as usize);
+        // Four additional DX6 vertex-buffer/strided entrypoints are
+        // strictly pass-through and only serve render-path coverage logs.
+        d3d3_path_coverage::install(device);
         if D3D3_DEVICE_HOOK_TRACE_COUNT.load(Ordering::Relaxed)<12 {
             log(&format!("D3D3-VERTEX: hooks DrawPrimitive={draw} DrawIndexedPrimitive={indexed} (pass-through read-only telemetry)"));
         }
