@@ -752,6 +752,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                         "NATIVE-MENU-MOUSE: opt-in refused: {error}; original mouse messages preserved")),
                 }
             }
+            // A/B: update original EXE H/W global ONLY after the virtual
+            // native DD4 graph and game-owned HWND have been validated.
+            // Never affects original 4:3 menus, and disabled by default.
+            #[cfg(feature="winmm-bootstrap")]
+            crate::native_widescreen::after_virtual_mode_camera_aspect(
+                w,h,native_3d && runtime.native_widescreen_ready
+            );
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
             // Check the actual Windows physical display state after every
