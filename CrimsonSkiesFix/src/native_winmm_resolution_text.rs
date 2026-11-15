@@ -7,7 +7,9 @@
 //! supplied ANSI source string into the destination GOS text object.
 //! Our wrapper forwards the original destination, type, ABI and return value.
 //! Only an exact "640x480" or "640 x 480" label is replaced with the already
-//! byte-authenticated physical launch dimensions. No mode table, GOS index,
+//! byte-authenticated *effective 3D raster* dimensions. This differs from the
+//! physical monitor in forced 4:3 (e.g. 1600x1200 inside 1920x1200).
+//! No mode table, GOS index,
 //! rendering surface, widget flags, or game EXE on disk are modified.
 //!
 //! The x86 EXE's immutable prologue is checked at VA 0x403350 before patch.
@@ -49,10 +51,13 @@ extern "system" {
 fn is_resolution_label(raw:&[u8])->bool{
     matches!(raw,b"640x480"|b"640 x 480"|b"640 X 480")
 }
-fn replacement_for_label(raw:&[u8],physical:Option<(u32,u32)>,menu_was_seen:bool,
-                         graphics_features:bool)->Option<String>{
+fn replacement_for_label(raw:&[u8],verified_3d:Option<(u32,u32)>,menu_was_seen:bool,
+                         graphics_features:bool,forced_4by3:bool)->Option<String>{
     if !menu_was_seen || !graphics_features || !is_resolution_label(raw){return None;}
-    let (w,h)=physical?;
+    let (w,h)=verified_3d?;
+    // Explicit 4:3 *must* use the centered 3D raster. Never claim
+    // the full monitor width or the historic 640x480 GOS selection.
+    if forced_4by3 && (w as u64)*3!=(h as u64)*4{return None;}
     if !(960..=8192).contains(&w) || !(600..=4320).contains(&h) ||
        (w as u64)*3<(h as u64)*4 || w as u64>(h as u64)*4 {return None;}
     if raw.contains(&b' ') {
@@ -78,12 +83,12 @@ unsafe extern "C" fn copy_text(dst:*mut c_void,source:*const c_char,flags:u32)->
     if !is_resolution_label(text){return call(dst,source,flags);}
 
     let config=crate::cfg();
-    let physical=native_widescreen::verified_launch_widescreen_dimensions();
+    let verified_3d=native_widescreen::verified_launch_widescreen_dimensions();
     let matched=MATCHES.fetch_add(1,Ordering::Relaxed);
     let target=replacement_for_label(
-        text,physical,crate::menu_scene::main_menu_was_seen(),
+        text,verified_3d,crate::menu_scene::main_menu_was_seen(),
         config.experimental_windowed_adapter && config.native_3d_widescreen &&
-        config.desktop_resolution && !config.force_4_by_3,
+        config.desktop_resolution, config.force_4_by_3,
     );
     if let Some(target)=target {
         // The string is copied synchronously by the original GOS routine;
@@ -92,14 +97,17 @@ unsafe extern "C" fn copy_text(dst:*mut c_void,source:*const c_char,flags:u32)->
         let ret=call(dst,replacement.as_ptr(),flags);
         let done=REPLACEMENTS.fetch_add(1,Ordering::Relaxed);
         if done<12 {
-            log(&format!("MENU-WINMM-TEXT: original=640x480 shown={target} source=verified_physical_launch kind=text-only result=forwarded; GOS mode index/table unchanged"));
+            log(&format!("MENU-WINMM-TEXT: original_GOS=640x480 shown_3D_render={target} aspect_mode={} source=verified_patched_3d_raster kind=text-only result=forwarded; GOS mode index/table unchanged",
+                if config.force_4_by_3{"4:3"}else{"auto"}
+            ));
         }
         return ret;
     }
     if matched<8 {
         log(&format!(
-            "MENU-WINMM-TEXT: original=640x480 not-replaced; main_menu_seen={} physical_launch={physical:?} features_enabled={}; text call forwarded",
+            "MENU-WINMM-TEXT: original_GOS=640x480 not-replaced; main_menu_seen={} verified_3d={verified_3d:?} aspect_mode={} features_enabled={}; text call forwarded",
             crate::menu_scene::main_menu_was_seen(),
+            if config.force_4_by_3{"4:3"}else{"auto"},
             config.experimental_windowed_adapter && config.native_3d_widescreen && config.desktop_resolution));
     }
     call(dst,source,flags)
@@ -109,7 +117,7 @@ pub unsafe fn install()->bool{
     if !diagnostics::is_native_windows(){return false;}
     let config=crate::cfg();
     if !config.experimental_windowed_adapter || !config.native_3d_widescreen ||
-       !config.desktop_resolution || config.force_4_by_3 {return false;}
+       !config.desktop_resolution {return false;}
     if ORIGINAL_TRAMPOLINE.load(Ordering::Acquire)!=0 {return true;}
     if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE {
         log("MENU-WINMM-TEXT: original game image base mismatch; no installation");
@@ -183,17 +191,21 @@ mod tests{
     fn native_winmm_text_rewrite_requires_verified_context(){
         let valid=Some((1920,1200));
         for old in [b"640x480".as_slice(),b"640 x 480",b"640 X 480"] {
-            let updated=replacement_for_label(old,valid,true,true).unwrap();
+            let updated=replacement_for_label(old,valid,true,true,false).unwrap();
             assert_eq!(updated,if old.contains(&b' '){"1920 x 1200"}else{"1920x1200"});
-            assert_eq!(replacement_for_label(old,valid,false,true),None);
-            assert_eq!(replacement_for_label(old,valid,true,false),None);
-            assert_eq!(replacement_for_label(old,None,true,true),None);
+            assert_eq!(replacement_for_label(old,valid,false,true,false),None);
+            assert_eq!(replacement_for_label(old,valid,true,false,false),None);
+            assert_eq!(replacement_for_label(old,None,true,true,false),None);
+            let four_by_three=replacement_for_label(
+                old,Some((1600,1200)),true,true,true).unwrap();
+            assert_eq!(four_by_three,if old.contains(&b' '){"1600 x 1200"}else{"1600x1200"});
+            assert_eq!(replacement_for_label(old,valid,true,true,true),None);
         }
-        assert_eq!(replacement_for_label(b"800x600",valid,true,true),None);
-        assert_eq!(replacement_for_label(b"640x480 Hz",valid,true,true),None);
-        assert_eq!(replacement_for_label(b"graphics 640x480",valid,true,true),None);
-        assert_eq!(replacement_for_label(b"640x480",Some((0,0)),true,true),None);
-        assert_eq!(replacement_for_label(b"640x480",Some((1920,1080)),true,true),
+        assert_eq!(replacement_for_label(b"800x600",valid,true,true,false),None);
+        assert_eq!(replacement_for_label(b"640x480 Hz",valid,true,true,false),None);
+        assert_eq!(replacement_for_label(b"graphics 640x480",valid,true,true,false),None);
+        assert_eq!(replacement_for_label(b"640x480",Some((0,0)),true,true,false),None);
+        assert_eq!(replacement_for_label(b"640x480",Some((1920,1080)),true,true,false),
                    Some("1920x1080".into()));
     }
 }
