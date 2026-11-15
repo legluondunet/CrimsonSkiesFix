@@ -23,6 +23,24 @@ This does **not** prove the game is compatible or that Wine ordinal forwarding
 is correct. Dynamic third-party modules, loader lock, crashes and UI are
 not validated by the small smoke program.
 
+## Ordinal-usage evidence in the revised experimental runtime
+
+When the player explicitly enables `[Debug] Log=1`, the DLL records
+`WINMM-ORDINAL-BRIDGE: stage=DD4-SetDisplayMode resolved_unique=... ordinals=...`
+at each authenticated DirectDraw mode transition, **outside DllMain**.
+
+The resolver records only successful first uses in a lock-free atomic bitmap.
+It never writes log files, allocates memory or invokes new user callbacks when
+recording the ordinal. `ordinals=none` means no numeric thunk was successfully
+resolved **before that snapshot**; it does **not** exclude future calls,
+dynamic `GetProcAddress` calls to names or ordinals, or a second DLL bypassing
+this proxy. `[Debug] Log=0` still disables the gameplay log entirely.
+
+The previous GE-Proton game log from 15 November (`71345d9e`) predates
+this read-only telemetry. It confirms the game ran but not which numeric
+thunks (if any) were used. Only use a newer build with this feature to
+inspect actual ordinal-use evidence under GE-Proton.
+
 ## If conducting an owner A/B gameplay test later
 
 **Only on a disposable complete copy** of the *approved* Crimson Skies 1.02
