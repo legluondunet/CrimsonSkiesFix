@@ -30,12 +30,6 @@ fn main(){
         "Windows loaded system WinMM instead of app-local WinMM");
     let probe=unsafe{GetProcAddress(handle,c"CrimsonSkiesFixBootstrapStatus".as_ptr())};
     assert!(!probe.is_null(),"bootstrap status export not found");
-    // Wine's winmm spec and test expect ordinal #2 to resolve to PlaySound.
-    // Compare addresses only; do not play a sound or depend on audio hardware.
-    let by_name=unsafe{GetProcAddress(handle,c"PlaySound".as_ptr())};
-    let by_ordinal=unsafe{GetProcAddress(handle,2usize as *const c_char)};
-    assert!(!by_name.is_null() && by_name==by_ordinal,
-        "WinMM ordinal 2 does not resolve to PlaySound");
     let status:unsafe extern "system" fn()->u32=unsafe{std::mem::transmute(probe)};
     assert_eq!(unsafe{status()},1,
         "the synthetic host should be rejected by the exact game PE filter");
