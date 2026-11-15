@@ -75,6 +75,7 @@ static UNCORRECTED_NONFINITE:AtomicUsize=AtomicUsize::new(0);
 static MOVED_ABOVE_TOP:AtomicUsize=AtomicUsize::new(0);
 static MOVED_BELOW_BOTTOM:AtomicUsize=AtomicUsize::new(0);
 static EDGE_EXAMPLES:AtomicUsize=AtomicUsize::new(0);
+static CENTERED_2D_CANDIDATES:AtomicUsize=AtomicUsize::new(0);
 
 #[repr(C)]
 struct MemoryBasicInformation{
@@ -125,6 +126,24 @@ fn eligible_stride(fvf:u32,primitive:u32,indexed:bool,count:u32)->Option<usize>{
         (false,FVF_TEX2,6) if count>=3=>Some(STRIDE_TEX2), // TEX2 TRIANGLEFAN
         _=>None
     }
+}
+
+fn possibly_pre_aspect_corrected_overlay(
+    left:f32,right:f32,top:f32,bottom:f32,w:u32,h:u32
+)->bool{
+    // Only a diagnostic candidate for a small centered 2D symbol
+    // drawn with essentially equal screen-space X and Y dimensions.
+    // No exclusion is made here: a candidate could also be world 3D.
+    let dx=right-left;
+    let dy=bottom-top;
+    if !dx.is_finite()||!dy.is_finite()||dx<8.0||dy<8.0 ||
+       dx>128.0||dy>128.0{return false;}
+    let cx=(left+right)*0.5;
+    let cy=(top+bottom)*0.5;
+    let ratio=dx/dy;
+    (cx-w as f32*0.5).abs()<=40.0 &&
+    (cy-h as f32*0.5).abs()<=40.0 &&
+    (0.85..=1.18).contains(&ratio)
 }
 
 fn vertical_viewport_exit(original:f32,corrected:f32,height:u32)->(bool,bool){
@@ -252,9 +271,21 @@ pub(super) unsafe fn shadow_y_corrected(
     let mut after_max=f32::NEG_INFINITY;
     let mut crosses_top=false;
     let mut crosses_bottom=false;
+    // A small centered circle is a possible *already-correct* aim
+    // reticle; record its source bbox only to decide later whether it
+    // should be excluded from Y43. This never changes the output.
+    let probe_center_sprite=!indexed &&
+       ((primitive==6 && count==4) || (primitive==3 && count>=8 && count<=64));
+    let mut x_min=f32::INFINITY;
+    let mut x_max=f32::NEG_INFINITY;
     for i in 0..count as usize {
         let yptr=shadow.as_mut_ptr().add(i*stride+4).cast::<f32>();
         let source=ptr::read_unaligned(yptr);
+        if probe_center_sprite{
+            let xptr=shadow.as_ptr().add(i*stride).cast::<f32>();
+            let x=ptr::read_unaligned(xptr);
+            if x.is_finite(){x_min=x_min.min(x);x_max=x_max.max(x);}
+        }
         let Some(target)=y_at_screen_center(source,mode.1,factor)else{
             let n=REJECTS.fetch_add(1,Ordering::Relaxed)+1;
             UNCORRECTED_NONFINITE.fetch_add(1,Ordering::Relaxed);
@@ -275,6 +306,19 @@ pub(super) unsafe fn shadow_y_corrected(
         crosses_bottom|=bottom;
         ptr::write_unaligned(yptr,target);
         if first.is_none(){first=Some((source,target));}
+    }
+    if probe_center_sprite &&
+       possibly_pre_aspect_corrected_overlay(
+           x_min,x_max,original_min,original_max,mode.0,mode.1
+       ){
+        let n=CENTERED_2D_CANDIDATES.fetch_add(1,Ordering::Relaxed)+1;
+        if n<=10{
+            let original_ratio=(x_max-x_min)/(original_max-original_min);
+            let new_ratio=(x_max-x_min)/(after_max-after_min);
+            crate::log(&format!(
+                "PROJECTED-Y43-CENTER: candidate={n} primitive_type={primitive} fvf={fvf:#010x} vertices={count} input_x=[{x_min:.2},{x_max:.2}] input_y=[{original_min:.2},{original_max:.2}] output_y=[{after_min:.2},{after_max:.2}] original_ratio={original_ratio:.4} new_ratio={new_ratio:.4} candidate_only_not_yet_excluded=true"
+            ));
+        }
     }
     if crosses_top || crosses_bottom{
         if crosses_top {MOVED_ABOVE_TOP.fetch_add(1,Ordering::Relaxed);}
@@ -303,7 +347,8 @@ pub(super) unsafe fn shadow_y_corrected(
              corrected_categories={:#04x} scratch_reuses={} scratch_grows={} \
              reserve_failures={} skip_format={} skip_large={} skip_unreadable={} \
              skip_invalid={} moved_top={} moved_bottom={} \
-             x_z_rhw_color_uv_unchanged=true source_vertices_unchanged=true experiment_only=true",
+             centered_candidates={} x_z_rhw_color_uv_unchanged=true \
+             source_vertices_unchanged=true experiment_only=true",
             if indexed{"DrawIndexedPrimitive"}else{"DrawPrimitive"},
             mode.0,mode.1,
             PATCHED_CATEGORIES.load(Ordering::Relaxed),
@@ -315,7 +360,8 @@ pub(super) unsafe fn shadow_y_corrected(
             UNREADABLE_VERTICES.load(Ordering::Relaxed),
             UNCORRECTED_NONFINITE.load(Ordering::Relaxed),
             MOVED_ABOVE_TOP.load(Ordering::Relaxed),
-            MOVED_BELOW_BOTTOM.load(Ordering::Relaxed)
+            MOVED_BELOW_BOTTOM.load(Ordering::Relaxed),
+            CENTERED_2D_CANDIDATES.load(Ordering::Relaxed)
         ));
     }
     Some(shadow)
@@ -381,6 +427,14 @@ mod tests{
         ];
         assert_eq!(all.iter().sum::<usize>(),63);
         assert_eq!(all.into_iter().fold(0,|mask,v|mask|v),63);
+    }
+    #[test]
+    fn center_candidate_is_only_a_measurement_not_an_exclusion(){
+        assert!(possibly_pre_aspect_corrected_overlay(945.0,975.0,525.0,555.0,1920,1080));
+        assert!(!possibly_pre_aspect_corrected_overlay(900.0,1050.0,525.0,555.0,1920,1080));
+        assert!(!possibly_pre_aspect_corrected_overlay(100.0,130.0,525.0,555.0,1920,1080));
+        assert!(!possibly_pre_aspect_corrected_overlay(945.0,975.0,200.0,230.0,1920,1080));
+        assert!(!possibly_pre_aspect_corrected_overlay(945.0,975.0,525.0,595.0,1920,1080));
     }
     #[test]
     fn viewport_exit_diagnosis_counts_only_new_crossings(){
