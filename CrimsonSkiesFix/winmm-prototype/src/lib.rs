@@ -49,6 +49,62 @@ static SYSTEM_MODULE: OnceLock<Option<usize>> = OnceLock::new();
 static RESOLVED: [AtomicUsize; 14] = [const { AtomicUsize::new(0) }; 14];
 static FIRST_CALL: AtomicBool = AtomicBool::new(false);
 
+// Test-only, lock-free first-use evidence for issue #32. Recording does NOT
+// resolve imports, take an OS loader lock, allocate, or write a log file.
+#[cfg(feature = "winmm-ordinal-bridge")]
+static GAME_DDRAW_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "winmm-ordinal-bridge")]
+static FIRST_NAMED_INDEX: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "winmm-ordinal-bridge")]
+static FIRST_NAMED_EARLY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "winmm-ordinal-bridge")]
+static NAMED_ATTEMPT_MASK: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "winmm-ordinal-bridge")]
+static NAMED_EARLY_MASK: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "winmm-ordinal-bridge")]
+static NAMED_RESOLVED_MASK: AtomicU32 = AtomicU32::new(0);
+
+// Called at entry to one of the three game-owned DirectDraw hooks, prior to
+// game configuration loading. Do not infer that loader lock is released solely
+// from this marker: it measures ordering, not kernel loader-lock ownership.
+#[cfg(feature = "winmm-ordinal-bridge")]
+pub(crate) fn mark_game_ddraw_started() {
+    GAME_DDRAW_STARTED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "winmm-ordinal-bridge")]
+fn mark_named_resolution_attempt(index: usize) {
+    let bit = 1u32 << index; // Only indices 0..13 reach this code path.
+    let early = !GAME_DDRAW_STARTED.load(Ordering::Acquire);
+    NAMED_ATTEMPT_MASK.fetch_or(bit,Ordering::Relaxed);
+    if early {NAMED_EARLY_MASK.fetch_or(bit,Ordering::Relaxed);}
+    if FIRST_NAMED_INDEX.compare_exchange(usize::MAX,index,Ordering::AcqRel,Ordering::Relaxed).is_ok(){
+        FIRST_NAMED_EARLY.store(early,Ordering::Release);
+    }
+}
+
+#[cfg(feature = "winmm-ordinal-bridge")]
+fn named_list_from_mask(mask: u32)->String {
+    let names=EXPORT_NAMES.iter().enumerate()
+        .filter(|(i,_)|mask & (1u32 << i)!=0)
+        .map(|(_,name)|std::str::from_utf8(name).unwrap_or("?").trim_end_matches('\0'))
+        .collect::<Vec<_>>();
+    if names.is_empty(){"none".to_string()}else{names.join(",")}
+}
+
+#[cfg(feature = "winmm-ordinal-bridge")]
+pub(crate) fn named_forward_snapshot()->String {
+    let first=FIRST_NAMED_INDEX.load(Ordering::Acquire);
+    let first_name=EXPORT_NAMES.get(first).and_then(|value|std::str::from_utf8(value).ok())
+        .map(|s|s.trim_end_matches('\0')).unwrap_or("none");
+    let first_early=first!=usize::MAX && FIRST_NAMED_EARLY.load(Ordering::Acquire);
+    let attempted=NAMED_ATTEMPT_MASK.load(Ordering::Acquire);
+    let early=NAMED_EARLY_MASK.load(Ordering::Acquire);
+    let resolved=NAMED_RESOLVED_MASK.load(Ordering::Acquire);
+    format!("first={first_name} first_before_ddraw={first_early} attempted_unique={} resolved_unique={} before_ddraw={}",
+        attempted.count_ones(),resolved.count_ones(),named_list_from_mask(early))
+}
+
 fn module_path(module: *mut c_void) -> Option<PathBuf> {
     let mut chars = [0u16; 32768];
     let n = unsafe { GetModuleFileNameW(module, chars.as_mut_ptr(), chars.len() as u32) } as usize;
@@ -111,12 +167,16 @@ extern "C" fn resolve_target(index: u32) -> usize {
     else { std::process::abort(); };
     let old = slot.load(Ordering::Acquire);
     if old != 0 { return old; }
+    #[cfg(feature = "winmm-ordinal-bridge")]
+    mark_named_resolution_attempt(index as usize);
     let Some(system) = system_winmm() else { std::process::abort(); };
     if own_module() == Some(system) { std::process::abort(); }
     let target = unsafe { GetProcAddress(system, name.as_ptr().cast()) } as usize;
     if target == 0 { std::process::abort(); }
     write_first_call(index as usize, system);
     slot.store(target, Ordering::Release);
+    #[cfg(feature = "winmm-ordinal-bridge")]
+    NAMED_RESOLVED_MASK.fetch_or(1u32 << index,Ordering::Release);
     target
 }
 
