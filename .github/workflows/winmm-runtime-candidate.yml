@@ -33,6 +33,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install Rust i686 MSVC target
         run: rustup target add i686-pc-windows-msvc
+      - name: Test portable PE WinMM import preflight (synthetic fixtures)
+        run: python -m unittest discover -s runtime-winmm/tools -p test_audit_game_winmm_imports.py -v
       - name: Test shared runtime in WinMM configuration
         run: cargo test --manifest-path runtime-winmm/Cargo.toml --target i686-pc-windows-msvc
       - name: Compile shared runtime into standalone x86 winmm.dll
@@ -68,6 +70,7 @@ jobs:
           Copy-Item 'runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll' 'winmm-runtime-test/winmm.dll'
           Copy-Item 'runtime-winmm/README.md' 'winmm-runtime-test/README-EXPERIMENTAL.md'
           Copy-Item 'winmm-system-abi.json' 'winmm-runtime-test/winmm-system-abi.json'
+          Copy-Item 'runtime-winmm/tools/audit_game_winmm_imports.py' 'winmm-runtime-test/audit_game_winmm_imports.py'
           $sha=(Get-FileHash 'winmm-runtime-test/winmm.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
           "SHA256=$sha" | Set-Content 'winmm-runtime-test/winmm.sha256'
           if (Test-Path 'winmm-runtime-test/ddraw.dll') {throw 'Runtime package must not contain ddraw.dll'}
