@@ -83,7 +83,7 @@ unsafe extern "C" fn copy_text(dst:*mut c_void,source:*const c_char,flags:u32)->
     let target=replacement_for_label(
         text,physical,crate::menu_scene::main_menu_was_seen(),
         config.experimental_windowed_adapter && config.native_3d_widescreen &&
-        config.desktop_resolution,
+        config.desktop_resolution && !config.force_4_by_3,
     );
     if let Some(target)=target {
         // The string is copied synchronously by the original GOS routine;
@@ -109,7 +109,7 @@ pub unsafe fn install()->bool{
     if !diagnostics::is_native_windows(){return false;}
     let config=crate::cfg();
     if !config.experimental_windowed_adapter || !config.native_3d_widescreen ||
-       !config.desktop_resolution {return false;}
+       !config.desktop_resolution || config.force_4_by_3 {return false;}
     if ORIGINAL_TRAMPOLINE.load(Ordering::Acquire)!=0 {return true;}
     if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE {
         log("MENU-WINMM-TEXT: original game image base mismatch; no installation");
