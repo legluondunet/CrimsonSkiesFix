@@ -78,11 +78,14 @@ pub struct Config {
     // Experimental gameplay-only screen-space Y normalization (original model+HUD).
     // Disabled by default. Never changes on-disk EXE, source vertices or D3D FOV.
     pub experimental_projected_y43_probe: bool,
+    // Optional A/B: preserve near-screen-center 32x32 TEX1 quad reticle,
+    // measured as already square before Y43. Default off.
+    pub experimental_y43_reticle_guard: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, experimental_hud_fov43_probe: false, experimental_hud_entity_y43_probe: false, experimental_hud_canvas43_probe: false, experimental_projected_y43_probe: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, experimental_hud_fov43_probe: false, experimental_hud_entity_y43_probe: false, experimental_hud_canvas43_probe: false, experimental_projected_y43_probe: false, experimental_y43_reticle_guard: false, }
     }
 }
 
@@ -157,6 +160,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.experimental_hud_canvas43_probe = v; },
             ("debug", "experimentalprojectedy43probe") =>
                 if let Some(v) = enabled(value) { settings.experimental_projected_y43_probe = v; },
+            ("debug", "experimentaly43reticleguard") =>
+                if let Some(v) = enabled(value) { settings.experimental_y43_reticle_guard = v; },
             ("debug", "surfaceusagetrace") =>
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
@@ -271,6 +276,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "debug/experimentalhudentityy43probe",
     "debug/experimentalhudcanvas43probe",
     "debug/experimentalprojectedy43probe",
+    "debug/experimentaly43reticleguard",
 ];
 
 /// Normalize repeated known INI keys while preserving the EXACT effective
@@ -433,7 +439,14 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, experimental_hud_fov43_probe:false, experimental_hud_entity_y43_probe:false, experimental_hud_canvas43_probe:false, experimental_projected_y43_probe:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, experimental_hud_fov43_probe:false, experimental_hud_entity_y43_probe:false, experimental_hud_canvas43_probe:false, experimental_projected_y43_probe:false, experimental_y43_reticle_guard:false, });
+    }
+    #[test]
+    fn y43_reticle_guard_is_debug_only_and_default_off(){
+        assert!(!Config::default().experimental_y43_reticle_guard);
+        assert!(parse("[Debug]\nExperimentalY43ReticleGuard=1").experimental_y43_reticle_guard);
+        assert!(!parse("[Debug]\nExperimentalY43ReticleGuard=0").experimental_y43_reticle_guard);
+        assert!(!parse("[Graphics]\nExperimentalY43ReticleGuard=1").experimental_y43_reticle_guard);
     }
     #[test]
     fn projected_y43_probe_is_debug_only_and_default_off(){
