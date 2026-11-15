@@ -347,3 +347,67 @@ runtime unchanged. Retain the canvas probe OFF until that cause is
 established; do not merge it as a production feature without A/B
 confirmation. These proprietary executables were inspected locally
 only and are **not** added to this repository.
+
+
+## 15 Nov 2026, 09:30 Proton Y43 trace: reticle regression proven, edge diagnosis
+
+Owner-supplied complete log `CrimsonSkiesFix(20261115-093031).log` is
+from WinMM **1.1.0-rc.1-fad24b14**, GE-Proton11-12 (Wine 11.0),
+1920x1080, `ExperimentalProjectedY43Probe=true`. An extended mission and
+mode transitions produce no `ERROR` or `CRITICAL` line, but the user still
+observes an oval aiming reticle, incomplete objective bubbles, and black
+triangles under extreme banking. The verified world's 3D airplane, round
+instruments and compass should remain unchanged.
+
+**Positive reticle geometry evidence, not just visual inference:**
+- `PROJECTED-Y43-CENTER` examples 1..10 at log lines 777–787 show a
+  repeatedly drawn `DrawPrimitive(type 6, FVF 0x1C4, count 4)` quad
+  near screen center with exact **32.00x32.00** original bbox and
+  **32.00x42.67** after Y43 (source `original_ratio=1.0000`, destination
+  `new_ratio=0.7500`). This exactly matches the user's oval aim symbol.
+- This quad is a strong *reticle candidate*, but bounding boxes do not
+  uniquely prove a sprite's identity; avoid any generic exemption of
+  all center-screen or all 2D draws.
+- **Opt-in A/B** is now implemented with `[Debug]
+  ExperimentalY43ReticleGuard=1`, OFF by default, and only effective
+  when `ExperimentalProjectedY43Probe=1`. It exempts a primitive from Y43
+  **only** if non-indexed, primitive type 6, exact FVF 0x1C4, count=4,
+  four unique axis-aligned corners, bbox widths **31.5–32.5** on both axes,
+  bbox center within 32px horizontally and 40px vertically of raster
+  center, in a verified native widescreen gameplay epoch. An exempt
+  quad uses original caller vertex data unchanged. Neither the 6-category
+  global Y43 factor, nor world/HUD vertex selection, nor on-disk EXE,
+  nor DD4/Surface4 is modified. `PROJECTED-Y43-RETICLE-GUARD` logs
+  bounded samples and `reticle_kept_round` cumulative count. User
+  verification must establish that the *actual reticle* becomes round
+  without breaking any other HUD element.
+
+**Clipping/cutout evidence and limitations:**
+- `PROJECTED-Y43-EDGE` sample 1 logs original Y bbox `[0,1237.60]`
+  moving to `[-180,1470.13]`; sample 4 `[704.37,1080]` moving to
+  `[759.16,1260]`, both in indexed TEX1 triangle lists. At the last
+  periodic checkpoint, **258,094 draw calls** crossed the upper viewport
+  boundary, and **221,618** crossed the lower, from a formerly in-range
+  vertex. These counters count calls, **not unique vertices, triangles,
+  artifacts or visible pixels**. A large number is not evidence that all
+  are bad — clipping outside viewport is routine 3D behavior.
+- `PROJECTED-Y43-SKIP` reveals a separate issue: source projected
+  coordinates **+1,215,425.9** and **-1,498,662.1** on valid indexed
+  triangle lists; the y-adjuster rejected these by its absolute bound
+  and forwarded the **entire draw unmodified**. Latest cumulative
+  `skip_invalid=161`. Such oversized values may be natural intermediate
+  outputs for geometry behind/near the camera; do not clamp or delete them.
+- All three other skip counters `skip_format=0`, `skip_large=0`,
+  `skip_unreadable=0`, and `reserve_failures=0` at last checkpoint.
+  No error code from Direct3D is seen in the trace.
+- These facts make late post-projection Y43 vs the original game's
+  precomputed clipping a serious hypothesis for incomplete objective
+  bubbles and black void triangles. **The log alone does not identify
+  an exact bad triangle.** A correct fix should align the **actual
+  projection + clipping stage**; avoid simply discarding or clamping
+  out-of-bounds geometry or broad exclusions of indexed triangles.
+
+**Worktree provenance:** commits `2699955c` (INI toggle) and
+`2564ac76` (precise A/B guard). Both are experimental on draft PR #36.
+Reticle guard is disabled by default; absence of regression requires
+actual Proton/Windows screenshots, not only Windows CI.
