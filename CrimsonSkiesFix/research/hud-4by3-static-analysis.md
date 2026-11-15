@@ -411,3 +411,20 @@ instruments and compass should remain unchanged.
 `2564ac76` (precise A/B guard). Both are experimental on draft PR #36.
 Reticle guard is disabled by default; absence of regression requires
 actual Proton/Windows screenshots, not only Windows CI.
+
+
+## Proton reticle-guard runtime result and camera setup static analysis (15 Nov 2026)
+
+Uploaded log CrimsonSkiesFix(20261115-094834).log: WinMM 1.1.0-rc.1-2564ac76; GE-Proton11-12, Wine11, Manjaro, 1920x1080. Both ExperimentalProjectedY43Probe and ExperimentalY43ReticleGuard enabled. No screenshot of this exact build was supplied, so the visual effect of the guard has NOT yet been independently validated.
+
+- PROJECTED-Y43-RETICLE-GUARD: first 8 traces show original, square 32x32-pixel center quads, e.g. bbox x=[942.5,974.5] y=[531.5,563.5], forwarded unmodified. Last cumulative reticle_kept_round=16258. This definitively validates invocation of the *experimental selector*, not full visible reticle shape.
+- PROJECTED-Y43-CENTER still reports 12130 other centered initially square quads, with original_ratio=1 and new_ratio=0.75. First candidate bbox is about 79.73x79.73. Do NOT broadly exclude all these from Y43: some could be world sprites/target indicators, not the reticle. Identify by texture or verified caller if a new selector is necessary.
+- Last sampled global Y43 counters: corrected_categories=0x3f; scratch_reuses=15298838, scratch_grows=49, reserve_failures=0; skip_format=skip_large=skip_unreadable=0; skip_invalid=1066, moved_top=1605863, moved_bottom=1426356. These boundary counters count draw calls, not visible black triangles or pixels. Do not infer black-triangle causal identity.
+- Four successful epochs (1920x1080 startup, 800x600 menu, 1920x1080 flight, 800x600 menu), no ERROR/CRITICAL. Accelerated HUD renderer_mode=Some(1) replicate=Some(0), old canvas branch inactive. Zero calls to extra Strided and VB paths.
+
+Independent static disassembly of the user-supplied *decrypted official 1.02* PE32 (SHA256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) using objdump:
+- VA 0x0042B570 is x87 FOV/camera conversion. It evaluates fptan on an angle converted with the coefficient at 0x006032E0; multiplies by global aspect H/W at 0x0071B3F8; applies fpatan and double-angle, then calls 0x004D2C20 to set a camera/render device property. It also invokes 0x004D2E30, which stores a camera parameter into renderer object field +0xD0 for expected state 1.
+- The owner-supplied 1920x1200 prepatched EXE contains injected code at 0x006024D9 and 0x00602508. This computes fptan(angle)*((width/height)/(4/3)) before fpatan, i.e. camera FOV math was already modified in the exact 38-region patch we ported. Our Y43 raster modification is an additional *post-projection* stretch.
+- 0x004D70A0 validates a type-3 rendering object and reads two fields from its internal +0x38 pointer; its precise relation to clip-space is unproven. Do not claim the true clipping entrypoint is identified.
+
+Next research: find the viewport projection and polygon clipping agreement *before* the XYZ/RHW screen-coordinate stage using the verified camera properties. Keep the working 38-region FOV patch and optional reticle guard as-is; avoid ad hoc clipping, huge-coordinate clamps, or unverified changes to the game executable. Draft PR #36 remains unreleased.
