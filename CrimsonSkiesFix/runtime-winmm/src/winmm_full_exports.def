@@ -1,12 +1,13 @@
-; Experimental ordinals remain noncanonical except for Wine's documented #2=PlaySound.
-; Many other ordinals still differ from Windows/Wine; this is NOT release-ready.
+; Ordinals are prototype numbers, NOT stable Windows/Wine ABI numbers.
+; The verified system-WinMM audit found 177/178 name/ordinal mismatches.
+; Do not rely on these numeric exports for a production v1.1 release.
 ; Full documented Wine WinMM symbol inventory, 185 names. Existing 14 game imports
 ; remain mapped to their already smoke-tested assembly trampolines.
 ; Source: https://github.com/wine-mirror/wine/blob/master/dlls/winmm/winmm.spec
 LIBRARY winmm.dll
 EXPORTS
     mixerGetLineInfoA=crimson_winmm_forward_0 @1
-    mixerOpen=crimson_winmm_forward_1 @28
+    mixerOpen=crimson_winmm_forward_1 @2
     mciGetErrorStringA=crimson_winmm_forward_2 @3
     mixerGetLineControlsA=crimson_winmm_forward_3 @4
     mixerClose=crimson_winmm_forward_4 @5
@@ -32,7 +33,7 @@ EXPORTS
     GetDriverModuleHandle=crimson_winmm_extra_10 @25
     OpenDriver=crimson_winmm_extra_11 @26
     OpenDriverA=crimson_winmm_extra_12 @27
-    PlaySound=crimson_winmm_extra_13 @2
+    PlaySound=crimson_winmm_extra_13 @28
     PlaySoundA=crimson_winmm_extra_14 @29
     PlaySoundW=crimson_winmm_extra_15 @30
     SendDriverMessage=crimson_winmm_extra_16 @31
