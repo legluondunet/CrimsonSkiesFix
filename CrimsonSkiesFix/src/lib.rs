@@ -226,7 +226,9 @@ static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature:
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 // Separate from the installer's persistent report: a game session owns a
-// fresh log. Never append gameplay records across separate game launches.
+// fresh log ONLY when [Debug] Log=1. Never append across launches, and
+// never truncate a prior diagnostic file for an ordinary Log=0 launch.
+fn should_open_game_session_log(config:&Config)->bool{config.log_enabled}
 fn fresh_game_session_log(path:&std::path::Path)->std::io::Result<File>{
     OpenOptions::new().create(true).write(true).truncate(true).open(path)
 }
@@ -277,11 +279,12 @@ fn cfg()->Config {
         let dpi_diagnostic=if parsed.native_dpi_aware && !parsed.directdraw_passthrough {
             Some(win32::enable_native_system_dpi_experiment())
         }else{None};
-        if parsed.log_enabled || parsed.experimental_windowed_adapter {
-            // The DLL owns its gameplay diagnostics exclusively. Every game
-            // session starts a fresh CrimsonSkiesFix.log, whether launched by
-            // the standalone installer or directly. Installer/repair records
-            // live independently in CrimsonSkiesFix_installer.log.
+        if should_open_game_session_log(&parsed) {
+            // Gameplay diagnostics are explicitly opt-in. In particular,
+            // the default-enabled borderless/windowed DD4 backend must NOT
+            // silently turn logging back on when [Debug] Log=0.
+            // Installer/repair records remain entirely independent in
+            // CrimsonSkiesFix_installer.log.
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
@@ -704,6 +707,19 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn log_zero_does_not_create_or_truncate_any_gameplay_log(){
+        let mut c=Config::default();
+        assert!(c.experimental_windowed_adapter);
+        assert!(!should_open_game_session_log(&c));
+        c.log_enabled=true;
+        assert!(should_open_game_session_log(&c));
+        c.log_enabled=false;
+        c.experimental_windowed_adapter=false;
+        assert!(!should_open_game_session_log(&c));
+        // Logging is a side effect, not a requirement for camera, DD4,
+        // or WinMM bootstrap: no other branch should open the file.
+    }
     #[test]
     fn fresh_game_log_does_not_erase_persistent_installer_report(){
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
