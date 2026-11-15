@@ -157,6 +157,10 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
     roffile_terminator_fix::probe();
     let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
+    // Optional source aspect, before the next original 3D scene is drawn.
+    // The mode-aware function is fail-closed and skips 4:3 menus.
+    #[cfg(feature="winmm-bootstrap")]
+    crate::native_widescreen::before_gameplay_scene_camera_aspect();
     let hr=original(this);
     #[cfg(feature="winmm-bootstrap")]
     if hr>=0 {sample_game_projection(this,"BeginScene");}
