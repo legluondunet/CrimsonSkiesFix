@@ -31,6 +31,7 @@
 //! excluded; known old HUD probes mutually exclusive. Malformed or huge
 //! vertex arrays fall back unchanged. Works on Wine/Proton and Windows.
 use std::{
+    cell::RefCell,
     ffi::c_void,
     mem::{size_of,MaybeUninit},
     ptr,
@@ -50,6 +51,17 @@ static PATCHED_PRIMITIVES:AtomicUsize=AtomicUsize::new(0);
 static PATCHED_INDEXED:AtomicUsize=AtomicUsize::new(0);
 static REJECTS:AtomicUsize=AtomicUsize::new(0);
 static PATCHED_CATEGORIES:AtomicUsize=AtomicUsize::new(0);
+// The previous Y43 test creates/drops a Vec on EVERY successful Draw* call.
+// The 2026-11-15 Proton game log exceeded one million such calls.
+// Keep one bounded scratch buffer PER RENDER THREAD; the buffer is moved
+// out of TLS before the original COM Draw*, allowing reentrant draws to
+// take a distinct buffer. No mutable TLS reference crosses an FFI call.
+thread_local!{
+    static VERTEX_SCRATCH:RefCell<Vec<u8>>=RefCell::new(Vec::new());
+}
+static POOL_REUSE:AtomicUsize=AtomicUsize::new(0);
+static POOL_GROWS:AtomicUsize=AtomicUsize::new(0);
+static POOL_RESERVE_FAILURES:AtomicUsize=AtomicUsize::new(0);
 
 #[repr(C)]
 struct MemoryBasicInformation{
@@ -146,6 +158,27 @@ fn enabled_for_gameplay()->Option<((u32,u32),f32)>{
     Some((mode,factor))
 }
 
+// Returns a uniquely owned buffer; no RefCell borrow is live while
+// the graphics driver is called. Reentrant draws on the same thread
+// automatically take a separate Vec rather than sharing the outer data.
+fn acquire_scratch()->Vec<u8>{
+    VERTEX_SCRATCH.with(|slot|std::mem::take(&mut *slot.borrow_mut()))
+}
+
+// Keep the largest buffer a render thread has needed (up to the fixed
+// MAX_BUFFER_BYTES). Truncate to zero length without freeing capacity.
+// If a nested Draw* returned another scratch first, keep the larger
+// capacity and drop the smaller one. The caller must call this only
+// AFTER the original Direct3D method has returned.
+pub(super) fn recycle_shadow(mut buffer:Vec<u8>){
+    buffer.clear();
+    if buffer.capacity()>MAX_BUFFER_BYTES{return;}
+    VERTEX_SCRATCH.with(|slot|{
+        let mut cached=slot.borrow_mut();
+        if buffer.capacity()>cached.capacity(){*cached=buffer;}
+    });
+}
+
 /// Return None to forward caller data unchanged. The scratch buffer MUST
 /// remain live until original IDirect3DDevice3::Draw* returns.
 pub(super) unsafe fn shadow_y_corrected(
@@ -155,10 +188,22 @@ pub(super) unsafe fn shadow_y_corrected(
     let (mode,factor)=enabled_for_gameplay()?;
     let size=(count as usize).checked_mul(stride)?;
     if !readable_region(vertices,size){return None;}
-    let mut shadow=Vec::new();
-    if shadow.try_reserve_exact(size).is_err(){return None;}
-    shadow.resize(size,0);
+    let mut shadow=acquire_scratch();
+    if shadow.capacity()>=size {
+        POOL_REUSE.fetch_add(1,Ordering::Relaxed);
+    }else{
+        if shadow.try_reserve_exact(size).is_err(){
+            POOL_RESERVE_FAILURES.fetch_add(1,Ordering::Relaxed);
+            recycle_shadow(shadow);
+            return None;
+        }
+        POOL_GROWS.fetch_add(1,Ordering::Relaxed);
+    }
+    // All bytes are initialized by the full copy before exposing len;
+    // avoid zero-filling them on every draw only to overwrite the zeros.
+    debug_assert_eq!(shadow.len(),0);
     ptr::copy_nonoverlapping(vertices.cast::<u8>(),shadow.as_mut_ptr(),size);
+    shadow.set_len(size);
     let mut first:Option<(f32,f32)>=None;
     for i in 0..count as usize {
         let yptr=shadow.as_mut_ptr().add(i*stride+4).cast::<f32>();
@@ -168,6 +213,7 @@ pub(super) unsafe fn shadow_y_corrected(
             if n<=3 {
                 crate::log("PROJECTED-Y43: rejected nonfinite/out-of-bounds projected Y; original draw forwarded");
             }
+            recycle_shadow(shadow);
             return None;
         };
         ptr::write_unaligned(yptr,target);
@@ -186,11 +232,15 @@ pub(super) unsafe fn shadow_y_corrected(
             "PROJECTED-Y43: enabled=1 draw={} primitive_type={primitive} \
              call={number} mode={}x{} factor={factor:.6} fvf={fvf:#010x} \
              stride={stride} vertices={count} sample_y={before:.3} corrected_y={after:.3} \
-             corrected_categories={:#04x} x_z_rhw_color_uv_unchanged=true \
+             corrected_categories={:#04x} scratch_reuses={} scratch_grows={} \
+             reserve_failures={} x_z_rhw_color_uv_unchanged=true \
              source_vertices_unchanged=true experiment_only=true",
             if indexed{"DrawIndexedPrimitive"}else{"DrawPrimitive"},
             mode.0,mode.1,
-            PATCHED_CATEGORIES.load(Ordering::Relaxed)
+            PATCHED_CATEGORIES.load(Ordering::Relaxed),
+            POOL_REUSE.load(Ordering::Relaxed),
+            POOL_GROWS.load(Ordering::Relaxed),
+            POOL_RESERVE_FAILURES.load(Ordering::Relaxed)
         ));
     }
     Some(shadow)
@@ -257,6 +307,34 @@ mod tests{
         assert_eq!(all.iter().sum::<usize>(),63);
         assert_eq!(all.into_iter().fold(0,|mask,v|mask|v),63);
     }
+    #[test]
+    fn reusable_shadow_keeps_capacity_and_not_owned_vertex_length(){
+        let mut first=acquire_scratch();
+        assert_eq!(first.len(),0);
+        first.try_reserve_exact(512).unwrap();
+        let cap=first.capacity();
+        first.resize(512,0x5a);
+        recycle_shadow(first);
+        let next=acquire_scratch();
+        assert_eq!(next.len(),0);
+        assert!(next.capacity()>=cap);
+        recycle_shadow(next);
+    }
+
+    #[test]
+    fn nested_reentrant_draw_buffers_are_distinct(){
+        let mut outer=acquire_scratch();
+        outer.try_reserve_exact(1024).unwrap();
+        let outer_pointer=outer.as_ptr();
+        // The outer Vec is in the caller's scope. A nested draw acquires
+        // an independent buffer while the original call is still active.
+        let mut inner=acquire_scratch();
+        inner.try_reserve_exact(1024).unwrap();
+        assert_ne!(outer_pointer,inner.as_ptr());
+        recycle_shadow(inner);
+        recycle_shadow(outer);
+    }
+
     #[test]
     fn win32_memory_basic_info_structure_matches_pe32_runtime(){
         #[cfg(target_pointer_width="32")]
