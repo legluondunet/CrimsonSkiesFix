@@ -63,8 +63,8 @@ jobs:
         run: |
           $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
           $version=(& $exe --version) -join "`n"
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\\.1\\.0-rc\\.1' -or
-              $version -notmatch 'runtime=winmm\\.dll EXPERIMENTAL ORDINAL-BRIDGE-TEST') {
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\.1\.0-rc\.1' -or
+              $version -notmatch 'runtime=winmm\.dll EXPERIMENTAL ORDINAL-BRIDGE-TEST') {
             throw "Wrong EXE backend/variant: $version"
           }
           $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
