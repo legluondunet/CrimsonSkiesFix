@@ -79,8 +79,10 @@ fn classify_path(renderer:Option<u32>,replicate:Option<u32>)->&'static str{
 }
 
 pub(super) unsafe fn sample(mode:(u32,u32),authenticated:bool){
+    // The verified virtual Surface4 gameplay Flip exists under both
+    // native Windows and Wine/Proton; keep this diagnostic cross-platform.
+    // The two fixed addresses belong to the same SHA-locked 1.02 EXE.
     if !authenticated || !crate::cfg().log_enabled ||
-        !crate::diagnostics::is_native_windows() ||
         mode.0<960 || mode.1<600 ||
         (mode.0 as u64)*3<=(mode.1 as u64)*4 {return;}
     let n=SAMPLES.fetch_add(1,Ordering::Relaxed)+1;
@@ -93,9 +95,10 @@ pub(super) unsafe fn sample(mode:(u32,u32),authenticated:bool){
     crate::log(&format!(
         "HUD-RENDER-PATH: sample={n} mode={}x{} renderer_mode={renderer:?} \
          replicate={replicate:?} branch={selected} \
-         legacy_canvas_640x480_executed_possible={} read_only=true",
+         legacy_canvas_640x480_executed_possible={} read_only=true platform_native_windows={}",
         mode.0,mode.1,
-        selected=="legacy-replicate-on-canvas-setter"
+        selected=="legacy-replicate-on-canvas-setter",
+        crate::diagnostics::is_native_windows()
     ));
 }
 
