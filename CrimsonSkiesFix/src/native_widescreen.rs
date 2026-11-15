@@ -19,34 +19,22 @@ mod full_patch;
 mod aspect_reference_audit;
 
 #[cfg(feature="winmm-bootstrap")]
-#[path="hud_fov43_probe.rs"]
-mod hud_fov43_probe;
-
-#[cfg(feature="winmm-bootstrap")]
-#[path="hud_entity_y43_probe.rs"]
-mod hud_entity_y43_probe;
-
-#[cfg(feature="winmm-bootstrap")]
-#[path="hud_canvas43_probe.rs"]
-mod hud_canvas43_probe;
-
-#[cfg(feature="winmm-bootstrap")]
 #[path="hud_render_branch_audit.rs"]
 mod hud_render_branch_audit;
 
 #[cfg(feature="winmm-bootstrap")]
-#[path="camera_aspect_experiment.rs"]
-mod camera_aspect_experiment;
+#[path="camera_aspect_fix.rs"]
+mod camera_aspect_fix;
 
-// Only the authenticated virtual DD4 3D gameplay epoch may opt into
-// 16:9 or 16:10 aspect at the original software camera source.
+// Always correct the verified upstream camera during 3D widescreen scenes;
+// never modify the original 4:3 menu/movie path or unverified game modes.
 #[cfg(feature="winmm-bootstrap")]
 pub(crate) unsafe fn after_virtual_mode_camera_aspect(w:u32,h:u32,gameplay:bool){
-    camera_aspect_experiment::after_verified_mode(w,h,gameplay);
+    camera_aspect_fix::after_verified_mode(w,h,gameplay);
 }
 #[cfg(feature="winmm-bootstrap")]
 pub(crate) unsafe fn before_gameplay_scene_camera_aspect(){
-    camera_aspect_experiment::on_begin_scene();
+    camera_aspect_fix::on_begin_scene();
 }
 
 #[cfg(feature="winmm-bootstrap")]
@@ -96,12 +84,6 @@ pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     let _=EARLY_NATIVE_PATCH.set((w,h,result));
     #[cfg(feature="winmm-bootstrap")]
     audit_aspect_xrefs_once(result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_fov43_probe::apply(w,h,result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_entity_y43_probe::install(w,h,result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_canvas43_probe::install(w,h,result);
     crate::log(&format!(
         "WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor={}x{} result={result:?}",
         w,h
@@ -124,12 +106,6 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
     let result=full_patch::apply(w,h);
     #[cfg(feature="winmm-bootstrap")]
     audit_aspect_xrefs_once(result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_fov43_probe::apply(w,h,result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_entity_y43_probe::install(w,h,result);
-    #[cfg(feature="winmm-bootstrap")]
-    hud_canvas43_probe::install(w,h,result);
     result
 }
 
