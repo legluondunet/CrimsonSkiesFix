@@ -480,7 +480,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="winmm-installer") {
+        if cfg!(feature="winmm-ordinal-bridge-test") {
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL ORDINAL-BRIDGE-TEST", &COMMIT[..8]);
+        } else if cfg!(feature="winmm-installer") {
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL", &COMMIT[..8]);
         } else {
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
