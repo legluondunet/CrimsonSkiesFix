@@ -15,6 +15,7 @@ use std::{
     ffi::c_void,
     mem::{size_of,MaybeUninit},
     ptr,
+    sync::atomic::{AtomicUsize,Ordering},
 };
 const WRAPPER_GLOBAL:usize=0x0064_EF78;
 const EXE_IMAGE_BASE:usize=0x0040_0000;
@@ -22,6 +23,16 @@ const MEM_COMMIT:u32=0x1000;
 const PAGE_GUARD:u32=0x100;
 const PAGE_NOACCESS:u32=0x01;
 const MAX_CAMERA_VALUE:f32=1_000_000.0;
+static UNAVAILABLE_SAMPLES:AtomicUsize=AtomicUsize::new(0);
+fn unavailable(ordinal:usize,when:&str,mode:(u32,u32),reason:&str){
+    let n=UNAVAILABLE_SAMPLES.fetch_add(1,Ordering::Relaxed)+1;
+    if n<=6 {
+        crate::log(&format!(
+            "CAMERA-UPSTREAM: sample={ordinal} phase={when} mode={}x{} status=unavailable reason={reason} read_only=true",
+            mode.0,mode.1
+        ));
+    }
+}
 
 #[repr(C)]
 struct MemoryBasicInformation{
@@ -81,21 +92,29 @@ pub(super) unsafe fn sample(when:&str,ordinal:usize){
     if crate::native_widescreen::verified_launch_widescreen_dimensions()
        !=Some((w,h)) {return;}
     if GetModuleHandleW(ptr::null()) as usize!=EXE_IMAGE_BASE{return;}
-    let Some(wrapper)=u32_at(WRAPPER_GLOBAL).map(|n|n as usize)else{return;};
-    let Some(iface)=u32_at(wrapper).map(|n|n as usize)else{return;};
+    let Some(wrapper)=u32_at(WRAPPER_GLOBAL).map(|n|n as usize)else{
+        unavailable(ordinal,when,(w,h),"camera-wrapper-global-unreadable");
+        return;
+    };
+    let Some(iface)=u32_at(wrapper).map(|n|n as usize)else{
+        unavailable(ordinal,when,(w,h),"camera-wrapper-pointer-unreadable");
+        return;
+    };
     let object_type=u32_at(iface.saturating_add(0x34));
     if object_type!=Some(1){
-        if ordinal<=4 {
-            crate::log(&format!(
-                "CAMERA-UPSTREAM: sample={ordinal} phase={when} mode={w}x{h} object_type={object_type:?} camera_state=unavailable read_only=true"
-            ));
-        }
+        unavailable(ordinal,when,(w,h),"unexpected-camera-object-type");
         return;
     }
     let Some(camera)=u32_at(iface.saturating_add(0x38))
-        .map(|n|n as usize)else{return;};
-    // Validate all 0x1DC bytes in a single page before field reads.
-    if !readable(camera,0x1dc){return;}
+        .map(|n|n as usize)else{
+        unavailable(ordinal,when,(w,h),"camera-backend-pointer-unreadable");
+        return;
+    };
+    // Validate all 0x1DC bytes in one readable region before field reads.
+    if !readable(camera,0x1dc){
+        unavailable(ordinal,when,(w,h),"camera-coefficient-region-unreadable");
+        return;
+    }
     let angle_x=f32_at(camera+0xe0);
     let angle_y=f32_at(camera+0xe4);
     let horizontal_div=f32_at(camera+0xe8);
