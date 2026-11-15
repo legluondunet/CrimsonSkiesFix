@@ -1,0 +1,71 @@
+name: WinMM-only CrimsonSkiesFix runtime candidate
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - '.github/workflows/winmm-runtime-candidate.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - '.github/workflows/winmm-runtime-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  winmm-runtime-x86:
+    runs-on: windows-latest
+    env:
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust i686 MSVC target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Test shared runtime in WinMM configuration
+        run: cargo test --manifest-path runtime-winmm/Cargo.toml --target i686-pc-windows-msvc
+      - name: Compile shared runtime into standalone x86 winmm.dll
+        run: cargo build --manifest-path runtime-winmm/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Independently verify PE32 WinMM exports
+        run: python runtime-winmm/tools/verify_runtime_exports.py runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Build standalone WinMM smoke host
+        run: cargo build --manifest-path winmm-prototype/Cargo.toml --release --target i686-pc-windows-msvc --bin winmm_loader_smoke
+      - name: Smoke-test real Windows native WinMM forwarding
+        shell: pwsh
+        run: |
+          $dll='runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll'
+          $hostExe='winmm-prototype/target/i686-pc-windows-msvc/release/winmm_loader_smoke.exe'
+          & $hostExe $dll
+          if ($LASTEXITCODE -ne 0) {throw 'WinMM-only runtime failed real x86 forwarding smoke'}
+      - name: Smoke-test real app-local WinMM static import and DllMain
+        shell: pwsh
+        run: |
+          $exe='runtime-winmm/target/i686-pc-windows-msvc/release/app_local_winmm_smoke.exe'
+          & $exe
+          if ($LASTEXITCODE -ne 0) {throw 'App-local WinMM static import / early bootstrap smoke failed'}
+      - name: Package WinMM-only game test candidate (NOT release)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'winmm-runtime-test' | Out-Null
+          Copy-Item 'runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll' 'winmm-runtime-test/winmm.dll'
+          Copy-Item 'runtime-winmm/README.md' 'winmm-runtime-test/README-EXPERIMENTAL.md'
+          $sha=(Get-FileHash 'winmm-runtime-test/winmm.dll' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'winmm-runtime-test/winmm.sha256'
+          if (Test-Path 'winmm-runtime-test/ddraw.dll') {throw 'Runtime package must not contain ddraw.dll'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-only-x86-EXPERIMENTAL
+          path: CrimsonSkiesFix/winmm-runtime-test/*
+          retention-days: 14
+          if-no-files-found: error
