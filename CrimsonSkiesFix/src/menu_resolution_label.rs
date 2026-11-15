@@ -167,14 +167,10 @@ unsafe extern "C" fn format_resolution(
             .and_then(|rect|rect.dimensions())
             .or_else(crate::win32::sole_primary_monitor_dimensions);
         let native=crate::diagnostics::is_native_windows();
-        // The previously validated native FOV/HUD patch captured physical
-        // desktop pixels BEFORE any real or virtual game-mode switch.
-        // Windows' current mode might now be 640x480 or 800x600; never
-        // mislabel that transient rendering mode as the desktop target.
-        // A failed or unsupported early EXE patch cannot authorize a guess.
-        let physical=if native{
-            crate::native_widescreen::verified_launch_widescreen_dimensions()
-        }else{None};
+        // Use the byte-verified in-memory 3D patch dimensions for 4:3;
+        // these are 1600x1200 on a 1920x1200 monitor, not 1920x1200.
+        // The original 640x480 GOS choice and 800x600 menu/movie are
+        // *not* the flight renderer resolution. Fail closed if unverified.
         effective_3d_label_size(
             crate::cfg().force_4_by_3,
             crate::native_widescreen::verified_launch_widescreen_dimensions(),
