@@ -122,7 +122,7 @@ fn active_video_page() -> bool {
     label_transaction_context(
         cfg.experimental_windowed_adapter,
         cfg.native_3d_widescreen,
-        cfg.desktop_resolution,
+        cfg.desktop_resolution && !cfg.force_4_by_3,
         crate::menu_scene::main_menu_was_seen(),
         crate::menu_video_probe::legacy_ui_active(),
         crate::menu_gos_event::preferences_transaction_active(),
