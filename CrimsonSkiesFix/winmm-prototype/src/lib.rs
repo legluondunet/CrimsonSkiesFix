@@ -362,3 +362,19 @@ _crimson_winmm_forward_13:
     jmp *%eax
 
 "#, resolve = sym resolve_target, options(att_syntax));
+
+#[cfg(all(test, feature = "winmm-ordinal-bridge"))]
+mod ordinal_telemetry_tests {
+    use super::{ordinal_resolution_snapshot, record_ordinal_resolution};
+
+    #[test]
+    fn first_resolution_bitmap_is_readable_without_system_dll_or_file_io() {
+        // The real resolver only records after resolving the native address.
+        // A synthetic successful resolution isolates the diagnostic bitset.
+        record_ordinal_resolution(999);
+        record_ordinal_resolution(999);
+        let snapshot=ordinal_resolution_snapshot();
+        assert!(snapshot.contains("999"), "missing recorded ordinal: {snapshot}");
+        assert!(snapshot.contains("resolved_unique="));
+    }
+}
