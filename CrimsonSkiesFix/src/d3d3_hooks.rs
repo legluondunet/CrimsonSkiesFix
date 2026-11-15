@@ -70,6 +70,9 @@ unsafe extern "system" fn d3d3_device_draw_primitive(
     );
     let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
     let hr=original(this,primitive,fvf,payload,vertex_count,flags);
+    // The COM call has completed; the driver no longer borrows this
+    // shadow pointer. Return capacity to this render thread's pool.
+    if let Some(buffer)=shadow{projected_y43_probe::recycle_shadow(buffer);}
     if cfg().log_enabled {
         let ordinal=PRIMITIVE_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
         d3d3_path_coverage::observe_plain(false,primitive,fvf,vertex_count);
@@ -92,6 +95,7 @@ unsafe extern "system" fn d3d3_device_draw_indexed_primitive(
     );
     let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
     let hr=original(this,primitive,fvf,payload,vertex_count,indices,index_count,flags);
+    if let Some(buffer)=shadow{projected_y43_probe::recycle_shadow(buffer);}
     if cfg().log_enabled {
         let ordinal=INDEXED_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
         d3d3_path_coverage::observe_plain(true,primitive,fvf,vertex_count);
