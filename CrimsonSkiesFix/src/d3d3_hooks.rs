@@ -4,150 +4,6 @@
 //! The game proxy still owns the shared COM registry and counters.
 use super::*;
 
-#[cfg(feature="winmm-bootstrap")]
-#[path="projected_y43_probe.rs"]
-mod projected_y43_probe;
-
-#[cfg(feature="winmm-bootstrap")]
-#[path="d3d3_path_coverage.rs"]
-mod d3d3_path_coverage;
-
-#[cfg(feature="winmm-bootstrap")]
-#[path="camera_upstream_audit.rs"]
-mod camera_upstream_audit;
-
-// Read-only projection telemetry for the WinMM 1.1 widescreen investigation.
-// Direct3DDevice3::GetTransform is vtable slot 26 in the DirectX 6 ABI;
-// D3DTRANSFORMSTATE_PROJECTION = 3. No matrix is written back to the game.
-#[cfg(feature="winmm-bootstrap")]
-const D3D3_DEVICE_GET_TRANSFORM:usize=26;
-#[cfg(feature="winmm-bootstrap")]
-const D3DTRANSFORMSTATE_PROJECTION:u32=3;
-#[cfg(feature="winmm-bootstrap")]
-static PROJECTION_SAMPLE_CALLS:AtomicUsize=AtomicUsize::new(0);
-
-#[cfg(feature="winmm-bootstrap")]
-const D3D3_DEVICE_DRAW_PRIMITIVE:usize=28;
-#[cfg(feature="winmm-bootstrap")]
-const D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE:usize=29;
-#[cfg(feature="winmm-bootstrap")]
-static PRIMITIVE_DRAW_CALLS:AtomicUsize=AtomicUsize::new(0);
-#[cfg(feature="winmm-bootstrap")]
-static INDEXED_DRAW_CALLS:AtomicUsize=AtomicUsize::new(0);
-
-// DirectX 6 D3DFVF_XYZRHW=0x004: vertices are already transformed into
-// screen/viewport space, so GetTransform(PROJECTION) need not affect them.
-// Classify only the FVF bits; never read or rewrite caller vertex memory.
-#[cfg(feature="winmm-bootstrap")]
-fn vertex_position_mode(fvf:u32)->&'static str{
-    match fvf & 0x0e {
-        0x04=>"XYZRHW-pretransformed-screen",
-        0x02=>"XYZ-model-space",
-        _=>"other-or-blended",
-    }
-}
-
-#[cfg(feature="winmm-bootstrap")]
-fn log_vertex_call(api:&str,ordinal:usize,primitive:u32,fvf:u32,vertices:u32,hr:Hr) {
-    // Repeated full per-primitive logs would overwhelm the game. Keep a
-    // bounded prefix and periodic samples over a long mission.
-    if ordinal<=12 || (ordinal<=32768 && ordinal%4096==0) {
-        log(&format!(
-            "D3D3-VERTEX: method={api} call={ordinal} primitive_type={primitive} fvf={fvf:#010x} position={} vertex_count={vertices} hr={hr:#010x}; observation only",
-            vertex_position_mode(fvf)));
-    }
-}
-
-#[cfg(feature="winmm-bootstrap")]
-unsafe extern "system" fn d3d3_device_draw_primitive(
-    this:*mut c_void,primitive:u32,fvf:u32,vertices:*const c_void,
-    vertex_count:u32,flags:u32
-)->Hr {
-    let Some(addr)=orig(this,D3D3_DEVICE_DRAW_PRIMITIVE) else{return DDERR_GENERIC};
-    type DrawPrimitive=unsafe extern "system" fn(*mut c_void,u32,u32,*const c_void,u32,u32)->Hr;
-    let original:DrawPrimitive=std::mem::transmute(addr);
-    // Only for an explicitly opted-in, authenticated in-game 3D epoch:
-    // clone pretransformed vertices and modify shadow Y, never user memory.
-    // The shadow remains alive across the original COM Draw call.
-    let shadow=projected_y43_probe::shadow_y_corrected(
-        primitive,fvf,vertices,vertex_count,false
-    );
-    let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
-    let hr=original(this,primitive,fvf,payload,vertex_count,flags);
-    // The COM call has completed; the driver no longer borrows this
-    // shadow pointer. Return capacity to this render thread's pool.
-    if let Some(buffer)=shadow{projected_y43_probe::recycle_shadow(buffer);}
-    if cfg().log_enabled {
-        let ordinal=PRIMITIVE_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
-        d3d3_path_coverage::observe_plain(false,primitive,fvf,vertex_count);
-        log_vertex_call("DrawPrimitive",ordinal,primitive,fvf,vertex_count,hr);
-    }
-    hr
-}
-
-#[cfg(feature="winmm-bootstrap")]
-unsafe extern "system" fn d3d3_device_draw_indexed_primitive(
-    this:*mut c_void,primitive:u32,fvf:u32,vertices:*const c_void,
-    vertex_count:u32,indices:*const u16,index_count:u32,flags:u32
-)->Hr {
-    let Some(addr)=orig(this,D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE) else{return DDERR_GENERIC};
-    type DrawIndexedPrimitive=unsafe extern "system" fn(
-        *mut c_void,u32,u32,*const c_void,u32,*const u16,u32,u32)->Hr;
-    let original:DrawIndexedPrimitive=std::mem::transmute(addr);
-    let shadow=projected_y43_probe::shadow_y_corrected(
-        primitive,fvf,vertices,vertex_count,true
-    );
-    let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
-    let hr=original(this,primitive,fvf,payload,vertex_count,indices,index_count,flags);
-    if let Some(buffer)=shadow{projected_y43_probe::recycle_shadow(buffer);}
-    if cfg().log_enabled {
-        let ordinal=INDEXED_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
-        d3d3_path_coverage::observe_plain(true,primitive,fvf,vertex_count);
-        log_vertex_call("DrawIndexedPrimitive",ordinal,primitive,fvf,vertex_count,hr);
-    }
-    hr
-}
-
-
-#[cfg(feature="winmm-bootstrap")]
-fn projection_aspect(m:&[f32;16])->Option<f32>{
-    let (horizontal,vertical)=(m[0],m[5]);
-    if !horizontal.is_finite() || !vertical.is_finite() ||
-       horizontal.abs()<0.00001 || vertical.abs()<0.00001 {return None;}
-    let aspect=(vertical/horizontal).abs();
-    (aspect.is_finite() && (0.2..=6.0).contains(&aspect)).then_some(aspect)
-}
-
-#[cfg(feature="winmm-bootstrap")]
-unsafe fn sample_game_projection(this:*mut c_void,when:&str){
-    if !cfg().log_enabled{return;}
-    let count=PROJECTION_SAMPLE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
-    d3d3_path_coverage::periodic_summary(count);
-    // Capture startup, menu, and subsequent gameplay, but cap the log.
-    if count>48 && !count.is_multiple_of(480){return;}
-    if count>7680{return;}
-    // The engine's x87 camera coefficients are more informative for
-    // pretransformed XYZ/RHW draws than D3D3's identity projection matrix.
-    // Authenticated read-only probe; no native COM object modified.
-    camera_upstream_audit::sample(when,count);
-    let slot=method(this,D3D3_DEVICE_GET_TRANSFORM);
-    if slot==0 {return;}
-    type GetTransform=unsafe extern "system" fn(*mut c_void,u32,*mut f32)->Hr;
-    let call:GetTransform=std::mem::transmute(slot);
-    let mut matrix=[0.0f32;16];
-    let hr=call(this,D3DTRANSFORMSTATE_PROJECTION,matrix.as_mut_ptr());
-    if hr<0 {
-        if count<=3 {log(&format!("D3D3-PROJECTION: sample={count} phase={when} GetTransform returned {:#010x}; observation only",hr as u32));}
-        return;
-    }
-    let aspect=projection_aspect(&matrix);
-    log(&format!(
-        "D3D3-PROJECTION: sample={count} phase={when} state=3 m11={:.6} m22={:.6} matrix_aspect={} target_screen_aspect=1.777778 draw_primitive_calls={} indexed_draw_calls={}; observation only, FOV not modified",
-        matrix[0],matrix[5],aspect.map(|v|format!("{v:.6}")).unwrap_or_else(||"unavailable".into()),
-        PRIMITIVE_DRAW_CALLS.load(Ordering::Relaxed),
-        INDEXED_DRAW_CALLS.load(Ordering::Relaxed)));
-}
-
 // Crimson Skies' IDirectDraw4::QueryInterface successfully requests
 // IID_IDirect3D3. This is the legacy Direct3D3 interface, NOT Direct3D9.
 // The attached device's legacy Direct3D3 interface is traced only after
@@ -157,13 +13,11 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
     roffile_terminator_fix::probe();
     let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
-    // Optional source aspect, before the next original 3D scene is drawn.
-    // The mode-aware function is fail-closed and skips 4:3 menus.
+    // Verified camera H/W fix: applied before game draws projected geometry.
+    // Independently disabled in forced 4:3 and unverified game epochs.
     #[cfg(feature="winmm-bootstrap")]
     crate::native_widescreen::before_gameplay_scene_camera_aspect();
     let hr=original(this);
-    #[cfg(feature="winmm-bootstrap")]
-    if hr>=0 {sample_game_projection(this,"BeginScene");}
     if cfg().log_enabled && hr>=0 {
         FIRST_D3D3_SCENE.call_once(||log(
             "D3D3-DEVICE: first successful BeginScene; game 3D rendering active"));
@@ -176,8 +30,6 @@ unsafe extern "system" fn d3d3_device_end_scene(this:*mut c_void)->Hr {
     let Some(addr)=orig(this,D3D3_DEVICE_END_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
     let hr=original(this);
-    #[cfg(feature="winmm-bootstrap")]
-    if hr>=0 {sample_game_projection(this,"EndScene");}
     if cfg().log_enabled && hr>=0 {
         sample_render_calls("D3D3.EndScene",&D3D3_END_EVENTS,&D3D3_END_START,&D3D3_END_WINDOW);
     }
@@ -227,19 +79,6 @@ unsafe fn observe_d3d3_device(device:*mut c_void){
     let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as *const () as usize);
     let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as *const () as usize);
     let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as *const () as usize);
-    #[cfg(feature="winmm-bootstrap")]
-    if cfg().log_enabled {
-        let draw=replace_method(device,D3D3_DEVICE_DRAW_PRIMITIVE,
-            d3d3_device_draw_primitive as *const () as usize);
-        let indexed=replace_method(device,D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE,
-            d3d3_device_draw_indexed_primitive as *const () as usize);
-        // Four additional DX6 vertex-buffer/strided entrypoints are
-        // strictly pass-through and only serve render-path coverage logs.
-        d3d3_path_coverage::install(device);
-        if D3D3_DEVICE_HOOK_TRACE_COUNT.load(Ordering::Relaxed)<12 {
-            log(&format!("D3D3-VERTEX: hooks DrawPrimitive={draw} DrawIndexedPrimitive={indexed} (pass-through read-only telemetry)"));
-        }
-    }
     if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!(
             "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
@@ -290,40 +129,6 @@ pub(super) unsafe fn observe_d3d3(object:*mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature="winmm-bootstrap")]
-    #[test]
-    fn draw_primitive_fvf_probe_is_read_only_and_abi_correct() {
-        assert_eq!(D3D3_DEVICE_DRAW_PRIMITIVE,28);
-        assert_eq!(D3D3_DEVICE_DRAW_INDEXED_PRIMITIVE,29);
-        assert_eq!(vertex_position_mode(0x004),"XYZRHW-pretransformed-screen");
-        assert_eq!(vertex_position_mode(0x144),"XYZRHW-pretransformed-screen");
-        assert_eq!(vertex_position_mode(0x002),"XYZ-model-space");
-        assert_eq!(vertex_position_mode(0x006),"other-or-blended");
-        let _:unsafe extern "system" fn(
-            *mut c_void,u32,u32,*const c_void,u32,u32)->Hr
-            =d3d3_device_draw_primitive;
-        let _:unsafe extern "system" fn(
-            *mut c_void,u32,u32,*const c_void,u32,*const u16,u32,u32)->Hr
-            =d3d3_device_draw_indexed_primitive;
-    }
-
-    #[cfg(feature="winmm-bootstrap")]
-    #[test]
-    fn projection_probe_reports_aspect_without_mutation() {
-        let mut matrix=[0.0f32;16];
-        matrix[0]=0.75;matrix[5]=1.0;
-        assert_eq!(projection_aspect(&matrix),Some(4.0/3.0));
-        matrix[0]=0.5625;
-        assert_eq!(projection_aspect(&matrix),Some(16.0/9.0));
-        matrix[0]=0.0;
-        assert_eq!(projection_aspect(&matrix),None);
-        matrix[0]=f32::NAN;
-        assert_eq!(projection_aspect(&matrix),None);
-        // Do not modify or hook SetTransform; GetTransform is read-only.
-        assert_eq!(D3D3_DEVICE_GET_TRANSFORM,26);
-        assert_eq!(D3DTRANSFORMSTATE_PROJECTION,3);
-    }
 
     #[test]
     fn callbacks_keep_original_win32_x86_abi() {
