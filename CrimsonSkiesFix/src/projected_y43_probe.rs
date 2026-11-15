@@ -63,6 +63,19 @@ static POOL_REUSE:AtomicUsize=AtomicUsize::new(0);
 static POOL_GROWS:AtomicUsize=AtomicUsize::new(0);
 static POOL_RESERVE_FAILURES:AtomicUsize=AtomicUsize::new(0);
 
+// Read-only A/B triage of the remaining distorted aim reticle, incomplete
+// objective indicators and black triangles while banking. An omitted draw
+// can leave contiguous geometry in a different Y coordinate system;
+// a post-clip vertex may also cross the hardware viewport boundary.
+// All counts remain purely diagnostic; NO vertex or clipping change.
+static NON_ELIGIBLE_FORMAT:AtomicUsize=AtomicUsize::new(0);
+static OVER_LIMIT_VERTICES:AtomicUsize=AtomicUsize::new(0);
+static UNREADABLE_VERTICES:AtomicUsize=AtomicUsize::new(0);
+static UNCORRECTED_NONFINITE:AtomicUsize=AtomicUsize::new(0);
+static MOVED_ABOVE_TOP:AtomicUsize=AtomicUsize::new(0);
+static MOVED_BELOW_BOTTOM:AtomicUsize=AtomicUsize::new(0);
+static EDGE_EXAMPLES:AtomicUsize=AtomicUsize::new(0);
+
 #[repr(C)]
 struct MemoryBasicInformation{
     base_address:*mut c_void,
@@ -112,6 +125,14 @@ fn eligible_stride(fvf:u32,primitive:u32,indexed:bool,count:u32)->Option<usize>{
         (false,FVF_TEX2,6) if count>=3=>Some(STRIDE_TEX2), // TEX2 TRIANGLEFAN
         _=>None
     }
+}
+
+fn vertical_viewport_exit(original:f32,corrected:f32,height:u32)->(bool,bool){
+    let h=height as f32;
+    // Only count verts that WERE on screen and become off screen due
+    // to our transformation. Does not label an already-offscreen point.
+    (original>=0.0 && original<=h && corrected<0.0,
+     original>=0.0 && original<=h && corrected>h)
 }
 
 fn category_bit(primitive:u32,fvf:u32,indexed:bool)->usize{
@@ -184,10 +205,30 @@ pub(super) fn recycle_shadow(mut buffer:Vec<u8>){
 pub(super) unsafe fn shadow_y_corrected(
     primitive:u32,fvf:u32,vertices:*const c_void,count:u32,indexed:bool
 )->Option<Vec<u8>>{
-    let stride=eligible_stride(fvf,primitive,indexed,count)?;
     let (mode,factor)=enabled_for_gameplay()?;
+    let Some(stride)=eligible_stride(fvf,primitive,indexed,count) else {
+        let over_limit=count>MAX_VERTICES;
+        let counter=if over_limit {&OVER_LIMIT_VERTICES}else{&NON_ELIGIBLE_FORMAT};
+        let n=counter.fetch_add(1,Ordering::Relaxed)+1;
+        if n<=5 {
+            crate::log(&format!(
+                "PROJECTED-Y43-SKIP: reason={} count={} indexed={} primitive_type={} fvf={fvf:#010x} vertices={} original_draw_unchanged=true",
+                if over_limit{"vertex-count-exceeds-2048"}else{"unsupported-FVF-or-topology"},
+                n,indexed,primitive,count
+            ));
+        }
+        return None;
+    };
     let size=(count as usize).checked_mul(stride)?;
-    if !readable_region(vertices,size){return None;}
+    if !readable_region(vertices,size) {
+        let n=UNREADABLE_VERTICES.fetch_add(1,Ordering::Relaxed)+1;
+        if n<=5 {
+            crate::log(&format!(
+                "PROJECTED-Y43-SKIP: reason=unreadable-input count={n} indexed={indexed} primitive_type={primitive} fvf={fvf:#010x} vertices={count} original_draw_unchanged=true"
+            ));
+        }
+        return None;
+    }
     let mut shadow=acquire_scratch();
     if shadow.capacity()>=size {
         POOL_REUSE.fetch_add(1,Ordering::Relaxed);
@@ -205,19 +246,46 @@ pub(super) unsafe fn shadow_y_corrected(
     ptr::copy_nonoverlapping(vertices.cast::<u8>(),shadow.as_mut_ptr(),size);
     shadow.set_len(size);
     let mut first:Option<(f32,f32)>=None;
+    let mut original_min=f32::INFINITY;
+    let mut original_max=f32::NEG_INFINITY;
+    let mut after_min=f32::INFINITY;
+    let mut after_max=f32::NEG_INFINITY;
+    let mut crosses_top=false;
+    let mut crosses_bottom=false;
     for i in 0..count as usize {
         let yptr=shadow.as_mut_ptr().add(i*stride+4).cast::<f32>();
         let source=ptr::read_unaligned(yptr);
         let Some(target)=y_at_screen_center(source,mode.1,factor)else{
             let n=REJECTS.fetch_add(1,Ordering::Relaxed)+1;
-            if n<=3 {
-                crate::log("PROJECTED-Y43: rejected nonfinite/out-of-bounds projected Y; original draw forwarded");
+            UNCORRECTED_NONFINITE.fetch_add(1,Ordering::Relaxed);
+            if n<=5 {
+                crate::log(&format!(
+                    "PROJECTED-Y43-SKIP: reason=invalid-projected-Y count={n} primitive_type={primitive} fvf={fvf:#010x} vertices={count} bad_y={source} original_draw_unchanged=true"
+                ));
             }
             recycle_shadow(shadow);
             return None;
         };
+        original_min=original_min.min(source);
+        original_max=original_max.max(source);
+        after_min=after_min.min(target);
+        after_max=after_max.max(target);
+        let (top,bottom)=vertical_viewport_exit(source,target,mode.1);
+        crosses_top|=top;
+        crosses_bottom|=bottom;
         ptr::write_unaligned(yptr,target);
         if first.is_none(){first=Some((source,target));}
+    }
+    if crosses_top || crosses_bottom{
+        if crosses_top {MOVED_ABOVE_TOP.fetch_add(1,Ordering::Relaxed);}
+        if crosses_bottom {MOVED_BELOW_BOTTOM.fetch_add(1,Ordering::Relaxed);}
+        let example=EDGE_EXAMPLES.fetch_add(1,Ordering::Relaxed)+1;
+        if example<=6{
+            crate::log(&format!(
+                "PROJECTED-Y43-EDGE: example={example} indexed={indexed} primitive_type={primitive} fvf={fvf:#010x} vertices={count} input_y=[{original_min:.2},{original_max:.2}] output_y=[{after_min:.2},{after_max:.2}] screen_y=[0,{}] moves_top={crosses_top} moves_bottom={crosses_bottom} analysis_only=true",
+                mode.1
+            ));
+        }
     }
     let number=if indexed{
         PATCHED_INDEXED.fetch_add(1,Ordering::Relaxed)+1
@@ -233,14 +301,21 @@ pub(super) unsafe fn shadow_y_corrected(
              call={number} mode={}x{} factor={factor:.6} fvf={fvf:#010x} \
              stride={stride} vertices={count} sample_y={before:.3} corrected_y={after:.3} \
              corrected_categories={:#04x} scratch_reuses={} scratch_grows={} \
-             reserve_failures={} x_z_rhw_color_uv_unchanged=true \
-             source_vertices_unchanged=true experiment_only=true",
+             reserve_failures={} skip_format={} skip_large={} skip_unreadable={} \
+             skip_invalid={} moved_top={} moved_bottom={} \
+             x_z_rhw_color_uv_unchanged=true source_vertices_unchanged=true experiment_only=true",
             if indexed{"DrawIndexedPrimitive"}else{"DrawPrimitive"},
             mode.0,mode.1,
             PATCHED_CATEGORIES.load(Ordering::Relaxed),
             POOL_REUSE.load(Ordering::Relaxed),
             POOL_GROWS.load(Ordering::Relaxed),
-            POOL_RESERVE_FAILURES.load(Ordering::Relaxed)
+            POOL_RESERVE_FAILURES.load(Ordering::Relaxed),
+            NON_ELIGIBLE_FORMAT.load(Ordering::Relaxed),
+            OVER_LIMIT_VERTICES.load(Ordering::Relaxed),
+            UNREADABLE_VERTICES.load(Ordering::Relaxed),
+            UNCORRECTED_NONFINITE.load(Ordering::Relaxed),
+            MOVED_ABOVE_TOP.load(Ordering::Relaxed),
+            MOVED_BELOW_BOTTOM.load(Ordering::Relaxed)
         ));
     }
     Some(shadow)
@@ -306,6 +381,14 @@ mod tests{
         ];
         assert_eq!(all.iter().sum::<usize>(),63);
         assert_eq!(all.into_iter().fold(0,|mask,v|mask|v),63);
+    }
+    #[test]
+    fn viewport_exit_diagnosis_counts_only_new_crossings(){
+        assert_eq!(vertical_viewport_exit(0.0,-180.0,1080),(true,false));
+        assert_eq!(vertical_viewport_exit(1080.0,1260.0,1080),(false,true));
+        assert_eq!(vertical_viewport_exit(-15.0,-200.0,1080),(false,false));
+        assert_eq!(vertical_viewport_exit(540.0,540.0,1080),(false,false));
+        assert_eq!(vertical_viewport_exit(100.0,40.0,1080),(false,false));
     }
     #[test]
     fn reusable_shadow_keeps_capacity_and_not_owned_vertex_length(){
