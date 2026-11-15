@@ -38,9 +38,8 @@ fn main(){
         // The shared Rust runtime also exports these two no_mangle symbols.
         // Assign explicit high ordinals; otherwise the linker silently places
         // them in the numeric-only region/gap at the first free number.
-        generated.push_str(
-            "    CrimsonSkiesFixBootstrapStatus=CrimsonSkiesFixBootstrapStatus @2233\\n\\
-             DllMain=DllMain @2234\\n");
+        generated.push_str("    CrimsonSkiesFixBootstrapStatus=CrimsonSkiesFixBootstrapStatus @2233\n");
+        generated.push_str("    DllMain=DllMain @2234\n");
         let mut assembly=String::from("    .text\n");
         for number in 1..=MAX_ORDINAL {
             generated.push_str(&format!(
