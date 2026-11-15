@@ -86,7 +86,9 @@ fn ratio(a:Option<f32>,b:Option<f32>)->Option<f32>{
 }
 pub(super) unsafe fn sample(when:&str,ordinal:usize){
     // Only called at already-bounded D3D3 projection telemetry samples.
-    if !crate::cfg().log_enabled || !crate::cfg().experimental_projected_y43_probe{return;}
+    if !crate::cfg().log_enabled ||
+       !(crate::cfg().experimental_projected_y43_probe ||
+         crate::cfg().experimental_upstream_aspect_probe){return;}
     let Some((w,h))=crate::in_game_adapter::active_verified_widescreen_gameplay_raster()
         else{return;};
     if crate::native_widescreen::verified_launch_widescreen_dimensions()
