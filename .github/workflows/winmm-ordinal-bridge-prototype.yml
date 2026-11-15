@@ -1,0 +1,73 @@
+name: Experimental WinMM ordinal-neutral x86 bridge (NOT release)
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/winmm-ordinal-bridge-prototype.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/runtime-winmm/**'
+      - 'CrimsonSkiesFix/winmm-prototype/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/winmm-ordinal-bridge-prototype.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ordinal-bridge-x86:
+    name: Same-ordinal provider-forwarding smoke (Windows i386)
+    runs-on: windows-latest
+    env:
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust i686 MSVC target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Test isolated ordinal bridge feature
+        run: cargo test --manifest-path runtime-winmm/Cargo.toml --target i686-pc-windows-msvc --features winmm-ordinal-bridge
+      - name: Build strictly opt-in WinMM ordinal-bridge DLL
+        run: cargo build --manifest-path runtime-winmm/Cargo.toml --release --target i686-pc-windows-msvc --features winmm-ordinal-bridge
+      - name: Verify x86 PE named and numeric export isolation
+        run: python runtime-winmm/tools/verify_ordinal_bridge_exports.py runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll --definitions runtime-winmm/src/winmm_full_exports.def
+      - name: Smoke-test native Windows x86 same-ordinal delegation
+        shell: pwsh
+        run: |
+          $dll=(Resolve-Path 'runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll').Path
+          $hostExe='runtime-winmm/target/i686-pc-windows-msvc/release/ordinal_bridge_smoke.exe'
+          & $hostExe $dll
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native WinMM ordinal delegation failed' }
+      - name: Smoke-test app-local named WinMM imports and loader status
+        shell: pwsh
+        run: |
+          $exe='runtime-winmm/target/i686-pc-windows-msvc/release/app_local_winmm_smoke.exe'
+          & $exe
+          if ($LASTEXITCODE -ne 0) { throw 'WinMM named imports or app-local bootstrap smoke failed' }
+      - name: Package ONLY the experimental bridge for offline A/B
+        shell: pwsh
+        run: |
+          $out='winmm-ordinal-bridge-test'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item 'runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll' "$out/winmm.dll"
+          Copy-Item 'runtime-winmm/README.md' "$out/README-WINMM-BACKGROUND.md"
+          Copy-Item 'runtime-winmm/tools/verify_ordinal_bridge_exports.py' "$out/verify_ordinal_bridge_exports.py"
+          $sha=(Get-FileHash "$out/winmm.dll" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content "$out/winmm.sha256"
+          'EXPERIMENTAL; ordinal bridge 1..1023 by-number, named at 2048+. NOT APPROVED for production/gameplay or the 1.1 installer.' | Set-Content "$out/NOT-RELEASE.txt"
+          if (Test-Path "$out/ddraw.dll") {throw 'Must not bundle ddraw.dll'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-ORDINAL-BRIDGE-X86-TEST-ONLY
+          path: CrimsonSkiesFix/winmm-ordinal-bridge-test/*
+          retention-days: 14
+          if-no-files-found: error
