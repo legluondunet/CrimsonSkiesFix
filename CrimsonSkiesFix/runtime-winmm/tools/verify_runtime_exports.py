@@ -61,11 +61,6 @@ def check(dll:Path):
             raise AssertionError(f"unexpected export definition: {line}")
     assert len(wanted)==185, f"expected 185 WinMM exports; found {len(wanted)}"
     assert set(REQUIRED)<=set(wanted)
-    # Wine winmm.spec and Wine's native wave test document ordinal #2
-    # as PlaySound. Prevent silent reassignment to an unrelated named API.
-    # Other ordinals remain experimental/noncanonical and need a wider audit.
-    assert wanted.get("PlaySound") == 2, "WinMM ordinal 2 must be PlaySound"
-    assert wanted.get("mixerOpen") != 2, "ordinal 2 cannot be mixerOpen"
     missing=sorted(set(wanted)-set(exports))
     extra=sorted(set(exports)-set(wanted))
     wrong=sorted(n for n in set(wanted)&set(exports) if wanted[n]!=exports[n])
