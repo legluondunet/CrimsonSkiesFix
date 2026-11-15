@@ -4,6 +4,10 @@
 //! The game proxy still owns the shared COM registry and counters.
 use super::*;
 
+#[cfg(feature="winmm-bootstrap")]
+#[path="projected_y43_probe.rs"]
+mod projected_y43_probe;
+
 // Read-only projection telemetry for the WinMM 1.1 widescreen investigation.
 // Direct3DDevice3::GetTransform is vtable slot 26 in the DirectX 6 ABI;
 // D3DTRANSFORMSTATE_PROJECTION = 3. No matrix is written back to the game.
@@ -54,7 +58,14 @@ unsafe extern "system" fn d3d3_device_draw_primitive(
     let Some(addr)=orig(this,D3D3_DEVICE_DRAW_PRIMITIVE) else{return DDERR_GENERIC};
     type DrawPrimitive=unsafe extern "system" fn(*mut c_void,u32,u32,*const c_void,u32,u32)->Hr;
     let original:DrawPrimitive=std::mem::transmute(addr);
-    let hr=original(this,primitive,fvf,vertices,vertex_count,flags);
+    // Only for an explicitly opted-in, authenticated in-game 3D epoch:
+    // clone pretransformed vertices and modify shadow Y, never user memory.
+    // The shadow remains alive across the original COM Draw call.
+    let shadow=projected_y43_probe::shadow_y_corrected(
+        primitive,fvf,vertices,vertex_count,false
+    );
+    let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
+    let hr=original(this,primitive,fvf,payload,vertex_count,flags);
     if cfg().log_enabled {
         let ordinal=PRIMITIVE_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
         log_vertex_call("DrawPrimitive",ordinal,primitive,fvf,vertex_count,hr);
@@ -71,7 +82,11 @@ unsafe extern "system" fn d3d3_device_draw_indexed_primitive(
     type DrawIndexedPrimitive=unsafe extern "system" fn(
         *mut c_void,u32,u32,*const c_void,u32,*const u16,u32,u32)->Hr;
     let original:DrawIndexedPrimitive=std::mem::transmute(addr);
-    let hr=original(this,primitive,fvf,vertices,vertex_count,indices,index_count,flags);
+    let shadow=projected_y43_probe::shadow_y_corrected(
+        primitive,fvf,vertices,vertex_count,true
+    );
+    let payload=shadow.as_ref().map_or(vertices,|copy|copy.as_ptr().cast::<c_void>());
+    let hr=original(this,primitive,fvf,payload,vertex_count,indices,index_count,flags);
     if cfg().log_enabled {
         let ordinal=INDEXED_DRAW_CALLS.fetch_add(1,Ordering::Relaxed)+1;
         log_vertex_call("DrawIndexedPrimitive",ordinal,primitive,fvf,vertex_count,hr);
