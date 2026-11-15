@@ -12,6 +12,10 @@ mod projected_y43_probe;
 #[path="d3d3_path_coverage.rs"]
 mod d3d3_path_coverage;
 
+#[cfg(feature="winmm-bootstrap")]
+#[path="camera_upstream_audit.rs"]
+mod camera_upstream_audit;
+
 // Read-only projection telemetry for the WinMM 1.1 widescreen investigation.
 // Direct3DDevice3::GetTransform is vtable slot 26 in the DirectX 6 ABI;
 // D3DTRANSFORMSTATE_PROJECTION = 3. No matrix is written back to the game.
@@ -122,6 +126,10 @@ unsafe fn sample_game_projection(this:*mut c_void,when:&str){
     // Capture startup, menu, and subsequent gameplay, but cap the log.
     if count>48 && !count.is_multiple_of(480){return;}
     if count>7680{return;}
+    // The engine's x87 camera coefficients are more informative for
+    // pretransformed XYZ/RHW draws than D3D3's identity projection matrix.
+    // Authenticated read-only probe; no native COM object modified.
+    camera_upstream_audit::sample(when,count);
     let slot=method(this,D3D3_DEVICE_GET_TRANSFORM);
     if slot==0 {return;}
     type GetTransform=unsafe extern "system" fn(*mut c_void,u32,*mut f32)->Hr;
