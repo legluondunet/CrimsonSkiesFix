@@ -25,6 +25,7 @@ jobs:
     env:
       CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-winmm/target/i686-pc-windows-msvc/release/winmm.dll
     defaults:
       run:
         working-directory: CrimsonSkiesFix
@@ -53,6 +54,36 @@ jobs:
           $exe='runtime-winmm/target/i686-pc-windows-msvc/release/app_local_winmm_smoke.exe'
           & $exe
           if ($LASTEXITCODE -ne 0) { throw 'WinMM named imports or app-local bootstrap smoke failed' }
+      - name: Unit-test isolated bridge installer
+        run: cargo test --manifest-path installer/Cargo.toml --target i686-pc-windows-msvc --features winmm-ordinal-bridge-test
+      - name: Build test-only standalone launcher embedding ordinal bridge DLL
+        run: cargo build --manifest-path installer/Cargo.toml --release --target i686-pc-windows-msvc --features winmm-ordinal-bridge-test
+      - name: Assert standalone test EXE identity and bundle
+        shell: pwsh
+        run: |
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $version=(& $exe --version) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '1\\.1\\.0-rc\\.1' -or
+              $version -notmatch 'runtime=winmm\\.dll EXPERIMENTAL ORDINAL-BRIDGE-TEST') {
+            throw "Wrong EXE backend/variant: $version"
+          }
+          $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $pe=[BitConverter]::ToInt32($bytes,0x3c)
+          if ([BitConverter]::ToUInt16($bytes,$pe+4) -ne 0x14c) {
+            throw 'Not PE32 i386 test installer'
+          }
+          $dir='winmm-ordinal-bridge-installer-test'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item $exe "$dir/CrimsonSkiesFix-WinMM-Ordinal-Bridge-TEST.exe"
+          Copy-Item 'runtime-winmm/README-ORDINAL-BRIDGE-TEST.md' "$dir/README-TEST-ONLY.md"
+          $sha=(Get-FileHash "$dir/CrimsonSkiesFix-WinMM-Ordinal-Bridge-TEST.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content "$dir/CrimsonSkiesFix-WinMM-Ordinal-Bridge-TEST.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-ORDINAL-BRIDGE-INSTALLER-X86-TEST-ONLY
+          path: CrimsonSkiesFix/winmm-ordinal-bridge-installer-test/*
+          retention-days: 14
+          if-no-files-found: error
       - name: Package ONLY the experimental bridge for offline A/B
         shell: pwsh
         run: |
