@@ -35,6 +35,21 @@ mod hud_canvas43_probe;
 mod hud_render_branch_audit;
 
 #[cfg(feature="winmm-bootstrap")]
+#[path="camera_aspect_experiment.rs"]
+mod camera_aspect_experiment;
+
+// Only the authenticated virtual DD4 3D gameplay epoch may opt into
+// 16:9 or 16:10 aspect at the original software camera source.
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) unsafe fn after_virtual_mode_camera_aspect(w:u32,h:u32,gameplay:bool){
+    camera_aspect_experiment::after_verified_mode(w,h,gameplay);
+}
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) unsafe fn before_gameplay_scene_camera_aspect(){
+    camera_aspect_experiment::on_begin_scene();
+}
+
+#[cfg(feature="winmm-bootstrap")]
 pub(crate) fn sample_hud_render_branch_on_game_flip(w:u32,h:u32){
     let authenticated=verified_launch_widescreen_dimensions().is_some();
     unsafe{hud_render_branch_audit::sample((w,h),authenticated);}
