@@ -569,7 +569,10 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     // This is independent of debug logging and never mutates the mode table.
     static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
     GOS_RESOLUTION_LABEL_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen &&
+           cfg().desktop_resolution && !cfg().force_4_by_3 {
+            // Forced 4:3 must expose the game's real original 640x480
+            // choice, not the physical monitor pixels used by letterboxing.
             log("WINDOWED-DIAG: menu_resolution_label hook install begin");
             let installed=unsafe{menu_resolution_label::install()};
             log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
