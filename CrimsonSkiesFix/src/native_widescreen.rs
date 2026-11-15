@@ -12,6 +12,47 @@ pub unsafe fn suppress_video_selector()->bool{startup_selector::apply()}
 #[path="native_widescreen_full.rs"]
 mod full_patch;
 
+// Static x86 operand reference scan; debug-log-only WinMM diagnosis.
+// Does not modify the verified image or hook any game entrypoint.
+#[cfg(feature="winmm-bootstrap")]
+#[path="aspect_reference_audit.rs"]
+mod aspect_reference_audit;
+
+#[cfg(feature="winmm-bootstrap")]
+#[path="hud_render_branch_audit.rs"]
+mod hud_render_branch_audit;
+
+#[cfg(feature="winmm-bootstrap")]
+#[path="camera_aspect_fix.rs"]
+mod camera_aspect_fix;
+
+// Always correct the verified upstream camera during 3D widescreen scenes;
+// never modify the original 4:3 menu/movie path or unverified game modes.
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) unsafe fn after_virtual_mode_camera_aspect(w:u32,h:u32,gameplay:bool){
+    camera_aspect_fix::after_verified_mode(w,h,gameplay);
+}
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) unsafe fn before_gameplay_scene_camera_aspect(){
+    camera_aspect_fix::on_begin_scene();
+}
+
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) fn sample_hud_render_branch_on_game_flip(w:u32,h:u32){
+    let authenticated=verified_launch_widescreen_dimensions().is_some();
+    unsafe{hud_render_branch_audit::sample((w,h),authenticated);}
+}
+
+#[cfg(feature="winmm-bootstrap")]
+fn audit_aspect_xrefs_once(result:PatchResult){
+    if !crate::cfg().log_enabled ||
+       !matches!(result,PatchResult::Patched|PatchResult::AlreadyNative){
+        return;
+    }
+    static ONCE:std::sync::Once=std::sync::Once::new();
+    ONCE.call_once(||unsafe{aspect_reference_audit::audit_verified_loaded_exe()});
+}
+
 use std::sync::OnceLock;
 
 // The historical prepatched EXE had the FOV/HUD code present when the
@@ -21,12 +62,28 @@ use std::sync::OnceLock;
 // before DirectDraw setup, never in DllMain. Defer on multi-monitor hosts.
 static EARLY_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
 
+// The game can switch the actual monitor to 640x480/800x600 while in
+// Preferences, even though its native target was captured at first DDRAW use.
+// Share the byte-verified, frozen launch resolution with the resolution text
+// formatter. Never re-read a transient current display mode for that label.
+fn confirmed_early_pixels(entry:Option<(u32,u32,PatchResult)>)->Option<(u32,u32)>{
+    match entry {
+        Some((w,h,PatchResult::Patched|PatchResult::AlreadyNative))=>Some((w,h)),
+        _=>None,
+    }
+}
+pub fn verified_launch_widescreen_dimensions()->Option<(u32,u32)>{
+    confirmed_early_pixels(EARLY_NATIVE_PATCH.get().copied())
+}
+
 pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
     if EARLY_NATIVE_PATCH.get().is_some(){return;}
     // apply() itself verifies exact PE headers and every original byte,
     // and performs fail-closed memory protection and rollback.
     let result=full_patch::apply(w,h);
     let _=EARLY_NATIVE_PATCH.set((w,h,result));
+    #[cfg(feature="winmm-bootstrap")]
+    audit_aspect_xrefs_once(result);
     crate::log(&format!(
         "WINDOWED-WIDE: early DirectDraw native FOV/HUD patch monitor={}x{} result={result:?}",
         w,h
@@ -46,7 +103,10 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
         return result; // NEVER apply a second time to already-patched bytes.
     }
     // Multi-monitor fallback retains the previous, late HWND-specific path.
-    full_patch::apply(w,h)
+    let result=full_patch::apply(w,h);
+    #[cfg(feature="winmm-bootstrap")]
+    audit_aspect_xrefs_once(result);
+    result
 }
 
 const IMAGE_BASE:usize=0x0040_0000;
@@ -85,6 +145,18 @@ pub enum PatchResult{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn frozen_native_pixels_require_authenticated_successful_patch(){
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::Patched))),
+                   Some((1920,1200)));
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::AlreadyNative))),
+                   Some((1920,1200)));
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::UnsupportedExecutable))),
+                   None);
+        assert_eq!(confirmed_early_pixels(Some((1920,1200,PatchResult::InvalidMonitor))),None);
+        assert_eq!(confirmed_early_pixels(None),None);
+    }
+
     #[test]
     fn valid_landscape_resolution_bounds(){
         for (w,h) in [(1280,720),(1680,1050),(1920,1080),(1920,1200),

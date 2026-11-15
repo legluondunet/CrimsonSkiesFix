@@ -752,6 +752,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                         "NATIVE-MENU-MOUSE: opt-in refused: {error}; original mouse messages preserved")),
                 }
             }
+            // A/B: update original EXE H/W global ONLY after the virtual
+            // native DD4 graph and game-owned HWND have been validated.
+            // Never affects original 4:3 menus, and disabled by default.
+            #[cfg(feature="winmm-bootstrap")]
+            crate::native_widescreen::after_virtual_mode_camera_aspect(
+                w,h,native_3d && runtime.native_widescreen_ready
+            );
             log(&format!("WINDOWED-GAME: mode={}x{}x{} native HAL/Z32/virtual Surface4 ready; desktop unchanged; generation={}",
                 w,h,bpp,runtime.generation));
             // Check the actual Windows physical display state after every
@@ -1373,6 +1380,29 @@ pub unsafe fn create_surface(dd4:*mut c_void,d:*mut c_void,out:*mut *mut c_void,
     });
     Some(0)
 }
+/// Passive, fail-closed query for experimental gameplay-only projected
+/// coordinate diagnosis. Never infer the active raster from the monitor:
+/// the 800x600 menu/movie epoch uses the SAME physical output monitor.
+/// try_lock avoids reentrant COM deadlocks; a busy lock means NO probe.
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) fn active_verified_widescreen_gameplay_raster()->Option<(u32,u32)>{
+    let config=crate::cfg();
+    if config.force_4_by_3 || !config.native_3d_widescreen ||
+       !config.experimental_windowed_adapter {
+        return None;
+    }
+    let expected=crate::native_widescreen::verified_launch_widescreen_dimensions()?;
+    let state=RUNTIME.try_lock().ok()?;
+    let runtime=state.as_ref()?;
+    let epoch=runtime.epoch.as_ref()?;
+    if !runtime.exposed || !runtime.native_widescreen_ready ||
+       (epoch.mode.width,epoch.mode.height,epoch.mode.bpp)
+            !=(expected.0,expected.1,16) {
+        return None;
+    }
+    Some(expected)
+}
+
 /// Other DD2/DD7 SetDisplayMode and cooperative calls cannot silently switch
 /// this live graph back to exclusive after the game has seen virtual objects.
 pub fn must_block_other_mode_interface()->bool{

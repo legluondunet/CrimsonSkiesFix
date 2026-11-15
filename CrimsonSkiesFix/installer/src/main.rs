@@ -19,11 +19,17 @@ use std::{
 const GAME_EXE_HASH: &str =
     "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
 const GAME_EXE_SIZE: u64 = 2_580_480;
-const BUNDLED_DDRAW: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
+// The opt-in WinMM installer is compiled separately from the v1.0 DirectDraw
+// installer, with a distinct bundled runtime and version identity.
+const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
+const RUNTIME_DLL: &str = if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
+#[cfg(not(feature="winmm-installer"))]
 const README: &str = include_str!("../../README.md");
+#[cfg(feature="winmm-installer")]
+const README: &str = include_str!("../README-winmm-candidate.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
 const COMMIT: &str = env!("CRIMSONSKIESFIX_COMMIT");
 // Installer/diagnostic reports are never written into the DLL's gameplay log.
 const INSTALLER_LOG: &str = "CrimsonSkiesFix_installer.log";
@@ -97,15 +103,16 @@ fn validated_game_exe(game: &Path) -> Result<PathBuf, String> {
 
 fn verify(game: &Path) -> Result<PathBuf, String> {
     let exe = validated_game_exe(game)?;
-    let proxy = game.join("ddraw.dll");
+    ensure_no_local_ddraw(game)?;
+    let proxy = game.join(RUNTIME_DLL);
     if !regular(&proxy) {
-        return Err("CrimsonSkiesFix ddraw.dll missing or not a regular file".into());
+        return Err(format!("CrimsonSkiesFix {RUNTIME_DLL} missing or not a regular file"));
     }
-    let expected = sha256::hex(BUNDLED_DDRAW);
+    let expected = sha256::hex(BUNDLED_RUNTIME);
     let actual = digest(&proxy)?;
     if actual != expected {
         return Err(format!(
-            "installed ddraw.dll does not match this launcher: actual={actual} expected={expected}"
+            "installed {RUNTIME_DLL} does not match this launcher: actual={actual} expected={expected}"
         ));
     }
     Ok(exe)
@@ -126,7 +133,7 @@ fn ensure_new_text(path: &Path, text: &str) -> Result<(), String> {
 // Never overwrite the active INI. The proxy creates it on its first game launch.
 fn deploy_documentation(game: &Path) -> Result<(), String> {
     // Flat installed-game layout: never create CrimsonSkiesFix/CrimsonSkiesFix/.
-    // The proxy creates CrimsonSkiesFix.ini directly in this game directory.
+    // The runtime creates CrimsonSkiesFix.ini directly in this game directory.
     ensure_new_text(&game.join("README.md"), README)?;
     ensure_new_text(&game.join("LICENSE"), LICENSE)?;
     ensure_new_text(&game.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
@@ -134,10 +141,10 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     let build_info = format!(
         "Project=CrimsonSkiesFix\nVersion={VERSION}\nCommit={COMMIT}\n\
          LogIdentity=CrimsonSkiesFix {VERSION}-{} x86\nArchitecture=Windows-x86\n\
-         DllSha256={}\nDllSizeBytes={}\nSource={source}\n",
+         DllSha256={}\nDllSizeBytes={}\nRuntimeDll={RUNTIME_DLL}\nSource={source}\n",
         &COMMIT[..8],
-        sha256::hex(BUNDLED_DDRAW),
-        BUNDLED_DDRAW.len()
+        sha256::hex(BUNDLED_RUNTIME),
+        BUNDLED_RUNTIME.len()
     );
     let manifest = game.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
@@ -147,60 +154,87 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     fs::write(manifest, build_info).map_err(error)
 }
 
-// Stage first. Keep exactly one previous DLL backup; never discard it before
-// the new DLL has been written and verified. Refuse abandoned transactions.
-fn deploy_proxy(game: &Path) -> Result<(), String> {
-    let active = game.join("ddraw.dll");
-    let pending = game.join("ddraw.dll.installing");
-    let backup = game.join("ddraw.dll.bak");
-    let old_backup = game.join("ddraw.dll.bak.previous");
+// The experimental WinMM installer deliberately requires a clean graphics
+// provider slot. In particular, it does not guess whether an existing ddraw.dll
+// is our old proxy or a third-party wrapper. Never remove or overwrite it.
+fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
+    if cfg!(feature="winmm-installer") && any_entry(&game.join("ddraw.dll")) {
+        return Err("WinMM candidate: a local ddraw.dll already exists; leave it untouched, test on a separate copy without that DLL. Automatic migration and external wrappers are not yet enabled".into());
+    }
+    Ok(())
+}
+
+// Stage the verified new DLL first, then rotate exactly one .bak.
+// The former .bak is held temporarily for rollback and discarded only
+// after the replacement DLL is successfully published. This intentionally
+// accepts any pre-existing regular runtime DLL, regardless of provenance.
+// If active and .bak both exist, the older .bak is replaced by active.
+fn deploy_runtime(game:&Path)->Result<(),String>{
+    if cfg!(feature="winmm-installer") {
+        ensure_no_local_ddraw(game)?;
+    }
+    let active=game.join(RUNTIME_DLL);
+    let pending=game.join(format!("{RUNTIME_DLL}.installing"));
+    let backup=game.join(format!("{RUNTIME_DLL}.bak"));
+    let old_backup=game.join(format!("{RUNTIME_DLL}.bak.previous"));
     if any_entry(&pending) || any_entry(&old_backup) {
-        return Err("abandoned ddraw.dll transaction; inspect files manually".into());
+        return Err(format!("abandoned {RUNTIME_DLL} transaction; inspect files manually"));
     }
     if any_entry(&active) && !regular(&active) {
-        return Err("unsafe existing ddraw.dll".into());
+        return Err(format!("unsafe existing {RUNTIME_DLL}"));
     }
     if any_entry(&backup) && !regular(&backup) {
-        return Err("unsafe existing ddraw.dll.bak".into());
+        return Err(format!("unsafe existing {RUNTIME_DLL}.bak"));
     }
-    let expected = sha256::hex(BUNDLED_DDRAW);
-    if regular(&active) && digest(&active)? == expected {
+    let expected=sha256::hex(BUNDLED_RUNTIME);
+    let existing_digest=if regular(&active){Some(digest(&active)?)}else{None};
+    // Same bundled runtime: no copy and no rotation even if .bak exists.
+    if existing_digest.as_deref()==Some(expected.as_str()) {
         return Ok(());
     }
+    if cfg!(feature="winmm-installer") && existing_digest.is_some() {
+        // The user explicitly requested an unconditional one-backup rotation.
+        // Unknown but regular DLLs follow the same reversible transaction.
+        println!("WinMM candidate: replacing existing winmm.dll (regardless of SHA-256); keeping the previous active file as winmm.dll.bak");
+    }
     {
-        let mut f = OpenOptions::new().write(true).create_new(true)
+        let mut f=OpenOptions::new().write(true).create_new(true)
             .open(&pending).map_err(error)?;
-        f.write_all(BUNDLED_DDRAW).map_err(error)?;
+        f.write_all(BUNDLED_RUNTIME).map_err(error)?;
         f.sync_all().map_err(error)?;
     }
-    if digest(&pending)? != expected {
-        let _ = fs::remove_file(&pending);
-        return Err("staged ddraw.dll SHA-256 mismatch".into());
+    if digest(&pending)?!=expected {
+        let _=fs::remove_file(&pending);
+        return Err(format!("staged {RUNTIME_DLL} SHA-256 mismatch"));
     }
-    let backup_moved = if regular(&backup) {
-        if let Err(err) = fs::rename(&backup, &old_backup) {
-            let _ = fs::remove_file(&pending);
+    // Keep the older backup until the new active DLL is atomically
+    // published; rollback restores BOTH prior names if a rename fails.
+    // Without an active DLL there is nothing to back up. Keep an existing
+    // .bak in its place rather than deleting the only recovery copy.
+    let backup_moved=if regular(&backup) && regular(&active) {
+        if let Err(err)=fs::rename(&backup,&old_backup) {
+            let _=fs::remove_file(&pending);
             return Err(format!("cannot stage previous DLL backup: {err}"));
         }
         true
-    } else { false };
-    let active_moved = if regular(&active) {
-        if let Err(err) = fs::rename(&active, &backup) {
-            if backup_moved { let _ = fs::rename(&old_backup, &backup); }
-            let _ = fs::remove_file(&pending);
-            return Err(format!("cannot back up previous ddraw.dll: {err}"));
+    }else{false};
+    let active_moved=if regular(&active) {
+        if let Err(err)=fs::rename(&active,&backup) {
+            if backup_moved {let _=fs::rename(&old_backup,&backup);}
+            let _=fs::remove_file(&pending);
+            return Err(format!("cannot back up previous {RUNTIME_DLL}: {err}"));
         }
         true
-    } else { false };
-    if let Err(err) = fs::rename(&pending, &active) {
-        if active_moved { let _ = fs::rename(&backup, &active); }
-        if backup_moved { let _ = fs::rename(&old_backup, &backup); }
-        let _ = fs::remove_file(&pending);
-        return Err(format!("cannot publish bundled ddraw.dll: {err}"));
+    }else{false};
+    if let Err(err)=fs::rename(&pending,&active) {
+        if active_moved {let _=fs::rename(&backup,&active);}
+        if backup_moved {let _=fs::rename(&old_backup,&backup);}
+        let _=fs::remove_file(&pending);
+        return Err(format!("cannot publish bundled {RUNTIME_DLL}: {err}"));
     }
     if backup_moved {
-        if let Err(err) = fs::remove_file(&old_backup) {
-            eprintln!("Warning: old backup retained as {}: {err}", old_backup.display());
+        if let Err(err)=fs::remove_file(&old_backup) {
+            eprintln!("Warning: old backup retained as {}: {err}",old_backup.display());
         }
     }
     Ok(())
@@ -231,6 +265,7 @@ fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
 }
 
 fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
+    ensure_no_local_ddraw(game)?;
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
     let state=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
@@ -276,9 +311,9 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
             return Err(format!("missing or unsafe writable game directory: {folder}"));
         }
     }
-    let proxy=game.join("ddraw.dll");
-    if !regular(&proxy) || digest(&proxy)?!=sha256::hex(BUNDLED_DDRAW) {
-        return Err("installed ddraw.dll missing or differs from bundled verified DLL".into());
+    let proxy=game.join(RUNTIME_DLL);
+    if !regular(&proxy) || digest(&proxy)?!=sha256::hex(BUNDLED_RUNTIME) {
+        return Err(format!("installed {RUNTIME_DLL} missing or differs from bundled verified DLL"));
     }
     if !regular(&game.join("CrimsonSkiesFix.ini.example"))
         || !regular(&game.join("build-info.txt")) {
@@ -339,7 +374,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:&Path)->Result<(),String> {
     for name in ["SavedGames","Planes"] {
         fs::create_dir(stage.join(name)).map_err(error)?;
     }
-    deploy_proxy(&stage)?;
+    deploy_runtime(&stage)?;
     deploy_documentation(&stage)?;
     let receipt=format!(
         "Project=CrimsonSkiesFix\nEdition={}\n\
@@ -400,7 +435,7 @@ fn usage() {
          CrimsonSkiesFix.exe            verify, install from adjacent CD or repair, then play\n\
          CrimsonSkiesFix.exe --install-only   install/repair fully, do not launch the game\n\
          CrimsonSkiesFix.exe --launch-no-verify         start CRIMSON.EXE directly, no verification or repair\n\
-         CrimsonSkiesFix.exe --verify         verify installed EXE and embedded ddraw.dll\n\
+         CrimsonSkiesFix.exe --verify         verify installed EXE and embedded {RUNTIME_DLL}\n\
 
          CrimsonSkiesFix.exe --inspect image.iso   inspect unsupported CD, separate inspect log\n\
          CrimsonSkiesFix.exe --inspect image.cue [track.bin|track.img]\n\
@@ -409,7 +444,7 @@ fn usage() {
          CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         A full installation requires the approved 1.02 EXE, bundled ddraw.dll patch,\n\
+         A full installation requires the approved 1.02 EXE, bundled {RUNTIME_DLL} patch,\n\
          and official 1.02 updater BEFORE CD extraction starts.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
@@ -445,7 +480,11 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
+        if cfg!(feature="winmm-installer") {
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL", &COMMIT[..8]);
+        } else {
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
+        }
         return Ok(0);
     }
     let inspect=args.first().is_some_and(|arg|arg=="--inspect");
@@ -467,7 +506,7 @@ fn run() -> Result<i32, String> {
     if verbose && !(args.len()==1 && args[0]=="--launch-no-verify") {
         println!("VERBOSE: launcher={} game={} installed_exe={} runtime_dll={}",
             launcher.display(),game.display(),
-            regular(&game.join("CRIMSON.EXE")),regular(&game.join("ddraw.dll")));
+            regular(&game.join("CRIMSON.EXE")),regular(&game.join(RUNTIME_DLL)));
     }
     // Explicit bypass must not inspect, hash, repair, migrate or extract game
     // files or modify an installer report. OS-level process launch only.
@@ -482,7 +521,7 @@ fn run() -> Result<i32, String> {
             verify_installed_cd_assets(&game)?;
         }
         verify(&game)?;
-        println!("Verified: approved game EXE, game data and DirectDraw patch.");
+        println!("Verified: approved game EXE, game data and {RUNTIME_DLL} patch.");
         return Ok(0);
     }
     if args.len()==1 && args[0]=="--install-only" {
@@ -573,9 +612,130 @@ mod tests {
     }
     #[test]
     fn embedded_proxy_present() {
-        assert!(!BUNDLED_DDRAW.is_empty());
-        assert_eq!(sha256::hex(BUNDLED_DDRAW).len(), 64);
+        assert!(!BUNDLED_RUNTIME.is_empty());
+        assert_eq!(sha256::hex(BUNDLED_RUNTIME).len(), 64);
     }
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn standalone_winmm_install_is_non_destructive_and_idempotent() {
+        let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-winmm-install-test-{}-{id}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        assert_eq!(RUNTIME_DLL,"winmm.dll");
+        // The experimental candidate never creates or removes ddraw.dll.
+        deploy_runtime(&game).unwrap();
+        assert!(!any_entry(&game.join("ddraw.dll")));
+        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),
+                   sha256::hex(BUNDLED_RUNTIME));
+        deploy_runtime(&game).unwrap();
+        assert!(!any_entry(&game.join("winmm.dll.bak")));
+        assert!(!any_entry(&game.join("winmm.dll.installing")));
+        let foreign=game.join("ddraw.dll");
+        fs::write(&foreign,b"owner graphics wrapper").unwrap();
+        let winmm_before=digest(&game.join("winmm.dll")).unwrap();
+        assert!(deploy_runtime(&game).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(),b"owner graphics wrapper");
+        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),winmm_before);
+        fs::remove_dir_all(&game).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn unknown_active_and_old_backup_are_replaced_with_one_rollback_copy() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-unconditional-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let active=dir.join("winmm.dll");
+        let backup=dir.join("winmm.dll.bak");
+        let unknown=b"unknown third-party active winmm";
+        let old=b"older third-party backup";
+        fs::write(&active,unknown).unwrap();
+        fs::write(&backup,old).unwrap();
+        deploy_runtime(&dir).unwrap();
+        assert_eq!(fs::read(&active).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(&backup).unwrap(),unknown);
+        assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
+        assert!(!any_entry(&dir.join("winmm.dll.installing")));
+        // Launching the exact same build again must not rotate .bak.
+        deploy_runtime(&dir).unwrap();
+        assert_eq!(fs::read(&active).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(&backup).unwrap(),unknown);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn unknown_active_without_backup_creates_one_rollback_copy() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-new-backup-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let prior=b"unrecognized winmm binary";
+        fs::write(dir.join("winmm.dll"),prior).unwrap();
+        deploy_runtime(&dir).unwrap();
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),prior);
+        assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn no_active_dll_keeps_existing_backup_regardless_of_provenance() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-preserve-only-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let old=b"sole backup without active DLL";
+        fs::write(dir.join("winmm.dll.bak"),old).unwrap();
+        deploy_runtime(&dir).unwrap();
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),old);
+        assert!(!any_entry(&dir.join("winmm.dll.bak.previous")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn unsafe_backup_path_still_fails_without_touching_active_dll() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-unsafe-backup-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let old=b"unrecognized active DLL";
+        fs::write(dir.join("winmm.dll"),old).unwrap();
+        fs::create_dir(dir.join("winmm.dll.bak")).unwrap();
+        assert!(deploy_runtime(&dir).is_err());
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),old);
+        assert!(!any_entry(&dir.join("winmm.dll.installing")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature="winmm-installer")]
+    #[test]
+    fn abandoned_rotation_marker_blocks_update_without_data_loss() {
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-winmm-abandoned-{}-{n}",std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("winmm.dll"),b"active").unwrap();
+        fs::write(dir.join("winmm.dll.bak"),b"backup").unwrap();
+        fs::write(dir.join("winmm.dll.bak.previous"),b"interrupted").unwrap();
+        assert!(deploy_runtime(&dir).is_err());
+        assert_eq!(fs::read(dir.join("winmm.dll")).unwrap(),b"active");
+        assert_eq!(fs::read(dir.join("winmm.dll.bak")).unwrap(),b"backup");
+        assert_eq!(fs::read(dir.join("winmm.dll.bak.previous")).unwrap(),b"interrupted");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn installed_cd_requires_receipt_and_never_treats_empty_data_as_installed() {
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

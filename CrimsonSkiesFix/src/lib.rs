@@ -12,6 +12,8 @@ mod menu_gos_event;
 mod menu_ui_trace;
 mod menu_ui_list_probe;
 mod menu_resolution_label;
+#[cfg(feature="winmm-bootstrap")]
+mod native_winmm_resolution_text;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
@@ -224,7 +226,9 @@ static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature:
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 // Separate from the installer's persistent report: a game session owns a
-// fresh log. Never append gameplay records across separate game launches.
+// fresh log ONLY when [Debug] Log=1. Never append across launches, and
+// never truncate a prior diagnostic file for an ordinary Log=0 launch.
+fn should_open_game_session_log(config:&Config)->bool{config.log_enabled}
 fn fresh_game_session_log(path:&std::path::Path)->std::io::Result<File>{
     OpenOptions::new().create(true).write(true).truncate(true).open(path)
 }
@@ -275,11 +279,12 @@ fn cfg()->Config {
         let dpi_diagnostic=if parsed.native_dpi_aware && !parsed.directdraw_passthrough {
             Some(win32::enable_native_system_dpi_experiment())
         }else{None};
-        if parsed.log_enabled || parsed.experimental_windowed_adapter {
-            // The DLL owns its gameplay diagnostics exclusively. Every game
-            // session starts a fresh CrimsonSkiesFix.log, whether launched by
-            // the standalone installer or directly. Installer/repair records
-            // live independently in CrimsonSkiesFix_installer.log.
+        if should_open_game_session_log(&parsed) {
+            // Gameplay diagnostics are explicitly opt-in. In particular,
+            // the default-enabled borderless/windowed DD4 backend must NOT
+            // silently turn logging back on when [Debug] Log=0.
+            // Installer/repair records remain entirely independent in
+            // CrimsonSkiesFix_installer.log.
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
@@ -368,11 +373,24 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
     }
     if diagnostics::is_native_windows() && !config.directdraw_passthrough {
+        // Historical Windows #22 fix: the game may obtain its IDirectDraw4
+        // from dynamically resolved DDRAW!DirectDrawCreateEx, not from one
+        // of the two static DDRAW imports we intercepted in DllMain.
+        // When the runtime moved to WinMM, that dynamic provider lookup
+        // once again bypassed our hooks. Restore the original game's
+        // provider-specific resolution path without taking over ddraw.dll.
+        // This must run after exe_gate and even with Log=0.
+        #[cfg(feature="winmm-bootstrap")]
+        {
+            static NATIVE_WINMM_GETPROC_ONCE:Once=Once::new();
+            NATIVE_WINMM_GETPROC_ONCE.call_once(native_getproc_trace::install);
+        }
         if config.log_enabled {
             NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
-                // Diagnostics must never be required to activate an actual
-                // Windows-only compatibility fix.
                 native_video_imports::report();
+                // The v1.0 DirectDraw backend preserves its original
+                // diagnostic-only GetProcAddress observer unchanged.
+                #[cfg(not(feature="winmm-bootstrap"))]
                 native_getproc_trace::install();
             });
         }
@@ -554,10 +572,24 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     // This is independent of debug logging and never mutates the mode table.
     static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
     GOS_RESOLUTION_LABEL_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen &&
+           cfg().desktop_resolution {
+            // Both auto and 4:3 show the genuine *patched 3D raster*:
+            // auto=physical monitor; forced 4:3=1600x1200 on 1920x1200.
+            // The original GOS mode selection and the 800x600 movie/menu
+            // surfaces remain unchanged (display-text replacement only).
             log("WINDOWED-DIAG: menu_resolution_label hook install begin");
             let installed=unsafe{menu_resolution_label::install()};
             log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
+            // Windows WinMM regression: some GOS Preferences sessions display
+            // a cached 640x480 label without invoking the 0x845 formatter.
+            // Keep the original 0x845 hook. Intercept only the separately
+            // verified game text-assignment routine as a last-mile fallback.
+            #[cfg(feature="winmm-bootstrap")]
+            if diagnostics::is_native_windows(){
+                let text_bridge=unsafe{native_winmm_resolution_text::install()};
+                log(&format!("MENU-WINMM-TEXT: hook_available={text_bridge}"));
+            }
         }
     });
     // Passive GOS UI tracing is off with Log=0; unlike the verified
@@ -675,6 +707,19 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn log_zero_does_not_create_or_truncate_any_gameplay_log(){
+        let mut c=Config::default();
+        assert!(c.experimental_windowed_adapter);
+        assert!(!should_open_game_session_log(&c));
+        c.log_enabled=true;
+        assert!(should_open_game_session_log(&c));
+        c.log_enabled=false;
+        c.experimental_windowed_adapter=false;
+        assert!(!should_open_game_session_log(&c));
+        // Logging is a side effect, not a requirement for camera, DD4,
+        // or WinMM bootstrap: no other branch should open the file.
+    }
     #[test]
     fn fresh_game_log_does_not_erase_persistent_installer_report(){
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

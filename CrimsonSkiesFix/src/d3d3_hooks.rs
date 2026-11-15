@@ -13,6 +13,10 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
     roffile_terminator_fix::probe();
     let Some(addr)=orig(this,D3D3_DEVICE_BEGIN_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
+    // Verified camera H/W fix: applied before game draws projected geometry.
+    // Independently disabled in forced 4:3 and unverified game epochs.
+    #[cfg(feature="winmm-bootstrap")]
+    crate::native_widescreen::before_gameplay_scene_camera_aspect();
     let hr=original(this);
     if cfg().log_enabled && hr>=0 {
         FIRST_D3D3_SCENE.call_once(||log(
