@@ -525,6 +525,12 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     if crate::cfg().log_enabled {
         log(&format!("WINDOWED-DIAG: DD4 SetDisplayMode enter dd4={:p} requested={}x{}x{} refresh={} flags={:#x}",
             dd4,w,h,bpp,refresh,flags));
+        // Only in the nondefault ordinal-bridge prototype: read a lock-free
+        // first-use snapshot after DLL initialization, outside DllMain.
+        // A missing observation is not proof of no dynamic ordinal imports.
+        #[cfg(feature="winmm-ordinal-bridge")]
+        log(&format!("WINMM-ORDINAL-BRIDGE: stage=DD4-SetDisplayMode {}",
+            crate::winmm_proxy::ordinal_resolution_snapshot()));
     }
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{
