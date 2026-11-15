@@ -76,6 +76,7 @@ static MOVED_ABOVE_TOP:AtomicUsize=AtomicUsize::new(0);
 static MOVED_BELOW_BOTTOM:AtomicUsize=AtomicUsize::new(0);
 static EDGE_EXAMPLES:AtomicUsize=AtomicUsize::new(0);
 static CENTERED_2D_CANDIDATES:AtomicUsize=AtomicUsize::new(0);
+static GUARDED_RETICLE_QUADS:AtomicUsize=AtomicUsize::new(0);
 
 #[repr(C)]
 struct MemoryBasicInformation{
@@ -144,6 +145,42 @@ fn possibly_pre_aspect_corrected_overlay(
     (cx-w as f32*0.5).abs()<=40.0 &&
     (cy-h as f32*0.5).abs()<=40.0 &&
     (0.85..=1.18).contains(&ratio)
+}
+
+/// Optional narrow A/B guard based on the real 15 Nov Proton log:
+/// center-screen reticle was a 32x32 TEX1 quad *before* Y43, and the
+/// unconditional Y43 changed its ratio from 1.000 to 0.750.
+/// This is NOT a general "small overlay" exclusion. Only exact quad
+/// corners with original 32px metric, centered near the aim point,
+/// can bypass the Y43 transform. A false positive remains possible,
+/// hence an explicit INI switch OFF by default.
+fn measured_center_reticle_quad(
+    corners:&[(f32,f32);4],mode:(u32,u32)
+)->Option<(f32,f32,f32,f32)>{
+    if corners.iter().any(|(x,y)|!x.is_finite()||!y.is_finite()){return None;}
+    let (min_x,max_x)=corners.iter().fold((f32::INFINITY,f32::NEG_INFINITY),
+       |(lo,hi),(x,_)|(lo.min(*x),hi.max(*x)));
+    let (min_y,max_y)=corners.iter().fold((f32::INFINITY,f32::NEG_INFINITY),
+       |(lo,hi),(_,y)|(lo.min(*y),hi.max(*y)));
+    // A 32px quad appeared consistently in all ten first diagnostic hits.
+    // Keep exact dimensions independent of screen resolution (native HUD pixels).
+    if !(31.5..=32.5).contains(&(max_x-min_x)) ||
+       !(31.5..=32.5).contains(&(max_y-min_y)){return None;}
+    let cx=(min_x+max_x)*0.5;
+    let cy=(min_y+max_y)*0.5;
+    if (cx-mode.0 as f32*0.5).abs()>32.0 ||
+       (cy-mode.1 as f32*0.5).abs()>40.0{return None;}
+    let mut mask=0u8;
+    for (x,y) in corners{
+        let side=if (*x-min_x).abs()<=1.0{0}else
+            if (*x-max_x).abs()<=1.0{1}else{return None;};
+        let row=if (*y-min_y).abs()<=1.0{0}else
+            if (*y-max_y).abs()<=1.0{1}else{return None;};
+        let bit=1u8<<(row*2+side);
+        if mask&bit!=0{return None;}
+        mask|=bit;
+    }
+    (mask==0x0f).then_some((min_x,max_x,min_y,max_y))
 }
 
 fn vertical_viewport_exit(original:f32,corrected:f32,height:u32)->(bool,bool){
@@ -264,6 +301,31 @@ pub(super) unsafe fn shadow_y_corrected(
     debug_assert_eq!(shadow.len(),0);
     ptr::copy_nonoverlapping(vertices.cast::<u8>(),shadow.as_mut_ptr(),size);
     shadow.set_len(size);
+    // The source quad has already been checked as readable and copied.
+    // Disable Y43 ONLY for this exact known reticle A/B, forwarding
+    // original caller vertices to the original COM DrawPrimitive.
+    if crate::cfg().experimental_y43_reticle_guard &&
+       !indexed && primitive==6 && fvf==FVF_TEX1 && count==4{
+        let mut corners=[(0.0f32,0.0f32);4];
+        for (i,corner) in corners.iter_mut().enumerate(){
+            let vertex=shadow.as_ptr().add(i*stride);
+            let x=ptr::read_unaligned(vertex.cast::<f32>());
+            let y=ptr::read_unaligned(vertex.add(4).cast::<f32>());
+            *corner=(x,y);
+        }
+        if let Some((min_x,max_x,min_y,max_y))=
+            measured_center_reticle_quad(&corners,mode){
+            let n=GUARDED_RETICLE_QUADS.fetch_add(1,Ordering::Relaxed)+1;
+            if n<=8 || n%16384==0{
+                crate::log(&format!(
+                    "PROJECTED-Y43-RETICLE-GUARD: count={n} mode={}x{} bbox_x=[{min_x:.2},{max_x:.2}] bbox_y=[{min_y:.2},{max_y:.2}] source_ratio=1.0000 original_quad_forwarded=true y43_world_hud_unchanged=true experimental=true",
+                    mode.0,mode.1
+                ));
+            }
+            recycle_shadow(shadow);
+            return None;
+        }
+    }
     let mut first:Option<(f32,f32)>=None;
     let mut original_min=f32::INFINITY;
     let mut original_max=f32::NEG_INFINITY;
@@ -347,7 +409,7 @@ pub(super) unsafe fn shadow_y_corrected(
              corrected_categories={:#04x} scratch_reuses={} scratch_grows={} \
              reserve_failures={} skip_format={} skip_large={} skip_unreadable={} \
              skip_invalid={} moved_top={} moved_bottom={} \
-             centered_candidates={} x_z_rhw_color_uv_unchanged=true \
+             centered_candidates={} reticle_kept_round={} x_z_rhw_color_uv_unchanged=true \
              source_vertices_unchanged=true experiment_only=true",
             if indexed{"DrawIndexedPrimitive"}else{"DrawPrimitive"},
             mode.0,mode.1,
@@ -361,7 +423,8 @@ pub(super) unsafe fn shadow_y_corrected(
             UNCORRECTED_NONFINITE.load(Ordering::Relaxed),
             MOVED_ABOVE_TOP.load(Ordering::Relaxed),
             MOVED_BELOW_BOTTOM.load(Ordering::Relaxed),
-            CENTERED_2D_CANDIDATES.load(Ordering::Relaxed)
+            CENTERED_2D_CANDIDATES.load(Ordering::Relaxed),
+            GUARDED_RETICLE_QUADS.load(Ordering::Relaxed)
         ));
     }
     Some(shadow)
@@ -427,6 +490,20 @@ mod tests{
         ];
         assert_eq!(all.iter().sum::<usize>(),63);
         assert_eq!(all.into_iter().fold(0,|mask,v|mask|v),63);
+    }
+    #[test]
+    fn narrow_reticle_guard_accepts_observed_center_32px_quad_only(){
+        let quad=[(942.5,531.5),(974.5,531.5),(974.5,563.5),(942.5,563.5)];
+        assert_eq!(measured_center_reticle_quad(&quad,(1920,1080)),
+          Some((942.5,974.5,531.5,563.5)));
+        let displaced=[(100.0,100.0),(132.0,100.0),(132.0,132.0),(100.0,132.0)];
+        assert!(measured_center_reticle_quad(&displaced,(1920,1080)).is_none());
+        let stretched=[(942.5,531.5),(974.5,531.5),(974.5,574.17),(942.5,574.17)];
+        assert!(measured_center_reticle_quad(&stretched,(1920,1080)).is_none());
+        let not_rect=[(942.5,531.5),(974.5,531.5),(974.5,563.5),(958.5,563.5)];
+        assert!(measured_center_reticle_quad(&not_rect,(1920,1080)).is_none());
+        let duplicate=[quad[0],quad[0],quad[2],quad[3]];
+        assert!(measured_center_reticle_quad(&duplicate,(1920,1080)).is_none());
     }
     #[test]
     fn center_candidate_is_only_a_measurement_not_an_exclusion(){
