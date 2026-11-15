@@ -13,6 +13,8 @@ path = "src/main.rs"
 default = []
 # Separate v1.1 test installer; never enabled by the v1.0 release workflow.
 winmm-installer = []
+# Isolated test-only packaging of the ordinal bridge; never default or released.
+winmm-ordinal-bridge-test = ["winmm-installer"]
 
 [dependencies]
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
