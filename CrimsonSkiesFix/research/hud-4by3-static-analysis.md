@@ -428,3 +428,47 @@ Independent static disassembly of the user-supplied *decrypted official 1.02* PE
 - 0x004D70A0 validates a type-3 rendering object and reads two fields from its internal +0x38 pointer; its precise relation to clip-space is unproven. Do not claim the true clipping entrypoint is identified.
 
 Next research: find the viewport projection and polygon clipping agreement *before* the XYZ/RHW screen-coordinate stage using the verified camera properties. Keep the working 38-region FOV patch and optional reticle guard as-is; avoid ad hoc clipping, huge-coordinate clamps, or unverified changes to the game executable. Draft PR #36 remains unreleased.
+
+
+## 16 November 2026: original 4:3 versus corrected widescreen HUD rings
+
+After the split WinMM pipeline was repaired, the owner asked to eliminate
+the remaining **~2% ellipse** in five instrument bezels. We recovered
+two original user screenshots at the *same physical* 1920×1200 desktop
+resolution:
+
+- `image(20261114-194052).png` — native centered **1600×1200 4:3**
+  gameplay (original ring aspect reference).
+- `image(20261116-162001).png` — native **1920×1200 16:10**
+  gameplay with the verified in-memory FOV/HUD delta and split WinMM DD4
+  backend (same aircraft/HUD style but scene state not pixel-identical).
+
+Measured instrument bezel extents in the 16:10 capture are ~145×149,
+145×148, 147×150, 145×148 and 145×148 pixels, giving width/height
+ratios **0.973–0.980**. The previous true 4:3 A/B had approximately
+147×149/150 pixels (**0.980–0.987**). The raw images have notably similar
+left/right ring details at the same screen locations: dark bezel pixels
+overlap within a 10/255 channel tolerance for roughly **84–92%**
+of aligned dark bezel pixels for the five instruments (background,
+pointer positions, animation and JPEG/PNG sampling differ).
+
+**Interpretation:** the large native widescreen distortion from November
+14 (≈147×125 instead of ≈147×150) is gone; the residual 1–3% discrepancy
+is essentially already present in the true 4:3 source/reference. This
+comparison alone cannot distinguish minor artist-painted noncircularity
+from rendering quantization or a genuine remaining 1–2 px sprite scaling
+error. Both the 3D aircraft and the player's reticle are rendered through
+preprojected FVF=0x1C4 pathways, so a generic Y or X vertex rescale risks
+reintroducing the earlier 3D FOV, aircraft, reticle and clipped-screen
+regressions.
+
+**Do NOT** silently add a second global projection, DD4 Blt, postprocess,
+or HUD-canvas scale to "fix" these few pixels. If geometrically perfect
+circles are desired (beyond fidelity to the original 4:3 rendition),
+first prove which **SW_GAUGES instrument sprite/geometry draw calls** own
+the bezel vertices and isolate those assets. Limit any correction to
+the bezel, not its background, labels, airplane, whole HUD, menu or
+reticle. Keep this as an independent opt-in experiment before promotion;
+there is no supported gauge-specific correction in the present PR #44.
+
+This result **does not close issue #41's world-aircraft aspect investigation**.
