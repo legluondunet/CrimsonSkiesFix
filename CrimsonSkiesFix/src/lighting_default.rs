@@ -36,14 +36,14 @@ const ORIGINAL_LIGHTING_REGISTER:[u8;10]=[
 static OFFERED:AtomicBool=AtomicBool::new(false);
 
 fn marker_applied(ini:&str)->bool{
-    let mut section="";
+    let mut compatibility=false;
     for line in ini.lines(){
         let item=line.split([';','#']).next().unwrap_or("").trim();
         if item.starts_with('[')&&item.ends_with(']'){
-            section=&item[1..item.len()-1];
+            compatibility=item[1..item.len()-1].eq_ignore_ascii_case("Compatibility");
             continue;
         }
-        if section.eq_ignore_ascii_case("Compatibility"){
+        if compatibility{
             if let Some((name,value))=item.split_once('='){
                 if name.trim().eq_ignore_ascii_case(MARKER)&&value.trim()=="1"{
                     return true;
