@@ -103,6 +103,13 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native alias loader tests failed'}
           cargo build --manifest-path loader-alias/Cargo.toml --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Native alias loader build failed'}
+      - name: Enforce no WinMM/DDraw/core imports in the real CSFIX alias DLL
+        shell: pwsh
+        run: |
+          python loader-alias/tools/test_verify_alias_pe.py -v
+          if($LASTEXITCODE -ne 0){throw 'Alias dependency gate synthetic tests failed'}
+          python loader-alias/tools/verify_alias_pe.py loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll
+          if($LASTEXITCODE -ne 0){throw 'Actual compiled CSFIX.dll imported a forbidden multimedia provider'}
       - name: Verify production CSFIX alias loader fails closed on synthetic EXE
         shell: pwsh
         run: |
