@@ -197,11 +197,27 @@ point the proxy's first-use `system_winmm()` resolver may call
 moves the game-fix runtime LoadLibrary out of its **own** DllMain; it
 does **not** prove all export forwarding is loader-lock safe.
 
-Until there is a platform-safe provider strategy (or an explicit
-dependency inventory and an isolated DllMain reentrancy test on native
-Windows and Wine), keep this prototype **DRAFT / TEST ONLY**. A green
-synthetic LoadLibrary smoke on an already running thread is not such
-a proof. Do not merge or ship as 1.1 based on the export gate alone.
+The automated **Win32 dependent-DllMain regression** now builds a
+standalone third-party x86 DLL that links against `winmm.dll` and calls
+`timeGetTime` directly from its own `DLL_PROCESS_ATTACH`. A separate
+fixture variant calls the **171-name extra-export forwarding** path
+(`joyGetNumDevs`) *first*, then `timeGetTime`. Each variant is loaded
+in a **fresh process** with no prior WinMM module, using a watchdog
+(30 seconds on native Windows, 45 seconds on Wine32). The host verifies
+the callback ran, the exact local proxy export is present, and the
+synthetic non-game image remained unhooked.
+
+A passing result covers these specific first-use calls, loader-order
+conditions and CI platforms only. **It does not prove loader-lock
+safety in general**. Microsoft explicitly forbids `LoadLibraryW` from
+`DllMain` (directly or indirectly), and our lazy forwarding still
+may execute it while a dependent DLL holds that lock:
+https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-best-practices
+
+Keep this prototype **DRAFT / TEST ONLY** pending a provider strategy
+that is safe even under loader lock, a full dependency inventory, and
+repeated actual game tests. Neither a green synthetic DLL test nor a
+green ordinal fail-closed export gate authorizes a 1.1 release.
 
 ## Known limitations
 
