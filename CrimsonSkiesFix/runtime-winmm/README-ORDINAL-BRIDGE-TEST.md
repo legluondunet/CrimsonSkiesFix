@@ -61,6 +61,11 @@ WINMM-NAMED-ORDER: stage=DD4-SetDisplayMode first=timeGetTime first_before_ddraw
   before that hook; this is NOT proof that the OS loader lock was absent.
 - `attempted_unique` and `resolved_unique`: unique game-import names
   attempted versus successfully mapped to the native provider, not call totals.
+- A companion `WINMM-EXTRA-ORDER` line measures the **171
+  additional named exports** available to third-party DLLs; it captures
+  `first`, `first_before_ddraw`, attempted and resolved unique totals,
+  and the first eight names seen before DirectDraw. This is separate from
+  the 14 direct game imports above.
 - This does **not** detect all loads, WinMM calls that bypass our proxy,
   anonymous ordinal thunks, or loader lock ownership. The Linux/Windows
   loader may call an imported function in another DLL's `DllMain` before
