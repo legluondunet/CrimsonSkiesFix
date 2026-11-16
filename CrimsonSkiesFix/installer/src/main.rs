@@ -40,6 +40,14 @@ fn ensure_patch_dir(game:&Path)->Result<PathBuf,String>{
     }
     Ok(dir)
 }
+#[cfg(feature="winmm-split-install")]
+fn bundled_core_matches(game:&Path)->bool{
+    let core=game.join(PATCH_FOLDER).join(CORE_DLL);
+    regular(&core) && digest(&core).ok().as_deref()==Some(sha256::hex(BUNDLED_CORE).as_str())
+}
+#[cfg(not(feature="winmm-split-install"))]
+fn bundled_core_matches(_game:&Path)->bool{true}
+
 #[cfg(not(feature="winmm-installer"))]
 const README: &str = include_str!("../../README.md");
 #[cfg(feature="winmm-installer")]
@@ -349,9 +357,13 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     if !regular(&proxy) || digest(&proxy)?!=sha256::hex(BUNDLED_RUNTIME) {
         return Err(format!("installed {RUNTIME_DLL} missing or differs from bundled verified DLL"));
     }
-    if !regular(&game.join("CrimsonSkiesFix.ini.example"))
-        || !regular(&game.join("build-info.txt")) {
+    let docs=patch_dir(game);
+    if !regular(&docs.join("CrimsonSkiesFix.ini.example"))
+        || !regular(&docs.join("build-info.txt")) {
         return Err("missing installed patch documentation/build information".into());
+    }
+    if !bundled_core_matches(game){
+        return Err("missing or unverified nested CrimsonSkiesFix.dll".into());
     }
     if activated {
         // The original protected EXE is hash-checked above using the
