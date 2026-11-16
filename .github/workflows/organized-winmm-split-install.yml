@@ -58,6 +58,20 @@ jobs:
           $shim=(Resolve-Path 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll').Path
           & $hostExe $core $shim
           if($LASTEXITCODE -ne 0){throw 'Actual x86 split loader/runtime PE smoke failed'}
+      - name: Stage x86 synthetic loader smoke payload for Wine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-split-wine-smoke' | Out-Null
+          Copy-Item 'loader-winmm/target/i686-pc-windows-msvc/debug/split_loader_smoke.exe' 'winmm-split-wine-smoke/'
+          Copy-Item 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll' 'winmm-split-wine-smoke/'
+      - name: Export DLL loader smoke payload (no game files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-X86-WINE-SMOKE
+          path: CrimsonSkiesFix/winmm-split-wine-smoke/*
+          retention-days: 7
+          if-no-files-found: error
       - name: Organized installer tests
         run: cargo test --manifest-path installer/Cargo.toml --features winmm-split-install --target i686-pc-windows-msvc
       - name: Build experimental combined installer
@@ -100,3 +114,45 @@ jobs:
           path: CrimsonSkiesFix/winmm-split-dist/*
           retention-days: 14
           if-no-files-found: error
+
+  wine32-smoke:
+    name: Native WinMM/Core loader smoke under Wine32 (no game data)
+    needs: split-installer-x86
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-X86-WINE-SMOKE
+          path: smoke
+      - name: Verify each artifact is a nonempty Windows i686 PE
+        run: |
+          python3 - <<'PY'
+          import pathlib, struct
+          for name in ("winmm.dll", "CrimsonSkiesFix.dll", "split_loader_smoke.exe"):
+              path = pathlib.Path("smoke") / name
+              data = path.read_bytes()
+              assert data[:2] == b"MZ", name
+              header = struct.unpack_from("<I", data, 0x3c)[0]
+              assert data[header:header+4] == b"PE\\0\\0", name
+              assert struct.unpack_from("<H",data,header+4)[0] == 0x14c, name
+              print("WINE-SMOKE: approved x86 synthetic asset",name,len(data))
+          PY
+      - name: Install clean Ubuntu Wine32 and Xvfb
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends wine wine32:i386 xvfb xauth
+      - name: Run real x86 WinMM/Core GetProcAddress smoke under Wine
+        env:
+          WINEARCH: win32
+          WINEPREFIX: ${{ runner.temp }}/crimson-split-smoke-prefix
+          WINEDEBUG: "-all"
+          WINEDLLOVERRIDES: "winmm=n,b"
+        run: |
+          set -euo pipefail
+          timeout 120s xvfb-run -a wineboot -u
+          core="$(winepath -w "$PWD/smoke/CrimsonSkiesFix.dll" | tr -d '\\r')"
+          shim="$(winepath -w "$PWD/smoke/winmm.dll" | tr -d '\\r')"
+          timeout 120s xvfb-run -a wine "$PWD/smoke/split_loader_smoke.exe" "$core" "$shim"
+          echo 'WINE-SMOKE: PASS — native WinMM proxy and nested x86 runtime load, non-game EXE refuses hooks'
