@@ -122,7 +122,13 @@ pub fn install()->bool {
     if win32::physical_primary_monitor_dimensions().is_none(){
         #[cfg(feature="winmm-split-runtime")]
         {
-            log("NATIVE-BOOTSTRAP: early physical display ambiguous; split mode defers exact DPI-physical target selection until authenticated game HWND (no display chosen now)");
+            // Preserve the original fail-closed policy on a single monitor
+            // when its physical display API unexpectedly fails.
+            if !win32::multiple_monitors_detected(){
+                log("NATIVE-BOOTSTRAP: physical display unavailable and multi-monitor topology unverified; refusing native observer");
+                return false;
+            }
+            log("NATIVE-BOOTSTRAP: multi-monitor Windows; split mode defers exact DPI-physical target selection until authenticated game HWND (no display chosen now)");
         }
         #[cfg(not(feature="winmm-split-runtime"))]
         {
