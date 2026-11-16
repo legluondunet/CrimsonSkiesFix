@@ -46,6 +46,37 @@ local unknown `ddraw.dll`. It must not overwrite the user's 1.0 or monolithic
 
 The original game EXE is not patched on disk.
 
+## Why a game can start without actually applying the patch
+
+`AUTO_INSTALL_RESULT=READY` and `GAME_EXIT_CODE=0` prove only that
+installation checks passed and the child process returned normally.
+They **do not prove** that the app-local WinMM DLL was selected by Windows,
+that the original game's two DirectDraw imports were redirected, or that the
+nested `CrimsonSkiesFix.dll` was actually loaded. If the MainMenu signature
+is missing and Graphics displays its original 640×480 label, collect the
+**installer log** for the startup probe.
+
+New split-only test installers append a line such as:
+
+```text
+SPLIT-PROBE: snapshots=... winmm_provider=local core_dll_seen=true directdraw_iat=redirected snapshot_unavailable=false
+```
+
+`winmm_provider=local` means the observed `winmm.dll` was loaded
+from `crimsonskies/`; `system` means a different system-side copy was
+observed, `unobserved` means the read-only process sampler did not capture
+one. `directdraw_iat=redirected` means **both** original DirectDraw
+IAT pointers in the approved game process pointed inside the local WinMM
+shim, `not-redirected` means the observed slots remained elsewhere,
+`partial` means only one pointed inside the shim, and `unknown` means
+the sampler could not establish a result. The probe never injects,
+suspends or writes to process memory.
+
+When the experimental INI does **not already exist**, the split installer
+creates it with `[Debug] Log=1`, `AspectRatio=auto` and `FPSLimit=60`
+for this diagnostic build only; it never overwrites an existing INI.
+The ordinary 1.0 and 1.1 builds keep their original defaults.
+
 ## Known limitations
 
 - First-use WinMM named-export forwarding can still call system
