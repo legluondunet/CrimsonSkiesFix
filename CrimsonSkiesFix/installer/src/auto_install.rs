@@ -357,7 +357,8 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         // edits to save data. A CD receipt still uses strict verification.
         if !any_entry(&receipt_path(game)) &&
             validated_game_exe(game).is_ok() &&
-            (current_digest.as_deref()!=Some(expected.as_str()) || !bundled_core_matches(game)) {
+            (current_digest.as_deref()!=Some(expected.as_str()) || !bundled_core_matches(game)
+             || (cfg!(feature="import-alias-install") && any_entry(&game.join("winmm.dll")))) {
             deploy_runtime(game)?;
             deploy_documentation(game)?;
             return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
