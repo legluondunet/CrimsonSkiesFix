@@ -389,7 +389,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // previous launcher's log lost this evidence when a later
                 // stale staging directory blocked the reconstruction.
                 // If only the bundled DLL changed, repair that first.
-                let followup=match deploy_runtime(game){
+                let followup=match deploy_runtime(game).and_then(|_|deploy_documentation(game)){
                     Ok(())=>match verify_installed_cd_assets(game){
                         Ok(_)=>{
                             // Keep build-info.txt in sync with the DLL.
