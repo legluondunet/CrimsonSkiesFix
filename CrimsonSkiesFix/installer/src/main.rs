@@ -6,6 +6,8 @@ mod update102;
 mod managed_gos_patch;
 mod chapter_cabs;
 mod auto_install;
+#[cfg(feature="winmm-split-install")]
+mod split_process_probe;
 
 use std::{
     env,
