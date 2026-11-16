@@ -22,7 +22,24 @@ const GAME_EXE_SIZE: u64 = 2_580_480;
 // The opt-in WinMM installer is compiled separately from the v1.0 DirectDraw
 // installer, with a distinct bundled runtime and version identity.
 const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
+#[cfg(feature="winmm-split-install")]
+const BUNDLED_CORE: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_CORE_DLL"));
 const RUNTIME_DLL: &str = if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
+const GAME_FOLDER: &str = if cfg!(feature="winmm-split-install") {"crimsonskies"} else {"CrimsonSkiesFix"};
+const PATCH_FOLDER: &str = "crimsonskiesfix";
+const CORE_DLL: &str = "CrimsonSkiesFix.dll";
+
+fn patch_dir(game:&Path)->PathBuf{
+    if cfg!(feature="winmm-split-install"){game.join(PATCH_FOLDER)}else{game.to_path_buf()}
+}
+fn ensure_patch_dir(game:&Path)->Result<PathBuf,String>{
+    let dir=patch_dir(game);
+    if !directory(&dir){
+        if any_entry(&dir){return Err(format!("unsafe game-fix directory: {}",dir.display()));}
+        fs::create_dir(&dir).map_err(error)?;
+    }
+    Ok(dir)
+}
 #[cfg(not(feature="winmm-installer"))]
 const README: &str = include_str!("../../README.md");
 #[cfg(feature="winmm-installer")]
@@ -115,6 +132,13 @@ fn verify(game: &Path) -> Result<PathBuf, String> {
             "installed {RUNTIME_DLL} does not match this launcher: actual={actual} expected={expected}"
         ));
     }
+    #[cfg(feature="winmm-split-install")]
+    {
+        let core=game.join(PATCH_FOLDER).join(CORE_DLL);
+        if !regular(&core) || digest(&core)?!=sha256::hex(BUNDLED_CORE) {
+            return Err("split runtime CrimsonSkiesFix.dll missing or hash mismatch".into());
+        }
+    }
     Ok(exe)
 }
 
@@ -132,11 +156,13 @@ fn ensure_new_text(path: &Path, text: &str) -> Result<(), String> {
 
 // Never overwrite the active INI. The proxy creates it on its first game launch.
 fn deploy_documentation(game: &Path) -> Result<(), String> {
-    // Flat installed-game layout: never create CrimsonSkiesFix/CrimsonSkiesFix/.
-    // The runtime creates CrimsonSkiesFix.ini directly in this game directory.
-    ensure_new_text(&game.join("README.md"), README)?;
-    ensure_new_text(&game.join("LICENSE"), LICENSE)?;
-    ensure_new_text(&game.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
+    // Opt-in WinMM layout: original game root remains untouched; metadata,
+    // license, template and the active INI belong to crimsonskiesfix/.
+    // The runtime creates the active INI on its first game DirectDraw call.
+    let docs=ensure_patch_dir(game)?;
+    ensure_new_text(&docs.join("README.md"), README)?;
+    ensure_new_text(&docs.join("LICENSE"), LICENSE)?;
+    ensure_new_text(&docs.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
     let source = format!("https://github.com/legluondunet/CrimsonSkiesFix/tree/{COMMIT}");
     let build_info = format!(
         "Project=CrimsonSkiesFix\nVersion={VERSION}\nCommit={COMMIT}\n\
@@ -146,7 +172,7 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_RUNTIME),
         BUNDLED_RUNTIME.len()
     );
-    let manifest = game.join("build-info.txt");
+    let manifest = docs.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
     }
@@ -480,7 +506,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="winmm-installer") {
+        if cfg!(feature="winmm-split-install"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll+crimsonskiesfix/CrimsonSkiesFix.dll EXPERIMENTAL SPLIT", &COMMIT[..8]);
+        }else if cfg!(feature="winmm-installer") {
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL", &COMMIT[..8]);
         } else {
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86", &COMMIT[..8]);
@@ -502,7 +530,7 @@ fn run() -> Result<i32, String> {
         let track=args.get(2).map(PathBuf::from);
         return inspect_cd(base,&image,track.as_deref(),verbose);
     }
-    let game = base.join("CrimsonSkiesFix");
+    let game = base.join(GAME_FOLDER);
     if verbose && !(args.len()==1 && args[0]=="--launch-no-verify") {
         println!("VERBOSE: launcher={} game={} installed_exe={} runtime_dll={}",
             launcher.display(),game.display(),
