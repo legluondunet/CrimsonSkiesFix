@@ -23,6 +23,9 @@ fn sole_monitor_metrics(count:i32,width:i32,height:i32)->Option<(u32,u32)> {
     if count!=1 || width<=0 || height<=0{return None;}
     Some((u32::try_from(width).ok()?,u32::try_from(height).ok()?))
 }
+pub fn multiple_monitors_detected()->bool {
+    unsafe{GetSystemMetrics(80)>1} // SM_CMONITORS; query only, no DPI modification
+}
 pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
     unsafe {
         sole_monitor_metrics(
