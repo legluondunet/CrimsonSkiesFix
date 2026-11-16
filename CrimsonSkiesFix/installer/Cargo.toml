@@ -15,6 +15,9 @@ default = []
 winmm-installer = []
 # New nested layout; two bundled DLLs, opt-in only until native tests pass.
 winmm-split-install = ["winmm-installer"]
+# Experimental alternative: game WinMM remains native, only DDRAW import name is
+# redirected in suspended child memory. NO app-local winmm.dll is deployed.
+import-alias-install = ["winmm-split-install"]
 
 [dependencies]
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
