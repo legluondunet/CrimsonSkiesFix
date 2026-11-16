@@ -42,8 +42,8 @@ jobs:
         run: cargo test --manifest-path loader-winmm/Cargo.toml --target i686-pc-windows-msvc
       - name: Compile WinMM bootstrap shim
         run: cargo build --manifest-path loader-winmm/Cargo.toml --release --target i686-pc-windows-msvc
-      - name: Check 185 named WinMM exports of the loader
-        run: python runtime-winmm/tools/verify_runtime_exports.py loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Enforce fail-closed split WinMM ABI (no conflicting low ordinals)
+        run: python loader-winmm/tools/verify_split_exports.py loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
       - name: Split runtime unit tests
         run: cargo test --manifest-path runtime-split/Cargo.toml --target i686-pc-windows-msvc
       - name: Build CrimsonSkiesFix.dll
