@@ -72,6 +72,11 @@ pub(crate) fn mark_game_ddraw_started() {
 }
 
 #[cfg(feature = "winmm-ordinal-bridge")]
+pub(crate) fn game_ddraw_started() -> bool {
+    GAME_DDRAW_STARTED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "winmm-ordinal-bridge")]
 fn mark_named_resolution_attempt(index: usize) {
     let bit = 1u32 << index; // Only indices 0..13 reach this code path.
     let early = !GAME_DDRAW_STARTED.load(Ordering::Acquire);
