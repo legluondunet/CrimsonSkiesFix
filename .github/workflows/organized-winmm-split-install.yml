@@ -193,6 +193,34 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      - name: Build/tests experimental CSFIX import alias installer (native WinMM)
+        env:
+          CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll
+        shell: pwsh
+        run: |
+          cargo test --manifest-path installer/Cargo.toml --features import-alias-install --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias installer tests failed'}
+          cargo build --manifest-path installer/Cargo.toml --features import-alias-install --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias installer build failed'}
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $version=(& $exe --version) -join "`n"
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL'){throw "Wrong import-alias build: $version"}
+      - name: Package import alias installer for OWNER TEST ONLY
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'alias-import-dist' | Out-Null
+          $out='alias-import-dist/CrimsonSkiesFix-IMPORT-ALIAS-TEST.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $out
+          Copy-Item 'installer/README-import-alias.md' 'alias-import-dist/README-IMPORT-ALIAS-EXPERIMENTAL.md'
+          $sha=(Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'alias-import-dist/CrimsonSkiesFix-IMPORT-ALIAS-TEST.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-IMPORT-ALIAS-X86-TEST-ONLY
+          path: CrimsonSkiesFix/alias-import-dist/*
+          retention-days: 14
+          if-no-files-found: error
+
   wine32-smoke:
     name: Native WinMM/Core loader smoke under Wine32 (no game data)
     needs: split-installer-x86
