@@ -296,7 +296,9 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                #[cfg(feature = "winmm-bootstrap")]
+                #[cfg(feature = "import-alias-bootstrap")]
+                let bootstrap_kind="CSFIX import alias bootstrap; native WinMM untouched";
+                #[cfg(all(feature = "winmm-bootstrap",not(feature="import-alias-bootstrap")))]
                 let bootstrap_kind="WinMM IAT bootstrap";
                 #[cfg(not(feature = "winmm-bootstrap"))]
                 let bootstrap_kind="DirectDraw proxy";
@@ -363,6 +365,10 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     {
         static WINMM_LOG_ONCE:Once=Once::new();
         WINMM_LOG_ONCE.call_once(||{
+            #[cfg(feature="import-alias-bootstrap")]
+            log(&format!("IMPORT-ALIAS-BOOTSTRAP: native game DirectDraw import alias reached; backend_status={} (7=both native DirectDraw exports handed to core); native_winmm_untouched=true",
+                winmm_bootstrap::status()));
+            #[cfg(not(feature="import-alias-bootstrap"))]
             log(&format!("WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status={} (7=two imports redirected, 1=unrecognized image, 2=ddraw absent, 4=IAT mismatch)",
                 winmm_bootstrap::status()));
         });
