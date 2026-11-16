@@ -103,6 +103,45 @@ the MainMenu signature, enters gameplay and displays the corrected 3D
 resolution label after returning to VIDEO Preferences. A green CI
 alone does not validate rendering or remove WinMM loader-lock risks.
 
+## One-time Lighting Quality: High (experimental)
+
+The original game's VIDEO.SCRIPT selects Lighting Quality using its own
+five-choice menu at opcode 0x847. The exact approved 1.02 executable
+maps the original medium hardware-lighting flags to selector 2, and its
+fully enabled lighting flags to selector 1 (the proposed **High**).
+The initial value displayed on the owner's 16 November Windows screenshot
+was Medium even though the game was running at 1920x1200.
+
+**Only the split prototype** proposes the High selector once when all
+of the following are true:
+
+- The original Video Preferences script reads its settings using
+  original `uiData(0x855, get)`, after the original Preferences prepare;
+- The game's verified original `nLightingQuality` registration and
+  video-settings access instructions still match the supported EXE;
+- Both active and pending lighting values are the original Medium=2;
+- The existing `CrimsonSkiesFix.ini` does not contain the completed
+  initial-default marker.
+
+This changes **only the pending Lighting Quality field** from selector 2
+to selector 1 before the game reads and displays the dropdown. All other
+graphics and gameplay preferences remain owned by the game. The user's
+original **Accept Changes** runs unchanged and persists the choice.
+After a successful Apply, the patch appends the following marker to the
+existing INI without replacing other lines or overwriting their values:
+
+```ini
+[Compatibility]
+CrimsonSkiesFixLightingHighDefaultApplied=1
+```
+
+On later launches the marker blocks automatic reselection: a player may
+choose Low/Medium/etc. and those changes are respected. Cancelling
+does not save the proposed value and does not mark it as applied.
+No game executable, archive or registry key is modified. This remains a
+real-game A/B change needing visible confirmation that selector 1 is
+localized to **High** on the actual installed language version.
+
 ## Known limitations
 
 - First-use WinMM named-export forwarding can still call system
