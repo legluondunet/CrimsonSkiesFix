@@ -88,6 +88,54 @@ pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
     Some(size)
 }
 
+// Physical dimensions for the ACTUAL GAME-OWNED HWND's monitor on native
+// multi-display, DPI-scaled Windows. Do not use cursor position, primary
+// display dimensions or a DPI-logical GetSystemMetrics size as substitutes.
+// This is called only from the verified DD4 cooperative path, never DllMain.
+#[repr(C)]
+#[derive(Default)]
+struct MonitorInfoExW {
+    info:MonitorInfo,
+    device_name:[u16;32],
+}
+pub fn physical_monitor_dimensions_for_game_window(hwnd:Hwnd)->Option<(u32,u32)> {
+    if hwnd.is_null(){return None;}
+    unsafe {
+        if IsWindow(hwnd)==0{return None;}
+        let mut owner=0u32;
+        if GetWindowThreadProcessId(hwnd,&mut owner)==0 || owner!=GetCurrentProcessId(){
+            return None;
+        }
+        let monitor=MonitorFromWindow(hwnd,2 /* MONITOR_DEFAULTTONEAREST */);
+        if monitor.is_null(){return None;}
+        let mut info=MonitorInfoExW::default();
+        info.info.size=std::mem::size_of::<MonitorInfoExW>() as u32;
+        if GetMonitorInfoW(monitor,&mut info.info)==0 {return None;}
+        // Win32 requires a terminated DISPLAY device path such as
+        // \\.\\DISPLAY1. An empty or unterminated name is not trustworthy.
+        let end=info.device_name.iter().position(|&x|x==0)?;
+        if end==0{return None;}
+        let mut mode:DevModeW=std::mem::zeroed();
+        mode.size=std::mem::size_of::<DevModeW>() as u16;
+        const ENUM_CURRENT_SETTINGS:u32=0xffff_ffff;
+        if EnumDisplaySettingsW(info.device_name.as_ptr(),ENUM_CURRENT_SETTINGS,&mut mode)==0{
+            return None;
+        }
+        let logical=info.info.monitor.dimensions()?;
+        let physical=(mode.pels_width,mode.pels_height);
+        if !valid_physical_target(logical,physical){return None;}
+        Some(physical)
+    }
+}
+fn valid_physical_target(logical:(u32,u32),physical:(u32,u32))->bool{
+    let ((lw,lh),(pw,ph))=(logical,physical);
+    // One verified monitor, no topology guessing. Same aspect is mandatory
+    // across DPI-scaled logical and physical coordinate spaces.
+    lw>0 && lh>0 && (960..=8192).contains(&pw) &&
+    (600..=4320).contains(&ph) &&
+    (pw as u64)*(lh as u64)==(ph as u64)*(lw as u64)
+}
+
 /// The Windows-native early FOV/HUD patch must use a physical, validated
 /// display mode. If it cannot be retrieved, defer instead of applying a
 /// potentially DPI-virtualized resolution that breaks video initialization.
@@ -811,6 +859,14 @@ mod physical_current_mode_layout_tests {
 #[cfg(test)]
 mod early_monitor_tests{
     use super::*;
+    #[test]
+    fn physical_multi_monitor_target_must_match_game_hwnd_dpi_aspect(){
+        assert!(valid_physical_target((1536,960),(1920,1200)));
+        assert!(valid_physical_target((1920,1080),(1920,1080)));
+        assert!(!valid_physical_target((1536,960),(1920,1080)));
+        assert!(!valid_physical_target((1536,960),(640,480)));
+        assert!(!valid_physical_target((0,960),(1920,1200)));
+    }
     #[test]
     fn early_monitor_only_when_unambiguous(){
         assert_eq!(sole_monitor_metrics(1,1920,1080),Some((1920,1080)));
