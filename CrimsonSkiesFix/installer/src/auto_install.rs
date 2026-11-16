@@ -441,6 +441,11 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     let result=auto_prepare(base,game).and_then(|action|{
         if regular(&receipt_path(game)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
+        // New organized experimental installations emit the first game log
+        // automatically; do not change any existing user configuration.
+        #[cfg(feature="winmm-split-install")]
+        ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),
+            "; Experimental split-loader compatibility test.\n[Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n")?;
         Ok((action,exe))
     });
     let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
