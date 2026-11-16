@@ -78,7 +78,7 @@ jobs:
             try {
               if(-not $p.WaitForExit(30000)) {
                 $p.Kill()
-                throw "WINMM-DLLMAIN-SMOKE timed out for $dll: possible loader-lock deadlock"
+                throw "WINMM-DLLMAIN-SMOKE timed out for ${dll}: possible loader-lock deadlock"
               }
               if($p.ExitCode -ne 0){throw "WINMM-DLLMAIN-SMOKE failed $dll exit=$($p.ExitCode)"}
             } finally {
