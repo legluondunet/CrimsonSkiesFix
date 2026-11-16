@@ -60,11 +60,11 @@ fn ddraw_name_rva(data:&[u8])->Result<u32,String>{
  for i in 0..bytes as usize/20 {
     let p=offset(rva+i as u32*20,20)?;
     if data[p..p+20].iter().all(|b|*b==0){break}
-    let name=u32_at(data,p+12)?;
-    let name_p=offset(name,10)?;
-    let name=&data[name_p..name_p+10];
-    if name.eq_ignore_ascii_case(b"DDRAW.dll\0"){
-       if found.replace(name).is_some(){return Err("duplicate DDRAW import".into())}
+    let name_rva=u32_at(data,p+12)?;
+    let name_p=offset(name_rva,10)?;
+    let name_bytes=&data[name_p..name_p+10];
+    if name_bytes.eq_ignore_ascii_case(b"DDRAW.dll\0"){
+       if found.replace(name_rva).is_some(){return Err("duplicate DDRAW import".into())}
     }
  }
  found.ok_or_else(||"missing DDRAW.dll import".to_string())
