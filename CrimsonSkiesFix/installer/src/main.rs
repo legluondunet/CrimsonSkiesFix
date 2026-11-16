@@ -676,8 +676,12 @@ mod tests {
         fs::write(root.join(INSTALLER_LOG),b"owned by installer").unwrap();
         deploy_runtime(&game).unwrap();
         deploy_documentation(&game).unwrap();
-        assert!(regular(&game.join("winmm.dll")));
-        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),sha256::hex(BUNDLED_RUNTIME));
+        assert!(regular(&game.join(RUNTIME_DLL)));
+        assert_eq!(digest(&game.join(RUNTIME_DLL)).unwrap(),sha256::hex(BUNDLED_RUNTIME));
+        if cfg!(feature="import-alias-install") {
+            assert!(!any_entry(&game.join("winmm.dll")),
+                "import-alias installer MUST NOT deploy WinMM proxy");
+        }
         assert!(regular(&game.join(PATCH_FOLDER).join(CORE_DLL)));
         assert_eq!(digest(&game.join(PATCH_FOLDER).join(CORE_DLL)).unwrap(),sha256::hex(BUNDLED_CORE));
         assert!(regular(&game.join(PATCH_FOLDER).join("CrimsonSkiesFix.ini.example")));
@@ -688,6 +692,27 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature="import-alias-install")]
+    #[test]
+    fn alias_mode_does_not_deploy_winmm_or_reject_independent_ddraw(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-alias-migration-test-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&root).unwrap();
+        assert_eq!(RUNTIME_DLL,"CSFIX.dll");
+        fs::write(root.join("ddraw.dll"),b"independent renderer").unwrap();
+        deploy_runtime(&root).unwrap();
+        assert!(regular(&root.join("CSFIX.dll")));
+        assert!(!any_entry(&root.join("winmm.dll")));
+        assert_eq!(fs::read(root.join("ddraw.dll")).unwrap(),b"independent renderer");
+        fs::write(root.join("winmm.dll"),b"unknown user multimedia wrapper").unwrap();
+        let before=digest(&root.join("CSFIX.dll")).unwrap();
+        assert!(preflight_legacy_winmm(&root).is_err());
+        assert!(deploy_runtime(&root).is_err());
+        assert!(regular(&root.join("winmm.dll")));
+        assert_eq!(digest(&root.join("CSFIX.dll")).unwrap(),before);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn cli_has_only_the_supported_commands(){
         for flags in [
@@ -760,7 +785,7 @@ mod tests {
         assert!(!BUNDLED_RUNTIME.is_empty());
         assert_eq!(sha256::hex(BUNDLED_RUNTIME).len(), 64);
     }
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn standalone_winmm_install_is_non_destructive_and_idempotent() {
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -786,7 +811,7 @@ mod tests {
         fs::remove_dir_all(&game).unwrap();
     }
 
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn unknown_active_and_old_backup_are_replaced_with_one_rollback_copy() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -812,7 +837,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn unknown_active_without_backup_creates_one_rollback_copy() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -829,7 +854,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn no_active_dll_keeps_existing_backup_regardless_of_provenance() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -846,7 +871,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn unsafe_backup_path_still_fails_without_touching_active_dll() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -863,7 +888,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(feature="winmm-installer")]
+    #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn abandoned_rotation_marker_blocks_update_without_data_loss() {
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
