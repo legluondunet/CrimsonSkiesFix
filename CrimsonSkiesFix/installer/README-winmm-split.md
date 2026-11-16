@@ -119,34 +119,37 @@ game's native lighting hardware flags (index 1) are **not** the five-item
 dropdown's visible quality index: Medium is index 2 and the next higher
 selection, High, is proposed as index 3.
 
-The new split-only experimental workaround uses two matching guards:
+The first GUI test of the initial resource workaround (build e47c2919)
+still displayed Medium. Its startup log established the decisive cause:
+the script preflight executed **before GameOS initialized preferences**
+(`active_index=0`) and cached an ineligible result; later menu loading
+could no longer change it.
 
-1. An exactly hashed, unmodified source archive and original managed
-   overlay + immutable official backup must verify. When the current
-   game lighting value is the initial Medium and the local INI has
-   no completed-once marker, build an exact-size, **memory-only** VIDEO
-   variant with the one proven script assignment changed to `HUA = 3`.
-   Only the original authenticated `VIDEO.SCRIPT` is eligible.
-2. The existing verified ROFFILE.DLL `ReadFile` observer substitutes
-   the compressed bytes from this exact variant when the actual patched
-   overlay's VIDEO payload is read (Windows observed route), or when
-   the fallback original ROF source is read. Original bytes, file
-   handles, reported sizes, return values, archive files, and
-   compressed-member offsets remain unchanged.
-3. Only **after the modified script bytes are observed being delivered**
-   will the original GOS `uiData(0x855,0)` read be allowed to change the
-   corresponding pending Lighting Quality field from Medium 2 to High 3.
-   The original menu, selections, Accept and Cancel handlers remain in
-   charge. Any other starting value is preserved.
-4. Only a verified successful Apply appends
-   `[Compatibility] CrimsonSkiesFixLightingHighDefaultApplied=1` to
-   the existing INI. A later launch never reapplies the forced default
-   and the player can subsequently change Lighting Quality normally.
+The revised split-only experiment now:
 
-The newly added log lines report script preflight, whether the actual
-ROF payload was delivered, and whether the menu pending lighting value
-was changed. They can help distinguish a wrong script routing result
-from an incorrect visible dropdown.
+1. Checks exact supported 1.02 EXE and authenticated original+managed ROF
+   sources. Before preferences initialize, only the existing INI's
+   completed-once marker determines whether an override may be prepared.
+2. Builds an authenticated **4443-byte** VIDEO script (the managed source
+   remains 4413 bytes on disk) with a conditional message-20001 override:
+   read the original selection from NVA, **if and only if the current
+   dropdown index is Medium (2), choose High (3)**. Existing Low, High
+   and other selections remain unchanged.
+3. Substitutes the stream only in the exact verified ROF `ReadFile`
+   buffers, including the Windows-observed `CRIMPTCH.ROF` route.
+   The decompressed-size descriptor is adjusted in the read buffer
+   **before** delivering script bytes. Compressed length and all file
+   offsets, Win32 return values and original files stay identical.
+4. Leaves the original uiData pending fields untouched. Once the
+   authenticated modified VIDEO resource has actually been delivered,
+   the GOS UI Get callback may record that the first-use option was
+   offered. Only after a successful original Apply does the runtime
+   append `[Compatibility] CrimsonSkiesFixLightingHighDefaultApplied=1`
+   to the existing INI. Subsequent player changes remain authoritative.
+
+The new logs distinguish pre-init script preparation, managed-overlay
+header/payload delivery and VIDEO GET. A green CI validates only the
+build and bounded substitutions, **not yet the visible High dropdown**.
 
 **Not yet validated against real GUI / actual display option semantics.**
 No user files should be modified in-place by the script patch.
