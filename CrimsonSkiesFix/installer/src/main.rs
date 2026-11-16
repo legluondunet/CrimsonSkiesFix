@@ -574,7 +574,7 @@ fn run() -> Result<i32, String> {
     // verified-only relaunch after the filename spelling changes.
     auto_install::migrate_previous_installer_log(base);
     if args.len() == 1 && args[0] == "--verify" {
-        if regular(&receipt_path(game)){
+        if regular(&receipt_path(&game)){
             verify_installed_cd_assets(&game)?;
         }
         verify(&game)?;
