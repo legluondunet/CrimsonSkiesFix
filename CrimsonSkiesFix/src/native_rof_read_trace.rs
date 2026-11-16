@@ -23,6 +23,8 @@ static VIRTUAL:OnceLock<Option<gos_video_lock::VirtualVideo>>=OnceLock::new();
 static LIGHTING_OVERLAY:OnceLock<Option<gos_video_lock::VirtualVideo>>=OnceLock::new();
 #[cfg(feature="winmm-split-runtime")]
 static LIGHTING_OVERLAY_READS:AtomicUsize=AtomicUsize::new(0);
+#[cfg(feature="winmm-split-runtime")]
+static LIGHTING_OVERLAY_HEADER_MASK:AtomicUsize=AtomicUsize::new(0);
 static VIRTUAL_HEADER_MASK:AtomicUsize=AtomicUsize::new(0);
 static VIRTUAL_PAYLOAD_READS:AtomicUsize=AtomicUsize::new(0);
 static REFERENCES:OnceLock<Option<References>>=OnceLock::new();
@@ -348,10 +350,28 @@ unsafe extern "system" fn observe_read(
             if let (Some(post),Some(read))=(
                 LIGHTING_OVERLAY.get().and_then(Option::as_ref),got){
                 let region=std::slice::from_raw_parts_mut(buffer as *mut u8,read as usize);
-                if splice(start as u64,region,post.data_at,&post.replacement).is_some(){
+                // This conditional GOS script is 30 bytes longer once
+                // decompressed. The original overlay descriptor MUST
+                // first be updated in the caller's read buffer, while
+                // the compressed member remains EXACTLY the same length.
+                // If it was not observed, fail closed and preserve the
+                // unmodified compressed data so GameOS never sees an
+                // inconsistent source length.
+                let expanded=post.expanded_size.to_le_bytes();
+                if let Some((offset,size))=splice(
+                    start as u64,region,post.size_field_at,&expanded){
+                    let mut bits=0usize;
+                    for i in offset..offset+size{bits|=1usize<<i;}
+                    let old=LIGHTING_OVERLAY_HEADER_MASK.fetch_or(bits,Ordering::AcqRel);
+                    if old|bits==15 && old!=15{
+                        log("GOS-ROF-VIRTUAL: authenticated overlay VIDEO.SCRIPT expanded-length descriptor delivered in game memory only");
+                    }
+                }
+                if LIGHTING_OVERLAY_HEADER_MASK.load(Ordering::Acquire)==15 &&
+                    splice(start as u64,region,post.data_at,&post.replacement).is_some(){
                     if LIGHTING_OVERLAY_READS.fetch_add(1,Ordering::Relaxed)==0{
                         crate::lighting_default::mark_verified_script_delivered();
-                        log("GOS-ROF-VIRTUAL: authenticated managed overlay VIDEO.SCRIPT bytes replaced in game read buffer for Lighting High default; file and read status unchanged");
+                        log("GOS-ROF-VIRTUAL: authenticated managed overlay VIDEO.SCRIPT bytes replaced in game read buffer for conditional Lighting High; file and read status unchanged");
                     }
                 }
             }
