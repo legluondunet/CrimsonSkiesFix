@@ -251,9 +251,12 @@ fn exe_directory()->Option<PathBuf> {
 
 pub fn project_path(name:&str)->Option<PathBuf> {
     // Fixed internal file names only; never insert user-controlled paths here.
-    // The standalone installer keeps the active INI in the game root.
-    // Manual DLL-only installations now use the same layout.
-    Some(exe_directory()?.join(name))
+    // In split mode the active INI lives beside CrimsonSkiesFix.dll in the
+    // verified crimsonskies/crimsonskiesfix/ patch directory.
+    #[cfg(feature="winmm-split-runtime")]
+    {Some(dll_directory()?.join(name))}
+    #[cfg(not(feature="winmm-split-runtime"))]
+    {Some(exe_directory()?.join(name))}
 }
 
 fn regular_file(path:&Path)->bool {
@@ -284,7 +287,8 @@ fn create_ini_once(path:&Path)->std::io::Result<bool> {
 // Migrate an older nested CrimsonSkiesFix INI to the new game-root layout,
 // without rewriting/deleting the player's original file.
 fn previous_ini(exe:&Path)->Option<PathBuf> {
-    [exe.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini"),
+    [exe.join("CrimsonSkiesFix.ini"),
+     exe.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini"),
      exe.join("CrimsonFix").join("CrimsonFix.ini"),
      exe.join("CrimsonFix.ini")]
         .into_iter().find(|p|regular_file(p))
@@ -418,6 +422,23 @@ fn dll_directory()->Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
 }
 
+// Organized v1.1 layout: two parent levels from the *actual loaded*
+// CrimsonSkiesFix.dll, independent of the game working directory and launcher
+// filename. Do not follow symlink folders when choosing log destinations.
+#[cfg(feature="winmm-split-runtime")]
+fn organized_launcher_root(dll_dir:&Path)->Option<PathBuf>{
+    if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskiesfix"){
+        return None;
+    }
+    let game=dll_dir.parent()?;
+    if !game.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskies"){
+        return None;
+    }
+    let base=game.parent()?;
+    (safe_directory(dll_dir,false)&&safe_directory(game,false)&&safe_directory(base,false))
+        .then(||base.to_path_buf())
+}
+
 fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
     if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"){
         return None;
@@ -438,8 +459,9 @@ fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
 
 fn log_directory()->Option<PathBuf> {
     let dll_dir=dll_directory()?;
-    // Standalone layout: launcher sits immediately above the game folder.
-    // Direct DLL installations continue writing beside ddraw.dll.
+    #[cfg(feature="winmm-split-runtime")]
+    if let Some(root)=organized_launcher_root(&dll_dir){return Some(root);}
+    // Historical v1.0 and monolithic 1.1 installers retain their paths.
     Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
 }
 
