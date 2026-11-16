@@ -83,9 +83,9 @@ fn exact_lighting_registration()->bool{
 // with its hardware default $NVA$ during message 20001. Keep
 // total source length unchanged so archive offsets remain stable.
 const SOURCE_RESET:&[u8]=b"HUA = \x24\x24NVA\x24\x24";
-const FIRST_RUN_RESET:&[u8]=b"HUA = 3      ";
+const FIRST_RUN_RESET:&[u8]=b"HUA = \x24\x24NVA\x24\x24\r\nif (2 == HUA)\r\n{\r\nHUA = 3\r\n}";
 const EXPECTED_SPLIT_VIDEO_HASH:&str=
-    "45dedb361b97c0cdaf8ba9ef00a7627d60c8effd72265841eefae669cf43e6ad";
+    "fcca0bddab908d8b2e9608bd84af07bca547b52aa7783812591a5d0bb953435b";
 
 pub(crate) fn one_time_script_eligible()->bool{
     if !exact_lighting_registration() ||
@@ -111,7 +111,7 @@ pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
     if source.len()!=4413 ||
         crate::exe_gate::sha256(source)!=
             "a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d" ||
-        SOURCE_RESET.len()!=FIRST_RUN_RESET.len(){
+        FIRST_RUN_RESET.len()!=SOURCE_RESET.len()+30{
         return None;
     }
     let positions=source.windows(SOURCE_RESET.len()).enumerate()
@@ -125,7 +125,7 @@ pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
     output.extend_from_slice(&source[..pos]);
     output.extend_from_slice(FIRST_RUN_RESET);
     output.extend_from_slice(&source[pos+SOURCE_RESET.len()..]);
-    if output.len()!=source.len() ||
+    if output.len()!=source.len()+30 ||
         crate::exe_gate::sha256(&output)!=EXPECTED_SPLIT_VIDEO_HASH{
         return None;
     }
@@ -177,8 +177,8 @@ mod tests{
     #[test]
     fn split_default_script_replaces_only_final_reselection_after_get(){
         let mut fixture=b"HUA = \x24\x24NVA\x24\x24".to_vec();
-        assert_eq!(SOURCE_RESET.len(),FIRST_RUN_RESET.len());
-        assert_eq!(std::str::from_utf8(FIRST_RUN_RESET).unwrap(),"HUA = 3      ");
+        assert_eq!(FIRST_RUN_RESET.len(),SOURCE_RESET.len()+30);
+        assert_eq!(std::str::from_utf8(FIRST_RUN_RESET).unwrap(),"HUA = $NVA$\r\nif (2 == HUA)\r\n{\r\nHUA = 3\r\n}");
         fixture.copy_from_slice(SOURCE_RESET);
         // Synthetic snippets are not the pinned game script.
         assert!(modify_verified_video_script(&fixture).is_none());
