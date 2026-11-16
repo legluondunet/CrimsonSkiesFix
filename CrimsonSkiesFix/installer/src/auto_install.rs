@@ -472,8 +472,18 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         return Ok(0);
     }
     println!("{action}: launching {}...",exe.display());
-    // No environment-marker handoff: the DLL owns CrimsonSkiesFix.log and
-    // truncates it at startup, while the installer report remains untouched.
+    // Organized prototype only: inspect loaded DLLs and read the exact
+    // DirectDraw import slots from the *running process*, without patching
+    // or suspending it. The user-visible game exit code is unchanged.
+    #[cfg(feature="winmm-split-install")]
+    let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
+        if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
+            let _=writeln!(report,"{summary}");
+        }
+        println!("{summary}");
+        exit
+    });
+    #[cfg(not(feature="winmm-split-install"))]
     let status=Command::new(&exe).current_dir(game).status();
     match status{
         Ok(status)=>{
