@@ -2141,4 +2141,13 @@ mod tests{
         assert!(names.contains(b"timeBeginPeriod\0".as_slice()));
         assert!(names.contains(b"waveOutOpen\0".as_slice()));
     }
+    #[cfg(feature="winmm-ordinal-bridge")]
+    #[test]
+    fn extra_dependency_first_use_bitmap_handles_last_valid_export() {
+        // No native system DLL loads needed for a telemetry-only unit test.
+        mark_extra_first_resolution(170);
+        let view=extra_forward_snapshot();
+        assert!(view.contains("waveOutWrite"),"last inventory entry missing: {view}");
+        assert!(view.contains("attempted_unique=1"),"bitmap count mismatch: {view}");
+    }
 }
