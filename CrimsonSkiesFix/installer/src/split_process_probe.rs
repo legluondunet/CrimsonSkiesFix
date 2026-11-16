@@ -154,6 +154,23 @@ mod tests{
         assert!(same_path(Path::new(r"C:\Demo\winmm.dll"),Path::new(r"c:\demo\WINMM.dll")));
     }
     #[test]
+    fn native_windows_module_snapshot_can_enumerate_our_own_process(){
+        let modules=module_list(std::process::id()).expect("Toolhelp32 cannot enumerate own process");
+        assert!(!modules.is_empty(),"empty module inventory");
+        assert!(modules.iter().all(|module|module.size>0&&module.base!=0));
+    }
+    #[test]
+    fn readprocessmemory_can_read_a_known_marker_without_mutation(){
+        static KNOWN:u32=0x45_C0_FF_EE;
+        let addr=&KNOWN as *const u32 as usize;
+        let offset=0x100usize;
+        let module=Module {
+            name:"synthetic".into(),path:PathBuf::new(),
+            base:addr-offset,size:offset+4,
+        };
+        assert_eq!(read_import(std::process::id(),&module,offset),Some(KNOWN as usize));
+    }
+    #[test]
     fn incomplete_sample_cannot_claim_installed_shim_worked(){
         let s=Evidence::default().summary();
         assert!(s.contains("directdraw_iat=unknown"));
