@@ -480,7 +480,20 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     // Organized prototype only: inspect loaded DLLs and read the exact
     // DirectDraw import slots from the *running process*, without patching
     // or suspending it. The user-visible game exit code is unchanged.
-    #[cfg(feature="winmm-split-install")]
+    #[cfg(feature="import-alias-install")]
+    let status={
+        use std::os::windows::process::ExitStatusExt;
+        super::alias_import_launcher::launch_child(&exe,u32::MAX)
+            .map(|(code,summary)|{
+                if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
+                    let _=writeln!(report,"{summary}");
+                }
+                println!("{summary}");
+                std::process::ExitStatus::from_raw(code)
+            })
+            .map_err(std::io::Error::other)
+    };
+    #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
     let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
         if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
             let _=writeln!(report,"{summary}");
