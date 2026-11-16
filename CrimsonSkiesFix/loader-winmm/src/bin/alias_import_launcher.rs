@@ -71,12 +71,9 @@ fn ddraw_name_rva(data:&[u8])->Result<u32,String>{
 }
 struct ChildGuard(ProcessInfo);
 impl Drop for ChildGuard{fn drop(&mut self){unsafe{CloseHandle(self.0.thread);CloseHandle(self.0.process);}}}
-fn run()->Result<u32,String>{
- let args=env::args_os().skip(1).collect::<Vec<_>>();
- if args.len()!=1{return Err("usage: alias_import_launcher.exe ABSOLUTE_PE32_EXE".into())}
- let target=PathBuf::from(&args[0]);
+pub(crate) fn launch_child(target:&std::path::Path,timeout_ms:u32)->Result<(u32,String),String>{
  if !target.is_absolute(){return Err("target must be absolute".into())}
- let name_rva=ddraw_name_rva(&fs::read(&target).map_err(|e|e.to_string())?)?;
+ let name_rva=ddraw_name_rva(&fs::read(target).map_err(|e|e.to_string())?)?;
  let w=wide(target.as_os_str());
  let cwd=wide(target.parent().ok_or("missing parent directory")?.as_os_str());
  let mut si:StartupInfoW=unsafe{zeroed()};si.cb=size_of::<StartupInfoW>() as u32;
@@ -119,13 +116,20 @@ fn run()->Result<u32,String>{
    println!("ALIAS-IMPORT: patched remote PE32 at RVA {name_rva:#x} ({remote_base:#x}); EXE on disk untouched");
    let resumed=unsafe{ResumeThread(child.0.thread)};
    if resumed==u32::MAX {return Err(format!("ResumeThread failed: {}",failure()))}
-   let wait=unsafe{WaitForSingleObject(child.0.process,30000)};
+   let wait=unsafe{WaitForSingleObject(child.0.process,timeout_ms)};
    if wait!=0{return Err(format!("child timeout/status={wait:#x}"))}
    let mut exit=1u32;
    if unsafe{GetExitCodeProcess(child.0.process,&mut exit)}==0{return Err("cannot get child exit code".into())}
-   Ok(exit)
+   Ok((exit,format!(
+     "ALIAS-LAUNCH: status=patched-resumed child_exit={exit} remote_name_rva={name_rva:#x} native_winmm_imports_unchanged=true on_disk_exe_unchanged=true")))
  })();
  if result.is_err(){unsafe{TerminateProcess(child.0.process,99);}}
  result
+}
+fn run()->Result<u32,String>{
+ let args=env::args_os().skip(1).collect::<Vec<_>>();
+ if args.len()!=1{return Err("usage: alias_import_launcher.exe ABSOLUTE_PE32_EXE".into())}
+ let (code,_) = launch_child(&PathBuf::from(&args[0]),30000)?;
+ Ok(code)
 }
 fn main(){match run(){Ok(code)=>{println!("ALIAS-IMPORT-LAUNCHER child_exit={code}");std::process::exit(code as i32)},Err(e)=>{eprintln!("ALIAS-IMPORT-LAUNCHER ERROR: {e}");std::process::exit(1)}}}
