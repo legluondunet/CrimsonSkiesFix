@@ -30,9 +30,18 @@ fn main(){
     assert_eq!(unsafe{call(0,0,7)},0,"missing pointers must be rejected");
     let winmm=load(&PathBuf::from(&args[1]));
     require(winmm,b"timeGetTime\0");
+    // Fail-closed ABI contract: a dependent DLL must never resolve an
+    // unverified OS numeric WinMM slot to a totally different function.
+    // Those names are exported at high private ordinals instead.
+    for ordinal in [1usize,2,11,14,185,1023]{
+        let address=unsafe{GetProcAddress(winmm,ordinal as *const c_char)};
+        assert!(address.is_null(),
+            "unsafe low WinMM ordinal {ordinal} resolved in split shim");
+    }
+
     let status=require(winmm,b"CrimsonSkiesFixBootstrapStatus\0");
     type Status=unsafe extern "system" fn()->u32;
     let read:Status=unsafe{std::mem::transmute(status)};
     assert_eq!(unsafe{read()},1,"synthetic, non-game EXE must not be hooked");
-    println!("SPLIT-WINMM-SMOKE PASS: both DLLs load x86; 4 core exports and native WinMM table present; non-game EXE safely rejected");
+    println!("SPLIT-WINMM-SMOKE PASS: both DLLs load x86; 4 core exports, 185 named WinMM exports, unsafe low ordinals absent; non-game EXE rejected");
 }
