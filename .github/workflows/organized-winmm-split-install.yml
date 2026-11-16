@@ -193,6 +193,12 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      - name: Build import-alias runtime variant with accurate native WinMM diagnostics
+        run: |
+          cargo test --manifest-path runtime-split/Cargo.toml --features import-alias-bootstrap --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias core unit tests failed'}
+          cargo build --manifest-path runtime-split/Cargo.toml --features import-alias-bootstrap --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias runtime build failed'}
       - name: Build/tests experimental CSFIX import alias installer (native WinMM)
         env:
           CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll
