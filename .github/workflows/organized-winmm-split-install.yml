@@ -1,0 +1,92 @@
+name: Experimental organized WinMM split installation (NOT RELEASE)
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/runtime-split/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/organized-winmm-split-install.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/runtime-split/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/organized-winmm-split-install.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  split-installer-x86:
+    runs-on: windows-latest
+    name: Organized split WinMM x86 — loader, runtime and launcher
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      CRIMSONSKIESFIX_BUNDLED_CORE_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Windows i686 target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Loader WinMM unit tests
+        run: cargo test --manifest-path loader-winmm/Cargo.toml --target i686-pc-windows-msvc
+      - name: Compile WinMM bootstrap shim
+        run: cargo build --manifest-path loader-winmm/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Check 185 named WinMM exports of the loader
+        run: python runtime-winmm/tools/verify_runtime_exports.py loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Split runtime unit tests
+        run: cargo test --manifest-path runtime-split/Cargo.toml --target i686-pc-windows-msvc
+      - name: Build CrimsonSkiesFix.dll
+        run: cargo build --manifest-path runtime-split/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Organized installer tests
+        run: cargo test --manifest-path installer/Cargo.toml --features winmm-split-install --target i686-pc-windows-msvc
+      - name: Build experimental combined installer
+        run: cargo build --manifest-path installer/Cargo.toml --features winmm-split-install --release --target i686-pc-windows-msvc
+      - name: Verify PE architecture, CLI marker and empty-tree behavior
+        shell: pwsh
+        run: |
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $winmm='loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll'
+          $core='runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll'
+          foreach($p in @($exe,$winmm,$core)){
+            if(!(Test-Path $p)){throw "Missing $p"}
+            $b=[IO.File]::ReadAllBytes((Resolve-Path $p))
+            $pe=[BitConverter]::ToInt32($b,0x3c)
+            if([BitConverter]::ToUInt16($b,$pe+4) -ne 0x14c){throw "Not PE32 x86: $p"}
+          }
+          $version=(& $exe --version) -join "`n"
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL SPLIT'){
+            throw "Wrong launcher variant: $version"
+          }
+          New-Item -ItemType Directory -Force 'winmm-split-smoke' | Out-Null
+          Copy-Item $exe 'winmm-split-smoke/CrimsonSkiesFix.exe'
+          & './winmm-split-smoke/CrimsonSkiesFix.exe' --launch-no-verify
+          if($LASTEXITCODE -ne 2){throw '--launch-no-verify should not install or create a game directory'}
+          if(Test-Path 'winmm-split-smoke/crimsonskies'){throw 'Unchecked launch modified an empty tree'}
+          Write-Host 'ORGANIZED WINMM SPLIT STANDALONE SMOKE PASS'
+          $global:LASTEXITCODE=0
+      - name: Package explicitly test-only installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-split-dist' | Out-Null
+          $target='winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $target
+          Copy-Item 'installer/README-winmm-candidate.md' 'winmm-split-dist/README-EXPERIMENTAL.md'
+          $sha=(Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-INSTALLER-X86-TEST-ONLY
+          path: CrimsonSkiesFix/winmm-split-dist/*
+          retention-days: 14
+          if-no-files-found: error
