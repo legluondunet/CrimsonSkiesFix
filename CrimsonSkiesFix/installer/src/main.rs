@@ -50,8 +50,10 @@ fn bundled_core_matches(_game:&Path)->bool{true}
 
 #[cfg(not(feature="winmm-installer"))]
 const README: &str = include_str!("../../README.md");
-#[cfg(feature="winmm-installer")]
+#[cfg(all(feature="winmm-installer",not(feature="winmm-split-install")))]
 const README: &str = include_str!("../README-winmm-candidate.md");
+#[cfg(feature="winmm-split-install")]
+const README: &str = include_str!("../README-winmm-split.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -172,7 +174,7 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     ensure_new_text(&docs.join("LICENSE"), LICENSE)?;
     ensure_new_text(&docs.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
     let source = format!("https://github.com/legluondunet/CrimsonSkiesFix/tree/{COMMIT}");
-    let build_info = format!(
+    let mut build_info = format!(
         "Project=CrimsonSkiesFix\nVersion={VERSION}\nCommit={COMMIT}\n\
          LogIdentity=CrimsonSkiesFix {VERSION}-{} x86\nArchitecture=Windows-x86\n\
          DllSha256={}\nDllSizeBytes={}\nRuntimeDll={RUNTIME_DLL}\nSource={source}\n",
@@ -180,6 +182,10 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_RUNTIME),
         BUNDLED_RUNTIME.len()
     );
+    #[cfg(feature="winmm-split-install")]
+    build_info.push_str(&format!(
+        "CoreDll={PATCH_FOLDER}/{CORE_DLL}\nCoreSha256={}\nCoreSizeBytes={}\nGameFolder={GAME_FOLDER}\n",
+        sha256::hex(BUNDLED_CORE),BUNDLED_CORE.len()));
     let manifest = docs.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
@@ -591,6 +597,32 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature="winmm-split-install")]
+    #[test]
+    fn organized_install_separates_both_dlls_and_documents_without_touching_logs(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-organized-layout-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let game=root.join(GAME_FOLDER);
+        fs::create_dir(&game).unwrap();
+        fs::write(root.join(INSTALLER_LOG),b"owned by installer").unwrap();
+        deploy_runtime(&game).unwrap();
+        deploy_documentation(&game).unwrap();
+        assert!(regular(&game.join("winmm.dll")));
+        assert_eq!(digest(&game.join("winmm.dll")).unwrap(),sha256::hex(BUNDLED_RUNTIME));
+        assert!(regular(&game.join(PATCH_FOLDER).join(CORE_DLL)));
+        assert_eq!(digest(&game.join(PATCH_FOLDER).join(CORE_DLL)).unwrap(),sha256::hex(BUNDLED_CORE));
+        assert!(regular(&game.join(PATCH_FOLDER).join("CrimsonSkiesFix.ini.example")));
+        assert!(regular(&game.join(PATCH_FOLDER).join("build-info.txt")));
+        assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
+        assert!(!any_entry(&game.join(CORE_DLL)));
+        assert_eq!(fs::read(root.join(INSTALLER_LOG)).unwrap(),b"owned by installer");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn cli_has_only_the_supported_commands(){
         for flags in [
