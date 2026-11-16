@@ -301,6 +301,10 @@ fn virtualize_base_read(start:u64,buffer:&mut [u8],post:&gos_video_lock::Virtual
     if VIRTUAL_HEADER_MASK.load(Ordering::Acquire)!=0x0f{return;}
     if let Some((_offset,_size))=splice(start,buffer,post.data_at,&post.replacement){
         if VIRTUAL_PAYLOAD_READS.fetch_add(1,Ordering::Relaxed)==0{
+            #[cfg(feature="winmm-split-runtime")]
+            if post.lighting_first_run {
+                crate::lighting_default::mark_verified_script_delivered();
+            }
             log("GOS-ROF-VIRTUAL: authenticated VIDEO.SCRIPT compressed bytes patched in game memory only; file unchanged");
         }
     }
