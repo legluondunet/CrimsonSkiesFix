@@ -597,7 +597,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="winmm-split-install"){
+        if cfg!(feature="import-alias-install"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=CSFIX.dll+crimsonskiesfix/CrimsonSkiesFix.dll native_winmm=yes EXPERIMENTAL IMPORT ALIAS", &COMMIT[..8]);
+        }else if cfg!(feature="winmm-split-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll+crimsonskiesfix/CrimsonSkiesFix.dll EXPERIMENTAL SPLIT", &COMMIT[..8]);
         }else if cfg!(feature="winmm-installer") {
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll EXPERIMENTAL", &COMMIT[..8]);
