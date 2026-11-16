@@ -312,6 +312,9 @@ fn cfg()->Config {
                 #[cfg(feature="winmm-ordinal-bridge")]
                 log(&format!("WINMM-NAMED-ORDER: stage=first-ddraw {}",
                     winmm_proxy::named_forward_snapshot()));
+                #[cfg(feature="winmm-ordinal-bridge")]
+                log(&format!("WINMM-EXTRA-ORDER: stage=first-ddraw {}",
+                    winmm_compat::extra_forward_snapshot()));
             }
         }
         // Read once at startup, never from DllMain. This file is intentionally
