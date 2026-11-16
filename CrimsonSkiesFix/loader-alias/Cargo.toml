@@ -1,0 +1,17 @@
+[package]
+name = "crimson-ddraw-import-alias"
+version = "1.1.0-rc.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Small DirectDraw-import alias, no WinMM exports and no loader-lock provider resolution"
+
+[lib]
+name = "CSFIX"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
