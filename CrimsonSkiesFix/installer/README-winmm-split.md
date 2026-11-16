@@ -77,6 +77,32 @@ creates it with `[Debug] Log=1`, `AspectRatio=auto` and `FPSLimit=60`
 for this diagnostic build only; it never overwrites an existing INI.
 The ordinary 1.0 and 1.1 builds keep their original defaults.
 
+## Native Win11 initial video initialization (640x480 RGB565)
+
+On a two-monitor Windows 11 test session the split loader successfully
+redirected DirectDraw (`iat_status=7`), authenticated the game EXE and
+prepared the first windowed D3D3 640x480x16 RGB565/Z32 graph. The game then
+requested `IID_IDirectDrawSurface` (COM v1) on the graph's backbuffer,
+which the previous bridge refused with `E_NOINTERFACE`; the user saw
+**"Failed to initialize video"**. This failure happened **after** successful
+HAL preflight, not because WinMM failed to load.
+
+The split-only bridge now forwards this *exact* legacy 640x480 RGB565
+backbuffer COM query to the **native backing surface**, returning the
+provider's real v1 interface with the provider's own AddRef. It never
+returns the virtual Surface4 pointer under a Surface1 IID. Primary,
+Depth, unknown formats and unknown resolutions remain excluded.
+The original monolithic WinMM and 1.0 variants are unchanged.
+
+With `[Debug] Log=1`, a successful native COM handoff should produce
+`NATIVE-WINMM-SURFACE1: ... mode=640x480x16 ... hr=0x00000000 valid_interface=true`.
+The 640x480 logical game startup mode is expected: it must not be confused
+with the later verified **1920x1200** physical 3D output. The next real
+native-Windows test must confirm the game proceeds beyond this QI, shows
+the MainMenu signature, enters gameplay and displays the corrected 3D
+resolution label after returning to VIDEO Preferences. A green CI
+alone does not validate rendering or remove WinMM loader-lock risks.
+
 ## Known limitations
 
 - First-use WinMM named-export forwarding can still call system
