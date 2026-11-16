@@ -95,15 +95,14 @@ pub(crate) fn one_time_script_eligible()->bool{
     let Some(path)=win32::ini_path() else{return false;};
     let Some(ini)=valid_ini(&path) else{return false;};
     let marker=marker_applied(&ini);
-    // Early menu/resource access occurs after bootstrap and the original
-    // game's preferences init in supported 1.02. Refuse rather than
-    // infer 'Medium' for an uninitialized or non-default value.
-    let active=unsafe {std::ptr::read_volatile(ACTIVE_LIGHTING as *const u32)};
-    let eligible=!marker && active==MEDIUM;
+    // ROF resources are authenticated before the game initializes Video
+    // settings. Reading the active DWORD here previously returned zero
+    // and disabled the first-use patch permanently.
+    // The verified GOS script now changes the selector only if it is
+    // still Medium at the later, actual message-20001 initialization.
+    let eligible=!marker;
     if crate::cfg().log_enabled{
-        log(&format!(
-            "MENU-LIGHTING-DEFAULT: first-run VIDEO script preflight active_index={active} previous_apply_marker={marker} eligible={eligible} (no user settings changed)"
-        ));
+        log(&format!("MENU-LIGHTING-DEFAULT: first-run script preflight completed_marker={marker} eligible={eligible}; no early game-preferences read"));
     }
     eligible
 }
@@ -151,8 +150,10 @@ pub(crate) unsafe fn before_video_get()->bool{
     let pending=std::ptr::read_volatile(PENDING_LIGHTING as *const u32);
     if !should_offer(active,pending,marker_applied(&ini),true){return false;}
     if OFFERED.swap(true,Ordering::AcqRel){return false;}
-    std::ptr::write_volatile(PENDING_LIGHTING as *mut u32,HIGH);
-    log("MENU-LIGHTING-DEFAULT: initial Video Preferences GET pending LightingQuality Medium(2)->High(3); awaiting original Apply to persist, cancel preserves previous choice");
+    // The original VIDEO.SCRIPT now conditionally overrides HUA *after*
+    // the callback returned. Do not mutate the pending data here: the
+    // original Accept/Cancel handles all preference changes and storage.
+    log("MENU-LIGHTING-DEFAULT: video GET saw Medium(2); authenticated script conditionally selects High(3) after GET; waiting for original Apply");
     true
 }
 pub(crate) fn after_video_apply(original_success:bool){
