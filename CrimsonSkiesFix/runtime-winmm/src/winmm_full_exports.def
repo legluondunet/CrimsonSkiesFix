@@ -1,4 +1,6 @@
-; Noncanonical prototype ordinals: only named WinMM imports are currently supported.
+; Ordinals are prototype numbers, NOT stable Windows/Wine ABI numbers.
+; The verified system-WinMM audit found 177/178 name/ordinal mismatches.
+; Do not rely on these numeric exports for a production v1.1 release.
 ; Full documented Wine WinMM symbol inventory, 185 names. Existing 14 game imports
 ; remain mapped to their already smoke-tested assembly trampolines.
 ; Source: https://github.com/wine-mirror/wine/blob/master/dlls/winmm/winmm.spec
