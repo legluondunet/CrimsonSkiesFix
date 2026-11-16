@@ -156,6 +156,53 @@ No user files should be modified in-place by the script patch.
 This is experimental and does not apply to the legacy monolithic DLL
 or the 1.0 release. PR remains draft.
 
+## Split loader WinMM export-ABI hardening — fail closed (experimental)
+
+The native WinMM ABI audit from PR #42 identified 177 ordinal mismatches
+among 178 matching exported names. The earlier split loader reused the
+monolithic `winmm_full_exports.def`, which mapped 185 named functions
+to arbitrary slots @1..@185; a third-party module importing e.g.
+`winmm.dll` **by ordinal** could therefore silently jump to the
+wrong function with an incompatible ABI.
+
+The split loader now uses an **independent** `winmm_loader_exports.def`:
+
+- All **185 named** WinMM exports still exist; the approved game imports
+  its 14 WinMM APIs **by name** and therefore does not depend on their
+  numeric ordinals.
+- Their numeric aliases now occupy **@2048..@2232**. The common OS
+  ordinal interval **@1..@1023** remains unoccupied. A dependent module
+  importing an ordinal in this range will explicitly fail to resolve
+  rather than call another, unrelated multimedia function.
+- `loader-winmm/tools/verify_split_exports.py` audits the actual PE32
+  export table, rejects any occupied slot @1..@1023, missing/wrong named
+  aliases or unexpected named exports. The synthetic x86 load host also
+  requires GetProcAddress by representative low ordinals to fail on
+  **real Windows and Wine32**.
+- This does **not** implement OS-accurate forwarding by ordinal, nor
+  promise correct execution for arbitrary third-party DLLs. A module
+  requiring the system's ordinal ABI may now fail to load **explicitly**,
+  which is preferable to silently corrupting memory. Ordinal
+  compatibility remains a **release blocker** under issue #32.
+
+### Remaining loader-lock hazard — NOT solved by this change
+
+`winmm.dll!DllMain` currently authenticates a fixed PE import structure
+and modifies exactly two DirectDraw IAT pointers using VirtualProtect.
+The full executable hash and the full runtime installation wait until
+the first intercepted DirectDraw function. However, **named WinMM
+exports** can be invoked by other DLLs during their own DllMain, at which
+point the proxy's first-use `system_winmm()` resolver may call
+`LoadLibraryW` under the Windows loader lock. The split loader only
+moves the game-fix runtime LoadLibrary out of its **own** DllMain; it
+does **not** prove all export forwarding is loader-lock safe.
+
+Until there is a platform-safe provider strategy (or an explicit
+dependency inventory and an isolated DllMain reentrancy test on native
+Windows and Wine), keep this prototype **DRAFT / TEST ONLY**. A green
+synthetic LoadLibrary smoke on an already running thread is not such
+a proof. Do not merge or ship as 1.1 based on the export gate alone.
+
 ## Known limitations
 
 - First-use WinMM named-export forwarding can still call system
