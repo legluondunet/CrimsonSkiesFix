@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/loader-alias/**'
       - 'CrimsonSkiesFix/runtime-split/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/src/**'
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/loader-alias/**'
       - 'CrimsonSkiesFix/runtime-split/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/src/**'
@@ -95,6 +97,25 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Cannot build synthetic launcher/EXE'}
           Copy-Item loader-winmm/target/i686-pc-windows-msvc/debug/alias_import_launcher.exe alias-import-smoke/
           Copy-Item loader-winmm/target/i686-pc-windows-msvc/debug/alias_import_fixture.exe alias-import-smoke/
+      - name: Build independent CSFIX loader without any WinMM imports or exports
+        run: |
+          cargo test --manifest-path loader-alias/Cargo.toml --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Native alias loader tests failed'}
+          cargo build --manifest-path loader-alias/Cargo.toml --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Native alias loader build failed'}
+      - name: Verify production CSFIX alias loader fails closed on synthetic EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'alias-import-real-smoke' | Out-Null
+          Copy-Item loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll alias-import-real-smoke/
+          Copy-Item alias-import-smoke/alias_import_launcher.exe alias-import-real-smoke/
+          Copy-Item alias-import-smoke/alias_import_fixture.exe alias-import-real-smoke/
+          $exe=(Resolve-Path 'alias-import-real-smoke/alias_import_fixture.exe').Path
+          $launcher=(Resolve-Path 'alias-import-real-smoke/alias_import_launcher.exe').Path
+          $env:CRIMSON_ALIAS_REAL='1'
+          & $launcher $exe
+          if($LASTEXITCODE -ne 0){throw "Production alias loader synthetic smoke failed: $LASTEXITCODE"}
+          Remove-Item Env:CRIMSON_ALIAS_REAL
       - name: Verify suspended-process in-memory DDRAW alias and untouched native WinMM on Windows x86
         shell: pwsh
         run: |
@@ -121,6 +142,7 @@ jobs:
           Copy-Item 'winmm-split-dllmain-smoke/winmm_dllmain_client_extra.dll' 'winmm-split-wine-smoke/'
           Copy-Item 'winmm-split-dllmain-smoke/split_dllmain_client_smoke.exe' 'winmm-split-wine-smoke/'
           Copy-Item -Recurse 'alias-import-smoke' 'winmm-split-wine-smoke/alias-import'
+          Copy-Item -Recurse 'alias-import-real-smoke' 'winmm-split-wine-smoke/alias-import-real'
       - name: Export DLL loader smoke payload (no game files)
         uses: actions/upload-artifact@v4
         with:
@@ -219,4 +241,7 @@ jobs:
           aliasfixture="$(winepath -w "$PWD/smoke/alias-import/alias_import_fixture.exe" | tr -d '\r')"
           timeout 45s xvfb-run -a wine "$PWD/smoke/alias-import/alias_import_launcher.exe" "$aliasfixture"
           echo 'ALIAS-IMPORT-SMOKE: Wine32 native WINMM ordinal/provider preserved by in-memory DDRAW alias'
+          realfixture="$(winepath -w "$PWD/smoke/alias-import-real/alias_import_fixture.exe" | tr -d '\r')"
+          CRIMSON_ALIAS_REAL=1 timeout 45s xvfb-run -a wine "$PWD/smoke/alias-import-real/alias_import_launcher.exe" "$realfixture"
+          echo 'ALIAS-BOOTSTRAP-SMOKE: real CSFIX loader does not intercept unknown executable'
           echo 'WINE-SMOKE: PASS — native WinMM proxy and nested x86 runtime load, non-game EXE refuses hooks'
