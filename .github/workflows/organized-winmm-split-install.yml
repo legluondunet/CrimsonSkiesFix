@@ -81,7 +81,7 @@ jobs:
           New-Item -ItemType Directory -Force 'winmm-split-dist' | Out-Null
           $target='winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.exe'
           Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $target
-          Copy-Item 'installer/README-winmm-candidate.md' 'winmm-split-dist/README-EXPERIMENTAL.md'
+          Copy-Item 'installer/README-winmm-split.md' 'winmm-split-dist/README-EXPERIMENTAL.md'
           $sha=(Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
           "SHA256=$sha" | Set-Content 'winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.sha256'
       - uses: actions/upload-artifact@v4
