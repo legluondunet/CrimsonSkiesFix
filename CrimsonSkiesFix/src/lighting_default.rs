@@ -13,7 +13,7 @@
 //! localization). VIDEO.SCRIPT owns a *different* five-item UI list with
 //! Medium at index 2 and the immediately higher High choice at index 3.
 //! The previous prototype incorrectly conflated these two domains and
-//! also missed the script's post-get HUA = $NVA$ reset.
+//! also missed the script's post-get HUA = double-dollar NVA token reset.
 //!
 //! A marker is written inside the existing, user-editable
 //! CrimsonSkiesFix.ini AFTER the original Video Apply callback completes.
@@ -82,7 +82,7 @@ fn exact_lighting_registration()->bool{
 // The script otherwise overwrites the freshly retrieved HUA selector
 // with its hardware default $NVA$ during message 20001. Keep
 // total source length unchanged so archive offsets remain stable.
-const SOURCE_RESET:&[u8]=b"HUA = $NVA$";
+const SOURCE_RESET:&[u8]=b"HUA = \x24\x24NVA\x24\x24";
 const FIRST_RUN_RESET:&[u8]=b"HUA = 3      ";
 const EXPECTED_SPLIT_VIDEO_HASH:&str=
     "45dedb361b97c0cdaf8ba9ef00a7627d60c8effd72265841eefae669cf43e6ad";
@@ -176,7 +176,7 @@ mod tests{
     use super::*;
     #[test]
     fn split_default_script_replaces_only_final_reselection_after_get(){
-        let mut fixture=b"HUA = $NVA$".to_vec();
+        let mut fixture=b"HUA = \x24\x24NVA\x24\x24".to_vec();
         assert_eq!(SOURCE_RESET.len(),FIRST_RUN_RESET.len());
         assert_eq!(std::str::from_utf8(FIRST_RUN_RESET).unwrap(),"HUA = 3      ");
         fixture.copy_from_slice(SOURCE_RESET);
