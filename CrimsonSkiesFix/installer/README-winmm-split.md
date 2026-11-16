@@ -103,44 +103,55 @@ the MainMenu signature, enters gameplay and displays the corrected 3D
 resolution label after returning to VIDEO Preferences. A green CI
 alone does not validate rendering or remove WinMM loader-lock risks.
 
-## One-time Lighting Quality: High (experimental)
+## One-time Lighting Quality High — experimental, exact GOS fix
 
-The original game's VIDEO.SCRIPT selects Lighting Quality using its own
-five-choice menu at opcode 0x847. The exact approved 1.02 executable
-maps the original medium hardware-lighting flags to selector 2, and its
-fully enabled lighting flags to selector 1 (the proposed **High**).
-The initial value displayed on the owner's 16 November Windows screenshot
-was Medium even though the game was running at 1920x1200.
+The owner's real Windows log `CrimsonSkiesFix(20261116-155414).log`
+proves the first attempt **did run**: `MENU-LIGHTING-DEFAULT` changed
+the pending Video scalar from 2 to 1. However, the dropdown **remained
+Medium**. This was **not** a WinMM/DirectDraw failure.
 
-**Only the split prototype** proposes the High selector once when all
-of the following are true:
+The original authenticated `VIDEO.SCRIPT` was independently examined.
+It reads nine pending Video fields via `callback(...,2133,0,...)`, then
+sends message `20001` to itself. That handler assigns Lighting Quality
+`HUA` again from the GOS hardware-selector symbol `NVA`, overwriting
+the value just read before it initializes dropdown `LVA`. Also, the
+game's native lighting hardware flags (index 1) are **not** the five-item
+dropdown's visible quality index: Medium is index 2 and the next higher
+selection, High, is proposed as index 3.
 
-- The original Video Preferences script reads its settings using
-  original `uiData(0x855, get)`, after the original Preferences prepare;
-- The game's verified original `nLightingQuality` registration and
-  video-settings access instructions still match the supported EXE;
-- Both active and pending lighting values are the original Medium=2;
-- The existing `CrimsonSkiesFix.ini` does not contain the completed
-  initial-default marker.
+The new split-only experimental workaround uses two matching guards:
 
-This changes **only the pending Lighting Quality field** from selector 2
-to selector 1 before the game reads and displays the dropdown. All other
-graphics and gameplay preferences remain owned by the game. The user's
-original **Accept Changes** runs unchanged and persists the choice.
-After a successful Apply, the patch appends the following marker to the
-existing INI without replacing other lines or overwriting their values:
+1. An exactly hashed, unmodified source archive and original managed
+   overlay + immutable official backup must verify. When the current
+   game lighting value is the initial Medium and the local INI has
+   no completed-once marker, build an exact-size, **memory-only** VIDEO
+   variant with the one proven script assignment changed to `HUA = 3`.
+   Only the original authenticated `VIDEO.SCRIPT` is eligible.
+2. The existing verified ROFFILE.DLL `ReadFile` observer substitutes
+   the compressed bytes from this exact variant when the actual patched
+   overlay's VIDEO payload is read (Windows observed route), or when
+   the fallback original ROF source is read. Original bytes, file
+   handles, reported sizes, return values, archive files, and
+   compressed-member offsets remain unchanged.
+3. Only **after the modified script bytes are observed being delivered**
+   will the original GOS `uiData(0x855,0)` read be allowed to change the
+   corresponding pending Lighting Quality field from Medium 2 to High 3.
+   The original menu, selections, Accept and Cancel handlers remain in
+   charge. Any other starting value is preserved.
+4. Only a verified successful Apply appends
+   `[Compatibility] CrimsonSkiesFixLightingHighDefaultApplied=1` to
+   the existing INI. A later launch never reapplies the forced default
+   and the player can subsequently change Lighting Quality normally.
 
-```ini
-[Compatibility]
-CrimsonSkiesFixLightingHighDefaultApplied=1
-```
+The newly added log lines report script preflight, whether the actual
+ROF payload was delivered, and whether the menu pending lighting value
+was changed. They can help distinguish a wrong script routing result
+from an incorrect visible dropdown.
 
-On later launches the marker blocks automatic reselection: a player may
-choose Low/Medium/etc. and those changes are respected. Cancelling
-does not save the proposed value and does not mark it as applied.
-No game executable, archive or registry key is modified. This remains a
-real-game A/B change needing visible confirmation that selector 1 is
-localized to **High** on the actual installed language version.
+**Not yet validated against real GUI / actual display option semantics.**
+No user files should be modified in-place by the script patch.
+This is experimental and does not apply to the legacy monolithic DLL
+or the 1.0 release. PR remains draft.
 
 ## Known limitations
 
