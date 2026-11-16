@@ -1,5 +1,5 @@
-//! Experimental x86 DirectDraw proxy for the locally unpacked Crimson Skies 1.0.2.0.
-//! Place this built DLL under the name ddraw.dll beside CRIMSON.EXE.
+//! Shared CrimsonSkiesFix runtime for either legacy DDRAW proxy or independent WinMM bootstrap.
+//! WinMM mode redirects only authenticated game imports; the external ddraw.dll remains untouched.
 #![cfg(windows)]
 mod config;
 mod build_info;
@@ -12,12 +12,21 @@ mod menu_gos_event;
 mod menu_ui_trace;
 mod menu_ui_list_probe;
 mod menu_resolution_label;
+#[cfg(feature="winmm-bootstrap")]
+mod native_winmm_resolution_text;
 mod menu_ui_pages;
 mod menu_brand;
 mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
-#[cfg(all(target_arch = "x86", target_env = "msvc"))]
+#[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]
 mod ddraw_forward;
+#[cfg(feature = "winmm-bootstrap")]
+#[path = "../winmm-prototype/src/lib.rs"]
+mod winmm_proxy;
+#[cfg(feature = "winmm-bootstrap")]
+mod winmm_bootstrap;
+#[cfg(feature = "winmm-bootstrap")]
+mod winmm_compat;
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
@@ -217,7 +226,9 @@ static BLT_SIGNATURE_AUDIT:Mutex<blt_signature::Audit>=Mutex::new(blt_signature:
 static BLT_SIGNATURE_LOGS:AtomicUsize=AtomicUsize::new(0);
 
 // Separate from the installer's persistent report: a game session owns a
-// fresh log. Never append gameplay records across separate game launches.
+// fresh log ONLY when [Debug] Log=1. Never append across launches, and
+// never truncate a prior diagnostic file for an ordinary Log=0 launch.
+fn should_open_game_session_log(config:&Config)->bool{config.log_enabled}
 fn fresh_game_session_log(path:&std::path::Path)->std::io::Result<File>{
     OpenOptions::new().create(true).write(true).truncate(true).open(path)
 }
@@ -268,18 +279,23 @@ fn cfg()->Config {
         let dpi_diagnostic=if parsed.native_dpi_aware && !parsed.directdraw_passthrough {
             Some(win32::enable_native_system_dpi_experiment())
         }else{None};
-        if parsed.log_enabled || parsed.experimental_windowed_adapter {
-            // The DLL owns its gameplay diagnostics exclusively. Every game
-            // session starts a fresh CrimsonSkiesFix.log, whether launched by
-            // the standalone installer or directly. Installer/repair records
-            // live independently in CrimsonSkiesFix_installer.log.
+        if should_open_game_session_log(&parsed) {
+            // Gameplay diagnostics are explicitly opt-in. In particular,
+            // the default-enabled borderless/windowed DD4 backend must NOT
+            // silently turn logging back on when [Debug] Log=0.
+            // Installer/repair records remain entirely independent in
+            // CrimsonSkiesFix_installer.log.
             if let Some(path)=win32::log_path() {
                 if let Ok(file)=fresh_game_session_log(&path) {
                     let _=LOG.set(Mutex::new(file));
                 }
             }
             if LOG.get().is_some() {
-                log(&format!("{} x86 - init; configuration={parsed:?}; DirectDraw proxy",build_info::label()));
+                #[cfg(feature = "winmm-bootstrap")]
+                let bootstrap_kind="WinMM IAT bootstrap";
+                #[cfg(not(feature = "winmm-bootstrap"))]
+                let bootstrap_kind="DirectDraw proxy";
+                log(&format!("{} x86 - init; configuration={parsed:?}; {bootstrap_kind}",build_info::label()));
                 if let Some(ref status)=ini_dedup_status{log(status);}
                 if parsed.gos_video_lock==gos_video_lock::Mode::Off &&
                    parsed.experimental_windowed_adapter &&
@@ -312,7 +328,12 @@ fn cfg()->Config {
 }
 
 fn real_module()->Option<*mut c_void> {
-    let result=(*REAL_DLL.get_or_init(|| unsafe {win32::real_ddraw().map(|x|x as usize)}))
+    let result=(*REAL_DLL.get_or_init(|| unsafe {
+        #[cfg(feature = "winmm-bootstrap")]
+        { winmm_bootstrap::loaded_ddraw().map(|x|x as usize) }
+        #[cfg(not(feature = "winmm-bootstrap"))]
+        { win32::real_ddraw().map(|x|x as usize) }
+    }))
         .map(|x|x as *mut c_void);
     // Resolve the proxy module from our own function address, not from a
     // user-defined exported DllMain. The latter adds an unwanted 23rd PE
@@ -333,6 +354,14 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    #[cfg(feature = "winmm-bootstrap")]
+    {
+        static WINMM_LOG_ONCE:Once=Once::new();
+        WINMM_LOG_ONCE.call_once(||{
+            log(&format!("WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status={} (7=two imports redirected, 1=unrecognized image, 2=ddraw absent, 4=IAT mismatch)",
+                winmm_bootstrap::status()));
+        });
+    }
     // Preserve the native opening-screen initialization order from the
     // previously validated Windows 488a5180 build: register the original
     // loader observer before applying the managed archive patch.
@@ -344,11 +373,24 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
     }
     if diagnostics::is_native_windows() && !config.directdraw_passthrough {
+        // Historical Windows #22 fix: the game may obtain its IDirectDraw4
+        // from dynamically resolved DDRAW!DirectDrawCreateEx, not from one
+        // of the two static DDRAW imports we intercepted in DllMain.
+        // When the runtime moved to WinMM, that dynamic provider lookup
+        // once again bypassed our hooks. Restore the original game's
+        // provider-specific resolution path without taking over ddraw.dll.
+        // This must run after exe_gate and even with Log=0.
+        #[cfg(feature="winmm-bootstrap")]
+        {
+            static NATIVE_WINMM_GETPROC_ONCE:Once=Once::new();
+            NATIVE_WINMM_GETPROC_ONCE.call_once(native_getproc_trace::install);
+        }
         if config.log_enabled {
             NATIVE_IMPORT_AUDIT_ONCE.call_once(||{
-                // Diagnostics must never be required to activate an actual
-                // Windows-only compatibility fix.
                 native_video_imports::report();
+                // The v1.0 DirectDraw backend preserves its original
+                // diagnostic-only GetProcAddress observer unchanged.
+                #[cfg(not(feature="winmm-bootstrap"))]
                 native_getproc_trace::install();
             });
         }
@@ -475,7 +517,20 @@ unsafe fn symbol(name:&[u8])->*const c_void {
             log(&format!("MENU-SCENE: hook_available={installed}"));
         });
     }
-    let Some(real)=real_module() else {log("ERROR: system32\\ddraw.dll cannot be loaded");return ptr::null()};
+    #[cfg(feature = "winmm-bootstrap")]
+    {
+        // Preserve exactly the provider function pointers resolved by the PE
+        // loader before our IAT interception. This respects third-party video
+        // wrappers and does not depend on GetModuleHandleW's initialization
+        // order during WinMM process attachment.
+        let original=match name {
+            b"DirectDrawCreate\0" => winmm_bootstrap::original_create(),
+            b"DirectDrawEnumerateA\0" => winmm_bootstrap::original_enumerate(),
+            _ => 0,
+        };
+        if original!=0 {return original as *const c_void;}
+    }
+    let Some(real)=real_module() else {log("ERROR: loaded DirectDraw backend unavailable");return ptr::null()};
     win32::system_export(real,name)
 }
 
@@ -486,7 +541,7 @@ fn trace_game_windows(stage:&str) {
     }
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
     // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
@@ -517,10 +572,24 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     // This is independent of debug logging and never mutates the mode table.
     static GOS_RESOLUTION_LABEL_ONCE:Once=Once::new();
     GOS_RESOLUTION_LABEL_ONCE.call_once(||{
-        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen && cfg().desktop_resolution {
+        if cfg().experimental_windowed_adapter && cfg().native_3d_widescreen &&
+           cfg().desktop_resolution {
+            // Both auto and 4:3 show the genuine *patched 3D raster*:
+            // auto=physical monitor; forced 4:3=1600x1200 on 1920x1200.
+            // The original GOS mode selection and the 800x600 movie/menu
+            // surfaces remain unchanged (display-text replacement only).
             log("WINDOWED-DIAG: menu_resolution_label hook install begin");
             let installed=unsafe{menu_resolution_label::install()};
             log(&format!("MENU-RESOLUTION-LABEL: hook_available={installed}"));
+            // Windows WinMM regression: some GOS Preferences sessions display
+            // a cached 640x480 label without invoking the 0x845 formatter.
+            // Keep the original 0x845 hook. Intercept only the separately
+            // verified game text-assignment routine as a last-mile fallback.
+            #[cfg(feature="winmm-bootstrap")]
+            if diagnostics::is_native_windows(){
+                let text_bridge=unsafe{native_winmm_resolution_text::install()};
+                log(&format!("MENU-WINMM-TEXT: hook_available={text_bridge}"));
+            }
         }
     });
     // Passive GOS UI tracing is off with Log=0; unlike the verified
@@ -593,7 +662,7 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     hr
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
     let function=symbol(b"DirectDrawEnumerateA\0");
     let trace=cfg().log_enabled &&
@@ -614,7 +683,7 @@ pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:
     hr
 }
 
-#[no_mangle]
+#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr {
     let function=symbol(b"DirectDrawCreateEx\0");
     if function.is_null(){return DDERR_GENERIC;}
@@ -638,6 +707,19 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 #[cfg(test)]
 mod trace_tests {
     use super::*;
+    #[test]
+    fn log_zero_does_not_create_or_truncate_any_gameplay_log(){
+        let mut c=Config::default();
+        assert!(c.experimental_windowed_adapter);
+        assert!(!should_open_game_session_log(&c));
+        c.log_enabled=true;
+        assert!(should_open_game_session_log(&c));
+        c.log_enabled=false;
+        c.experimental_windowed_adapter=false;
+        assert!(!should_open_game_session_log(&c));
+        // Logging is a side effect, not a requirement for camera, DD4,
+        // or WinMM bootstrap: no other branch should open the file.
+    }
     #[test]
     fn fresh_game_log_does_not_erase_persistent_installer_report(){
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

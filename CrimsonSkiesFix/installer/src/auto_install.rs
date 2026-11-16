@@ -139,8 +139,8 @@ pub(super) fn preflight_install_sources(
     // Check the local owner-supplied approved game binary independently from
     // the CD data, so corrupt original media cannot block source reuse.
     let exe=approved_executable(base,existing)?;
-    if BUNDLED_DDRAW.len()<4096 || !BUNDLED_DDRAW.starts_with(b"MZ"){
-        return Err("embedded CrimsonSkiesFix DirectDraw patch is missing or invalid; extraction refused".into());
+    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
+        return Err(format!("embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"));
     }
     let updater=update102::find(base,update)?;
     Ok((exe,updater))
@@ -335,6 +335,30 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
 }
 
 fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
+    // The v1.1 WinMM candidate must never mistake an old CrimsonSkiesFix
+    // ddraw.dll (or a third-party wrapper) for a missing file to repair.
+    // Refuse *before* CD extraction, installer staging or player-data writes.
+    ensure_no_local_ddraw(game)?;
+    if cfg!(feature="winmm-installer") && directory(game) {
+        let runtime=game.join(RUNTIME_DLL);
+        if any_entry(&runtime) && !regular(&runtime) {
+            return Err("WinMM candidate: unsafe winmm.dll filesystem object; refusing installation".into());
+        }
+        let current_digest=if regular(&runtime){Some(digest(&runtime)?)}else{None};
+        let expected=sha256::hex(BUNDLED_RUNTIME);
+        // Any existing regular winmm.dll can be backed up automatically.
+        // deploy_runtime handles transactional replacement and one .bak.
+        // Existing verified manually imported game: install or upgrade the
+        // complete WinMM-only runtime without CD rebuild, EXE replacement or
+        // edits to save data. A CD receipt still uses strict verification.
+        if !any_entry(&game.join(INSTALL_RECEIPT)) &&
+            validated_game_exe(game).is_ok() &&
+            current_digest.as_deref()!=Some(expected.as_str()) {
+            deploy_runtime(game)?;
+            deploy_documentation(game)?;
+            return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
+        }
+    }
     if !any_entry(game){
         build_and_publish(base,game,false)?;
         return Ok("INSTALL_FROM_CD_AND_LAUNCH");
@@ -361,7 +385,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // previous launcher's log lost this evidence when a later
                 // stale staging directory blocked the reconstruction.
                 // If only the bundled DLL changed, repair that first.
-                let followup=match deploy_proxy(game){
+                let followup=match deploy_runtime(game){
                     Ok(())=>match verify_installed_cd_assets(game){
                         Ok(_)=>{
                             // Keep build-info.txt in sync with the DLL.
@@ -475,12 +499,25 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    use std::sync::atomic::{AtomicU64,Ordering};
+    // Windows SystemTime can have coarse precision even though as_nanos()
+    // is used, and Rust tests execute concurrently within one process.
+    // Use a monotonic per-process nonce and retry existing test directories.
+    static NEXT_TEMP:AtomicU64=AtomicU64::new(0);
     fn temp()->PathBuf{
         let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
-        let p=std::env::temp_dir().join(format!("crimson-auto-flow-{}-{n}",std::process::id()));
-        fs::create_dir(&p).unwrap();
-        p
+        for _ in 0..64{
+            let seq=NEXT_TEMP.fetch_add(1,Ordering::Relaxed);
+            let p=std::env::temp_dir().join(format!(
+                "crimson-auto-flow-{}-{n}-{seq}",std::process::id()));
+            match fs::create_dir(&p){
+                Ok(())=>return p,
+                Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue,
+                Err(e)=>panic!("cannot create isolated test directory: {e}"),
+            }
+        }
+        panic!("could not reserve distinct auto-install test directory")
     }
     #[test]
     fn old_generated_installer_log_removed_only_when_replaced(){

@@ -423,8 +423,16 @@ fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
         return None;
     }
     let parent=dll_dir.parent()?;
-    if !safe_directory(parent,false) ||
-       !regular_file(&parent.join("CrimsonSkiesFix.exe")){return None;}
+    let standard_launcher=regular_file(&parent.join("CrimsonSkiesFix.exe"));
+    // Test installers have a distinct filename so they cannot be confused
+    // with the v1.0 DirectDraw installer. Keep the same single gameplay log
+    // path when only the experimental launcher is present in the parent.
+    #[cfg(feature="winmm-bootstrap")]
+    let recognized_launcher=standard_launcher ||
+        regular_file(&parent.join("CrimsonSkiesFix-WinMM-1.1-TEST.exe"));
+    #[cfg(not(feature="winmm-bootstrap"))]
+    let recognized_launcher=standard_launcher;
+    if !safe_directory(parent,false) || !recognized_launcher{return None;}
     Some(parent.to_path_buf())
 }
 

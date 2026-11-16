@@ -55,6 +55,87 @@ pub(crate) unsafe fn replace_method(object:*mut c_void,index:usize,hook:usize)->
 }
 
 
+
+/// Native-WinMM-only recovery for the *verified game-owned DD4 object*.
+/// The caller must authenticate the game EXE, prove IDirectDraw4 by QI and
+/// intercept the exact game mode-setup entry. Neither a stale registry entry
+/// nor a shared vtable pointer alone authorizes a re-hook.
+///
+/// Preflight ALL requested hooks before writing any: a slot may only contain
+/// the recorded native original or the precise hook we installed earlier.
+/// An unrelated replacement / recycled COM vtable fails closed. The registry
+/// is never rewritten to treat an unfamiliar replacement as original.
+/// Rolls back any earlier slots if protection/patching fails.
+#[cfg(feature="winmm-bootstrap")]
+pub(crate) unsafe fn rearm_exact_registered_originals(
+    object:*mut c_void, hooks:&[(usize,usize)]
+)->Result<usize,&'static str>{
+    if object.is_null() || hooks.is_empty(){return Err("invalid-owner-or-hooks");}
+    let table=*(object as *const *mut usize);
+    if table.is_null(){return Err("null-vtable");}
+    let Ok(map)=originals().lock() else {return Err("registry-lock-failed");};
+    let mut pending:Vec<(usize,usize,usize)>=Vec::new();
+    for &(index,hook) in hooks {
+        if pending.iter().any(|&(i,_,_)|i==index) {
+            return Err("duplicate-hook-slot");
+        }
+        let Some(&original)=map.get(&(table as usize,index)) else {
+            return Err("unregistered-slot");
+        };
+        let current=*table.add(index);
+        match classify_rearm_slot(current,original,hook) {
+            Some(true)=>pending.push((index,original,hook)),
+            Some(false)=>{},
+            None=>return Err("foreign-or-recycled-vtable-slot"),
+        }
+    }
+    // Keep the lock while patching: the registry cannot be rekeyed in
+    // parallel with a guarded restore. Only physical slot writes happen.
+    let mut written:Vec<(usize,usize)>=Vec::new();
+    for (index,original,hook) in pending.iter().copied() {
+        let slot=table.add(index);
+        if *slot!=original || !win32::patch_vtable_slot(slot,hook) {
+            for (old_index,old_original) in written.into_iter().rev() {
+                let _=win32::patch_vtable_slot(table.add(old_index),old_original);
+            }
+            return Err("slot-changed-or-write-failed");
+        }
+        written.push((index,original));
+    }
+    Ok(written.len())
+}
+
+#[cfg(feature="winmm-bootstrap")]
+fn classify_rearm_slot(current:usize,original:usize,hook:usize)->Option<bool>{
+    if original==0 || hook==0 || original==hook || current==0 {return None;}
+    if current==hook {Some(false)}
+    else if current==original {Some(true)}
+    else {None}
+}
+
+
+/// Read-only diagnosis of a *known, authenticated* COM object's vtable slot.
+/// A successful call to replace_method() is not proof that a later COM
+/// object still uses the same callback. This reports why a re-attach failed,
+/// without mutating the vtable or trusting a stale original function pointer.
+pub(crate) unsafe fn hook_slot_status(object:*mut c_void,index:usize,hook:usize)->&'static str {
+    if object.is_null(){return "null-object";}
+    let table=*(object as *const *const usize);
+    if table.is_null(){return "null-vtable";}
+    let current=*table.add(index);
+    if current==0{return "null-method";}
+    let Ok(map)=originals().lock() else{return "registry-unavailable"};
+    match map.get(&(table as usize,index)) {
+        Some(&original) if original!=0 && original!=hook => {
+            if current==hook {"active"}else{"registered-but-displaced"}
+        },
+        Some(_)=>"registry-invalid",
+        None if current==hook=>"hook-present-unregistered",
+        None=>"not-installed",
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +235,62 @@ mod tests {
         unsafe {assert!(!replace_method(object,0,0x2222));}
         assert_eq!(slots,[0x1111]);
         assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
+    }
+
+    #[test]
+    fn read_only_slot_status_distinguishes_active_and_displaced_hooks() {
+        let mut slots=[0x9876usize,0x4567usize];
+        let mut vtable=slots.as_mut_ptr();
+        let object=(&mut vtable as *mut *mut usize).cast::<c_void>();
+        let key=(slots.as_ptr() as usize,0usize);
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"not-installed");
+            assert_eq!(hook_slot_status(object,1,0xabcd),"not-installed");
+        }
+        assert!(originals().lock().unwrap().insert(key,0x1111).is_none());
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"registered-but-displaced");
+        }
+        slots[0]=0xabcd;
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"active");
+        }
+        assert_eq!(originals().lock().unwrap().remove(&key),Some(0x1111));
+        unsafe {
+            assert_eq!(hook_slot_status(object,0,0xabcd),"hook-present-unregistered");
+            assert_eq!(hook_slot_status(std::ptr::null_mut(),0,0xabcd),"null-object");
+        }
+    }
+
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn guarded_rearm_preflight_requires_exact_old_function_not_foreign_hook(){
+        assert_eq!(classify_rearm_slot(0x3000,0x1000,0x3000),Some(false));
+        assert_eq!(classify_rearm_slot(0x1000,0x1000,0x3000),Some(true));
+        assert_eq!(classify_rearm_slot(0x2000,0x1000,0x3000),None);
+        assert_eq!(classify_rearm_slot(0,0x1000,0x3000),None);
+        assert_eq!(classify_rearm_slot(0x3000,0x3000,0x3000),None);
+    }
+    #[cfg(feature="winmm-bootstrap")]
+    #[test]
+    fn guarded_rearm_refuses_unregistered_and_foreign_slots_without_writing(){
+        let mut slots=[0x11usize,0x22usize,0x33usize];
+        let mut table=slots.as_mut_ptr();
+        let object=(&mut table as *mut *mut usize).cast::<c_void>();
+        let one=(slots.as_ptr() as usize,1usize);
+        unsafe {
+            assert_eq!(
+                rearm_exact_registered_originals(object,&[(1,0x99)]),
+                Err("unregistered-slot"));
+        }
+        assert!(originals().lock().unwrap().insert(one,0x55).is_none());
+        unsafe {
+            assert_eq!(
+                rearm_exact_registered_originals(object,&[(1,0x99)]),
+                Err("foreign-or-recycled-vtable-slot"));
+        }
+        assert_eq!(slots,[0x11,0x22,0x33]);
+        assert_eq!(originals().lock().unwrap().remove(&one),Some(0x55));
     }
 
     #[test]
