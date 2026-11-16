@@ -177,15 +177,70 @@ const EXTRA:[&[u8];171]=[
     b"waveOutWrite\0",
 ];
 static RESOLVED:[AtomicUsize;171]=[const {AtomicUsize::new(0)};171];
+
+#[cfg(feature="winmm-ordinal-bridge")]
+use std::sync::atomic::AtomicU32;
+
+// Extra dependencies can call WinMM exports before the game's first DD4 API.
+// Record only bits; the actual summary is emitted from the regular game log.
+#[cfg(feature="winmm-ordinal-bridge")]
+static EXTRA_FIRST_PHASE: AtomicU32 = AtomicU32::new(0); // 1..171 early, 172..342 later
+#[cfg(feature="winmm-ordinal-bridge")]
+static EXTRA_ATTEMPTED: [AtomicU32;6]=[const {AtomicU32::new(0)};6];
+#[cfg(feature="winmm-ordinal-bridge")]
+static EXTRA_BEFORE_DDRAW: [AtomicU32;6]=[const {AtomicU32::new(0)};6];
+#[cfg(feature="winmm-ordinal-bridge")]
+static EXTRA_SUCCEEDED: [AtomicU32;6]=[const {AtomicU32::new(0)};6];
+
+#[cfg(feature="winmm-ordinal-bridge")]
+fn mark_extra_first_resolution(index: usize) {
+    let early=!crate::winmm_proxy::game_ddraw_started();
+    let word=index/32;
+    let bit=1u32 << (index%32);
+    EXTRA_ATTEMPTED[word].fetch_or(bit,Ordering::Relaxed);
+    if early {EXTRA_BEFORE_DDRAW[word].fetch_or(bit,Ordering::Relaxed);}
+    let encoded=(index+1+if early {0}else{171}) as u32;
+    let _=EXTRA_FIRST_PHASE.compare_exchange(0,encoded,Ordering::AcqRel,Ordering::Relaxed);
+}
+#[cfg(feature="winmm-ordinal-bridge")]
+fn total_unique(mask:&[AtomicU32;6])->u32{
+    mask.iter().map(|word|word.load(Ordering::Acquire).count_ones()).sum()
+}
+#[cfg(feature="winmm-ordinal-bridge")]
+fn early_extra_names()->String{
+    let names=(0..171).filter(|&index|{
+        let mask=EXTRA_BEFORE_DDRAW[index/32].load(Ordering::Acquire);
+        mask & (1u32 << (index%32))!=0
+    }).take(8).map(|index|{
+        std::str::from_utf8(EXTRA[index]).unwrap_or("?").trim_end_matches('\0')
+    }).collect::<Vec<_>>();
+    if names.is_empty(){"none".to_string()}else{names.join(",")}
+}
+
+#[cfg(feature="winmm-ordinal-bridge")]
+pub(crate) fn extra_forward_snapshot()->String{
+    let first=EXTRA_FIRST_PHASE.load(Ordering::Acquire);
+    let first_index=if first==0 {None}else{Some(((first-1)%171) as usize)};
+    let name=first_index.map(|i|{
+        std::str::from_utf8(EXTRA[i]).unwrap_or("?").trim_end_matches('\0')
+    }).unwrap_or("none");
+    format!("first={name} first_before_ddraw={} attempted_unique={} resolved_unique={} before_ddraw_first8={}",
+        (1..=171).contains(&first),total_unique(&EXTRA_ATTEMPTED),
+        total_unique(&EXTRA_SUCCEEDED),early_extra_names())
+}
 #[inline(never)]
 extern "C" fn resolve_extra(index:u32)->usize{
     let Some((slot,name))=RESOLVED.get(index as usize).zip(EXTRA.get(index as usize))
     else {std::process::abort();};
     let old=slot.load(Ordering::Acquire);
     if old!=0{return old;}
+    #[cfg(feature="winmm-ordinal-bridge")]
+    mark_extra_first_resolution(index as usize);
     let address=crate::winmm_proxy::resolve_external(name);
     if address==0 {std::process::abort();}
     slot.store(address,Ordering::Release);
+    #[cfg(feature="winmm-ordinal-bridge")]
+    EXTRA_SUCCEEDED[(index as usize)/32].fetch_or(1u32 << (index%32),Ordering::Release);
     address
 }
 global_asm!(r#"
