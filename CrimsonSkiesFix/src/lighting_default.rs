@@ -37,6 +37,11 @@ const ORIGINAL_LIGHTING_REGISTER:[u8;10]=[
     0x68,0x9c,0xe8,0x61,0x00, // push "nLightingQuality"
 ];
 static OFFERED:AtomicBool=AtomicBool::new(false);
+static SCRIPT_REPLACEMENT_DELIVERED:AtomicBool=AtomicBool::new(false);
+pub(crate) fn mark_verified_script_delivered(){
+    SCRIPT_REPLACEMENT_DELIVERED.store(true,Ordering::Release);
+    log("MENU-LIGHTING-DEFAULT: authenticated first-run GOS VIDEO script bytes delivered from base ROF, local HUA selector reset now High=3");
+}
 
 fn marker_applied(ini:&str)->bool{
     let mut compatibility=false;
@@ -126,7 +131,8 @@ pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
 /// One DWORD in *pending* memory, before the game itself reads it and builds
 /// the dropdown. The original UI and Apply/Cancel handlers stay authoritative.
 pub(crate) unsafe fn before_video_get()->bool{
-    if OFFERED.load(Ordering::Acquire) || !exact_lighting_registration() ||
+    if !SCRIPT_REPLACEMENT_DELIVERED.load(Ordering::Acquire) ||
+        OFFERED.load(Ordering::Acquire) || !exact_lighting_registration() ||
         !crate::menu_video_probe::verified_video_fields() ||
         !crate::menu_video_probe::legacy_ui_active() ||
         !crate::menu_scene::main_menu_was_seen() ||
