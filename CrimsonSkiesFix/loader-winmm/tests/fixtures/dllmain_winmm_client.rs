@@ -5,7 +5,10 @@
 use std::{ffi::c_void,sync::atomic::{AtomicU32,Ordering}};
 
 #[link(name="winmm")]
-extern "system" { fn timeGetTime()->u32; }
+extern "system" {
+    fn timeGetTime()->u32;
+    fn joyGetNumDevs()->u32;
+}
 
 const SEEN: u32=0xC11E_17A1;
 static CALLED:AtomicU32=AtomicU32::new(0);
@@ -15,6 +18,11 @@ static TICK:AtomicU32=AtomicU32::new(0);
 pub unsafe extern "system" fn DllMain(
     _module:*mut c_void,reason:u32,_reserved:*mut c_void)->i32 {
     if reason==1 {  // DLL_PROCESS_ATTACH; the loader lock is held.
+        // Compile a second client with --cfg winmm_first_extra to force
+        // the independent 171-export trampoline path to resolve before
+        // any of the game's 14 imports have initialized native WinMM.
+        #[cfg(winmm_first_extra)]
+        let _devices=unsafe{joyGetNumDevs()};
         let tick=unsafe{timeGetTime()};
         TICK.store(tick,Ordering::Release);
         CALLED.store(SEEN,Ordering::Release);
