@@ -517,7 +517,7 @@ pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
         size_field_at:header.checked_add(4)? as u64,
         data_at:original.offset as u64,
         replacement,
-        expanded_size:VIDEO_MODIFIED_SIZE as u32,
+        expanded_size:presentation_script.len() as u32,
         lighting_first_run,
     })
 }
@@ -558,7 +558,7 @@ pub(crate) fn virtual_lighting_overlay_postimage()->Option<VirtualVideo>{
         size_field_at:video.descriptor.checked_add(4)? as u64,
         data_at:video.offset as u64,
         replacement,
-        expanded_size:VIDEO_MODIFIED_SIZE as u32,
+        expanded_size:patched.len() as u32,
         lighting_first_run:true,
     })
 }
