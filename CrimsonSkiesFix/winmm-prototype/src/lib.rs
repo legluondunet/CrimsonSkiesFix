@@ -438,3 +438,16 @@ mod ordinal_telemetry_tests {
         assert!(snapshot.contains("resolved_unique="));
     }
 }
+
+#[cfg(all(test, feature = "winmm-ordinal-bridge"))]
+mod named_call_order_tests {
+    use super::named_list_from_mask;
+
+    #[test]
+    fn name_resolution_bitmask_uses_the_actual_game_import_inventory() {
+        assert_eq!(named_list_from_mask(0),"none");
+        assert_eq!(named_list_from_mask(1 << 13),"timeGetTime");
+        assert_eq!(named_list_from_mask((1 << 0) | (1 << 13)),
+            "mixerGetLineInfoA,timeGetTime");
+    }
+}
