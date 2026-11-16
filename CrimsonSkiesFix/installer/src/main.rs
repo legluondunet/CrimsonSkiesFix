@@ -195,75 +195,83 @@ fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
 // after the replacement DLL is successfully published. This intentionally
 // accepts any pre-existing regular runtime DLL, regardless of provenance.
 // If active and .bak both exist, the older .bak is replaced by active.
-fn deploy_runtime(game:&Path)->Result<(),String>{
-    if cfg!(feature="winmm-installer") {
-        ensure_no_local_ddraw(game)?;
+fn preflight_binary(dir:&Path,name:&str)->Result<(),String>{
+    for filename in [name.to_owned(),format!("{name}.bak")]{
+        let path=dir.join(&filename);
+        if any_entry(&path)&&!regular(&path){
+            return Err(format!("unsafe existing {filename}"));
+        }
     }
-    let active=game.join(RUNTIME_DLL);
-    let pending=game.join(format!("{RUNTIME_DLL}.installing"));
-    let backup=game.join(format!("{RUNTIME_DLL}.bak"));
-    let old_backup=game.join(format!("{RUNTIME_DLL}.bak.previous"));
-    if any_entry(&pending) || any_entry(&old_backup) {
-        return Err(format!("abandoned {RUNTIME_DLL} transaction; inspect files manually"));
+    for filename in [format!("{name}.installing"),format!("{name}.bak.previous")]{
+        if any_entry(&dir.join(filename)){
+            return Err(format!("abandoned {name} transaction; inspect files manually"));
+        }
     }
-    if any_entry(&active) && !regular(&active) {
-        return Err(format!("unsafe existing {RUNTIME_DLL}"));
-    }
-    if any_entry(&backup) && !regular(&backup) {
-        return Err(format!("unsafe existing {RUNTIME_DLL}.bak"));
-    }
-    let expected=sha256::hex(BUNDLED_RUNTIME);
-    let existing_digest=if regular(&active){Some(digest(&active)?)}else{None};
-    // Same bundled runtime: no copy and no rotation even if .bak exists.
-    if existing_digest.as_deref()==Some(expected.as_str()) {
-        return Ok(());
-    }
-    if cfg!(feature="winmm-installer") && existing_digest.is_some() {
-        // The user explicitly requested an unconditional one-backup rotation.
-        // Unknown but regular DLLs follow the same reversible transaction.
-        println!("WinMM candidate: replacing existing winmm.dll (regardless of SHA-256); keeping the previous active file as winmm.dll.bak");
+    Ok(())
+}
+
+// Stage and hash-verify a DLL, rotate just one active backup, and roll back
+// both names if publishing fails. Shared by proxy and nested game-fix runtime.
+fn deploy_binary(dir:&Path,name:&str,bundled:&[u8])->Result<(),String>{
+    preflight_binary(dir,name)?;
+    let active=dir.join(name);
+    let pending=dir.join(format!("{name}.installing"));
+    let backup=dir.join(format!("{name}.bak"));
+    let old_backup=dir.join(format!("{name}.bak.previous"));
+    let expected=sha256::hex(bundled);
+    if regular(&active)&&digest(&active)?==expected{return Ok(());}
+    if regular(&active) && cfg!(feature="winmm-installer"){
+        println!("WinMM candidate: replacing existing {name}; previous active preserved as {name}.bak");
     }
     {
         let mut f=OpenOptions::new().write(true).create_new(true)
             .open(&pending).map_err(error)?;
-        f.write_all(BUNDLED_RUNTIME).map_err(error)?;
+        f.write_all(bundled).map_err(error)?;
         f.sync_all().map_err(error)?;
     }
-    if digest(&pending)?!=expected {
+    if digest(&pending)?!=expected{
         let _=fs::remove_file(&pending);
-        return Err(format!("staged {RUNTIME_DLL} SHA-256 mismatch"));
+        return Err(format!("staged {name} SHA-256 mismatch"));
     }
-    // Keep the older backup until the new active DLL is atomically
-    // published; rollback restores BOTH prior names if a rename fails.
-    // Without an active DLL there is nothing to back up. Keep an existing
-    // .bak in its place rather than deleting the only recovery copy.
-    let backup_moved=if regular(&backup) && regular(&active) {
-        if let Err(err)=fs::rename(&backup,&old_backup) {
+    let backup_moved=if regular(&backup)&&regular(&active){
+        if let Err(err)=fs::rename(&backup,&old_backup){
             let _=fs::remove_file(&pending);
-            return Err(format!("cannot stage previous DLL backup: {err}"));
+            return Err(format!("cannot stage previous {name} backup: {err}"));
         }
         true
     }else{false};
-    let active_moved=if regular(&active) {
-        if let Err(err)=fs::rename(&active,&backup) {
-            if backup_moved {let _=fs::rename(&old_backup,&backup);}
+    let active_moved=if regular(&active){
+        if let Err(err)=fs::rename(&active,&backup){
+            if backup_moved{let _=fs::rename(&old_backup,&backup);}
             let _=fs::remove_file(&pending);
-            return Err(format!("cannot back up previous {RUNTIME_DLL}: {err}"));
+            return Err(format!("cannot back up previous {name}: {err}"));
         }
         true
     }else{false};
-    if let Err(err)=fs::rename(&pending,&active) {
-        if active_moved {let _=fs::rename(&backup,&active);}
-        if backup_moved {let _=fs::rename(&old_backup,&backup);}
+    if let Err(err)=fs::rename(&pending,&active){
+        if active_moved{let _=fs::rename(&backup,&active);}
+        if backup_moved{let _=fs::rename(&old_backup,&backup);}
         let _=fs::remove_file(&pending);
-        return Err(format!("cannot publish bundled {RUNTIME_DLL}: {err}"));
+        return Err(format!("cannot publish bundled {name}: {err}"));
     }
-    if backup_moved {
-        if let Err(err)=fs::remove_file(&old_backup) {
+    if backup_moved{
+        if let Err(err)=fs::remove_file(&old_backup){
             eprintln!("Warning: old backup retained as {}: {err}",old_backup.display());
         }
     }
     Ok(())
+}
+fn deploy_runtime(game:&Path)->Result<(),String>{
+    if cfg!(feature="winmm-installer"){ensure_no_local_ddraw(game)?;}
+    #[cfg(feature="winmm-split-install")]
+    {
+        // Validate both transaction slots BEFORE touching either DLL.
+        let patch=ensure_patch_dir(game)?;
+        preflight_binary(game,RUNTIME_DLL)?;
+        preflight_binary(&patch,CORE_DLL)?;
+        deploy_binary(&patch,CORE_DLL,BUNDLED_CORE)?;
+    }
+    deploy_binary(game,RUNTIME_DLL,BUNDLED_RUNTIME)
 }
 
 const INSTALL_RECEIPT: &str = "CrimsonSkiesFix.install-receipt.txt";
