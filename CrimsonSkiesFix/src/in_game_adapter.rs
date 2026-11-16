@@ -531,6 +531,9 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         #[cfg(feature="winmm-ordinal-bridge")]
         log(&format!("WINMM-ORDINAL-BRIDGE: stage=DD4-SetDisplayMode {}",
             crate::winmm_proxy::ordinal_resolution_snapshot()));
+        #[cfg(feature="winmm-ordinal-bridge")]
+        log(&format!("WINMM-NAMED-ORDER: stage=DD4-SetDisplayMode {}",
+            crate::winmm_proxy::named_forward_snapshot()));
     }
     let Ok(mut state)=RUNTIME.lock() else{return Some(E_FAIL);};
     let Some(runtime)=state.as_mut() else{
