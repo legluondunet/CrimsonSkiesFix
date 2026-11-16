@@ -825,6 +825,21 @@ mod early_monitor_tests{
 #[cfg(test)]
 mod game_log_routing_tests {
     use super::*;
+    #[cfg(feature="winmm-split-runtime")]
+    #[test]
+    fn organized_runtime_routes_gameplay_logs_two_directories_above_dll(){
+        let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-organized-log-{}-{id}",std::process::id()));
+        let game=root.join("crimsonskies");
+        let patch=game.join("crimsonskiesfix");
+        fs::create_dir_all(&patch).unwrap();
+        assert_eq!(organized_launcher_root(&patch),Some(root.clone()));
+        let other=root.join("something-else").join("crimsonskiesfix");
+        fs::create_dir_all(&other).unwrap();
+        assert_eq!(organized_launcher_root(&other),None);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
         let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
