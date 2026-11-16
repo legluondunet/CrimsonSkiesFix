@@ -38,6 +38,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install Windows i686 target
         run: rustup target add i686-pc-windows-msvc
+      - name: Split WinMM ordinal fail-closed gate synthetic fixture tests
+        run: python loader-winmm/tools/test_verify_split_exports.py -v
       - name: Loader WinMM unit tests
         run: cargo test --manifest-path loader-winmm/Cargo.toml --target i686-pc-windows-msvc
       - name: Compile WinMM bootstrap shim
