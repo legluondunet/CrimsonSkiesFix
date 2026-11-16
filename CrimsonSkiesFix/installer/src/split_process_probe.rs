@@ -5,7 +5,7 @@ use std::{
     ffi::{c_void,OsString},mem::{size_of,zeroed},
     os::windows::ffi::OsStringExt,
     path::{Path,PathBuf},process::{Command,ExitStatus},
-    ptr,thread,time::{Duration,Instant},
+    thread,time::{Duration,Instant,SystemTime},fs,io::Read,
 };
 
 const TH32CS_SNAPMODULE:u32=0x8;
@@ -79,9 +79,12 @@ fn same_path(a:&Path,b:&Path)->bool{
 struct Evidence {
     samples:u32,
     local_winmm:bool,
-    system_winmm:bool,
-    core_seen:bool,
-    redirected:bool,
+    named_winmm:bool,
+    redirected_named_winmm:bool,
+    redirected_local_winmm:bool,
+    core_path_match:bool,
+    core_module_seen:bool,
+    runtime_log_attested:bool,
     unpatched:bool,
     inconsistent:bool,
     snapshot_unavailable:bool,
@@ -95,36 +98,97 @@ impl Evidence{
         self.samples+=1;
         let expected_shim=game.join("winmm.dll");
         let expected_core=game.join("crimsonskiesfix").join("CrimsonSkiesFix.dll");
-        let shim=modules.iter().find(|module|module.name=="winmm.dll");
-        if let Some(shim)=shim{
-            if same_path(&shim.path,&expected_shim){self.local_winmm=true;}
-            else{self.system_winmm=true;}
-        }
-        self.core_seen|=modules.iter().any(|m|m.name=="crimsonskiesfix.dll"&&same_path(&m.path,&expected_core));
-        let exe=modules.iter().find(|m|m.name=="crimson.exe");
-        if let (Some(exe),Some(shim))=(exe,shim){
+        let shims=modules.iter().filter(|m|m.name=="winmm.dll")
+            .collect::<Vec<_>>();
+        self.named_winmm|=!shims.is_empty();
+        self.local_winmm|=shims.iter().any(|m|same_path(&m.path,&expected_shim));
+        self.core_module_seen|=modules.iter().any(|m|m.name=="crimsonskiesfix.dll");
+        self.core_path_match|=modules.iter().any(|m|
+            m.name=="crimsonskiesfix.dll"&&same_path(&m.path,&expected_core));
+        if let Some(exe)=modules.iter().find(|m|m.name=="crimson.exe"){
             let first=read_import(pid,exe,IAT_CREATE);
             let second=read_import(pid,exe,IAT_ENUMERATE);
-            match (first,second){
-                (Some(a),Some(b)) if is_inside(a,shim)&&is_inside(b,shim)=>{
-                    self.redirected=true;
-                }
-                (Some(a),Some(b)) if is_inside(a,shim)!=is_inside(b,shim)=>{
+            if let (Some(a),Some(b))=(first,second){
+                let in_any_named=shims.iter().any(|m|is_inside(a,m)) &&
+                    shims.iter().any(|m|is_inside(b,m));
+                let in_local=shims.iter().any(|m|
+                    same_path(&m.path,&expected_shim) && is_inside(a,m) && is_inside(b,m));
+                if in_local{self.redirected_local_winmm=true;}
+                if in_any_named{self.redirected_named_winmm=true;}
+                if (shims.iter().any(|m|is_inside(a,m))) !=
+                   (shims.iter().any(|m|is_inside(b,m))){
                     self.inconsistent=true;
                 }
-                (Some(_),Some(_))=>self.unpatched=true,
-                _=>{}
+                if !in_any_named && !self.inconsistent{
+                    self.unpatched=true;
+                }
             }
         }
     }
     fn summary(&self)->String{
-        let provider=if self.local_winmm{"local"}else if self.system_winmm{"system"}else{"unobserved"};
-        let iat=if self.redirected{"redirected"}else if self.inconsistent{"partial"}else if self.unpatched{"not-redirected"}else{"unknown"};
-        format!("SPLIT-PROBE: snapshots={} winmm_provider={} core_dll_seen={} directdraw_iat={} snapshot_unavailable={} (read-only, sampled while game ran; no loader-lock assertion)",
-            self.samples,provider,self.core_seen,iat,self.snapshot_unavailable)
+        // Wine/Proton may expose a builtin winmm.dll before or instead of
+        // the app-local PE in Toolhelp32. It is NEVER sufficient to take
+        // the first name match and label that "system". Cross-check
+        // the actual IAT targets and a fresh runtime-owned startup log.
+        let provider=if self.redirected_local_winmm {
+            "local"
+        }else if self.runtime_log_attested && self.redirected_named_winmm {
+            "runtime-confirmed-path-unverified"
+        }else if self.redirected_named_winmm {
+            "winmm-module-path-unverified"
+        }else if self.runtime_log_attested {
+            "runtime-confirmed-module-unobserved"
+        }else{
+            "unverified"
+        };
+        let core=if self.core_path_match{"verified-path"}
+        else if self.runtime_log_attested{"runtime-log-fresh"}
+        else if self.core_module_seen{"module-path-unverified"}
+        else{"unverified"};
+        let iat=if self.redirected_local_winmm || self.redirected_named_winmm{
+            "redirected"
+        }else if self.inconsistent{"partial"}
+        else if self.unpatched{"not-redirected"}
+        else{"unknown"};
+        format!(
+            "SPLIT-PROBE: snapshots={} winmm_provider={} core_dll_seen={} core_evidence={} directdraw_iat={} runtime_log_fresh={} snapshot_unavailable={} (read-only; Wine module paths may differ; never infer module absence from Toolhelp alone)",
+            self.samples,provider,
+            self.core_path_match || self.runtime_log_attested,
+            core,iat,self.runtime_log_attested,self.snapshot_unavailable)
     }
 }
+#[derive(Clone,Copy,PartialEq,Eq,Debug)]
+struct LogStamp{modified:Option<SystemTime>,len:u64}
+fn stamp(path:&Path)->Option<LogStamp>{
+    let meta=fs::metadata(path).ok()?;
+    if !meta.is_file(){return None;}
+    Some(LogStamp{modified:meta.modified().ok(),len:meta.len()})
+}
+fn current_split_runtime_log(log_path:&Path,previous:Option<LogStamp>)->bool{
+    let Some(now)=stamp(log_path) else{return false;};
+    if now.len==0 || now.len>32*1024*1024 || Some(now)==previous{
+        return false;
+    }
+    let Ok(mut file)=fs::File::open(log_path) else{return false;};
+    let mut bytes=Vec::new();
+    if file.by_ref().take(64*1024).read_to_end(&mut bytes).is_err(){return false;}
+    let Ok(prefix)=String::from_utf8(bytes) else{return false;};
+    let first=prefix.lines().next().unwrap_or("");
+    // The first line is written by the nested runtime, after its WinMM
+    // bootstrap handoff. A stale file, no Log=1, wrong build or an
+    // unrelated game process must not be upgraded to "confirmed".
+    let expected=option_env!("CRIMSONSKIESFIX_COMMIT")
+        .and_then(|s|s.get(..8))
+        .filter(|s|s.chars().all(|c|c.is_ascii_hexdigit()));
+    first.starts_with("CrimsonSkiesFix 1.1.0-rc.1-") &&
+        first.contains("WinMM IAT bootstrap") &&
+        expected.is_some_and(|sha|first.contains(sha)) &&
+        prefix.contains("WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7")
+}
+
 pub(super) fn launch(exe:&Path,game:&Path)->Result<(ExitStatus,String),std::io::Error>{
+    let log_path=game.parent().unwrap_or(game).join("CrimsonSkiesFix.log");
+    let prior_log=stamp(&log_path);
     let mut child=Command::new(exe).current_dir(game).spawn()?;
     let pid=child.id();
     let start=Instant::now();
@@ -134,12 +198,14 @@ pub(super) fn launch(exe:&Path,game:&Path)->Result<(ExitStatus,String),std::io::
     loop {
         evidence.observe(pid,game);
         if let Some(status)=child.try_wait()?{
+            evidence.runtime_log_attested=current_split_runtime_log(&log_path,prior_log);
             return Ok((status,evidence.summary()));
         }
         if start.elapsed()>=Duration::from_secs(12){break;}
         thread::sleep(Duration::from_millis(120));
     }
     let status=child.wait()?;
+    evidence.runtime_log_attested=current_split_runtime_log(&log_path,prior_log);
     Ok((status,evidence.summary()))
 }
 #[cfg(test)]
@@ -152,6 +218,36 @@ mod tests{
         assert!(is_inside(0x10ff,&m));
         assert!(!is_inside(0x1100,&m));
         assert!(same_path(Path::new(r"C:\Demo\winmm.dll"),Path::new(r"c:\demo\WINMM.dll")));
+    }
+    #[test]
+    fn wine_module_name_only_never_claims_system_provider_or_absent_core(){
+        let mut e=Evidence::default();
+        e.named_winmm=true;
+        e.redirected_named_winmm=true;
+        let s=e.summary();
+        assert!(s.contains("winmm_provider=winmm-module-path-unverified"));
+        assert!(s.contains("core_dll_seen=false"));
+        e.runtime_log_attested=true;
+        let s=e.summary();
+        assert!(s.contains("winmm_provider=runtime-confirmed-path-unverified"));
+        assert!(s.contains("core_dll_seen=true"));
+        assert!(s.contains("core_evidence=runtime-log-fresh"));
+        assert!(s.contains("directdraw_iat=redirected"));
+        e.redirected_local_winmm=true;
+        assert!(e.summary().contains("winmm_provider=local"));
+    }
+    #[test]
+    fn stale_missing_or_blank_runtime_log_cannot_attest_game_start(){
+        let path=std::env::temp_dir().join(format!(
+            "crimson-probe-log-test-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos()));
+        assert!(!current_split_runtime_log(&path,None));
+        fs::write(&path,b"not a runtime log").unwrap();
+        assert!(!current_split_runtime_log(&path,None));
+        let baseline=stamp(&path);
+        assert!(!current_split_runtime_log(&path,baseline));
+        fs::remove_file(path).unwrap();
     }
     #[test]
     fn native_windows_module_snapshot_can_enumerate_our_own_process(){
@@ -174,6 +270,6 @@ mod tests{
     fn incomplete_sample_cannot_claim_installed_shim_worked(){
         let s=Evidence::default().summary();
         assert!(s.contains("directdraw_iat=unknown"));
-        assert!(s.contains("winmm_provider=unobserved"));
+        assert!(s.contains("winmm_provider=unverified"));
     }
 }
