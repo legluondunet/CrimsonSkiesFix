@@ -20,7 +20,14 @@ fn main(){
  let tick=unsafe{timeGetTime()};
  let first=unsafe{DirectDrawCreate(std::ptr::null(),std::ptr::null_mut(),std::ptr::null_mut())};
  let second=unsafe{DirectDrawEnumerateA(std::ptr::null_mut(),std::ptr::null_mut())};
- assert_eq!(first,0x6A6A_1234,"DirectDrawCreate did not target alias DLL");
- assert_eq!(second,0x6A6A_1234,"DirectDrawEnumerateA did not target alias DLL");
+ if std::env::var_os("CRIMSON_ALIAS_REAL").is_some() {
+    // Production CSFIX without the approved game/core must fail closed.
+    assert_eq!(first,0x8876_0000u32 as i32,
+      "production loader must refuse unknown game without its core");
+    assert_eq!(second,0x8876_0000u32 as i32);
+ } else {
+    assert_eq!(first,0x6A6A_1234,"DirectDrawCreate did not target alias DLL");
+    assert_eq!(second,0x6A6A_1234,"DirectDrawEnumerateA did not target alias DLL");
+ }
  println!("ALIAS-IMPORT-SMOKE PASS: native WinMM import unchanged, two DirectDraw imports dispatched to unique CSFIX.dll, tick={tick}");
 }
