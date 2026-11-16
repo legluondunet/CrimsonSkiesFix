@@ -5,8 +5,8 @@
 use super::*;
 use std::ffi::OsStr;
 
-const REBUILT:&str="CrimsonSkiesFix.rebuilding";
-const PREVIOUS:&str="CrimsonSkiesFix.previous";
+const REBUILT:&str=if cfg!(feature="winmm-split-install"){"crimsonskies.rebuilding"}else{"CrimsonSkiesFix.rebuilding"};
+const PREVIOUS:&str=if cfg!(feature="winmm-split-install"){"crimsonskies.previous"}else{"CrimsonSkiesFix.previous"};
 const EXE_BACKUP:&str="CRIMSON.EXE.protected.bak";
 const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
 // The installer and game use independent logs. The last installation or
@@ -252,10 +252,14 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
             copy_player_files(&from,&new.join(folder))?;
         }
     }
-    let ini=old.join("CrimsonSkiesFix.ini");
-    if any_entry(&ini){
-        if !regular(&ini){return Err("unsafe existing player INI; repair refused".into());}
-        let dest=new.join("CrimsonSkiesFix.ini");
+    let active=patch_dir(old).join("CrimsonSkiesFix.ini");
+    // Preserve a legacy flat game-root INI if this is the first organized
+    // repair; the original remains in the old game directory.
+    let old_flat=old.join("CrimsonSkiesFix.ini");
+    let source=if regular(&active){Some(active)}else if regular(&old_flat){Some(old_flat)}else{None};
+    if let Some(ini)=source{
+        let dest_dir=ensure_patch_dir(new)?;
+        let dest=dest_dir.join("CrimsonSkiesFix.ini");
         if any_entry(&dest){return Err("refusing to overwrite active player INI".into());}
         fs::copy(ini,dest).map_err(error)?;
     }
@@ -353,7 +357,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         // edits to save data. A CD receipt still uses strict verification.
         if !any_entry(&game.join(INSTALL_RECEIPT)) &&
             validated_game_exe(game).is_ok() &&
-            current_digest.as_deref()!=Some(expected.as_str()) {
+            (current_digest.as_deref()!=Some(expected.as_str()) || !bundled_core_matches(game)) {
             deploy_runtime(game)?;
             deploy_documentation(game)?;
             return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
