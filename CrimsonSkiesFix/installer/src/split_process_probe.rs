@@ -150,10 +150,14 @@ impl Evidence{
         }else if self.inconsistent{"partial"}
         else if self.unpatched{"not-redirected"}
         else{"unknown"};
+        // A missing Toolhelp32 entry is not a loaded-module absence proof,
+        // particularly for Wine/Proton paths and forwarded native DLLs.
+        let core_seen=if self.core_path_match || self.runtime_log_attested {
+            "true"
+        }else{"unverified"};
         format!(
             "SPLIT-PROBE: snapshots={} winmm_provider={} core_dll_seen={} core_evidence={} directdraw_iat={} runtime_log_fresh={} snapshot_unavailable={} (read-only; Wine module paths may differ; never infer module absence from Toolhelp alone)",
-            self.samples,provider,
-            self.core_path_match || self.runtime_log_attested,
+            self.samples,provider,core_seen,
             core,iat,self.runtime_log_attested,self.snapshot_unavailable)
     }
 }
@@ -226,7 +230,7 @@ mod tests{
         e.redirected_named_winmm=true;
         let s=e.summary();
         assert!(s.contains("winmm_provider=winmm-module-path-unverified"));
-        assert!(s.contains("core_dll_seen=false"));
+        assert!(s.contains("core_dll_seen=unverified"));
         e.runtime_log_attested=true;
         let s=e.summary();
         assert!(s.contains("winmm_provider=runtime-confirmed-path-unverified"));
