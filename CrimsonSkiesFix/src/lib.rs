@@ -20,12 +20,15 @@ mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
 #[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]
 mod ddraw_forward;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 #[path = "../winmm-prototype/src/lib.rs"]
 mod winmm_proxy;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 mod winmm_bootstrap;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",feature="winmm-split-runtime"))]
+#[path="winmm_bootstrap_split.rs"]
+mod winmm_bootstrap;
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 mod winmm_compat;
 mod com_vtable;
 mod d3d3_hooks;
@@ -702,6 +705,27 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
         if let Some(version)=ddraw_iface(iid.cast()){observe_modern_ddraw(*out,version);}
     }
     hr
+}
+
+// Stable, internal-only exports used by the app-local WinMM shim.
+// No exported loader entry point or game hook is renamed in the legacy builds.
+#[cfg(feature="winmm-split-runtime")]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreate(
+    guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr{
+    unsafe{DirectDrawCreate(guid,out,outer)}
+}
+#[cfg(feature="winmm-split-runtime")]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawEnumerateA(
+    callback:*mut c_void,context:*mut c_void)->Hr{
+    unsafe{DirectDrawEnumerateA(callback,context)}
+}
+#[cfg(feature="winmm-split-runtime")]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreateEx(
+    guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr{
+    unsafe{DirectDrawCreateEx(guid,out,iid,outer)}
 }
 
 #[cfg(test)]
