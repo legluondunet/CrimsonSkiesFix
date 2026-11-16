@@ -289,11 +289,14 @@ fn deploy_runtime(game:&Path)->Result<(),String>{
 }
 
 const INSTALL_RECEIPT: &str = "CrimsonSkiesFix.install-receipt.txt";
+// Installer provenance belongs to the patch alongside build-info, never
+// mixed into the original game's file tree in the organized variant.
+fn receipt_path(game:&Path)->PathBuf{patch_dir(game).join(INSTALL_RECEIPT)}
 
 // The receipt records provenance, not proof: validate every original GAME/
 // file and the official overlay independently before trusting the install.
 fn installed_cd_edition(game:&Path)->Result<&'static str,String> {
-    let file=game.join(INSTALL_RECEIPT);
+    let file=receipt_path(game);
     if !regular(&file) {return Err("missing or unsafe CD installation receipt".into());}
     if fs::metadata(&file).map_err(error)?.len()>2048 {
         return Err("CD installation receipt is unexpectedly large".into());
@@ -316,7 +319,7 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     ensure_no_local_ddraw(game)?;
     if !directory(game) {return Err("missing or unsafe installed game directory".into());}
     let edition=installed_cd_edition(game)?;
-    let state=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
+    let state=fs::read_to_string(receipt_path(game)).map_err(error)?;
     let activated=state.lines().any(|l|l=="InstallState=GAME_READY");
     let count=disc_inspect::verify_installed_without_cabs(game,edition,activated)?;
     // These eight original retail loader/setup companion files come from
@@ -327,7 +330,7 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
     }
     // A retail file installation must contain both the chapter content
     // and the seven original CD root companions plus localized Readme.
-    let receipt=fs::read_to_string(game.join(INSTALL_RECEIPT)).map_err(error)?;
+    let receipt=fs::read_to_string(receipt_path(game)).map_err(error)?;
     let values=receipt.lines().filter_map(|line|
         line.strip_prefix("ChapterManifestSHA256=")
     ).collect::<Vec<_>>();
@@ -443,7 +446,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:&Path)->Result<(),String> {
         finalized.manifest_sha,finalized.short_name_candidates,
         extracted.retail_support_files,extracted.retail_support_bytes,renamed
     );
-    ensure_new_text(&stage.join(INSTALL_RECEIPT),&receipt)?;
+    ensure_new_text(&receipt_path(&stage),&receipt)?;
     let (edition,verified_count)=verify_installed_cd_assets(&stage)?;
     if verified_count+disc_inspect::REMOVED_CHAPTER_CABS!=extracted.file_count ||
         edition!=extracted.edition ||
@@ -571,7 +574,7 @@ fn run() -> Result<i32, String> {
     // verified-only relaunch after the filename spelling changes.
     auto_install::migrate_previous_installer_log(base);
     if args.len() == 1 && args[0] == "--verify" {
-        if regular(&game.join(INSTALL_RECEIPT)){
+        if regular(&receipt_path(game)){
             verify_installed_cd_assets(&game)?;
         }
         verify(&game)?;
@@ -823,7 +826,9 @@ mod tests {
         let root=std::env::temp_dir().join(format!("crimson-cd-install-check-{}-{id}",std::process::id()));
         fs::create_dir(&root).unwrap();
         assert!(verify_installed_cd_assets(&root).is_err());
-        fs::write(root.join(INSTALL_RECEIPT),
+        #[cfg(feature="winmm-split-install")]
+        fs::create_dir(patch_dir(&root)).unwrap();
+        fs::write(receipt_path(&root),
             "Project=CrimsonSkiesFix\nEdition=C_SKIES_FR_001\nInstallState=GAME_FILES_READY_EXECUTABLE_PENDING\n").unwrap();
         assert!(verify_installed_cd_assets(&root).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -834,7 +839,9 @@ mod tests {
             .unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!("crimson-cd-ready-{}-{id}",std::process::id()));
         fs::create_dir(&dir).unwrap();
-        let receipt=dir.join(INSTALL_RECEIPT);
+        #[cfg(feature="winmm-split-install")]
+        fs::create_dir(patch_dir(&dir)).unwrap();
+        let receipt=receipt_path(&dir);
         fs::write(&receipt,
             "Project=CrimsonSkiesFix\nEdition=C_SKIES_DISC_001\nInstallState=GAME_READY\n"
         ).unwrap();
