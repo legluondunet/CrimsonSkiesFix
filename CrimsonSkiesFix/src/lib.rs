@@ -307,6 +307,11 @@ fn cfg()->Config {
                 if let Some(ref result)=dpi_diagnostic {log(result);}
                 // Only one read-only inventory, gated by the explicit opt-in.
                 diagnostics::report(log);
+                // First-use WinMM name resolution may occur before game entry.
+                // Report the lock-free counters only here, never in DllMain.
+                #[cfg(feature="winmm-ordinal-bridge")]
+                log(&format!("WINMM-NAMED-ORDER: stage=first-ddraw {}",
+                    winmm_proxy::named_forward_snapshot()));
             }
         }
         // Read once at startup, never from DllMain. This file is intentionally
@@ -545,6 +550,8 @@ fn trace_game_windows(stage:&str) {
 
 #[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
+    #[cfg(feature="winmm-ordinal-bridge")]
+    winmm_proxy::mark_game_ddraw_started();
     // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
         if !out.is_null(){*out=ptr::null_mut();}
@@ -666,6 +673,8 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
 
 #[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
+    #[cfg(feature="winmm-ordinal-bridge")]
+    winmm_proxy::mark_game_ddraw_started();
     let function=symbol(b"DirectDrawEnumerateA\0");
     let trace=cfg().log_enabled &&
         STARTUP_DDRAW_ENUM_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32;
@@ -687,6 +696,8 @@ pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:
 
 #[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr {
+    #[cfg(feature="winmm-ordinal-bridge")]
+    winmm_proxy::mark_game_ddraw_started();
     let function=symbol(b"DirectDrawCreateEx\0");
     if function.is_null(){return DDERR_GENERIC;}
     let real:CreateExFn=std::mem::transmute(function);
