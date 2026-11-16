@@ -250,6 +250,26 @@ mod tests{
         fs::remove_file(path).unwrap();
     }
     #[test]
+    fn current_runtime_log_attestation_requires_new_matching_build_and_live_bootstrap(){
+        let Some(commit)=option_env!("CRIMSONSKIESFIX_COMMIT") else{return;};
+        let expected=&commit[..8];
+        let path=std::env::temp_dir().join(format!(
+            "crimson-probe-attest-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::write(&path,format!(
+            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7\\n"
+        )).unwrap();
+        assert!(current_split_runtime_log(&path,None));
+        let before=stamp(&path);
+        assert!(!current_split_runtime_log(&path,before));
+        fs::write(&path,format!(
+            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=4\\n"
+        )).unwrap();
+        assert!(!current_split_runtime_log(&path,None));
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn native_windows_module_snapshot_can_enumerate_our_own_process(){
         let modules=module_list(std::process::id()).expect("Toolhelp32 cannot enumerate own process");
         assert!(!modules.is_empty(),"empty module inventory");
