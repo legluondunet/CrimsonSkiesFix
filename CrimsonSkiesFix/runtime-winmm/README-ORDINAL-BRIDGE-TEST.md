@@ -41,6 +41,36 @@ this read-only telemetry. It confirms the game ran but not which numeric
 thunks (if any) were used. Only use a newer build with this feature to
 inspect actual ordinal-use evidence under GE-Proton.
 
+## Named WinMM call-order evidence (issue #32)
+
+The updated opt-in prototype also records the **first attempted resolution**
+among the game's 14 statically imported WinMM names. Resolution attempts
+record an atomic bit **before** calling the native system-WinMM provider;
+successes are counted separately, after `GetProcAddress` succeeds.
+
+At the initial game DirectDraw hook and each subsequent DD4 mode change, an
+ordinary `Log=1` game session prints a line such as:
+
+```text
+WINMM-NAMED-ORDER: stage=DD4-SetDisplayMode first=timeGetTime first_before_ddraw=true attempted_unique=1 resolved_unique=1 before_ddraw=timeGetTime
+```
+
+- `first_before_ddraw=true`: a named WinMM thunk attempted resolution
+  before the **first observed CrimsonSkiesFix DirectDraw hook**.
+- `before_ddraw=none`: no named WinMM first-resolution attempt was recorded
+  before that hook; this is NOT proof that the OS loader lock was absent.
+- `attempted_unique` and `resolved_unique`: unique game-import names
+  attempted versus successfully mapped to the native provider, not call totals.
+- This does **not** detect all loads, WinMM calls that bypass our proxy,
+  anonymous ordinal thunks, or loader lock ownership. The Linux/Windows
+  loader may call an imported function in another DLL's `DllMain` before
+  our normal game initialization; that remains an explicit release blocker.
+
+The probe performs **no logging, filesystem access, allocation, native API
+resolution or new library loading** in the first-use marker. All string
+formatting happens in the normal DirectDraw game path, outside our `DllMain`.
+It is diagnostic only and is not enabled in the regular 1.0 or 1.1 builds.
+
 ## If conducting an owner A/B gameplay test later
 
 **Only on a disposable complete copy** of the *approved* Crimson Skies 1.02
