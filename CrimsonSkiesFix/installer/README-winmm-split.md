@@ -23,6 +23,7 @@ crimsonskies/
     README.md
     LICENSE
     build-info.txt
+    CrimsonSkiesFix.install-receipt.txt  # for installs reconstructed from CD
 ```
 
 Use a **disposable test installation** with exact approved game data and the
