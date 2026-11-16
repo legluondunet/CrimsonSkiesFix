@@ -10,6 +10,8 @@ mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
 mod menu_ui_trace;
+#[cfg(feature="winmm-split-runtime")]
+mod lighting_default; // one-time native Video Lighting Quality High suggestion
 mod menu_ui_list_probe;
 mod menu_resolution_label;
 #[cfg(feature="winmm-bootstrap")]
