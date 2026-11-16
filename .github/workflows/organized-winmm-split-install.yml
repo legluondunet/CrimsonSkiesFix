@@ -134,7 +134,7 @@ jobs:
               data = path.read_bytes()
               assert data[:2] == b"MZ", name
               header = struct.unpack_from("<I", data, 0x3c)[0]
-              assert data[header:header+4] == b"PE\\0\\0", name
+              assert data[header:header+4] == b"PE\0\0", name
               assert struct.unpack_from("<H",data,header+4)[0] == 0x14c, name
               print("WINE-SMOKE: approved x86 synthetic asset",name,len(data))
           PY
@@ -152,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout 120s xvfb-run -a wineboot -u
-          core="$(winepath -w "$PWD/smoke/CrimsonSkiesFix.dll" | tr -d '\\r')"
-          shim="$(winepath -w "$PWD/smoke/winmm.dll" | tr -d '\\r')"
+          core="$(winepath -w "$PWD/smoke/CrimsonSkiesFix.dll" | tr -d '\r')"
+          shim="$(winepath -w "$PWD/smoke/winmm.dll" | tr -d '\r')"
           timeout 120s xvfb-run -a wine "$PWD/smoke/split_loader_smoke.exe" "$core" "$shim"
           echo 'WINE-SMOKE: PASS — native WinMM proxy and nested x86 runtime load, non-game EXE refuses hooks'
