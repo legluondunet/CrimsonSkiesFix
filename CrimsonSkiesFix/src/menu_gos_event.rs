@@ -159,6 +159,15 @@ unsafe extern "system" fn observe_callback(
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
     let in_ui=crate::menu_video_probe::legacy_ui_active();
+    // The original game commits ALL selected Video fields and persists
+    // preferences on Apply=14. Only after that event completes successfully
+    // do we mark the one-time default as offered; future user changes stay
+    // authoritative. Cancelling does not persist or mark the default.
+    #[cfg(feature="winmm-split-runtime")]
+    if in_ui && command==14 && result!=0 &&
+        PREFERENCES_DATA_SESSION.load(Ordering::Acquire){
+        crate::lighting_default::after_video_apply(true);
+    }
     if in_ui && matches!(command,13|14|16){
         let was_data=PREFERENCES_DATA_SESSION.load(Ordering::Acquire);
         let now_data=next_video_dialog_state(was_data,command,in_ui);
