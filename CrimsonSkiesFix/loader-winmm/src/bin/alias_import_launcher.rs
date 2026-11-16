@@ -84,7 +84,7 @@ pub(crate) fn launch_child(target:&std::path::Path,timeout_ms:u32)->Result<(u32,
  }
  let child=ChildGuard(pi);
  let failure=||unsafe{GetLastError()};
- let result=(||->Result<u32,String>{
+ let result=(||->Result<(u32,String),String>{
    let mut basic:ProcessBasicInfo=unsafe{zeroed()};let mut length=0;
    let status=unsafe{NtQueryInformationProcess(child.0.process,0,(&mut basic as *mut ProcessBasicInfo).cast(),
       size_of::<ProcessBasicInfo>() as u32,&mut length)};
