@@ -179,7 +179,8 @@ mod tests{
     fn split_default_script_replaces_only_final_reselection_after_get(){
         let mut fixture=b"HUA = \x24\x24NVA\x24\x24".to_vec();
         assert_eq!(FIRST_RUN_RESET.len(),SOURCE_RESET.len()+30);
-        assert_eq!(std::str::from_utf8(FIRST_RUN_RESET).unwrap(),"HUA = $NVA$\r\nif (2 == HUA)\r\n{\r\nHUA = 3\r\n}");
+        assert!(FIRST_RUN_RESET.starts_with(SOURCE_RESET));
+        assert!(FIRST_RUN_RESET.ends_with(b"\r\nif (2 == HUA)\r\n{\r\nHUA = 3\r\n}"));
         fixture.copy_from_slice(SOURCE_RESET);
         // Synthetic snippets are not the pinned game script.
         assert!(modify_verified_video_script(&fixture).is_none());
