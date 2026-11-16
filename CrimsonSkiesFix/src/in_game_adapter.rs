@@ -415,7 +415,18 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
         return None;
     }
-    let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
+    // The verified game HWND is the authoritative monitor on native
+    // multi-display Windows. Early cursor-based capture can refer to an
+    // unrelated screen even when the game launches on the other one.
+    // Resolve once at the first game-owned DD4 cooperative request, before
+    // the original exclusive mode setup is permitted to alter geometry.
+    let selected_monitor=if cfg!(feature="winmm-split-runtime") &&
+        crate::diagnostics::is_native_windows(){
+        win32::monitor_for_game_window(hwnd)
+    }else{
+        win32::launch_monitor_or_game_window(hwnd)
+    };
+    let Some(monitor)=selected_monitor else{
         if strict_native_nonexclusive(){
             log("NATIVE-STRICT-BORDERLESS: invalid monitor/HWND; exclusive cooperative request REJECTED");
             return Some(E_FAIL);
@@ -423,19 +434,9 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
         return None;
     };
-    // Split/native multi-monitor: a previously frozen launch monitor must
-    // agree with the ACTUAL verified game-owned HWND monitor. Refuse a
-    // cross-display guess, especially when both monitors look identical.
     #[cfg(feature="winmm-split-runtime")]
     if crate::diagnostics::is_native_windows(){
-        let hwnd_area=win32::monitor_for_game_window(hwnd);
-        let matches=hwnd_area.is_some_and(|area|
-            (area.left,area.top,area.right,area.bottom)==
-            (monitor.left,monitor.top,monitor.right,monitor.bottom));
-        if !matches{
-            log("WINDOWED-GAME: launch monitor differs from authenticated game HWND monitor; split DD4 graph refused without choosing display");
-            return if strict_native_nonexclusive(){Some(E_FAIL)}else{None};
-        }
+        log("WINDOWED-GAME: split native target selected from authenticated game-owned HWND (not cursor or primary display)");
     }
     let Some((monitor_w,monitor_h))=monitor.dimensions() else{
         if strict_native_nonexclusive(){
