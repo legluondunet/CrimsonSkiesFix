@@ -632,7 +632,7 @@ mod tests{
         let error=auto_prepare(&root,&game).unwrap_err();
         assert!(error.contains("existing installed CD verification failed"));
         assert!(error.contains("rebuild blocked by existing"));
-        assert!(error.contains("CrimsonSkiesFix.rebuilding"));
+        assert!(error.contains(REBUILT));
         assert_eq!(fs::read(stale.join("keep-me")).unwrap(),b"owner data");
         assert!(game.exists());
         fs::remove_dir_all(root).unwrap();
@@ -646,7 +646,7 @@ mod tests{
         fs::create_dir(&pending).unwrap();
         fs::write(pending.join("keep-me"),b"pending owner data").unwrap();
         let error=build_and_publish(&root,&game,true).unwrap_err();
-        assert!(error.contains("CrimsonSkiesFix.rebuilding.installing"));
+        assert!(error.contains(&format!("{REBUILT}.installing")));
         assert_eq!(fs::read(pending.join("keep-me")).unwrap(),b"pending owner data");
         fs::remove_dir_all(root).unwrap();
     }
@@ -682,7 +682,7 @@ mod tests{
         preserve_player_data(&old,&new).unwrap();
         assert_eq!(fs::read(new.join("SavedGames").join("career").join("pilot.dat")).unwrap(),b"original save");
         assert_eq!(fs::read(new.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
-        assert_eq!(fs::read(new.join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
+        assert_eq!(fs::read(patch_dir(&new).join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
         assert_eq!(fs::read(old.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
         fs::remove_dir_all(root).unwrap();
     }
