@@ -57,6 +57,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force 'winmm-split-dllmain-smoke' | Out-Null
           rustc --crate-type cdylib --target i686-pc-windows-msvc --edition 2021 -C target-feature=+crt-static -C panic=abort -o winmm-split-dllmain-smoke/winmm_dllmain_client.dll loader-winmm/tests/fixtures/dllmain_winmm_client.rs
+          rustc --crate-type cdylib --target i686-pc-windows-msvc --edition 2021 --cfg winmm_first_extra -C target-feature=+crt-static -C panic=abort -o winmm-split-dllmain-smoke/winmm_dllmain_client_extra.dll loader-winmm/tests/fixtures/dllmain_winmm_client.rs
+          if($LASTEXITCODE -ne 0){throw 'Could not build extra-export DllMain client DLL'}
           if($LASTEXITCODE -ne 0){throw 'Could not build synthetic loader-lock client DLL'}
           cargo build --manifest-path loader-winmm/Cargo.toml --bin split_dllmain_client_smoke --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Could not build synthetic loader-lock host'}
@@ -68,15 +70,20 @@ jobs:
           $folder=(Resolve-Path 'winmm-split-dllmain-smoke').Path
           $exe=(Resolve-Path 'winmm-split-dllmain-smoke/split_dllmain_client_smoke.exe').Path
           $client=(Resolve-Path 'winmm-split-dllmain-smoke/winmm_dllmain_client.dll').Path
-          $p=Start-Process -FilePath $exe -ArgumentList ('"{0}"' -f $client) -WorkingDirectory $folder -PassThru -NoNewWindow
-          try {
-            if(-not $p.WaitForExit(30000)) {
-              $p.Kill()
-              throw 'WINMM-DLLMAIN-SMOKE timed out: possible loader-lock deadlock'
+          # A separate process per variant guarantees native WinMM was not
+          # previously resolved by the 14-function trampoline.
+          foreach($dll in @('winmm_dllmain_client.dll','winmm_dllmain_client_extra.dll')){
+            $testClient=(Resolve-Path ("winmm-split-dllmain-smoke/" + $dll)).Path
+            $p=Start-Process -FilePath $exe -ArgumentList ('"{0}"' -f $testClient) -WorkingDirectory $folder -PassThru -NoNewWindow
+            try {
+              if(-not $p.WaitForExit(30000)) {
+                $p.Kill()
+                throw "WINMM-DLLMAIN-SMOKE timed out for $dll: possible loader-lock deadlock"
+              }
+              if($p.ExitCode -ne 0){throw "WINMM-DLLMAIN-SMOKE failed $dll exit=$($p.ExitCode)"}
+            } finally {
+              $p.Dispose()
             }
-            if($p.ExitCode -ne 0){throw "WINMM-DLLMAIN-SMOKE exit code $($p.ExitCode)"}
-          } finally {
-            $p.Dispose()
           }
       - name: Verify split loader/runtime exports without copyrighted game files
         shell: pwsh
@@ -94,6 +101,7 @@ jobs:
           Copy-Item 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll' 'winmm-split-wine-smoke/'
           Copy-Item 'runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll' 'winmm-split-wine-smoke/'
           Copy-Item 'winmm-split-dllmain-smoke/winmm_dllmain_client.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'winmm-split-dllmain-smoke/winmm_dllmain_client_extra.dll' 'winmm-split-wine-smoke/'
           Copy-Item 'winmm-split-dllmain-smoke/split_dllmain_client_smoke.exe' 'winmm-split-wine-smoke/'
       - name: Export DLL loader smoke payload (no game files)
         uses: actions/upload-artifact@v4
@@ -159,7 +167,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import pathlib, struct
-          for name in ("winmm.dll", "CrimsonSkiesFix.dll", "split_loader_smoke.exe", "winmm_dllmain_client.dll", "split_dllmain_client_smoke.exe"):
+          for name in ("winmm.dll", "CrimsonSkiesFix.dll", "split_loader_smoke.exe", "winmm_dllmain_client.dll", "winmm_dllmain_client_extra.dll", "split_dllmain_client_smoke.exe"):
               path = pathlib.Path("smoke") / name
               data = path.read_bytes()
               assert data[:2] == b"MZ", name
@@ -187,5 +195,7 @@ jobs:
           timeout 120s xvfb-run -a wine "$PWD/smoke/split_loader_smoke.exe" "$core" "$shim"
           client="$(winepath -w "$PWD/smoke/winmm_dllmain_client.dll" | tr -d '\r')"
           timeout 45s xvfb-run -a wine "$PWD/smoke/split_dllmain_client_smoke.exe" "$client"
+          extra="$(winepath -w "$PWD/smoke/winmm_dllmain_client_extra.dll" | tr -d '\r')"
+          timeout 45s xvfb-run -a wine "$PWD/smoke/split_dllmain_client_smoke.exe" "$extra"
           echo 'WINMM-DLLMAIN-SMOKE: Wine32 dependent DllMain call completed without deadlock'
           echo 'WINE-SMOKE: PASS — native WinMM proxy and nested x86 runtime load, non-game EXE refuses hooks'
