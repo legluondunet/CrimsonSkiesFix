@@ -107,18 +107,17 @@ pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
         SOURCE_RESET.len()!=FIRST_RUN_RESET.len(){
         return None;
     }
-    let mut chunks=source.splitn(3,SOURCE_RESET);
-    let first=chunks.next()?;
-    let second=chunks.next()?;
-    if second.windows(SOURCE_RESET.len()).any(|w|w==SOURCE_RESET){
-        return None;
-    }
-    // splitn(3) also confirms a single exact assignment: no accidental
-    // replacement in another menu branch or translated script.
+    let positions=source.windows(SOURCE_RESET.len()).enumerate()
+        .filter_map(|(at,win)|if win==SOURCE_RESET{Some(at)}else{None})
+        .collect::<Vec<_>>();
+    // Exactly one anchored assignment; fail closed on any duplicate
+    // branch or localized script with different source.
+    if positions.len()!=1{return None;}
+    let pos=positions[0];
     let mut output=Vec::with_capacity(source.len());
-    output.extend_from_slice(first);
+    output.extend_from_slice(&source[..pos]);
     output.extend_from_slice(FIRST_RUN_RESET);
-    output.extend_from_slice(second);
+    output.extend_from_slice(&source[pos+SOURCE_RESET.len()..]);
     if output.len()!=source.len() ||
         crate::exe_gate::sha256(&output)!=EXPECTED_SPLIT_VIDEO_HASH{
         return None;
