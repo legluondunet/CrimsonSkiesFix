@@ -6,8 +6,11 @@ mod update102;
 mod managed_gos_patch;
 mod chapter_cabs;
 mod auto_install;
-#[cfg(feature="winmm-split-install")]
+#[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
 mod split_process_probe;
+#[cfg(feature="import-alias-install")]
+#[path="../../loader-winmm/src/bin/alias_import_launcher.rs"]
+mod alias_import_launcher;
 
 use std::{
     env,
@@ -26,7 +29,8 @@ const GAME_EXE_SIZE: u64 = 2_580_480;
 const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
 #[cfg(feature="winmm-split-install")]
 const BUNDLED_CORE: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_CORE_DLL"));
-const RUNTIME_DLL: &str = if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
+const RUNTIME_DLL: &str = if cfg!(feature="import-alias-install") {"CSFIX.dll"}
+    else if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
 const GAME_FOLDER: &str = if cfg!(feature="winmm-split-install") {"crimsonskies"} else {"CrimsonSkiesFix"};
 const PATCH_FOLDER: &str = "crimsonskiesfix";
 const CORE_DLL: &str = "CrimsonSkiesFix.dll";
@@ -54,8 +58,10 @@ fn bundled_core_matches(_game:&Path)->bool{true}
 const README: &str = include_str!("../../README.md");
 #[cfg(all(feature="winmm-installer",not(feature="winmm-split-install")))]
 const README: &str = include_str!("../README-winmm-candidate.md");
-#[cfg(feature="winmm-split-install")]
+#[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
 const README: &str = include_str!("../README-winmm-split.md");
+#[cfg(feature="import-alias-install")]
+const README: &str = include_str!("../README-import-alias.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -133,6 +139,8 @@ fn validated_game_exe(game: &Path) -> Result<PathBuf, String> {
 fn verify(game: &Path) -> Result<PathBuf, String> {
     let exe = validated_game_exe(game)?;
     ensure_no_local_ddraw(game)?;
+    #[cfg(feature="import-alias-install")]
+    preflight_no_active_winmm(game)?;
     let proxy = game.join(RUNTIME_DLL);
     if !regular(&proxy) {
         return Err(format!("CrimsonSkiesFix {RUNTIME_DLL} missing or not a regular file"));
@@ -200,7 +208,7 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
 // provider slot. In particular, it does not guess whether an existing ddraw.dll
 // is our old proxy or a third-party wrapper. Never remove or overwrite it.
 fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
-    if cfg!(feature="winmm-installer") && any_entry(&game.join("ddraw.dll")) {
+    if cfg!(feature="winmm-installer") && !cfg!(feature="import-alias-install") && any_entry(&game.join("ddraw.dll")) {
         return Err("WinMM candidate: a local ddraw.dll already exists; leave it untouched, test on a separate copy without that DLL. Automatic migration and external wrappers are not yet enabled".into());
     }
     Ok(())
@@ -277,8 +285,50 @@ fn deploy_binary(dir:&Path,name:&str,bundled:&[u8])->Result<(),String>{
     }
     Ok(())
 }
+#[cfg(feature="import-alias-install")]
+const LEGACY_SPLIT_WINMM_DIGESTS:[&str;3]=[
+    // Previously distributed experimental test builds only. Unknown WinMM
+    // providers (or user wrappers) must NEVER be renamed automatically.
+    "58421e1e6299c524e87f912808eaae016cb603cf3f9d8da14a5ed755067f8193", // 8326a322
+    "36a555555f9ebc2af9fa51c124714d03dd190ab8c54394ae8050289f2b118141", // b15b4181
+    "69f8998b7eb45704f74dc724e5df718d4df70aa6fa3b81b1b4b746f64912838e", // 3c205897
+];
+#[cfg(feature="import-alias-install")]
+fn preflight_legacy_winmm(game:&Path)->Result<(),String>{
+    let path=game.join("winmm.dll");
+    if !any_entry(&path){return Ok(())}
+    if !regular(&path){return Err("unsafe app-local winmm.dll file; refusing alias migration".into())}
+    let hash=digest(&path)?;
+    if !LEGACY_SPLIT_WINMM_DIGESTS.contains(&hash.as_str()){
+       return Err("unrecognized app-local winmm.dll; preserving third-party provider and refusing alias mode".into());
+    }
+    let destination=game.join("winmm.dll.before-alias.bak");
+    if any_entry(&destination){
+       return Err("existing winmm.dll.before-alias.bak must be preserved; cannot overwrite on migration".into());
+    }
+    Ok(())
+}
+#[cfg(feature="import-alias-install")]
+fn migrate_legacy_winmm(game:&Path)->Result<(),String>{
+    preflight_legacy_winmm(game)?;
+    let old=game.join("winmm.dll");
+    if regular(&old){
+       fs::rename(&old,game.join("winmm.dll.before-alias.bak")).map_err(error)?;
+       println!("IMPORT-ALIAS: managed experimental WinMM shim preserved as winmm.dll.before-alias.bak");
+    }
+    Ok(())
+}
+#[cfg(feature="import-alias-install")]
+fn preflight_no_active_winmm(game:&Path)->Result<(),String>{
+    if any_entry(&game.join("winmm.dll")){
+        return Err("import alias mode requires native system WinMM; app-local winmm.dll still present".into())
+    }
+    Ok(())
+}
 fn deploy_runtime(game:&Path)->Result<(),String>{
     if cfg!(feature="winmm-installer"){ensure_no_local_ddraw(game)?;}
+    #[cfg(feature="import-alias-install")]
+    preflight_legacy_winmm(game)?;
     #[cfg(feature="winmm-split-install")]
     {
         // Validate both transaction slots BEFORE touching either DLL.
@@ -287,7 +337,10 @@ fn deploy_runtime(game:&Path)->Result<(),String>{
         preflight_binary(&patch,CORE_DLL)?;
         deploy_binary(&patch,CORE_DLL,BUNDLED_CORE)?;
     }
-    deploy_binary(game,RUNTIME_DLL,BUNDLED_RUNTIME)
+    deploy_binary(game,RUNTIME_DLL,BUNDLED_RUNTIME)?;
+    #[cfg(feature="import-alias-install")]
+    migrate_legacy_winmm(game)?;
+    Ok(())
 }
 
 const INSTALL_RECEIPT: &str = "CrimsonSkiesFix.install-receipt.txt";
@@ -469,9 +522,16 @@ fn launch_without_verification(game:&Path)->Result<i32,String>{
     let exe=game.join("CRIMSON.EXE");
     println!("--launch-no-verify: skipping all integrity, existence and patch checks; starting {}",
         exe.display());
-    let exit=Command::new(&exe).current_dir(game).status()
-        .map_err(|e|format!("--launch-no-verify could not start {}: {e}",exe.display()))?;
-    let code=exit.code().unwrap_or(2);
+    #[cfg(feature="import-alias-install")]
+    let code=alias_import_launcher::launch_child(&exe,u32::MAX)
+        .map(|(code,_)|code as i32)
+        .map_err(|e|format!("--launch-no-verify could not start import alias {}: {e}",exe.display()))?;
+    #[cfg(not(feature="import-alias-install"))]
+    let code={
+        let exit=Command::new(&exe).current_dir(game).status()
+          .map_err(|e|format!("--launch-no-verify could not start {}: {e}",exe.display()))?;
+        exit.code().unwrap_or(2)
+    };
     println!("--launch-no-verify: game exited with code {code}");
     Ok(code)
 }
