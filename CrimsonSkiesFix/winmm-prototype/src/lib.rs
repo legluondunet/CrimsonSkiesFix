@@ -54,9 +54,8 @@ static FIRST_CALL: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "winmm-ordinal-bridge")]
 static GAME_DDRAW_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "winmm-ordinal-bridge")]
-static FIRST_NAMED_INDEX: AtomicUsize = AtomicUsize::new(usize::MAX);
-#[cfg(feature = "winmm-ordinal-bridge")]
-static FIRST_NAMED_EARLY: AtomicBool = AtomicBool::new(false);
+// Encoded as 0=none, 1..14=before-DDraw (index+1), 15..28=after-DDraw.
+static FIRST_NAMED_PHASE: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "winmm-ordinal-bridge")]
 static NAMED_ATTEMPT_MASK: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "winmm-ordinal-bridge")]
@@ -78,9 +77,8 @@ fn mark_named_resolution_attempt(index: usize) {
     let early = !GAME_DDRAW_STARTED.load(Ordering::Acquire);
     NAMED_ATTEMPT_MASK.fetch_or(bit,Ordering::Relaxed);
     if early {NAMED_EARLY_MASK.fetch_or(bit,Ordering::Relaxed);}
-    if FIRST_NAMED_INDEX.compare_exchange(usize::MAX,index,Ordering::AcqRel,Ordering::Relaxed).is_ok(){
-        FIRST_NAMED_EARLY.store(early,Ordering::Release);
-    }
+    let encoded=index as u32 + 1 + if early {0}else{14};
+    let _=FIRST_NAMED_PHASE.compare_exchange(0,encoded,Ordering::AcqRel,Ordering::Relaxed);
 }
 
 #[cfg(feature = "winmm-ordinal-bridge")]
@@ -94,10 +92,12 @@ fn named_list_from_mask(mask: u32)->String {
 
 #[cfg(feature = "winmm-ordinal-bridge")]
 pub(crate) fn named_forward_snapshot()->String {
-    let first=FIRST_NAMED_INDEX.load(Ordering::Acquire);
-    let first_name=EXPORT_NAMES.get(first).and_then(|value|std::str::from_utf8(value).ok())
-        .map(|s|s.trim_end_matches('\0')).unwrap_or("none");
-    let first_early=first!=usize::MAX && FIRST_NAMED_EARLY.load(Ordering::Acquire);
+    let encoded=FIRST_NAMED_PHASE.load(Ordering::Acquire);
+    let first_name=if encoded==0 {"none"}else{
+        let index=((encoded-1)%14) as usize;
+        std::str::from_utf8(EXPORT_NAMES[index]).unwrap_or("?").trim_end_matches('\0')
+    };
+    let first_early=(1..=14).contains(&encoded);
     let attempted=NAMED_ATTEMPT_MASK.load(Ordering::Acquire);
     let early=NAMED_EARLY_MASK.load(Ordering::Acquire);
     let resolved=NAMED_RESOLVED_MASK.load(Ordering::Acquire);
