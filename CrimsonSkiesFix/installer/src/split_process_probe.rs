@@ -258,13 +258,13 @@ mod tests{
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap().as_nanos()));
         fs::write(&path,format!(
-            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7\\n"
+            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=7\n"
         )).unwrap();
         assert!(current_split_runtime_log(&path,None));
         let before=stamp(&path);
         assert!(!current_split_runtime_log(&path,before));
         fs::write(&path,format!(
-            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=4\\n"
+            "CrimsonSkiesFix 1.1.0-rc.1-{expected} x86 - init; WinMM IAT bootstrap\nWINMM-BOOTSTRAP: game DirectDraw API reached; iat_status=4\n"
         )).unwrap();
         assert!(!current_split_runtime_log(&path,None));
         fs::remove_file(path).unwrap();
