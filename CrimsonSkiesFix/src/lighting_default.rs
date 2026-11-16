@@ -9,8 +9,11 @@
 //!
 //! On the exact admitted executable the lighting selector is at 0x64B484
 //! (pending copy 0x648364). The original getter 0x4190E6 maps the 0x60001
-//! full-lighting hardware flags to selector=1. Default flags 0x1 yield
-//! selector=2 (Medium). Do not make a generic "all quality" adjustment.
+//! full-lighting hardware flags to selector=1 (hardware index, NOT menu
+//! localization). VIDEO.SCRIPT owns a *different* five-item UI list with
+//! Medium at index 2 and the immediately higher High choice at index 3.
+//! The previous prototype incorrectly conflated these two domains and
+//! also missed the script's post-get HUA = $NVA$ reset.
 //!
 //! A marker is written inside the existing, user-editable
 //! CrimsonSkiesFix.ini AFTER the original Video Apply callback completes.
@@ -24,7 +27,7 @@ use crate::{log,win32};
 
 pub(crate) const ACTIVE_LIGHTING:usize=0x0064_B484;
 pub(crate) const PENDING_LIGHTING:usize=0x0064_8364;
-const HIGH:u32=1;
+const HIGH:u32=3;
 const MEDIUM:u32=2;
 const MARKER:&str="CrimsonSkiesFixLightingHighDefaultApplied";
 const MAX_INI_BYTES:u64=128*1024;
@@ -69,6 +72,55 @@ fn exact_lighting_registration()->bool{
     }
 }
 
+// The exact GOS VIDEO script is independently SHA-authenticated by
+// gos_video_lock before this optional, one-time, memory-only change.
+// The script otherwise overwrites the freshly retrieved HUA selector
+// with its hardware default $NVA$ during message 20001. Keep
+// total source length unchanged so archive offsets remain stable.
+const SOURCE_RESET:&[u8]=b"HUA = $NVA$";
+const FIRST_RUN_RESET:&[u8]=b"HUA = 3      ";
+const EXPECTED_SPLIT_VIDEO_HASH:&str=
+    "45dedb361b97c0cdaf8ba9ef00a7627d60c8effd72265841eefae669cf43e6ad";
+
+pub(crate) fn one_time_script_eligible()->bool{
+    if !exact_lighting_registration() ||
+        !crate::menu_video_probe::verified_video_fields(){
+        return false;
+    }
+    let Some(path)=win32::ini_path() else{return false;};
+    let Some(ini)=valid_ini(&path) else{return false;};
+    if marker_applied(&ini){return false;}
+    // Early menu/resource access occurs after bootstrap and the original
+    // game's preferences init in supported 1.02. Refuse rather than
+    // infer 'Medium' for an uninitialized or non-default value.
+    unsafe {std::ptr::read_volatile(ACTIVE_LIGHTING as *const u32)==MEDIUM}
+}
+pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
+    if source.len()!=4413 ||
+        crate::exe_gate::sha256(source)!=
+            "a5f716d2e1ad007ac217a172e9d17b459444f7ffb23855a5a10d9a1841b9b22d" ||
+        SOURCE_RESET.len()!=FIRST_RUN_RESET.len(){
+        return None;
+    }
+    let mut chunks=source.splitn(3,SOURCE_RESET);
+    let first=chunks.next()?;
+    let second=chunks.next()?;
+    if second.windows(SOURCE_RESET.len()).any(|w|w==SOURCE_RESET){
+        return None;
+    }
+    // splitn(3) also confirms a single exact assignment: no accidental
+    // replacement in another menu branch or translated script.
+    let mut output=Vec::with_capacity(source.len());
+    output.extend_from_slice(first);
+    output.extend_from_slice(FIRST_RUN_RESET);
+    output.extend_from_slice(second);
+    if output.len()!=source.len() ||
+        crate::exe_gate::sha256(&output)!=EXPECTED_SPLIT_VIDEO_HASH{
+        return None;
+    }
+    Some(output)
+}
+
 /// Called only from the verified game's original uiData 0x855 VIDEO GET,
 /// after original GOS command 13 copied the active preferences to pending.
 /// One DWORD in *pending* memory, before the game itself reads it and builds
@@ -88,7 +140,7 @@ pub(crate) unsafe fn before_video_get()->bool{
     if !should_offer(active,pending,marker_applied(&ini),true){return false;}
     if OFFERED.swap(true,Ordering::AcqRel){return false;}
     std::ptr::write_volatile(PENDING_LIGHTING as *mut u32,HIGH);
-    log("MENU-LIGHTING-DEFAULT: initial Video Preferences GET pending LightingQuality Medium(2)->High(1); awaiting original Apply to persist, cancel preserves previous choice");
+    log("MENU-LIGHTING-DEFAULT: initial Video Preferences GET pending LightingQuality Medium(2)->High(3); awaiting original Apply to persist, cancel preserves previous choice");
     true
 }
 pub(crate) fn after_video_apply(original_success:bool){
@@ -111,11 +163,20 @@ pub(crate) fn after_video_apply(original_success:bool){
 mod tests{
     use super::*;
     #[test]
+    fn split_default_script_replaces_only_final_reselection_after_get(){
+        let mut fixture=b"HUA = $NVA$".to_vec();
+        assert_eq!(SOURCE_RESET.len(),FIRST_RUN_RESET.len());
+        assert_eq!(std::str::from_utf8(FIRST_RUN_RESET).unwrap(),"HUA = 3      ");
+        fixture.copy_from_slice(SOURCE_RESET);
+        // Synthetic snippets are not the pinned game script.
+        assert!(modify_verified_video_script(&fixture).is_none());
+    }
+    #[test]
     fn exact_game_lighting_field_and_read_registration_offsets(){
         assert_eq!(ACTIVE_LIGHTING-0x64B450,PENDING_LIGHTING-0x648330);
         assert_eq!(ORIGINAL_LIGHTING_REGISTER,
             [0x68,0x84,0xb4,0x64,0x00,0x68,0x9c,0xe8,0x61,0x00]);
-        assert_eq!(HIGH,1);
+        assert_eq!(HIGH,3);
         assert_eq!(MEDIUM,2);
     }
     #[test]
