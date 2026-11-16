@@ -48,6 +48,16 @@ jobs:
         run: cargo test --manifest-path runtime-split/Cargo.toml --target i686-pc-windows-msvc
       - name: Build CrimsonSkiesFix.dll
         run: cargo build --manifest-path runtime-split/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Build synthetic x86 DLL loading probe
+        run: cargo build --manifest-path loader-winmm/Cargo.toml --bin split_loader_smoke --target i686-pc-windows-msvc
+      - name: Verify split loader/runtime exports without copyrighted game files
+        shell: pwsh
+        run: |
+          $hostExe='loader-winmm/target/i686-pc-windows-msvc/debug/split_loader_smoke.exe'
+          $core=(Resolve-Path 'runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll').Path
+          $shim=(Resolve-Path 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll').Path
+          & $hostExe $core $shim
+          if($LASTEXITCODE -ne 0){throw 'Actual x86 split loader/runtime PE smoke failed'}
       - name: Organized installer tests
         run: cargo test --manifest-path installer/Cargo.toml --features winmm-split-install --target i686-pc-windows-msvc
       - name: Build experimental combined installer
