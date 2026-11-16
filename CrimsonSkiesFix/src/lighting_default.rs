@@ -40,7 +40,7 @@ static OFFERED:AtomicBool=AtomicBool::new(false);
 static SCRIPT_REPLACEMENT_DELIVERED:AtomicBool=AtomicBool::new(false);
 pub(crate) fn mark_verified_script_delivered(){
     SCRIPT_REPLACEMENT_DELIVERED.store(true,Ordering::Release);
-    log("MENU-LIGHTING-DEFAULT: authenticated first-run GOS VIDEO script bytes delivered from base ROF, local HUA selector reset now High=3");
+    log("MENU-LIGHTING-DEFAULT: authenticated first-run GOS VIDEO script bytes delivered to game, local HUA reset now index 3");
 }
 
 fn marker_applied(ini:&str)->bool{
@@ -94,11 +94,18 @@ pub(crate) fn one_time_script_eligible()->bool{
     }
     let Some(path)=win32::ini_path() else{return false;};
     let Some(ini)=valid_ini(&path) else{return false;};
-    if marker_applied(&ini){return false;}
+    let marker=marker_applied(&ini);
     // Early menu/resource access occurs after bootstrap and the original
     // game's preferences init in supported 1.02. Refuse rather than
     // infer 'Medium' for an uninitialized or non-default value.
-    unsafe {std::ptr::read_volatile(ACTIVE_LIGHTING as *const u32)==MEDIUM}
+    let active=unsafe {std::ptr::read_volatile(ACTIVE_LIGHTING as *const u32)};
+    let eligible=!marker && active==MEDIUM;
+    if crate::cfg().log_enabled{
+        log(&format!(
+            "MENU-LIGHTING-DEFAULT: first-run VIDEO script preflight active_index={active} previous_apply_marker={marker} eligible={eligible} (no user settings changed)"
+        ));
+    }
+    eligible
 }
 pub(crate) fn modify_verified_video_script(source:&[u8])->Option<Vec<u8>>{
     if source.len()!=4413 ||
