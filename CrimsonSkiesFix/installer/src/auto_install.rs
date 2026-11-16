@@ -98,7 +98,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
         // A protected-pending install can be activated only with an EXE
         // outside its game directory: keeping an extra alternate candidate
         // there would make validated_game_exe reject the final directory.
-        let pending=fs::read_to_string(existing.join(INSTALL_RECEIPT))
+        let pending=fs::read_to_string(receipt_path(existing))
             .map(|s|s.lines().any(|l|
                 l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"))
             .unwrap_or(false);
@@ -155,7 +155,7 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
         || digest(source)?!=GAME_EXE_HASH {
         return Err("decrypted EXE did not match the only approved 1.02 size/SHA-256".into());
     }
-    let receipt=game.join(INSTALL_RECEIPT);
+    let receipt=receipt_path(game);
     let raw=fs::read_to_string(&receipt).map_err(error)?;
     if !raw.lines().any(|l|l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"){
         return Err("cannot activate an installation that is not verified protected/pending".into());
@@ -355,7 +355,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         // Existing verified manually imported game: install or upgrade the
         // complete WinMM-only runtime without CD rebuild, EXE replacement or
         // edits to save data. A CD receipt still uses strict verification.
-        if !any_entry(&game.join(INSTALL_RECEIPT)) &&
+        if !any_entry(&receipt_path(game)) &&
             validated_game_exe(game).is_ok() &&
             (current_digest.as_deref()!=Some(expected.as_str()) || !bundled_core_matches(game)) {
             deploy_runtime(game)?;
@@ -368,10 +368,10 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         return Ok("INSTALL_FROM_CD_AND_LAUNCH");
     }
     if !directory(game){return Err("unsafe existing game path (not a real directory)".into());}
-    if any_entry(&game.join(INSTALL_RECEIPT)) && !regular(&game.join(INSTALL_RECEIPT)){
+    if any_entry(&receipt_path(game)) && !regular(&receipt_path(game)){
         return Err("unsafe existing CD installation receipt; refusing to launch".into());
     }
-    if regular(&game.join(INSTALL_RECEIPT)){
+    if regular(&receipt_path(game)){
         match verify_installed_cd_assets(game){
             Ok((_edition,_count))=>{
                 if validated_game_exe(game).is_ok() {
@@ -439,7 +439,7 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     }
     // Never log READY unless the final independent validation succeeded.
     let result=auto_prepare(base,game).and_then(|action|{
-        if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
+        if regular(&receipt_path(game)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
         Ok((action,exe))
     });
@@ -454,7 +454,7 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             "CrimsonSkiesFix AUTO INSTALL v1\nAction={result_action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
              OriginalProtectedBackup={}\nGosOverlayState={}\n{launch_line}AUTO_INSTALL_RESULT=READY\n",
-            game.display(),if regular(&game.join(INSTALL_RECEIPT)){"YES"}else{"LEGACY_ONLY"},
+            game.display(),if regular(&receipt_path(game)){"YES"}else{"LEGACY_ONLY"},
             if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
             if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
             crate::managed_gos_patch::verify_game_overlay(game)
@@ -628,7 +628,9 @@ mod tests{
         fs::create_dir(&game).unwrap();
         fs::create_dir(&stale).unwrap();
         fs::write(stale.join("keep-me"),b"owner data").unwrap();
-        fs::write(game.join(INSTALL_RECEIPT),b"invalid receipt").unwrap();
+        #[cfg(feature="winmm-split-install")]
+        fs::create_dir(patch_dir(&game)).unwrap();
+        fs::write(receipt_path(&game),b"invalid receipt").unwrap();
         let error=auto_prepare(&root,&game).unwrap_err();
         assert!(error.contains("existing installed CD verification failed"));
         assert!(error.contains("rebuild blocked by existing"));
