@@ -89,7 +89,7 @@ independently of the DirectDraw widescreen patch. Quartz/DirectShow is a
 **diagnostic hypothesis**, not a universally verified prerequisite and not
 necessarily a complete decoder solution. For an isolated-prefix test,
 runner-specific logs, and an optional *manual* `winetricks quartz` comparison,
-see [the Wine video troubleshooting guide](../docs/wine-directshow-movie-troubleshooting.md).
+see [the Wine video troubleshooting guide](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/wine-directshow-movie-troubleshooting.md).
 The installer does not change codecs, DirectShow overrides, or the user's
 Wine/Proton prefix.
 
