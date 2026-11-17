@@ -96,6 +96,7 @@ jobs:
           Remove-Item Env:CRIMSONSKIESFIX_NONINTERACTIVE
           if($exit -ne 1){throw "Native Win32 unified synthetic EXE must be REJECTED with exit=1, actual=$exit"}
           Write-Host 'UNIFIED-WINDOWS-SMOKE PASS: unsupported PE32 rejected after native fix.dll load'
+          $global:LASTEXITCODE=0
       - name: Package test-only one-exe installer, SHA and instructions
         shell: pwsh
         run: |
