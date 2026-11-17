@@ -563,9 +563,7 @@ fn prepare_first_launch_ini(base:&Path)->Result<(),String>{
     })();
     if let Err(reason)=marker_result{
         // Do not leave an automatically managed Log=1 INI without its marker.
-        if regular(&marker) && fs::read(&marker).ok().as_deref()!=Some(FIRST_LAUNCH_MARKER_BYTES){
-            let _=fs::remove_file(&marker);
-        }
+        if regular(&marker){let _=fs::remove_file(&marker);}
         if regular(&ini) && fs::read(&ini).ok().as_deref()==Some(initial_unified_ini().as_bytes()){
             let _=fs::remove_file(&ini);
         }
@@ -990,6 +988,81 @@ mod tests{
         assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"owner backup");
         fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn first_launch_creates_log_once_then_disables_logging_without_erasing_diagnostics(){
+        let root=temp();
+        let state=root.join("state");
+        fs::create_dir(&state).unwrap();
+        fs::write(state.join(INSTALL_RECEIPT),b"owner CD receipt").unwrap();
+        prepare_first_launch_ini(&root).unwrap();
+        let ini=root.join("CrimsonSkiesFix.ini");
+        assert_eq!(fs::read_to_string(&ini).unwrap(),initial_unified_ini());
+        assert!(regular(&state.join(FIRST_LAUNCH_MARKER)));
+        fs::write(root.join("CrimsonSkiesFix.log"),b"first game diagnostics").unwrap();
+        assert!(!finish_first_launch_log(&root,1).unwrap()); // crash/error
+        assert_eq!(fs::read_to_string(&ini).unwrap(),initial_unified_ini());
+        assert!(regular(&state.join(FIRST_LAUNCH_MARKER)));
+        assert!(finish_first_launch_log(&root,0).unwrap());
+        assert_eq!(fs::read_to_string(&ini).unwrap(),quiet_unified_ini());
+        assert!(!any_entry(&state.join(FIRST_LAUNCH_MARKER)));
+        assert!(!any_entry(&state.join("CrimsonSkiesFix.ini.first-launch.pending")));
+        assert_eq!(fs::read(state.join(INSTALL_RECEIPT)).unwrap(),b"owner CD receipt");
+        assert_eq!(fs::read(root.join("CrimsonSkiesFix.log")).unwrap(),b"first game diagnostics");
+        prepare_first_launch_ini(&root).unwrap(); // subsequent launch cannot re-arm
+        assert_eq!(fs::read_to_string(&ini).unwrap(),quiet_unified_ini());
+        assert!(!finish_first_launch_log(&root,0).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn manually_supplied_log_one_ini_remains_active_even_if_identical_to_generated_template(){
+        let root=temp();
+        let ini=root.join("CrimsonSkiesFix.ini");
+        fs::write(&ini,initial_unified_ini()).unwrap();
+        prepare_first_launch_ini(&root).unwrap();
+        assert!(!any_entry(&root.join("state").join(FIRST_LAUNCH_MARKER)));
+        fs::write(root.join("CrimsonSkiesFix.log"),b"manual logging").unwrap();
+        assert!(!finish_first_launch_log(&root,0).unwrap());
+        assert_eq!(fs::read_to_string(&ini).unwrap(),initial_unified_ini());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn first_launch_user_edits_override_automatic_log_change(){
+        let root=temp();
+        prepare_first_launch_ini(&root).unwrap();
+        let ini=root.join("CrimsonSkiesFix.ini");
+        let edited=format!("{}; user chose to preserve logging\n",initial_unified_ini());
+        fs::write(&ini,&edited).unwrap();
+        fs::write(root.join("CrimsonSkiesFix.log"),b"first game diagnostics").unwrap();
+        assert!(!finish_first_launch_log(&root,0).unwrap());
+        assert_eq!(fs::read_to_string(&ini).unwrap(),edited);
+        assert!(!any_entry(&root.join("state").join(FIRST_LAUNCH_MARKER)));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn first_launch_does_not_auto_disable_if_no_game_session_log_exists(){
+        let root=temp();
+        prepare_first_launch_ini(&root).unwrap();
+        assert!(!finish_first_launch_log(&root,0).unwrap());
+        assert_eq!(fs::read_to_string(root.join("CrimsonSkiesFix.ini")).unwrap(),
+            initial_unified_ini());
+        assert!(regular(&root.join("state").join(FIRST_LAUNCH_MARKER)));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unsafe_state_path_refuses_first_launch_without_touching_user_content(){
+        let root=temp();
+        fs::write(root.join("state"),b"owner data").unwrap();
+        assert!(prepare_first_launch_ini(&root).is_err());
+        assert!(!any_entry(&root.join("CrimsonSkiesFix.ini")));
+        assert_eq!(fs::read(root.join("state")).unwrap(),b"owner data");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn authentic_executable_is_required_before_any_new_install(){
         let root=temp();
