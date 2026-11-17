@@ -42,6 +42,24 @@ class TestAliasPe(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(PeError):
                 verify(fixture(import_name=name))
 
+    def test_unified_fix_has_exact_exports(self):
+        names = (b'DirectDrawCreate', b'DirectDrawEnumerateA', b'DllMain')
+        imports, exports = verify(fixture(export_names=names), unified=True)
+        self.assertEqual(imports, ['KERNEL32.dll'])
+        self.assertEqual(exports, [n.decode('ascii') for n in names])
+
+    def test_unified_fix_rejects_extra_exports_and_missing_dllmain(self):
+        required = (b'DirectDrawCreate', b'DirectDrawEnumerateA', b'DllMain')
+        for names in (required[:2], required + (b'UnexpectedExport',)):
+            with self.subTest(names=names), self.assertRaises(PeError):
+                verify(fixture(export_names=names), unified=True)
+
+    def test_unified_fix_cannot_statically_import_sdl3_or_itself(self):
+        required = (b'DirectDrawCreate', b'DirectDrawEnumerateA', b'DllMain')
+        for name in (b'SDL3.dll', b'fix.dll', b'FIX.DLL'):
+            with self.subTest(name=name), self.assertRaises(PeError):
+                verify(fixture(import_name=name, export_names=required), unified=True)
+
     def test_missing_alias_export_fails(self):
         with self.assertRaises(PeError):
             verify(fixture(export_names=(b'DirectDrawCreate', b'unrelated')))
