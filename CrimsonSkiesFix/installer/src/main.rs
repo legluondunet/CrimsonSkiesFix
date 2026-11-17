@@ -185,14 +185,8 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     // license, template and the active INI belong to crimsonskiesfix/.
     // The runtime creates the active INI on its first game DirectDraw call.
     let docs=ensure_patch_dir(game)?;
-    #[cfg(feature="unified-fix-install")]
-    for folder in ["mods","third_party"]{
-        let path=docs.join(folder);
-        if !directory(&path){
-            if any_entry(&path){return Err(format!("unsafe optional game-fix directory: {}",path.display()));}
-            fs::create_dir(&path).map_err(error)?;
-        }
-    }
+    // Do not create optional mods/ or third_party/ directories until a
+    // feature actually needs them. Any existing user-owned paths are left alone.
     ensure_new_text(&docs.join("README.md"), README)?;
     ensure_new_text(&docs.join("LICENSE"), LICENSE)?;
     ensure_new_text(&docs.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
@@ -739,6 +733,33 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_documentation_preserves_existing_optional_content(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-unified-optional-content-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        let mods=root.join("mods");
+        fs::create_dir(&mods).unwrap();
+        fs::write(mods.join("my-mod.txt"),b"owner mod").unwrap();
+        // Even an unrelated user file under the future optional name must
+        // not cause installation failure or be replaced by a directory.
+        let third_party=root.join("third_party");
+        fs::write(&third_party,b"owner data").unwrap();
+
+        deploy_documentation(&game).unwrap();
+        assert_eq!(fs::read(mods.join("my-mod.txt")).unwrap(),b"owner mod");
+        assert_eq!(fs::read(&third_party).unwrap(),b"owner data");
+        assert!(regular(&root.join("README.md")));
+        assert!(regular(&root.join("build-info.txt")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(feature="winmm-split-install")]
     #[test]
     fn organized_install_separates_both_dlls_and_documents_without_touching_logs(){
@@ -768,8 +789,8 @@ mod tests {
         if cfg!(feature="unified-fix-install"){
             assert_eq!(GAME_FOLDER,"game");
             assert_eq!(RUNTIME_DLL,"fix.dll");
-            assert!(directory(&root.join("mods")));
-            assert!(directory(&root.join("third_party")));
+            assert!(!any_entry(&root.join("mods")));
+            assert!(!any_entry(&root.join("third_party")));
             assert!(!any_entry(&root.join("CrimsonSkiesFix.dll")));
         }
         if !cfg!(feature="unified-fix-install"){
