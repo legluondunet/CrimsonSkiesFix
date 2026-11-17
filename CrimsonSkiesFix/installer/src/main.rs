@@ -185,6 +185,14 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     // license, template and the active INI belong to crimsonskiesfix/.
     // The runtime creates the active INI on its first game DirectDraw call.
     let docs=ensure_patch_dir(game)?;
+    #[cfg(feature="unified-fix-install")]
+    for folder in ["mods","third_party"]{
+        let path=docs.join(folder);
+        if !directory(&path){
+            if any_entry(&path){return Err(format!("unsafe optional game-fix directory: {}",path.display()));}
+            fs::create_dir(&path).map_err(error)?;
+        }
+    }
     ensure_new_text(&docs.join("README.md"), README)?;
     ensure_new_text(&docs.join("LICENSE"), LICENSE)?;
     ensure_new_text(&docs.join("CrimsonSkiesFix.ini.example"), EXAMPLE_INI)?;
@@ -359,7 +367,7 @@ fn receipt_path(game:&Path)->PathBuf{
         // Only a published game/ stores the receipt next to the launcher.
         // A game.rebuilding/ candidate keeps its uncommitted receipt privately
         // until validation and the reversible directory publication succeed.
-        if game.file_name().is_some_and(|name|name.eq_ignore_ascii_case("game")){
+        if game.file_name().is_some_and(|name|name.to_string_lossy().eq_ignore_ascii_case("game")){
             return game.parent().unwrap_or(game).join(INSTALL_RECEIPT);
         }
         return game.join(INSTALL_RECEIPT);
@@ -713,6 +721,13 @@ mod tests {
         }
         assert!(regular(&patch_dir(&game).join("CrimsonSkiesFix.ini.example")));
         assert!(regular(&patch_dir(&game).join("build-info.txt")));
+        if cfg!(feature="unified-fix-install"){
+            assert_eq!(GAME_FOLDER,"game");
+            assert_eq!(RUNTIME_DLL,"fix.dll");
+            assert!(directory(&root.join("mods")));
+            assert!(directory(&root.join("third_party")));
+            assert!(!any_entry(&root.join("CrimsonSkiesFix.dll")));
+        }
         if !cfg!(feature="unified-fix-install"){
             assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
         }
