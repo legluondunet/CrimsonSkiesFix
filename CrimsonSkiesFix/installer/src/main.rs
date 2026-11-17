@@ -248,6 +248,69 @@ fn ensure_no_local_ddraw(game:&Path)->Result<(),String>{
     Ok(())
 }
 
+// The unified fix.dll is an installer-owned runtime, not user game data.
+// Replace any different regular DLL transactionally, but do NOT retain it as
+// fix.dll.bak. The displaced DLL exists only as a rollback slot until the
+// authenticated bundled version is successfully published.
+#[cfg(feature="unified-fix-install")]
+fn deploy_unified_fix_without_backup(game:&Path)->Result<(),String>{
+    let name="fix.dll";
+    let active=game.join(name);
+    let pending=game.join("fix.dll.installing");
+    let displaced=game.join("fix.dll.replacing");
+    if any_entry(&active)&&!regular(&active){
+        return Err("unsafe existing fix.dll: refusing replacement of a non-regular file".into());
+    }
+    if any_entry(&pending)||any_entry(&displaced){
+        return Err("interrupted fix.dll replacement: inspect .installing/.replacing before retrying".into());
+    }
+    let expected=sha256::hex(BUNDLED_RUNTIME);
+    if regular(&active)&&digest(&active)?==expected{return Ok(());}
+    // Do not remove an existing fix.dll before the new payload is fully
+    // written, synced and hash-verified. No persistent .bak is created.
+    {
+        let mut file=OpenOptions::new().write(true).create_new(true)
+            .open(&pending).map_err(error)?;
+        if let Err(err)=file.write_all(BUNDLED_RUNTIME).and_then(|_|file.sync_all()){
+            drop(file); // Required on Windows before deleting a failed staging file.
+            let _=fs::remove_file(&pending);
+            return Err(format!("cannot stage bundled fix.dll: {err}"));
+        }
+    }
+    let staged=match digest(&pending){
+        Ok(actual)=>actual,
+        Err(err)=>{
+            let _=fs::remove_file(&pending);
+            return Err(format!("cannot validate staged fix.dll: {err}"));
+        }
+    };
+    if staged!=expected{
+        let _=fs::remove_file(&pending);
+        return Err("staged fix.dll SHA-256 mismatch; original preserved".into());
+    }
+    let had_active=regular(&active);
+    if had_active {
+        if let Err(err)=fs::rename(&active,&displaced){
+            let _=fs::remove_file(&pending);
+            return Err(format!("cannot move previous fix.dll into temporary rollback slot: {err}"));
+        }
+    }
+    if let Err(err)=fs::rename(&pending,&active){
+        let rollback=if had_active{fs::rename(&displaced,&active).map_err(error)}
+            else{Ok(())};
+        let _=fs::remove_file(&pending);
+        return Err(format!("cannot install bundled fix.dll: {err}; original restoration={rollback:?}"));
+    }
+    if had_active {
+        // Once the verified new DLL is active, the old version serves no
+        // purpose. If deletion is blocked, explicitly report this instead
+        // of silently leaving a permanent old-runtime copy.
+        fs::remove_file(&displaced)
+            .map_err(|err|format!("bundled fix.dll installed, but could not discard temporary old version {}: {err}",displaced.display()))?;
+    }
+    Ok(())
+}
+
 // Stage the verified new DLL first, then rotate exactly one .bak.
 // The former .bak is held temporarily for rollback and discarded only
 // after the replacement DLL is successfully published. This intentionally
@@ -361,6 +424,14 @@ fn preflight_no_active_winmm(game:&Path)->Result<(),String>{
 }
 fn deploy_runtime(game:&Path)->Result<(),String>{
     if cfg!(feature="winmm-installer"){ensure_no_local_ddraw(game)?;}
+    #[cfg(feature="unified-fix-install")]
+    {
+        // One DLL only; no lasting .bak from another fix.dll version.
+        preflight_legacy_winmm(game)?;
+        deploy_unified_fix_without_backup(game)?;
+        migrate_legacy_winmm(game)?;
+        return Ok(());
+    }
     #[cfg(feature="import-alias-install")]
     preflight_legacy_winmm(game)?;
     #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
