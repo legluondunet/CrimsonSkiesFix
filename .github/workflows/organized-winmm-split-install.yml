@@ -234,6 +234,26 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      - name: Test and compile single unified x86 fix.dll (experimental)
+        shell: pwsh
+        run: |
+          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll unit tests failed'}
+          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll build failed'}
+      - name: Verify unified DLL PE imports and exports
+        shell: pwsh
+        run: |
+          python loader-alias/tools/verify_alias_pe.py runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll PE dependency gate failed'}
+      - name: Save standalone unified runtime for integration work
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-FIX-DLL-X86-EXPERIMENTAL
+          path: CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          retention-days: 7
+          if-no-files-found: error
+
   wine32-smoke:
     name: Native WinMM/Core loader smoke under Wine32 (no game data)
     needs: split-installer-x86
