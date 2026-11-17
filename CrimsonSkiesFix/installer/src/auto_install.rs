@@ -5,8 +5,10 @@
 use super::*;
 use std::ffi::OsStr;
 
-const REBUILT:&str=if cfg!(feature="winmm-split-install"){"crimsonskies.rebuilding"}else{"CrimsonSkiesFix.rebuilding"};
-const PREVIOUS:&str=if cfg!(feature="winmm-split-install"){"crimsonskies.previous"}else{"CrimsonSkiesFix.previous"};
+const REBUILT:&str=if cfg!(feature="unified-fix-install"){"game.rebuilding"}
+    else if cfg!(feature="winmm-split-install"){"crimsonskies.rebuilding"}else{"CrimsonSkiesFix.rebuilding"};
+const PREVIOUS:&str=if cfg!(feature="unified-fix-install"){"game.previous"}
+    else if cfg!(feature="winmm-split-install"){"crimsonskies.previous"}else{"CrimsonSkiesFix.previous"};
 const EXE_BACKUP:&str="CRIMSON.EXE.protected.bak";
 const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
 // The installer and game use independent logs. The last installation or
@@ -260,9 +262,57 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
     if let Some(ini)=source{
         let dest_dir=ensure_patch_dir(new)?;
         let dest=dest_dir.join("CrimsonSkiesFix.ini");
+        // The unified launcher keeps the original INI at the shared root.
+        // A repair must not attempt to copy that file onto itself.
+        if ini==dest{return Ok(());}
         if any_entry(&dest){return Err("refusing to overwrite active player INI".into());}
         fs::copy(ini,dest).map_err(error)?;
     }
+    Ok(())
+}
+
+// A candidate reconstructed from the original CD owns its receipt only while
+// it resides in game.rebuilding/. Publish the receipt at the launcher root
+// together with the game directory, preserving the previous record for rollback.
+#[cfg(feature="unified-fix-install")]
+fn previous_receipt(game:&Path)->Result<PathBuf,String>{
+    Ok(game.parent().ok_or("game directory has no parent")?
+        .join("CrimsonSkiesFix.install-receipt.previous"))
+}
+#[cfg(feature="unified-fix-install")]
+fn publish_unified_receipt(game:&Path)->Result<bool,String>{
+    let private=game.join(INSTALL_RECEIPT);
+    let active=receipt_path(game);
+    let previous=previous_receipt(game)?;
+    if !regular(&private){return Err("rebuilt game has no private installation receipt".into());}
+    if any_entry(&previous){return Err(format!(
+        "previous installation receipt backup exists; preserving {}",previous.display()));}
+    if any_entry(&active)&&!regular(&active){
+        return Err("unsafe existing root installation receipt".into());
+    }
+    let had_previous=regular(&active);
+    if had_previous{fs::rename(&active,&previous).map_err(error)?;}
+    if let Err(e)=fs::rename(&private,&active){
+        if had_previous {
+            fs::rename(&previous,&active).map_err(|restore|format!(
+                "cannot publish receipt: {e}; previous receipt restore failed: {restore}"))?;
+        }
+        return Err(format!("cannot publish verified CD receipt: {e}"));
+    }
+    Ok(had_previous)
+}
+#[cfg(feature="unified-fix-install")]
+fn rollback_unified_receipt(game:&Path,had_previous:bool)->Result<(),String>{
+    let active=receipt_path(game);
+    fs::rename(&active,game.join(INSTALL_RECEIPT)).map_err(error)?;
+    if had_previous{
+        fs::rename(previous_receipt(game)?,active).map_err(error)?;
+    }
+    Ok(())
+}
+#[cfg(feature="unified-fix-install")]
+fn finish_unified_receipt(game:&Path,had_previous:bool)->Result<(),String>{
+    if had_previous {fs::remove_file(previous_receipt(game)?).map_err(error)?;}
     Ok(())
 }
 
@@ -339,7 +389,7 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
 }
 
 fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
-    // The v1.1 WinMM candidate must never mistake an old CrimsonSkiesFix
+    // The v1.1 candidate must never mistake an old CrimsonSkiesFix
     // ddraw.dll (or a third-party wrapper) for a missing file to repair.
     // Refuse *before* CD extraction, installer staging or player-data writes.
     ensure_no_local_ddraw(game)?;
