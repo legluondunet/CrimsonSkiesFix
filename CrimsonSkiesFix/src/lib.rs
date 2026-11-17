@@ -303,7 +303,9 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                #[cfg(feature = "import-alias-bootstrap")]
+                #[cfg(feature = "unified-fix-dll")]
+                let bootstrap_kind="unified fix.dll import alias bootstrap; native WinMM untouched";
+                #[cfg(all(feature = "import-alias-bootstrap",not(feature="unified-fix-dll")))]
                 let bootstrap_kind="CSFIX import alias bootstrap; native WinMM untouched";
                 #[cfg(all(feature = "winmm-bootstrap",not(feature="import-alias-bootstrap")))]
                 let bootstrap_kind="WinMM IAT bootstrap";
@@ -372,7 +374,10 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     {
         static WINMM_LOG_ONCE:Once=Once::new();
         WINMM_LOG_ONCE.call_once(||{
-            #[cfg(feature="import-alias-bootstrap")]
+            #[cfg(feature="unified-fix-dll")]
+            log(&format!("UNIFIED-FIX-BOOTSTRAP: native game DirectDraw import alias reached fix.dll; backend_status={} (7=both original DirectDraw exports resolved inside unified DLL); native_winmm_untouched=true",
+                winmm_bootstrap::status()));
+            #[cfg(all(feature="import-alias-bootstrap",not(feature="unified-fix-dll")))]
             log(&format!("IMPORT-ALIAS-BOOTSTRAP: native game DirectDraw import alias reached; backend_status={} (7=both native DirectDraw exports handed to core); native_winmm_untouched=true",
                 winmm_bootstrap::status()));
             #[cfg(not(feature="import-alias-bootstrap"))]
