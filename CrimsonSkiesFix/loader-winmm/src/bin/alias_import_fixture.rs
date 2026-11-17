@@ -12,7 +12,7 @@ extern "system" {fn timeGetTime()->u32;}
 extern "system" { fn GetModuleHandleW(n:*const u16)->*mut c_void; }
 fn wide(s:&str)->Vec<u16>{std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()}
 fn main(){
- let alias=wide("CSFIX.dll");let native=wide("winmm.dll");
+ let alias=wide(if cfg!(unified_alias) {"fix.dll"}else{"CSFIX.dll"});let native=wide("winmm.dll");
  let winmm=unsafe{GetModuleHandleW(native.as_ptr())};
  let csfix=unsafe{GetModuleHandleW(alias.as_ptr())};
  assert!(!winmm.is_null(),"ordinary native WINMM.dll was not loaded by OS");
@@ -29,5 +29,5 @@ fn main(){
     assert_eq!(first,0x6A6A_1234,"DirectDrawCreate did not target alias DLL");
     assert_eq!(second,0x6A6A_1234,"DirectDrawEnumerateA did not target alias DLL");
  }
- println!("ALIAS-IMPORT-SMOKE PASS: native WinMM import unchanged, two DirectDraw imports dispatched to unique CSFIX.dll, tick={tick}");
+ println!("ALIAS-IMPORT-SMOKE PASS: native WinMM import unchanged, two DirectDraw imports dispatched to unique {alias:?}, tick={tick}");
 }
