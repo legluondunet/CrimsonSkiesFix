@@ -186,7 +186,8 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
         .replace("InstallState=GAME_FILES_READY_EXECUTABLE_PENDING","InstallState=GAME_READY")
         .replace("ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED",
                  "ExecutablePolicy=APPROVED_UNWRAPPED_102_ORIGINAL_BACKED_UP");
-    let receipt_pending=game.join("CrimsonSkiesFix.install-receipt.ready");
+    let receipt_parent=receipt.parent().ok_or("receipt has no parent")?;
+    let receipt_pending=receipt_parent.join("CrimsonSkiesFix.install-receipt.ready");
     if any_entry(&receipt_pending){
         let _=fs::remove_file(&pending);
         return Err("abandoned ready receipt exists; refusing to replace it".into());
@@ -208,7 +209,7 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
     }
     // Windows does not always support replacing an existing file using
     // rename. Keep a reversible receipt backup until completed.
-    let receipt_backup=game.join("CrimsonSkiesFix.install-receipt.pending.bak");
+    let receipt_backup=receipt_parent.join("CrimsonSkiesFix.install-receipt.pending.bak");
     if any_entry(&receipt_backup){
         return Err("abandoned pending receipt backup; leaving staged data for inspection".into());
     }
@@ -277,7 +278,7 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
 #[cfg(feature="unified-fix-install")]
 fn previous_receipt(game:&Path)->Result<PathBuf,String>{
     Ok(game.parent().ok_or("game directory has no parent")?
-        .join("CrimsonSkiesFix.install-receipt.previous"))
+        .join("state").join("CrimsonSkiesFix.install-receipt.previous"))
 }
 #[cfg(feature="unified-fix-install")]
 fn publish_unified_receipt(game:&Path)->Result<bool,String>{
@@ -288,8 +289,9 @@ fn publish_unified_receipt(game:&Path)->Result<bool,String>{
     if any_entry(&previous){return Err(format!(
         "previous installation receipt backup exists; preserving {}",previous.display()));}
     if any_entry(&active)&&!regular(&active){
-        return Err("unsafe existing root installation receipt".into());
+        return Err("unsafe existing state installation receipt".into());
     }
+    ensure_state_dir(game)?; // refuse symlinks or occupied files before any rename
     let had_previous=regular(&active);
     if had_previous{fs::rename(&active,&previous).map_err(error)?;}
     if let Err(e)=fs::rename(&private,&active){
@@ -838,14 +840,14 @@ mod tests{
         let staged=root.join(REBUILT);
         fs::create_dir(&staged).unwrap();
         assert_eq!(receipt_path(&staged),staged.join(INSTALL_RECEIPT));
-        assert_eq!(receipt_path(&root.join("game")),root.join(INSTALL_RECEIPT));
+        assert_eq!(receipt_path(&root.join("game")),root.join("state").join(INSTALL_RECEIPT));
         fs::write(staged.join(INSTALL_RECEIPT),b"verified pending receipt").unwrap();
-        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        assert!(!any_entry(&root.join("state").join(INSTALL_RECEIPT)));
         fs::rename(&staged,root.join("game")).unwrap();
-        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        assert!(!any_entry(&root.join("state").join(INSTALL_RECEIPT)));
         let game=root.join("game");
         assert!(!publish_unified_receipt(&game).unwrap());
-        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"verified pending receipt");
+        assert_eq!(fs::read(root.join("state").join(INSTALL_RECEIPT)).unwrap(),b"verified pending receipt");
         assert!(!any_entry(&game.join(INSTALL_RECEIPT)));
         fs::remove_dir_all(root).unwrap();
     }
@@ -855,13 +857,14 @@ mod tests{
         let root=temp();
         let game=root.join("game");
         fs::create_dir(&game).unwrap();
-        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::create_dir(root.join("state")).unwrap();
+        fs::write(root.join("state").join(INSTALL_RECEIPT),b"original receipt").unwrap();
         fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
         assert!(publish_unified_receipt(&game).unwrap());
-        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert_eq!(fs::read(root.join("state").join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
         assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"original receipt");
         rollback_unified_receipt(&game,true).unwrap();
-        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(root.join("state").join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
         assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
         assert!(!any_entry(&previous_receipt(&game).unwrap()));
         fs::remove_dir_all(root).unwrap();
@@ -872,13 +875,28 @@ mod tests{
         let root=temp();
         let game=root.join("game");
         fs::create_dir(&game).unwrap();
-        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::create_dir(root.join("state")).unwrap();
+        fs::write(root.join("state").join(INSTALL_RECEIPT),b"original receipt").unwrap();
         fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
         fs::write(previous_receipt(&game).unwrap(),b"owner backup").unwrap();
         assert!(publish_unified_receipt(&game).is_err());
-        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(root.join("state").join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
         assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
         assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"owner backup");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_refuses_occupied_state_and_preserves_owners_files(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"verified pending receipt").unwrap();
+        fs::write(root.join("state"),b"owner file").unwrap();
+        let err=publish_unified_receipt(&game).unwrap_err();
+        assert!(err.contains("unsafe installation state directory"));
+        assert_eq!(fs::read(root.join("state")).unwrap(),b"owner file");
+        assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"verified pending receipt");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
