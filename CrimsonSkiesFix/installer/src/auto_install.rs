@@ -554,8 +554,10 @@ fn prepare_first_launch_ini(base:&Path)->Result<(),String>{
     }
     // Create the INI only once. A pre-existing INI can never be enrolled.
     let mut file=OpenOptions::new().write(true).create_new(true).open(&ini).map_err(error)?;
-    if let Err(err)=file.write_all(initial_unified_ini().as_bytes())
-        .and_then(|_|file.sync_all()){
+    let write_result=file.write_all(initial_unified_ini().as_bytes())
+        .and_then(|_|file.sync_all());
+    drop(file); // Windows must close the handle before rollback or replacement.
+    if let Err(err)=write_result{
         // We created this file, so a partial write can be safely rolled back.
         let _=fs::remove_file(&ini);
         return Err(format!("could not initialize first-launch INI: {err}"));
@@ -603,7 +605,9 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
     let next=quiet_unified_ini();
     let mut file=OpenOptions::new().write(true).create_new(true)
         .open(&temporary).map_err(error)?;
-    if let Err(err)=file.write_all(next.as_bytes()).and_then(|_|file.sync_all()){
+    let staged=file.write_all(next.as_bytes()).and_then(|_|file.sync_all());
+    drop(file); // The pending INI must be closed before Windows can rename it.
+    if let Err(err)=staged{
         let _=fs::remove_file(&temporary);
         return Err(format!("could not stage quiet first-launch INI: {err}"));
     }
