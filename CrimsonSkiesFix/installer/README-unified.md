@@ -15,8 +15,6 @@ crimsonskiesfix/
   README.md
   LICENSE
   build-info.txt
-  third_party/             <- optional vendor DLLs, not populated by this test
-  mods/                    <- optional modifications, not populated by this test
   game/
     CRIMSON.EXE
     fix.dll                <- single combined loader + CrimsonSkiesFix code
@@ -77,8 +75,9 @@ If a command fails, preserve `CrimsonSkiesFix_installer.log` and
 compare game launch, opening menu, preferences, first mission, movies,
 pause, save/load and exit with the previously verified WinMM build.
 
-The `mods/` and `third_party/` folders are **reserved for optional future
-content**: no SDL3 or additional mods are installed by this prototype.
+The installer **does not create** `mods/` or `third_party/` by default.
+These folders will only be needed if future features actually use them.
+Any existing user content at those paths is left untouched.
 
 **Important limits:**
 - Start the game with CrimsonSkiesFix.exe, not directly via CRIMSON.EXE.
