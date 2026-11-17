@@ -486,10 +486,11 @@ fn organized_launcher_root(dll_dir:&Path)->Option<PathBuf>{
             return None;
         }
         let root=dll_dir.parent()?;
-        if !root.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskiesfix"){
-            return None;
-        }
-        return (safe_directory(dll_dir,false)&&safe_directory(root,false))
+        // The parent can be renamed or moved by its owner, but it must
+        // really contain the launcher. Never infer configuration/log paths
+        // from the current working directory or follow symlink directories.
+        return (safe_directory(dll_dir,false)&&safe_directory(root,false)&&
+            regular_file(&root.join("CrimsonSkiesFix.exe")))
             .then(||root.to_path_buf());
     }
     #[cfg(not(feature="unified-fix-dll"))]
@@ -527,10 +528,13 @@ fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
 
 fn log_directory()->Option<PathBuf> {
     let dll_dir=dll_directory()?;
-    #[cfg(feature="winmm-split-runtime")]
+    #[cfg(feature="unified-fix-dll")]
+    { return organized_launcher_root(&dll_dir); }
+    #[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
     if let Some(root)=organized_launcher_root(&dll_dir){return Some(root);}
     // Historical v1.0 and monolithic 1.1 installers retain their paths.
-    Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
+    #[cfg(not(feature="unified-fix-dll"))]
+    {Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))}
 }
 
 pub fn log_path()->Option<PathBuf> {
@@ -925,6 +929,8 @@ mod game_log_routing_tests {
             .join("crimsonskiesfix");
         let game=root.join("game");
         std::fs::create_dir_all(&game).unwrap();
+        assert_eq!(organized_launcher_root(&game),None);
+        std::fs::write(root.join("CrimsonSkiesFix.exe"),b"test fake launcher").unwrap();
         assert_eq!(organized_launcher_root(&game),Some(root.clone()));
         assert_eq!(organized_launcher_root(&root),None);
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
