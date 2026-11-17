@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/loader-alias/tools/**'
       - 'CrimsonSkiesFix/src/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/loader-alias/tools/**'
       - 'CrimsonSkiesFix/src/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
@@ -54,7 +56,7 @@ jobs:
         run: |
           python loader-alias/tools/test_verify_alias_pe.py -v
           if($LASTEXITCODE -ne 0){throw 'PE parser tests failed'}
-          python loader-alias/tools/verify_alias_pe.py runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          python loader-alias/tools/verify_alias_pe.py --unified runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
           if($LASTEXITCODE -ne 0){throw 'Unified runtime import/export gate failed'}
       - name: Compile and test unified installer with only fix.dll embedded
         shell: pwsh
