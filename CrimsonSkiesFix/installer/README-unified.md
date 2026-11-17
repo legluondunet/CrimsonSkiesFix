@@ -84,14 +84,15 @@ binary, data and bundled `fix.dll`. The final command launches the game
 through the required suspended-process import alias. Launching
 `game/CRIMSON.EXE` directly **does not activate** our corrections.
 
-**Movies under Wine / GE-Proton:** intro and cinematic playback can fail
-independently of the DirectDraw widescreen patch. Quartz/DirectShow is a
-**diagnostic hypothesis**, not a universally verified prerequisite and not
-necessarily a complete decoder solution. For an isolated-prefix test,
-runner-specific logs, and an optional *manual* `winetricks quartz` comparison,
-see [the Wine video troubleshooting guide](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/wine-directshow-movie-troubleshooting.md).
-The installer does not change codecs, DirectShow overrides, or the user's
-Wine/Proton prefix.
+**Movies under Wine / GE-Proton:** the existing Lutris installer uses
+Winetricks `amstream quartz` to install native Microsoft DLLs. This unified
+fix does **not** silently install them. Original CD cutscenes are stored as
+`GOSDATA/ASSETS/GRAPHICS/MPG/*.MPG`; for a Winetricks-free solution, our
+first step is a **clean-prefix Wine builtin-only test**, followed, if necessary,
+by studying a small open-source MPEG decoder integrated into `fix.dll`.
+Neither solution is validated or installed by this prototype yet.
+See [the Wine video investigation and test guide](https://github.com/legluondunet/CrimsonSkiesFix/blob/main/CrimsonSkiesFix/docs/wine-directshow-movie-troubleshooting.md).
+Windows native video playback is unchanged.
 
 **First-launch logging:** a freshly generated INI starts with `[Debug] Log=1`
 so that the first game session produces `CrimsonSkiesFix.log`. After a normal
