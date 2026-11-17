@@ -17,6 +17,11 @@ on:
       - '.github/workflows/unified-fix-prototype.yml'
   workflow_dispatch:
 
+# Keep only the newest validation when the feature branch advances quickly.
+concurrency:
+  group: unified-fix-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
