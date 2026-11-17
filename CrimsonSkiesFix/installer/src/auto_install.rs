@@ -714,7 +714,6 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         use std::os::windows::process::ExitStatusExt;
         super::alias_import_launcher::launch_child(&exe,u32::MAX)
             .map(|(code,summary)|{
-
                 append_installer_launch_detail(&log,&summary,needed);
                 println!("{summary}");
                 std::process::ExitStatus::from_raw(code)
@@ -723,8 +722,7 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     };
     #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
     let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
-
-                append_installer_launch_detail(&log,&summary,needed);
+        append_installer_launch_detail(&log,&summary,needed);
         println!("{summary}");
         exit
     });
