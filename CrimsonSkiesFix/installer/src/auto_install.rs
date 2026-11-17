@@ -53,6 +53,15 @@ fn report_needed(action:Option<&str>)->bool{
     !matches!(action,Some("VERIFIED_EXISTING_AND_LAUNCH"|"VERIFIED_LEGACY_IMPORT_AND_LAUNCH"))
 }
 
+/// Append details only to the NEW report produced by this installation or
+/// repair. A routine verified relaunch must leave previous diagnostics intact.
+fn append_installer_launch_detail(path:&Path,detail:&str,needed:bool){
+    if !needed{return;}
+    if let Ok(mut report)=OpenOptions::new().append(true).open(path){
+        let _=writeln!(report,"{detail}");
+    }
+}
+
 /// Write only installer-owned records; never touch the DLL's gameplay log.
 /// A failed or real installation replaces the previous installer report.
 fn write_installer_report(base:&Path,report:&str,needed:bool)->Result<(),String>{
@@ -705,9 +714,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         use std::os::windows::process::ExitStatusExt;
         super::alias_import_launcher::launch_child(&exe,u32::MAX)
             .map(|(code,summary)|{
-                if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
-                    let _=writeln!(report,"{summary}");
-                }
+
+                append_installer_launch_detail(&log,&summary,needed);
                 println!("{summary}");
                 std::process::ExitStatus::from_raw(code)
             })
@@ -715,9 +723,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     };
     #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
     let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
-        if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
-            let _=writeln!(report,"{summary}");
-        }
+
+                append_installer_launch_detail(&log,&summary,needed);
         println!("{summary}");
         exit
     });
@@ -728,11 +735,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             let code=status.code().unwrap_or(2);
             // Only an actual installation/repair report tracks its child
             // exit. Ordinary verified launches preserve the last report.
-            if needed {
-                if let Ok(mut session)=OpenOptions::new().append(true).open(&log){
-                    let _=writeln!(session,"\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}");
-                }
-            }
+            append_installer_launch_detail(&log,
+                &format!("\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}"),needed);
             #[cfg(feature="unified-fix-install")]
             match finish_first_launch_log(base,code){
                 Ok(true)=>println!("First-launch diagnostics retained; subsequent game sessions use Log=0."),
@@ -862,6 +866,45 @@ mod tests{
         assert!(fs::read_to_string(&game_log).unwrap().starts_with("GameSession="));
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn verified_launches_never_accumulate_installer_log_lines(){
+        let root=temp();
+        let installer=root.join(INSTALLER_LOG);
+        let first="CrimsonSkiesFix AUTO INSTALL v1\nAction=INSTALL_FROM_CD_AND_LAUNCH\nAUTO_INSTALL_RESULT=READY\n";
+        write_installer_report(&root,first,true).unwrap();
+        append_installer_launch_detail(&installer,"ALIAS-LAUNCH: child_exit=0",true);
+        append_installer_launch_detail(&installer,
+            "\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE=0",true);
+        let original=fs::read(&installer).unwrap();
+        assert!(original.ends_with(b"GAME_EXIT_CODE=0\n"));
+        for action in ["VERIFIED_EXISTING_AND_LAUNCH","VERIFIED_LEGACY_IMPORT_AND_LAUNCH"]{
+            let needed=report_needed(Some(action));
+            assert!(!needed);
+            write_installer_report(&root,"SHOULD_NOT_REPLACE",needed).unwrap();
+            append_installer_launch_detail(&installer,"ALIAS-LAUNCH: repeat",needed);
+            append_installer_launch_detail(&installer,
+                "\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE=0",needed);
+            assert_eq!(fs::read(&installer).unwrap(),original);
+        }
+        write_installer_report(&root,"Action=REPAIRED_BUNDLED_FIX_DLL_AND_LAUNCH\n",true).unwrap();
+        append_installer_launch_detail(&installer,"ALIAS-LAUNCH: child_exit=0",true);
+        let repaired=fs::read_to_string(&installer).unwrap();
+        assert!(repaired.starts_with("Action=REPAIRED_BUNDLED_FIX_DLL_AND_LAUNCH\n"));
+        assert_eq!(repaired.matches("ALIAS-LAUNCH").count(),1);
+        assert!(!repaired.contains("INSTALL_FROM_CD_AND_LAUNCH"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_relaunch_does_not_recreate_missing_installer_log(){
+        let root=temp();
+        let log=root.join(INSTALLER_LOG);
+        assert!(!any_entry(&log));
+        append_installer_launch_detail(&log,"ALIAS-LAUNCH",false);
+        assert!(!any_entry(&log));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn unsafe_installer_log_never_truncates_game_log_or_owner_data(){
         let root=temp();
