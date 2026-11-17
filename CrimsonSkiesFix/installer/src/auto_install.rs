@@ -362,9 +362,21 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
             let rollback=fs::rename(&previous,game);
             return Err(format!("cannot publish rebuilt game: {err}; rollback={rollback:?}"));
         }
+        #[cfg(feature="unified-fix-install")]
+        let previous_receipt_present=match publish_unified_receipt(game){
+            Ok(was_present)=>was_present,
+            Err(reason)=>{
+                let staged=fs::rename(game,&new);
+                let restored=fs::rename(&previous,game);
+                return Err(format!("rebuilt game receipt publication failed: {reason}; candidate={staged:?}; old game restoration={restored:?}"));
+            }
+        };
         let validated=verify_installed_cd_assets(game)
             .and_then(|_|verify(game).map(|_|()));
         if let Err(reason)=validated {
+            #[cfg(feature="unified-fix-install")]
+            rollback_unified_receipt(game,previous_receipt_present)
+                .map_err(|e|format!("cannot restore previous receipt after final verification failure ({reason}): {e}; previous game is safe at {}",previous.display()))?;
             if let Err(err)=fs::rename(game,&new){
                 return Err(format!(
                     "repaired installation failed final SHA verification ({reason});                      old installation is safe in {} but new game could not be moved: {err}",
@@ -378,12 +390,32 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
             return Err(format!(
                 "rebuilt game failed post-publication verification ({reason});                  previous game restored; failed rebuild retained at {}",new.display()));
         }
+        #[cfg(feature="unified-fix-install")]
+        finish_unified_receipt(game,previous_receipt_present)?;
         println!("Previous installation preserved at {}.",previous.display());
     }else{
         if any_entry(game){return Err("game target appeared while installing; refusing overwrite".into());}
         fs::rename(&new,game).map_err(error)?;
-        verify_installed_cd_assets(game)?;
-        verify(game)?;
+        #[cfg(feature="unified-fix-install")]
+        let previous_receipt_present=match publish_unified_receipt(game){
+            Ok(was_present)=>was_present,
+            Err(reason)=>{
+                let rollback=fs::rename(game,&new);
+                return Err(format!("new game receipt publication failed: {reason}; candidate rollback={rollback:?}"));
+            }
+        };
+        let validated=verify_installed_cd_assets(game).and_then(|_|verify(game).map(|_|()));
+        if let Err(reason)=validated{
+            #[cfg(feature="unified-fix-install")]
+            {
+                rollback_unified_receipt(game,previous_receipt_present)
+                    .map_err(|e|format!("cannot rollback failed fresh CD receipt ({reason}): {e}"))?;
+                fs::rename(game,&new).map_err(|e|format!("cannot rollback failed new game ({reason}): {e}"))?;
+            }
+            return Err(format!("new game failed post-publication verification: {reason}"));
+        }
+        #[cfg(feature="unified-fix-install")]
+        finish_unified_receipt(game,previous_receipt_present)?;
     }
     Ok(())
 }
