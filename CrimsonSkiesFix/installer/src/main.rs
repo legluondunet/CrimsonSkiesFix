@@ -27,16 +27,19 @@ const GAME_EXE_SIZE: u64 = 2_580_480;
 // The opt-in WinMM installer is compiled separately from the v1.0 DirectDraw
 // installer, with a distinct bundled runtime and version identity.
 const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
-#[cfg(feature="winmm-split-install")]
+#[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
 const BUNDLED_CORE: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_CORE_DLL"));
-const RUNTIME_DLL: &str = if cfg!(feature="import-alias-install") {"CSFIX.dll"}
+const RUNTIME_DLL: &str = if cfg!(feature="unified-fix-install") {"fix.dll"}
+    else if cfg!(feature="import-alias-install") {"CSFIX.dll"}
     else if cfg!(feature="winmm-installer") {"winmm.dll"} else {"ddraw.dll"};
-const GAME_FOLDER: &str = if cfg!(feature="winmm-split-install") {"crimsonskies"} else {"CrimsonSkiesFix"};
+const GAME_FOLDER: &str = if cfg!(feature="unified-fix-install") {"game"}
+    else if cfg!(feature="winmm-split-install") {"crimsonskies"} else {"CrimsonSkiesFix"};
 const PATCH_FOLDER: &str = "crimsonskiesfix";
 const CORE_DLL: &str = "CrimsonSkiesFix.dll";
 
 fn patch_dir(game:&Path)->PathBuf{
-    if cfg!(feature="winmm-split-install"){game.join(PATCH_FOLDER)}else{game.to_path_buf()}
+    if cfg!(feature="unified-fix-install"){game.parent().unwrap_or(game).to_path_buf()}
+    else if cfg!(feature="winmm-split-install"){game.join(PATCH_FOLDER)}else{game.to_path_buf()}
 }
 fn ensure_patch_dir(game:&Path)->Result<PathBuf,String>{
     let dir=patch_dir(game);
@@ -46,12 +49,12 @@ fn ensure_patch_dir(game:&Path)->Result<PathBuf,String>{
     }
     Ok(dir)
 }
-#[cfg(feature="winmm-split-install")]
+#[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
 fn bundled_core_matches(game:&Path)->bool{
     let core=game.join(PATCH_FOLDER).join(CORE_DLL);
     regular(&core) && digest(&core).ok().as_deref()==Some(sha256::hex(BUNDLED_CORE).as_str())
 }
-#[cfg(not(feature="winmm-split-install"))]
+#[cfg(any(not(feature="winmm-split-install"),feature="unified-fix-install"))]
 fn bundled_core_matches(_game:&Path)->bool{true}
 
 #[cfg(not(feature="winmm-installer"))]
@@ -60,8 +63,10 @@ const README: &str = include_str!("../../README.md");
 const README: &str = include_str!("../README-winmm-candidate.md");
 #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
 const README: &str = include_str!("../README-winmm-split.md");
-#[cfg(feature="import-alias-install")]
+#[cfg(all(feature="import-alias-install",not(feature="unified-fix-install")))]
 const README: &str = include_str!("../README-import-alias.md");
+#[cfg(feature="unified-fix-install")]
+const README: &str = include_str!("../README-unified.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -152,7 +157,7 @@ fn verify(game: &Path) -> Result<PathBuf, String> {
             "installed {RUNTIME_DLL} does not match this launcher: actual={actual} expected={expected}"
         ));
     }
-    #[cfg(feature="winmm-split-install")]
+    #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
     {
         let core=game.join(PATCH_FOLDER).join(CORE_DLL);
         if !regular(&core) || digest(&core)?!=sha256::hex(BUNDLED_CORE) {
@@ -192,10 +197,12 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_RUNTIME),
         BUNDLED_RUNTIME.len()
     );
-    #[cfg(feature="winmm-split-install")]
+    #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
     build_info.push_str(&format!(
         "CoreDll={PATCH_FOLDER}/{CORE_DLL}\nCoreSha256={}\nCoreSizeBytes={}\nGameFolder={GAME_FOLDER}\n",
         sha256::hex(BUNDLED_CORE),BUNDLED_CORE.len()));
+    #[cfg(feature="unified-fix-install")]
+    build_info.push_str("GameFolder=game\nCoreDll=game/fix.dll\nFixFolder=.\n");
     let manifest = docs.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
@@ -329,7 +336,7 @@ fn deploy_runtime(game:&Path)->Result<(),String>{
     if cfg!(feature="winmm-installer"){ensure_no_local_ddraw(game)?;}
     #[cfg(feature="import-alias-install")]
     preflight_legacy_winmm(game)?;
-    #[cfg(feature="winmm-split-install")]
+    #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
     {
         // Validate both transaction slots BEFORE touching either DLL.
         let patch=ensure_patch_dir(game)?;
@@ -597,7 +604,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="import-alias-install"){
+        if cfg!(feature="unified-fix-install"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll native_winmm=yes EXPERIMENTAL UNIFIED", &COMMIT[..8]);
+        }else if cfg!(feature="import-alias-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=CSFIX.dll+crimsonskiesfix/CrimsonSkiesFix.dll native_winmm=yes EXPERIMENTAL IMPORT ALIAS", &COMMIT[..8]);
         }else if cfg!(feature="winmm-split-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=winmm.dll+crimsonskiesfix/CrimsonSkiesFix.dll EXPERIMENTAL SPLIT", &COMMIT[..8]);
@@ -684,11 +693,16 @@ mod tests {
             assert!(!any_entry(&game.join("winmm.dll")),
                 "import-alias installer MUST NOT deploy WinMM proxy");
         }
-        assert!(regular(&game.join(PATCH_FOLDER).join(CORE_DLL)));
-        assert_eq!(digest(&game.join(PATCH_FOLDER).join(CORE_DLL)).unwrap(),sha256::hex(BUNDLED_CORE));
-        assert!(regular(&game.join(PATCH_FOLDER).join("CrimsonSkiesFix.ini.example")));
-        assert!(regular(&game.join(PATCH_FOLDER).join("build-info.txt")));
-        assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
+        #[cfg(not(feature="unified-fix-install"))]
+        {
+            assert!(regular(&game.join(PATCH_FOLDER).join(CORE_DLL)));
+            assert_eq!(digest(&game.join(PATCH_FOLDER).join(CORE_DLL)).unwrap(),sha256::hex(BUNDLED_CORE));
+        }
+        assert!(regular(&patch_dir(&game).join("CrimsonSkiesFix.ini.example")));
+        assert!(regular(&patch_dir(&game).join("build-info.txt")));
+        if !cfg!(feature="unified-fix-install"){
+            assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
+        }
         assert!(!any_entry(&game.join(CORE_DLL)));
         assert_eq!(fs::read(root.join(INSTALLER_LOG)).unwrap(),b"owned by installer");
         fs::remove_dir_all(root).unwrap();
@@ -701,18 +715,18 @@ mod tests {
             "crimson-alias-migration-test-{}-{}",std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir(&root).unwrap();
-        assert_eq!(RUNTIME_DLL,"CSFIX.dll");
+        assert_eq!(RUNTIME_DLL,if cfg!(feature="unified-fix-install"){"fix.dll"}else{"CSFIX.dll"});
         fs::write(root.join("ddraw.dll"),b"independent renderer").unwrap();
         deploy_runtime(&root).unwrap();
-        assert!(regular(&root.join("CSFIX.dll")));
+        assert!(regular(&root.join(RUNTIME_DLL)));
         assert!(!any_entry(&root.join("winmm.dll")));
         assert_eq!(fs::read(root.join("ddraw.dll")).unwrap(),b"independent renderer");
         fs::write(root.join("winmm.dll"),b"unknown user multimedia wrapper").unwrap();
-        let before=digest(&root.join("CSFIX.dll")).unwrap();
+        let before=digest(&root.join(RUNTIME_DLL)).unwrap();
         assert!(preflight_legacy_winmm(&root).is_err());
         assert!(deploy_runtime(&root).is_err());
         assert!(regular(&root.join("winmm.dll")));
-        assert_eq!(digest(&root.join("CSFIX.dll")).unwrap(),before);
+        assert_eq!(digest(&root.join(RUNTIME_DLL)).unwrap(),before);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -915,7 +929,7 @@ mod tests {
         let root=std::env::temp_dir().join(format!("crimson-cd-install-check-{}-{id}",std::process::id()));
         fs::create_dir(&root).unwrap();
         assert!(verify_installed_cd_assets(&root).is_err());
-        #[cfg(feature="winmm-split-install")]
+        #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
         fs::create_dir(patch_dir(&root)).unwrap();
         fs::write(receipt_path(&root),
             "Project=CrimsonSkiesFix\nEdition=C_SKIES_FR_001\nInstallState=GAME_FILES_READY_EXECUTABLE_PENDING\n").unwrap();
@@ -928,7 +942,7 @@ mod tests {
             .unwrap().as_nanos();
         let dir=std::env::temp_dir().join(format!("crimson-cd-ready-{}-{id}",std::process::id()));
         fs::create_dir(&dir).unwrap();
-        #[cfg(feature="winmm-split-install")]
+        #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
         fs::create_dir(patch_dir(&dir)).unwrap();
         let receipt=receipt_path(&dir);
         fs::write(&receipt,
