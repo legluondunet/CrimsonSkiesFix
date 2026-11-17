@@ -695,6 +695,50 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_layout_keeps_single_dll_and_owner_files_in_place(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-unified-contract-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let game=root.join("game");
+        let staged=root.join("game.rebuilding");
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&staged).unwrap();
+
+        assert_eq!(GAME_FOLDER,"game");
+        assert_eq!(RUNTIME_DLL,"fix.dll");
+        assert_eq!(patch_dir(&game),root);
+        assert_eq!(receipt_path(&game),root.join(INSTALL_RECEIPT));
+        assert_eq!(receipt_path(&staged),staged.join(INSTALL_RECEIPT));
+        let ini=root.join("CrimsonSkiesFix.ini");
+        let gameplay_log=root.join("CrimsonSkiesFix.log");
+        let installer_log=root.join(INSTALLER_LOG);
+        fs::write(&ini,b"[Graphics]\\nAspectRatio=4:3\\n").unwrap();
+        fs::write(&gameplay_log,b"owner gameplay log").unwrap();
+        fs::write(&installer_log,b"owner installer log").unwrap();
+
+        deploy_runtime(&game).unwrap();
+        deploy_documentation(&game).unwrap();
+        assert_eq!(digest(&game.join("fix.dll")).unwrap(),sha256::hex(BUNDLED_RUNTIME));
+        for name in ["CSFIX.dll","CrimsonSkiesFix.dll","winmm.dll"] {
+            assert!(!any_entry(&game.join(name)),"unexpected obsolete game DLL: {name}");
+            assert!(!any_entry(&root.join(name)),"unexpected extra root DLL: {name}");
+        }
+        assert!(regular(&root.join("CrimsonSkiesFix.ini.example")));
+        assert!(regular(&root.join("README.md")));
+        assert!(regular(&root.join("build-info.txt")));
+        assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
+        assert!(!any_entry(&game.join("build-info.txt")));
+        assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\\nAspectRatio=4:3\\n");
+        assert_eq!(fs::read(&gameplay_log).unwrap(),b"owner gameplay log");
+        assert_eq!(fs::read(&installer_log).unwrap(),b"owner installer log");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(feature="winmm-split-install")]
     #[test]
     fn organized_install_separates_both_dlls_and_documents_without_touching_logs(){
