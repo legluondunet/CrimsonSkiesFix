@@ -353,7 +353,20 @@ fn deploy_runtime(game:&Path)->Result<(),String>{
 const INSTALL_RECEIPT: &str = "CrimsonSkiesFix.install-receipt.txt";
 // Installer provenance belongs to the patch alongside build-info, never
 // mixed into the original game's file tree in the organized variant.
-fn receipt_path(game:&Path)->PathBuf{patch_dir(game).join(INSTALL_RECEIPT)}
+fn receipt_path(game:&Path)->PathBuf{
+    #[cfg(feature="unified-fix-install")]
+    {
+        // Only a published game/ stores the receipt next to the launcher.
+        // A game.rebuilding/ candidate keeps its uncommitted receipt privately
+        // until validation and the reversible directory publication succeed.
+        if game.file_name().is_some_and(|name|name.eq_ignore_ascii_case("game")){
+            return game.parent().unwrap_or(game).join(INSTALL_RECEIPT);
+        }
+        return game.join(INSTALL_RECEIPT);
+    }
+    #[cfg(not(feature="unified-fix-install"))]
+    {patch_dir(game).join(INSTALL_RECEIPT)}
+}
 
 // The receipt records provenance, not proof: validate every original GAME/
 // file and the official overlay independently before trusting the install.
