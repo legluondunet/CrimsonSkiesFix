@@ -138,9 +138,24 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
 )->Result<(PathBuf,PathBuf),String>{
-    // Check the local owner-supplied approved game binary independently from
-    // the CD data, so corrupt original media cannot block source reuse.
-    let exe=approved_executable(base,existing)?;
+    // Check owner-supplied EXE independently from CD contents. If it is
+    // missing/unsupported, check the updater too, so a user who has neither
+    // learns about BOTH prerequisites in one attempt. All checks are read-only.
+    let exe=match approved_executable(base,existing){
+        Ok(exe)=>exe,
+        Err(exe_issue)=>{
+            return Err(match update102::find(base,update){
+                Ok(_)=>exe_issue,
+                Err(update_issue)=>format!(
+                    "CD install prerequisites missing or invalid; no extraction or game launch attempted:\n\
+                     - approved decrypted 1.02 EXE: {exe_issue}\n\
+                     - official 1.02 updater: {update_issue}\n\
+                     Supply both authenticated files beside CrimsonSkiesFix.exe, then rerun --install-only or launch normally. \
+                     Any previously installed game and saves are preserved."
+                ),
+            });
+        }
+    };
     if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
         return Err(format!("embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"));
     }
@@ -936,6 +951,42 @@ mod tests{
         assert!(!report.contains("GAME_EXIT_CODE="));
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn missing_exe_and_updater_report_both_without_touching_existing_game(){
+        let root=temp();
+        let game=root.join(if cfg!(feature="unified-fix-install"){"game"}else{"CrimsonSkiesFix"});
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(game.join("SavedGames")).unwrap();
+        fs::write(game.join("SavedGames").join("pilot.dat"),b"owner save").unwrap();
+        fs::write(root.join("disc.iso"),b"owner CD image placeholder").unwrap();
+        let err=preflight_install_sources(&root,&game,None).unwrap_err();
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        assert!(err.contains("no exact verified Crimson Skies 1.02 updater"),"{err}");
+        assert!(err.contains("rerun --install-only"),"{err}");
+        assert_eq!(fs::read(game.join("SavedGames").join("pilot.dat")).unwrap(),b"owner save");
+        assert_eq!(fs::read(root.join("disc.iso")).unwrap(),b"owner CD image placeholder");
+        assert!(!any_entry(&root.join(REBUILT)));
+        assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
+        assert!(!any_entry(&root.join(PREVIOUS)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_prerequisites_are_both_present_in_installer_error_report(){
+        let root=temp();
+        let game=root.join(if cfg!(feature="unified-fix-install"){"game"}else{"CrimsonSkiesFix"});
+        let err=auto_run(&root,&game,false).unwrap_err();
+        let report=fs::read_to_string(root.join(INSTALLER_LOG)).unwrap();
+        assert!(err.contains("official 1.02 updater"),"{err}");
+        assert!(report.contains("approved decrypted 1.02 EXE"),"{report}");
+        assert!(report.contains("official 1.02 updater"),"{report}");
+        assert!(report.contains("AUTO_INSTALL_RESULT=ERROR"));
+        assert!(!any_entry(&game));
+        assert!(!any_entry(&root.join(REBUILT)));
+        assert!(!any_entry(&root.join("state")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn prerequisite_gate_rejects_unknown_executable_before_any_cd_extraction(){
         let root=temp();
