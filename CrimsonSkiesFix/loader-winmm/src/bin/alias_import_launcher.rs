@@ -103,6 +103,9 @@ pub(crate) fn launch_child(target:&std::path::Path,timeout_ms:u32)->Result<(u32,
    if unsafe{VirtualProtectEx(child.0.process,remote_addr,10,4,&mut old_prot)}==0{
       return Err(format!("VirtualProtectEx failed: {}",failure()))
    }
+   #[cfg(feature="unified-fix-install")]
+   const NEW:&[u8;10]=b"fix.dll\0\0\0";
+   #[cfg(not(feature="unified-fix-install"))]
    const NEW:&[u8;10]=b"CSFIX.dll\0";
    let mut written=0usize;
    let wrote=unsafe{WriteProcessMemory(child.0.process,remote_addr,NEW.as_ptr().cast(),10,&mut written)}!=0 && written==10;
