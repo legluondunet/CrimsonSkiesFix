@@ -304,7 +304,9 @@ pub fn project_path(name:&str)->Option<PathBuf> {
     // Fixed internal file names only; never insert user-controlled paths here.
     // In split mode the active INI lives beside CrimsonSkiesFix.dll in the
     // verified crimsonskies/crimsonskiesfix/ patch directory.
-    #[cfg(feature="winmm-split-runtime")]
+    #[cfg(feature="unified-fix-dll")]
+    {organized_launcher_root(&dll_directory()?).map(|root|root.join(name))}
+    #[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
     {Some(dll_directory()?.join(name))}
     #[cfg(not(feature="winmm-split-runtime"))]
     {Some(exe_directory()?.join(name))}
@@ -478,6 +480,20 @@ fn dll_directory()->Option<PathBuf> {
 // filename. Do not follow symlink folders when choosing log destinations.
 #[cfg(feature="winmm-split-runtime")]
 fn organized_launcher_root(dll_dir:&Path)->Option<PathBuf>{
+    #[cfg(feature="unified-fix-dll")]
+    {
+        if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("game"){
+            return None;
+        }
+        let root=dll_dir.parent()?;
+        if !root.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskiesfix"){
+            return None;
+        }
+        return (safe_directory(dll_dir,false)&&safe_directory(root,false))
+            .then(||root.to_path_buf());
+    }
+    #[cfg(not(feature="unified-fix-dll"))]
+    {
     if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskiesfix"){
         return None;
     }
@@ -488,6 +504,7 @@ fn organized_launcher_root(dll_dir:&Path)->Option<PathBuf>{
     let base=game.parent()?;
     (safe_directory(dll_dir,false)&&safe_directory(game,false)&&safe_directory(base,false))
         .then(||base.to_path_buf())
+    }
 }
 
 fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
@@ -885,6 +902,7 @@ mod early_monitor_tests{
 mod game_log_routing_tests {
     use super::*;
     #[cfg(feature="winmm-split-runtime")]
+    #[cfg(not(feature="unified-fix-dll"))]
     #[test]
     fn organized_runtime_routes_gameplay_logs_two_directories_above_dll(){
         let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -898,6 +916,18 @@ mod game_log_routing_tests {
         fs::create_dir_all(&other).unwrap();
         assert_eq!(organized_launcher_root(&other),None);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-dll")]
+    #[test]
+    fn unified_runtime_routes_ini_and_logs_to_parent_of_game(){
+        let root=std::env::temp_dir().join(format!("unified-csf-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+            .join("crimsonskiesfix");
+        let game=root.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        assert_eq!(organized_launcher_root(&game),Some(root.clone()));
+        assert_eq!(organized_launcher_root(&root),None);
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
     #[test]
     fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
