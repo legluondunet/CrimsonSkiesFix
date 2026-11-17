@@ -717,7 +717,7 @@ mod tests {
         let ini=root.join("CrimsonSkiesFix.ini");
         let gameplay_log=root.join("CrimsonSkiesFix.log");
         let installer_log=root.join(INSTALLER_LOG);
-        fs::write(&ini,b"[Graphics]\\nAspectRatio=4:3\\n").unwrap();
+        fs::write(&ini,b"[Graphics]\nAspectRatio=4:3\n").unwrap();
         fs::write(&gameplay_log,b"owner gameplay log").unwrap();
         fs::write(&installer_log,b"owner installer log").unwrap();
 
@@ -733,7 +733,7 @@ mod tests {
         assert!(regular(&root.join("build-info.txt")));
         assert!(!any_entry(&game.join("CrimsonSkiesFix.ini.example")));
         assert!(!any_entry(&game.join("build-info.txt")));
-        assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\\nAspectRatio=4:3\\n");
+        assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\nAspectRatio=4:3\n");
         assert_eq!(fs::read(&gameplay_log).unwrap(),b"owner gameplay log");
         assert_eq!(fs::read(&installer_log).unwrap(),b"owner installer log");
         fs::remove_dir_all(root).unwrap();
