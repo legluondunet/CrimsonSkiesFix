@@ -86,18 +86,17 @@ def fresh_is_safe(repo, token, branch, default, matched_pr, now, min_age_days):
     fresh = request(repo, token, "GET", f"/branches/{encoded}")
     if fresh["commit"]["sha"] != branch["commit"]["sha"] or fresh.get("protected"):
         return False, "branch-tip-or-protection-changed"
-    # Refetch the PR including merged timestamp, base branch, and latest head.
-    pr = request(repo, token, "GET", f"/pulls/{matched_pr}")
-    verdict, _ = assess_branch(fresh, [pr], repo=repo, default=default,
-                                now=now, min_age_days=min_age_days)
-    if verdict != "eligible":
-        return False, f"merged-pr-no-longer-valid:{verdict}"
-    # Detect newly opened PRs against the same local branch.
+    # Recheck ALL PRs for this head. A new open or closed-unmerged PR, or
+    # newly added commits, must prevent deletion even if an older PR merged.
     owner = repo.split("/", 1)[0]
     head = quote(f"{owner}:{name}", safe="")
-    open_prs = request(repo, token, "GET", f"/pulls?state=open&head={head}&per_page=100")
-    if open_prs:
-        return False, "new-open-pr"
+    history = request(repo, token, "GET", f"/pulls?state=all&head={head}&per_page=100")
+    if not isinstance(history, list) or len(history) >= 100:
+        return False, "pr-history-unavailable-or-over-limit"
+    verdict, current_pr = assess_branch(fresh, history, repo=repo, default=default,
+                                        now=now, min_age_days=min_age_days)
+    if verdict != "eligible" or current_pr != matched_pr:
+        return False, f"pr-changed-or-no-longer-valid:{verdict}"
     return True, "eligible"
 
 def summarize(lines):
