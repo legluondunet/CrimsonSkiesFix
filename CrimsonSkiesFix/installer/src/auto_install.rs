@@ -498,6 +498,23 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
             }
         }
     }
+    // A validated manual import may have the exact approved game EXE and
+    // assets but an older (or third-party) fix.dll. Replace only our runtime
+    // in place, without demanding the CD/updater or rebuilding player data.
+    // Preserve the strict checks for the game EXE, assets and native WinMM.
+    #[cfg(feature="unified-fix-install")]
+    if validated_game_exe(game).is_ok() && !any_entry(&game.join("winmm.dll")){
+        let runtime=game.join(RUNTIME_DLL);
+        if any_entry(&runtime)&&!regular(&runtime){
+            return Err("unsafe existing fix.dll: refusing replacement".into());
+        }
+        if !regular(&runtime)||digest(&runtime)?!=sha256::hex(BUNDLED_RUNTIME){
+            deploy_runtime(game)?;
+            deploy_documentation(game)?;
+            verify(game)?;
+            return Ok("REPAIRED_BUNDLED_FIX_DLL_AND_LAUNCH");
+        }
+    }
     // Backwards compatibility: a validated manually imported installation
     // may lack an original-CD receipt. Its old-format verification is less
     // comprehensive than the new immutable CD file manifest.
