@@ -1,51 +1,49 @@
-# GitHub Actions — safe branch cleanup
+# Branch cleanup — preserve only main and open pull-request branches
 
-Workflow: [`.github/workflows/prune-merged-branches.yml`](workflows/prune-merged-branches.yml).
+The GitHub Actions workflow [Cleanup branches - keep main and open PRs](workflows/cleanup-branches.yml)
+runs every **Sunday at 03:31 UTC** and is also manually executable.
 
-## Policy
+## Exact policy
 
-Runs **every Sunday at 03:31 UTC** (GitHub schedule is approximate).
-It removes local branches only if **all** the following checks pass:
+**Keep:**
+- The repository's main/default branch (`main`).
+- Every branch **in this repository** associated with at least one **open pull request**,
+  even when the PR targets another base branch.
+- Branches covered by GitHub branch protection **cannot be deleted by this
+  workflow**. They are visibly reported as blocked; protection is never removed.
 
-- The branch belongs to a pull request **merged into `main`** at least **7 full days** ago.
-- The latest PR on that branch is merged, **no PR on the branch is open**, and the current branch HEAD SHA is **exactly** the merged PR's head SHA.
-- The branch is not protected and is not `main`, `master`, `develop`, `gh-pages`, or any `maintenance/`, `release/`, `hotfix/`, `archive/` branch.
-- Immediately before deletion, the workflow re-fetches the branch and all pull requests associated with it to reject stale data or new work.
+**Delete:**
+- All other local branches, including branches whose PRs were merged,
+  branches whose PRs were closed without merging, branches without any PR,
+  and even branches named `release/*`, `maintenance/*`, `hotfix/*` or
+  `master` if they are not `main` and have no open PR.
 
-**Closed-but-unmerged PR branches are NEVER automatically deleted.**
-Branches without PR history are also preserved. Deletions cannot be undone
-through the GitHub UI; the commit SHA remains available in historical PRs
-but the branch reference is removed.
+**Warning:** This is more aggressive than a "merged branches only" cleanup.
+Unmerged changes on a deleted branch can become difficult to recover. Check
+the dry-run list before enabling the first manual deletion. Deleting branch
+references does not remove the corresponding commits immediately, but does
+remove the convenient branch pointers.
 
-## Manual dry run
+## Manual use
 
-After this workflow has been merged into the default branch:
+After this PR is merged:
+1. Actions → **Cleanup branches - keep main and open PRs** → Run workflow.
+2. Keep **dry_run=true** (default) and read the complete list in the job summary.
+3. Run again with **dry_run=false** to delete the candidates.
+4. The weekly scheduled execution applies the same policy automatically,
+   without a minimum age or waiting period.
 
-1. Open **Actions → Cleanup merged PR branches (safe) → Run workflow**.
-2. Leave `dry_run=true` (the default). Set `min_age_days` to 7 or another
-   value from 0 to 365.
-3. Read the workflow's **Job summary**. It lists exactly which branches
-   would be deleted and how many are being preserved.
-4. If the list is correct, run again with **`dry_run=false`**.
-   This option deletes the matching branches, subject to the final safety
-   recheck. To disable the automatic weekly purge, remove the `schedule`
-   trigger in the workflow.
+## Safety and validation
 
-## CI and safety
-
-- Branch push tests run seven offline policy tests plus a **read-only API
-  dry run**. They have **read-only repository permissions** and cannot
-  delete anything.
-- Scheduled and manually applied jobs use a short-lived GitHub Actions
-  token with `contents:write`; no PAT or secret is needed.
-- Maintenance and release branches are excluded, including any temporary
-  artifact-purge workflow branch.
-- This workflow **does not delete GitHub Actions runs or artifacts**.
-  Branch deletion is organizational and does not itself reclaim artifact
-  storage. Use the separate artifact cleanup for that purpose.
-
-Current repo context (17 Nov 2026, before this workflow): 43 branches,
-including 33 heads of merged PRs, six heads of closed-but-unmerged PRs,
-two active PR branches (#49, #51), `main` and the temporary artifact
-cleanup branch. Counts are just an initial inventory; the workflow always
-re-queries GitHub before taking action.
+- The policy test job has no permission to delete branches. Its push-trigger
+  runs Python unit tests followed by a read-only inventory.
+- Before applying any deletion, the script refuses to run from any ref other
+  than `refs/heads/main`, verifies the repository default is still `main`,
+  and requires an explicit short-lived GitHub token authorization.
+- It fetches **all** current local branches and **all** open PRs (paginated),
+  and checks each candidate's SHA, protection and open-PR status once more
+  immediately before the deletion API call.
+- GitHub branch protection takes precedence over the cleanup; these blocked
+  branches are listed in the workflow summary.
+- Does **not** remove GitHub Actions workflow executions, build artifacts,
+  releases, commits, or tags. Artifact storage cleanup is a separate process.
