@@ -424,25 +424,22 @@ fn preflight_no_active_winmm(game:&Path)->Result<(),String>{
 }
 fn deploy_runtime(game:&Path)->Result<(),String>{
     if cfg!(feature="winmm-installer"){ensure_no_local_ddraw(game)?;}
-    #[cfg(feature="unified-fix-install")]
-    {
-        // One DLL only; no lasting .bak from another fix.dll version.
-        preflight_legacy_winmm(game)?;
-        deploy_unified_fix_without_backup(game)?;
-        migrate_legacy_winmm(game)?;
-        return Ok(());
-    }
     #[cfg(feature="import-alias-install")]
     preflight_legacy_winmm(game)?;
-    #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
+    #[cfg(feature="unified-fix-install")]
+    deploy_unified_fix_without_backup(game)?;
+    #[cfg(not(feature="unified-fix-install"))]
     {
-        // Validate both transaction slots BEFORE touching either DLL.
-        let patch=ensure_patch_dir(game)?;
-        preflight_binary(game,RUNTIME_DLL)?;
-        preflight_binary(&patch,CORE_DLL)?;
-        deploy_binary(&patch,CORE_DLL,BUNDLED_CORE)?;
+        #[cfg(feature="winmm-split-install")]
+        {
+            // Validate both transaction slots BEFORE touching either DLL.
+            let patch=ensure_patch_dir(game)?;
+            preflight_binary(game,RUNTIME_DLL)?;
+            preflight_binary(&patch,CORE_DLL)?;
+            deploy_binary(&patch,CORE_DLL,BUNDLED_CORE)?;
+        }
+        deploy_binary(game,RUNTIME_DLL,BUNDLED_RUNTIME)?;
     }
-    deploy_binary(game,RUNTIME_DLL,BUNDLED_RUNTIME)?;
     #[cfg(feature="import-alias-install")]
     migrate_legacy_winmm(game)?;
     Ok(())
@@ -1009,6 +1006,80 @@ mod tests {
         assert!(!BUNDLED_RUNTIME.is_empty());
         assert_eq!(sha256::hex(BUNDLED_RUNTIME).len(), 64);
     }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn foreign_fix_dll_is_replaced_without_backup_and_second_install_is_noop(){
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-unified-replace-{}-{n}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join("fix.dll"),b"older or unknown version of fix.dll").unwrap();
+        deploy_unified_fix_without_backup(&game).unwrap();
+        assert_eq!(fs::read(game.join("fix.dll")).unwrap(),BUNDLED_RUNTIME);
+        for name in ["fix.dll.bak","fix.dll.installing","fix.dll.replacing"]{
+            assert!(!any_entry(&game.join(name)),"unexpected retained DLL: {name}");
+        }
+        let hash=digest(&game.join("fix.dll")).unwrap();
+        deploy_unified_fix_without_backup(&game).unwrap();
+        assert_eq!(digest(&game.join("fix.dll")).unwrap(),hash);
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_replacement_does_not_touch_preexisting_unrelated_backup(){
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-unified-owner-backup-{}-{n}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        fs::write(game.join("fix.dll"),b"unrecognized previous runtime").unwrap();
+        fs::write(game.join("fix.dll.bak"),b"pre-existing owner backup").unwrap();
+        deploy_unified_fix_without_backup(&game).unwrap();
+        assert_eq!(fs::read(game.join("fix.dll")).unwrap(),BUNDLED_RUNTIME);
+        assert_eq!(fs::read(game.join("fix.dll.bak")).unwrap(),b"pre-existing owner backup");
+        assert!(!any_entry(&game.join("fix.dll.replacing")));
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unsafe_or_interrupted_unified_fix_never_replaces_active_dll(){
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-unified-blocked-{}-{n}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        let old=b"previous foreign runtime";
+        fs::write(game.join("fix.dll"),old).unwrap();
+        fs::write(game.join("fix.dll.replacing"),b"abandoned rollback slot").unwrap();
+        assert!(deploy_unified_fix_without_backup(&game).is_err());
+        assert_eq!(fs::read(game.join("fix.dll")).unwrap(),old);
+        assert!(!any_entry(&game.join("fix.dll.installing")));
+        fs::remove_file(game.join("fix.dll.replacing")).unwrap();
+        fs::create_dir(game.join("fix.dll.installing")).unwrap();
+        assert!(deploy_unified_fix_without_backup(&game).is_err());
+        assert_eq!(fs::read(game.join("fix.dll")).unwrap(),old);
+        fs::remove_dir_all(game).unwrap();
+    }
+
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unsafe_nonregular_fix_dll_is_never_deleted(){
+        let n=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap().as_nanos();
+        let game=std::env::temp_dir().join(format!(
+            "crimson-unified-unsafe-{}-{n}",std::process::id()));
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(game.join("fix.dll")).unwrap();
+        fs::write(game.join("fix.dll").join("owner.txt"),b"do not touch").unwrap();
+        assert!(deploy_unified_fix_without_backup(&game).is_err());
+        assert_eq!(fs::read(game.join("fix.dll").join("owner.txt")).unwrap(),b"do not touch");
+        assert!(!any_entry(&game.join("fix.dll.installing")));
+        fs::remove_dir_all(game).unwrap();
+    }
+
     #[cfg(all(feature="winmm-installer",not(feature="import-alias-install")))]
     #[test]
     fn standalone_winmm_install_is_non_destructive_and_idempotent() {
