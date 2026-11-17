@@ -1,7 +1,8 @@
 # CrimsonSkiesFix 1.1 — unified single-DLL architecture (EXPERIMENTAL)
 
-**OWNER TEST ONLY — NOT A RELEASE.** This build is a new architecture; it
-has not yet passed real Crimson Skies Windows/GE-Proton gameplay tests.
+**TEST BUILD — NOT A RELEASE.** The unified architecture has passed real
+Crimson Skies gameplay tests on Windows 11 and GE-Proton, but no v1.1 release
+is published yet.
 
 Intended layout:
 
@@ -11,12 +12,13 @@ crimsonskiesfix/
   CrimsonSkiesFix.ini
   CrimsonSkiesFix.log
   CrimsonSkiesFix_installer.log
-  CrimsonSkiesFix.install-receipt.txt
-  README.md
-  LICENSE
-  build-info.txt
-  third_party/             <- optional vendor DLLs, not populated by this test
-  mods/                    <- optional modifications, not populated by this test
+  state/
+    CrimsonSkiesFix.install-receipt.txt  <- verified CD installation receipt
+  docs/
+    README.md
+    LICENSE
+    CrimsonSkiesFix.ini.example
+    build-info.txt
   game/
     CRIMSON.EXE
     fix.dll                <- single combined loader + CrimsonSkiesFix code
@@ -39,7 +41,8 @@ second CrimsonSkiesFix.dll. Its DllMain remains inert.
 ## Testing this prototype (Windows 11 or Wine/GE-Proton)
 
 Use a **separate test folder** named `crimsonskiesfix`. Do not overwrite an
-existing working CrimsonSkiesFix/WinMM installation.
+existing working CrimsonSkiesFix/WinMM installation. The installer does **not**
+migrate old folder layouts to this unified architecture.
 
 **Existing game files (quick smoke):** put the packaged `CrimsonSkiesFix.exe`
 at the test-folder root, and copy a clean, already installed Crimson Skies
@@ -88,8 +91,12 @@ If a command fails, preserve `CrimsonSkiesFix_installer.log` and
 compare game launch, opening menu, preferences, first mission, movies,
 pause, save/load and exit with the previously verified WinMM build.
 
-The `mods/` and `third_party/` folders are **reserved for optional future
-content**: no SDL3 or additional mods are installed by this prototype.
+The installer stores the verified installation receipt and its temporary
+rollback files in `state/`, and generated documentation in `docs/`. The
+active INI and both logs remain beside the launcher. `state/` is created
+only when a CD receipt must be published; an imported game without a CD
+receipt does not need it. The installer does **not create** `mods/` or
+`third_party/` by default. Existing user content is left untouched.
 
 **Important limits:**
 - Start the game with CrimsonSkiesFix.exe, not directly via CRIMSON.EXE.
@@ -98,5 +105,7 @@ content**: no SDL3 or additional mods are installed by this prototype.
 - Synthetic PE/Win32/Wine checks cannot replace a real in-game test.
 - DirectDraw invoked by a third-party DLL from its own DllMain could still
   be unsafe; this architectural risk requires separate examination.
-- This opt-in prototype must not be merged or released before complete
-  extraction, repair, migration and real gameplay validation.
+- No automatic migration from older `CrimsonSkiesFix/` or `crimsonskies/`
+  layouts is implemented. Use a separate new-layout installation.
+- Rebuilding a broken **new-layout** installation from an authenticated disc
+  is supported, with the former `game/` preserved for rollback.
