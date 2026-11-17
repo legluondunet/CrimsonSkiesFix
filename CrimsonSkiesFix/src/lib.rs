@@ -32,6 +32,13 @@ mod winmm_bootstrap;
 mod winmm_bootstrap;
 #[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 mod winmm_compat;
+
+// The import-alias launcher loads fix.dll through the native PE import walker.
+// DLL_PROCESS_ATTACH must remain inert: no WinMM forwarding, dynamic loads,
+// filesystem work, IAT writes, or hook initialization under loader lock.
+#[cfg(feature="unified-fix-dll")]
+#[no_mangle]
+pub extern "system" fn DllMain(_: *mut c_void, _: u32, _: *mut c_void) -> i32 { 1 }
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
@@ -552,10 +559,15 @@ fn trace_game_windows(stage:&str) {
     }
 }
 
-#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
+#[cfg_attr(any(not(feature = "winmm-bootstrap"), feature="unified-fix-dll"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
     // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
+        if !out.is_null(){*out=ptr::null_mut();}
+        return DDERR_GENERIC;
+    }
+    #[cfg(feature="unified-fix-dll")]
+    if !winmm_bootstrap::ensure_backend(){
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
     }
@@ -673,8 +685,12 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     hr
 }
 
-#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
+#[cfg_attr(any(not(feature = "winmm-bootstrap"), feature="unified-fix-dll"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
+    #[cfg(feature="unified-fix-dll")]
+    if !exe_gate::verify_once() || !winmm_bootstrap::ensure_backend(){
+        return DDERR_GENERIC;
+    }
     let function=symbol(b"DirectDrawEnumerateA\0");
     let trace=cfg().log_enabled &&
         STARTUP_DDRAW_ENUM_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32;
@@ -717,19 +733,19 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
 
 // Stable, internal-only exports used by the app-local WinMM shim.
 // No exported loader entry point or game hook is renamed in the legacy builds.
-#[cfg(feature="winmm-split-runtime")]
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
 #[no_mangle]
 pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreate(
     guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr{
     unsafe{DirectDrawCreate(guid,out,outer)}
 }
-#[cfg(feature="winmm-split-runtime")]
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
 #[no_mangle]
 pub unsafe extern "system" fn CrimsonSkiesFixDDrawEnumerateA(
     callback:*mut c_void,context:*mut c_void)->Hr{
     unsafe{DirectDrawEnumerateA(callback,context)}
 }
-#[cfg(feature="winmm-split-runtime")]
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
 #[no_mangle]
 pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreateEx(
     guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr{
