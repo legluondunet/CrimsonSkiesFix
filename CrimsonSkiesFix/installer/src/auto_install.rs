@@ -427,6 +427,9 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     // ddraw.dll (or a third-party wrapper) for a missing file to repair.
     // Refuse *before* CD extraction, installer staging or player-data writes.
     ensure_no_local_ddraw(game)?;
+    // The WinMM-only repair shortcut must NOT intercept the unified fix.dll.
+    // A unified manual import uses the dedicated, post-repair-verified path below.
+    #[cfg(not(feature="unified-fix-install"))]
     if cfg!(feature="winmm-installer") && directory(game) {
         let runtime=game.join(RUNTIME_DLL);
         if any_entry(&runtime) && !regular(&runtime) {
