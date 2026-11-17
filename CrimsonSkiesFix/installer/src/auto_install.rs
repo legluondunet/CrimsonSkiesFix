@@ -427,6 +427,9 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     // ddraw.dll (or a third-party wrapper) for a missing file to repair.
     // Refuse *before* CD extraction, installer staging or player-data writes.
     ensure_no_local_ddraw(game)?;
+    // The WinMM-only repair shortcut must NOT intercept the unified fix.dll.
+    // A unified manual import uses the dedicated, post-repair-verified path below.
+    #[cfg(not(feature="unified-fix-install"))]
     if cfg!(feature="winmm-installer") && directory(game) {
         let runtime=game.join(RUNTIME_DLL);
         if any_entry(&runtime) && !regular(&runtime) {
@@ -496,6 +499,23 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                      {followup}; rebuild not completed: {err}"))?;
                 return Ok("REPAIRED_FROM_CD_AND_LAUNCH");
             }
+        }
+    }
+    // A validated manual import may have the exact approved game EXE and
+    // assets but an older (or third-party) fix.dll. Replace only our runtime
+    // in place, without demanding the CD/updater or rebuilding player data.
+    // Preserve the strict checks for the game EXE, assets and native WinMM.
+    #[cfg(feature="unified-fix-install")]
+    if validated_game_exe(game).is_ok() && !any_entry(&game.join("winmm.dll")){
+        let runtime=game.join(RUNTIME_DLL);
+        if any_entry(&runtime)&&!regular(&runtime){
+            return Err("unsafe existing fix.dll: refusing replacement".into());
+        }
+        if !regular(&runtime)||digest(&runtime)?!=sha256::hex(BUNDLED_RUNTIME){
+            deploy_runtime(game)?;
+            deploy_documentation(game)?;
+            verify(game)?;
+            return Ok("REPAIRED_BUNDLED_FIX_DLL_AND_LAUNCH");
         }
     }
     // Backwards compatibility: a validated manually imported installation

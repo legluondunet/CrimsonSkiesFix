@@ -38,6 +38,15 @@ The single **fix.dll** contains all CrimsonSkiesFix patches, exports the
 game's two imported DirectDraw functions, and does not dynamically load a
 second CrimsonSkiesFix.dll. Its DllMain remains inert.
 
+**Runtime update:** if game/fix.dll is missing or does not match the exact
+DLL embedded in this launcher, the installer stages and verifies its own
+fix.dll, then replaces the older regular file. The displaced DLL is removed
+after successful publication; no new fix.dll.bak is retained. If an update
+cannot be completed, the previous DLL is restored where possible and the
+installer returns an explicit error. Existing unrelated fix.dll.bak files
+are never touched. For an already verified manual game import, this repair
+does not require extracting the CD again.
+
 ## Testing this prototype (Windows 11 or Wine/GE-Proton)
 
 Use a **separate test folder** named `crimsonskiesfix`. Do not overwrite an
