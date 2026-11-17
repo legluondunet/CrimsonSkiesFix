@@ -739,7 +739,7 @@ mod tests{
         fs::create_dir(&game).unwrap();
         fs::create_dir(&stale).unwrap();
         fs::write(stale.join("keep-me"),b"owner data").unwrap();
-        #[cfg(feature="winmm-split-install")]
+        #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
         fs::create_dir(patch_dir(&game)).unwrap();
         fs::write(receipt_path(&game),b"invalid receipt").unwrap();
         let error=auto_prepare(&root,&game).unwrap_err();
