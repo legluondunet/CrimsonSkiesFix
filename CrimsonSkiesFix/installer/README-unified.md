@@ -75,6 +75,17 @@ binary, data and bundled `fix.dll`. The final command launches the game
 through the required suspended-process import alias. Launching
 `game/CRIMSON.EXE` directly **does not activate** our corrections.
 
+**First-launch logging:** a freshly generated INI starts with `[Debug] Log=1`
+so that the first game session produces `CrimsonSkiesFix.log`. After a normal
+exit (code 0) with a nonempty game log, the installer changes only its own
+**unmodified**, automatically created INI to `Log=0`. The first log is
+preserved for support. Nonzero exits keep `Log=1` for a retry, and an INI
+supplied or edited by the player is never changed automatically. A temporary
+marker inside `state/` identifies the installer's first-run ownership and
+is removed when logging is finalized or player customization is detected.
+The separate `CrimsonSkiesFix_installer.log` remains available regardless
+of this setting.
+
 If a command fails, preserve `CrimsonSkiesFix_installer.log` and
 `CrimsonSkiesFix.log` from the test root. For rendering regressions,
 compare game launch, opening menu, preferences, first mission, movies,
