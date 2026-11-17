@@ -85,11 +85,17 @@ jobs:
           Copy-Item runtime-unified/target/i686-pc-windows-msvc/release/fix.dll unified-synthetic-smoke/
           $launcher=(Resolve-Path 'unified-synthetic-smoke/alias_import_launcher.exe').Path
           $fixture=(Resolve-Path 'unified-synthetic-smoke/alias_import_fixture.exe').Path
+          # Production fix.dll MUST refuse the unapproved fixture and exit(1).
+          # The noninteractive flag suppresses only the refusal MessageBoxW:
+          # the SHA gate, rejection and process termination remain intact.
           $env:CRIMSON_ALIAS_REAL='1'
+          $env:CRIMSONSKIESFIX_NONINTERACTIVE='1'
           & $launcher $fixture
           $exit=$LASTEXITCODE
           Remove-Item Env:CRIMSON_ALIAS_REAL
-          if($exit -ne 0){throw "Native Win32 unified synthetic fail-closed smoke failed exit=$exit"}
+          Remove-Item Env:CRIMSONSKIESFIX_NONINTERACTIVE
+          if($exit -ne 1){throw "Native Win32 unified synthetic EXE must be REJECTED with exit=1, actual=$exit"}
+          Write-Host 'UNIFIED-WINDOWS-SMOKE PASS: unsupported PE32 rejected after native fix.dll load'
       - name: Package test-only one-exe installer, SHA and instructions
         shell: pwsh
         run: |
@@ -132,9 +138,17 @@ jobs:
           WINEPREFIX: ${{ runner.temp }}/crimson-unified-smoke-prefix
           WINEDEBUG: -all
           CRIMSON_ALIAS_REAL: '1'
+          CRIMSONSKIESFIX_NONINTERACTIVE: '1'
         run: |
           set -euo pipefail
           timeout 120s xvfb-run -a wineboot -u
           exe="$(winepath -w "$PWD/smoke/alias_import_fixture.exe" | tr -d '\r')"
+          set +e
           timeout 120s xvfb-run -a wine "$PWD/smoke/alias_import_launcher.exe" "$exe"
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "Expected the production fix.dll to reject unsupported synthetic EXE with exit 1, got $code"
+            exit 1
+          fi
           echo 'UNIFIED-WINE32-SMOKE PASS: native WinMM unaffected; synthetic executable rejected by core'
