@@ -13,7 +13,7 @@ by CrimsonSkiesFix and Windows native users should not change their setup.
 The owner's [Crimson Skies Lutris installer: CD + d7vk + fixes](https://lutris.net/games/install/40026/view)
 contains exactly:
 
-`yaml
+```yaml
 - task:
     app: amstream quartz
     description: Installing codecs...
@@ -71,7 +71,8 @@ This is an engineering roadmap, **not a claim that an integrated player is
 implemented**. No new INI switch should be exposed until the playback
 entrypoint is understood and a working prototype exists.
 
-\n## Reproduce before changing anything
+
+## Reproduce before changing anything
 
 Use a **new test prefix** or a backup of the real prefix; leave your working
 installation untouched. Record:
