@@ -527,8 +527,14 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         // New organized experimental installations emit the first game log
         // automatically; do not change any existing user configuration.
         #[cfg(feature="winmm-split-install")]
-        ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),
-            "; Experimental split-loader compatibility test.\n[Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n")?;
+        {
+            #[cfg(feature="unified-fix-install")]
+            let header="; Experimental unified fix.dll compatibility test.\n";
+            #[cfg(not(feature="unified-fix-install"))]
+            let header="; Experimental split-loader compatibility test.\n";
+            let content=format!("{header}[Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n");
+            ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),&content)?;
+        }
         Ok((action,exe))
     });
     let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
