@@ -23,6 +23,9 @@ fn sole_monitor_metrics(count:i32,width:i32,height:i32)->Option<(u32,u32)> {
     if count!=1 || width<=0 || height<=0{return None;}
     Some((u32::try_from(width).ok()?,u32::try_from(height).ok()?))
 }
+pub fn multiple_monitors_detected()->bool {
+    unsafe{GetSystemMetrics(80)>1} // SM_CMONITORS; query only, no DPI modification
+}
 pub fn sole_primary_monitor_dimensions()->Option<(u32,u32)>{
     unsafe {
         sole_monitor_metrics(
@@ -86,6 +89,54 @@ pub fn physical_primary_monitor_dimensions()->Option<(u32,u32)> {
     let size=(mode.pels_width,mode.pels_height);
     if size.0==0 || size.1==0 {return None;}
     Some(size)
+}
+
+// Physical dimensions for the ACTUAL GAME-OWNED HWND's monitor on native
+// multi-display, DPI-scaled Windows. Do not use cursor position, primary
+// display dimensions or a DPI-logical GetSystemMetrics size as substitutes.
+// This is called only from the verified DD4 cooperative path, never DllMain.
+#[repr(C)]
+#[derive(Default)]
+struct MonitorInfoExW {
+    info:MonitorInfo,
+    device_name:[u16;32],
+}
+pub fn physical_monitor_dimensions_for_game_window(hwnd:Hwnd)->Option<(u32,u32)> {
+    if hwnd.is_null(){return None;}
+    unsafe {
+        if IsWindow(hwnd)==0{return None;}
+        let mut owner=0u32;
+        if GetWindowThreadProcessId(hwnd,&mut owner)==0 || owner!=GetCurrentProcessId(){
+            return None;
+        }
+        let monitor=MonitorFromWindow(hwnd,2 /* MONITOR_DEFAULTTONEAREST */);
+        if monitor.is_null(){return None;}
+        let mut info=MonitorInfoExW::default();
+        info.info.size=std::mem::size_of::<MonitorInfoExW>() as u32;
+        if GetMonitorInfoW(monitor,&mut info.info)==0 {return None;}
+        // Win32 requires a terminated DISPLAY device path such as
+        // \\.\\DISPLAY1. An empty or unterminated name is not trustworthy.
+        let end=info.device_name.iter().position(|&x|x==0)?;
+        if end==0{return None;}
+        let mut mode:DevModeW=std::mem::zeroed();
+        mode.size=std::mem::size_of::<DevModeW>() as u16;
+        const ENUM_CURRENT_SETTINGS:u32=0xffff_ffff;
+        if EnumDisplaySettingsW(info.device_name.as_ptr(),ENUM_CURRENT_SETTINGS,&mut mode)==0{
+            return None;
+        }
+        let logical=info.info.monitor.dimensions()?;
+        let physical=(mode.pels_width,mode.pels_height);
+        if !valid_physical_target(logical,physical){return None;}
+        Some(physical)
+    }
+}
+fn valid_physical_target(logical:(u32,u32),physical:(u32,u32))->bool{
+    let ((lw,lh),(pw,ph))=(logical,physical);
+    // One verified monitor, no topology guessing. Same aspect is mandatory
+    // across DPI-scaled logical and physical coordinate spaces.
+    lw>0 && lh>0 && (960..=8192).contains(&pw) &&
+    (600..=4320).contains(&ph) &&
+    (pw as u64)*(lh as u64)==(ph as u64)*(lw as u64)
 }
 
 /// The Windows-native early FOV/HUD patch must use a physical, validated
@@ -251,9 +302,14 @@ fn exe_directory()->Option<PathBuf> {
 
 pub fn project_path(name:&str)->Option<PathBuf> {
     // Fixed internal file names only; never insert user-controlled paths here.
-    // The standalone installer keeps the active INI in the game root.
-    // Manual DLL-only installations now use the same layout.
-    Some(exe_directory()?.join(name))
+    // In split mode the active INI lives beside CrimsonSkiesFix.dll in the
+    // verified crimsonskies/crimsonskiesfix/ patch directory.
+    #[cfg(feature="unified-fix-dll")]
+    {organized_launcher_root(&dll_directory()?).map(|root|root.join(name))}
+    #[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
+    {Some(dll_directory()?.join(name))}
+    #[cfg(not(feature="winmm-split-runtime"))]
+    {Some(exe_directory()?.join(name))}
 }
 
 fn regular_file(path:&Path)->bool {
@@ -284,7 +340,8 @@ fn create_ini_once(path:&Path)->std::io::Result<bool> {
 // Migrate an older nested CrimsonSkiesFix INI to the new game-root layout,
 // without rewriting/deleting the player's original file.
 fn previous_ini(exe:&Path)->Option<PathBuf> {
-    [exe.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini"),
+    [exe.join("CrimsonSkiesFix.ini"),
+     exe.join("CrimsonSkiesFix").join("CrimsonSkiesFix.ini"),
      exe.join("CrimsonFix").join("CrimsonFix.ini"),
      exe.join("CrimsonFix.ini")]
         .into_iter().find(|p|regular_file(p))
@@ -418,6 +475,39 @@ fn dll_directory()->Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..n])).parent()?.to_path_buf())
 }
 
+// Organized v1.1 layout: two parent levels from the *actual loaded*
+// CrimsonSkiesFix.dll, independent of the game working directory and launcher
+// filename. Do not follow symlink folders when choosing log destinations.
+#[cfg(feature="winmm-split-runtime")]
+fn organized_launcher_root(dll_dir:&Path)->Option<PathBuf>{
+    #[cfg(feature="unified-fix-dll")]
+    {
+        if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("game"){
+            return None;
+        }
+        let root=dll_dir.parent()?;
+        // The parent can be renamed or moved by its owner, but it must
+        // really contain the launcher. Never infer configuration/log paths
+        // from the current working directory or follow symlink directories.
+        return (safe_directory(dll_dir,false)&&safe_directory(root,false)&&
+            regular_file(&root.join("CrimsonSkiesFix.exe")))
+            .then(||root.to_path_buf());
+    }
+    #[cfg(not(feature="unified-fix-dll"))]
+    {
+    if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskiesfix"){
+        return None;
+    }
+    let game=dll_dir.parent()?;
+    if !game.file_name()?.to_string_lossy().eq_ignore_ascii_case("crimsonskies"){
+        return None;
+    }
+    let base=game.parent()?;
+    (safe_directory(dll_dir,false)&&safe_directory(game,false)&&safe_directory(base,false))
+        .then(||base.to_path_buf())
+    }
+}
+
 fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
     if !dll_dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("CrimsonSkiesFix"){
         return None;
@@ -438,9 +528,13 @@ fn standalone_launcher_root(dll_dir:&Path)->Option<PathBuf>{
 
 fn log_directory()->Option<PathBuf> {
     let dll_dir=dll_directory()?;
-    // Standalone layout: launcher sits immediately above the game folder.
-    // Direct DLL installations continue writing beside ddraw.dll.
-    Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))
+    #[cfg(feature="unified-fix-dll")]
+    { return organized_launcher_root(&dll_dir); }
+    #[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
+    if let Some(root)=organized_launcher_root(&dll_dir){return Some(root);}
+    // Historical v1.0 and monolithic 1.1 installers retain their paths.
+    #[cfg(not(feature="unified-fix-dll"))]
+    {Some(standalone_launcher_root(&dll_dir).unwrap_or(dll_dir))}
 }
 
 pub fn log_path()->Option<PathBuf> {
@@ -790,6 +884,14 @@ mod physical_current_mode_layout_tests {
 mod early_monitor_tests{
     use super::*;
     #[test]
+    fn physical_multi_monitor_target_must_match_game_hwnd_dpi_aspect(){
+        assert!(valid_physical_target((1536,960),(1920,1200)));
+        assert!(valid_physical_target((1920,1080),(1920,1080)));
+        assert!(!valid_physical_target((1536,960),(1920,1080)));
+        assert!(!valid_physical_target((1536,960),(640,480)));
+        assert!(!valid_physical_target((0,960),(1920,1200)));
+    }
+    #[test]
     fn early_monitor_only_when_unambiguous(){
         assert_eq!(sole_monitor_metrics(1,1920,1080),Some((1920,1080)));
         assert_eq!(sole_monitor_metrics(1,3440,1440),Some((3440,1440)));
@@ -803,6 +905,36 @@ mod early_monitor_tests{
 #[cfg(test)]
 mod game_log_routing_tests {
     use super::*;
+    #[cfg(feature="winmm-split-runtime")]
+    #[cfg(not(feature="unified-fix-dll"))]
+    #[test]
+    fn organized_runtime_routes_gameplay_logs_two_directories_above_dll(){
+        let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root=std::env::temp_dir().join(format!(
+            "crimson-organized-log-{}-{id}",std::process::id()));
+        let game=root.join("crimsonskies");
+        let patch=game.join("crimsonskiesfix");
+        fs::create_dir_all(&patch).unwrap();
+        assert_eq!(organized_launcher_root(&patch),Some(root.clone()));
+        let other=root.join("something-else").join("crimsonskiesfix");
+        fs::create_dir_all(&other).unwrap();
+        assert_eq!(organized_launcher_root(&other),None);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-dll")]
+    #[test]
+    fn unified_runtime_routes_ini_and_logs_to_parent_of_game(){
+        let root=std::env::temp_dir().join(format!("unified-csf-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+            .join("crimsonskiesfix");
+        let game=root.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        assert_eq!(organized_launcher_root(&game),None);
+        std::fs::write(root.join("CrimsonSkiesFix.exe"),b"test fake launcher").unwrap();
+        assert_eq!(organized_launcher_root(&game),Some(root.clone()));
+        assert_eq!(organized_launcher_root(&root),None);
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
     #[test]
     fn launcher_root_requires_exact_sibling_layout_and_regular_exe(){
         let id=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

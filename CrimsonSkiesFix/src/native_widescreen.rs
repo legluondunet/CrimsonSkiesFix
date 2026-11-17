@@ -61,6 +61,10 @@ use std::sync::OnceLock;
 // Prime on the earliest DirectDraw export when exactly one monitor exists,
 // before DirectDraw setup, never in DllMain. Defer on multi-monitor hosts.
 static EARLY_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
+// Native multi-monitor Windows has no safe early physical target. The exact
+// game-owned DD4/HWND path applies the same verified patch later. Preserve
+// its successful raster for native VIDEO Preferences label substitution.
+static LATE_NATIVE_PATCH:OnceLock<(u32,u32,PatchResult)>=OnceLock::new();
 
 // The game can switch the actual monitor to 640x480/800x600 while in
 // Preferences, even though its native target was captured at first DDRAW use.
@@ -72,8 +76,13 @@ fn confirmed_early_pixels(entry:Option<(u32,u32,PatchResult)>)->Option<(u32,u32)
         _=>None,
     }
 }
+fn confirmed_verified_raster(
+    early:Option<(u32,u32,PatchResult)>,late:Option<(u32,u32,PatchResult)>
+)->Option<(u32,u32)>{
+    confirmed_early_pixels(early).or_else(||confirmed_early_pixels(late))
+}
 pub fn verified_launch_widescreen_dimensions()->Option<(u32,u32)>{
-    confirmed_early_pixels(EARLY_NATIVE_PATCH.get().copied())
+    confirmed_verified_raster(EARLY_NATIVE_PATCH.get().copied(),LATE_NATIVE_PATCH.get().copied())
 }
 
 pub unsafe fn prime_native_widescreen_early(w:u32,h:u32){
@@ -102,8 +111,23 @@ pub unsafe fn apply_or_reuse_early_patch(w:u32,h:u32)->PatchResult{
         ));
         return result; // NEVER apply a second time to already-patched bytes.
     }
-    // Multi-monitor fallback retains the previous, late HWND-specific path.
+    // Multi-monitor fallback must preserve its own verified raster. Without
+    // this, VIDEO Preferences continues showing its original 640x480 text
+    // even after a valid late full-resolution patch.
+    if let Some(&(late_w,late_h,result))=LATE_NATIVE_PATCH.get(){
+        if (late_w,late_h)!=(w,h){
+            crate::log("WINDOWED-WIDE: conflicting later game HWND monitor raster; refusing a second in-memory patch");
+            return PatchResult::InvalidMonitor;
+        }
+        return result;
+    }
     let result=full_patch::apply(w,h);
+    if matches!(result,PatchResult::Patched|PatchResult::AlreadyNative){
+        let _=LATE_NATIVE_PATCH.set((w,h,result));
+        crate::log(&format!(
+            "WINDOWED-WIDE: native game-HWND physical FOV/HUD raster confirmed {}x{} (late verified patch)",
+            w,h));
+    }
     #[cfg(feature="winmm-bootstrap")]
     audit_aspect_xrefs_once(result);
     result
@@ -157,6 +181,16 @@ mod tests{
         assert_eq!(confirmed_early_pixels(None),None);
     }
 
+    #[test]
+    fn late_verified_gameplay_raster_is_usable_for_video_preferences(){
+        assert_eq!(confirmed_verified_raster(None,Some((1920,1200,PatchResult::Patched))),
+                   Some((1920,1200)));
+        assert_eq!(confirmed_verified_raster(None,Some((1920,1200,PatchResult::InvalidMonitor))),
+                   None);
+        assert_eq!(confirmed_verified_raster(
+            Some((1920,1080,PatchResult::Patched)),
+            Some((1920,1200,PatchResult::Patched))),Some((1920,1080)));
+    }
     #[test]
     fn valid_landscape_resolution_bounds(){
         for (w,h) in [(1280,720),(1680,1050),(1920,1080),(1920,1200),

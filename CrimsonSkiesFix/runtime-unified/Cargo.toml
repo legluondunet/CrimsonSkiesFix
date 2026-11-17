@@ -1,0 +1,27 @@
+[package]
+name = "crimsonskiesfix-unified-runtime"
+version = "1.1.0-rc.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Single x86 fix.dll: DirectDraw import alias and all Crimson Skies patches"
+
+[lib]
+name = "fix"
+path = "../src/lib.rs"
+crate-type = ["cdylib"]
+
+[features]
+default = ["unified-fix-dll"]
+winmm-bootstrap = []
+winmm-split-runtime = ["winmm-bootstrap"]
+import-alias-bootstrap = ["winmm-split-runtime"]
+unified-fix-dll = ["import-alias-bootstrap"]
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

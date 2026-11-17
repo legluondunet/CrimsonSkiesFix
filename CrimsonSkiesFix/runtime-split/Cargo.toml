@@ -1,0 +1,27 @@
+[package]
+name = "crimsonskiesfix-split-runtime"
+version = "1.1.0-rc.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Game patches loaded by the separate app-local WinMM bootstrap"
+
+[lib]
+name = "CrimsonSkiesFix"
+path = "../src/lib.rs"
+crate-type = ["cdylib"]
+
+[features]
+default = ["winmm-bootstrap", "winmm-split-runtime"]
+winmm-bootstrap = []
+winmm-split-runtime = ["winmm-bootstrap"]
+# Distinct logging/initialization label for the loader-controlled DDRAW alias.
+import-alias-bootstrap = ["winmm-split-runtime"]
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

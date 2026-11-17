@@ -1,0 +1,308 @@
+name: Experimental organized WinMM split installation (NOT RELEASE)
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/loader-alias/**'
+      - 'CrimsonSkiesFix/runtime-split/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/organized-winmm-split-install.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - 'CrimsonSkiesFix/loader-alias/**'
+      - 'CrimsonSkiesFix/runtime-split/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
+      - '.github/workflows/organized-winmm-split-install.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  split-installer-x86:
+    runs-on: windows-latest
+    name: Organized split WinMM x86 — loader, runtime and launcher
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      CRIMSONSKIESFIX_BUNDLED_CORE_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Windows i686 target
+        run: rustup target add i686-pc-windows-msvc
+      - name: Split WinMM ordinal fail-closed gate synthetic fixture tests
+        run: python loader-winmm/tools/test_verify_split_exports.py -v
+      - name: Loader WinMM unit tests
+        run: cargo test --manifest-path loader-winmm/Cargo.toml --target i686-pc-windows-msvc
+      - name: Compile WinMM bootstrap shim
+        run: cargo build --manifest-path loader-winmm/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Enforce fail-closed split WinMM ABI (no conflicting low ordinals)
+        run: python loader-winmm/tools/verify_split_exports.py loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll
+      - name: Split runtime unit tests
+        run: cargo test --manifest-path runtime-split/Cargo.toml --target i686-pc-windows-msvc
+      - name: Build CrimsonSkiesFix.dll
+        run: cargo build --manifest-path runtime-split/Cargo.toml --release --target i686-pc-windows-msvc
+      - name: Build synthetic x86 DLL loading probe
+        run: cargo build --manifest-path loader-winmm/Cargo.toml --bin split_loader_smoke --target i686-pc-windows-msvc
+      - name: Compile third-party WinMM client DLL that calls timeGetTime in DllMain
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-split-dllmain-smoke' | Out-Null
+          rustc --crate-type cdylib --target i686-pc-windows-msvc --edition 2021 -C target-feature=+crt-static -C panic=abort -o winmm-split-dllmain-smoke/winmm_dllmain_client.dll loader-winmm/tests/fixtures/dllmain_winmm_client.rs
+          rustc --crate-type cdylib --target i686-pc-windows-msvc --edition 2021 --cfg winmm_first_extra -C target-feature=+crt-static -C panic=abort -o winmm-split-dllmain-smoke/winmm_dllmain_client_extra.dll loader-winmm/tests/fixtures/dllmain_winmm_client.rs
+          if($LASTEXITCODE -ne 0){throw 'Could not build extra-export DllMain client DLL'}
+          if($LASTEXITCODE -ne 0){throw 'Could not build synthetic loader-lock client DLL'}
+          cargo build --manifest-path loader-winmm/Cargo.toml --bin split_dllmain_client_smoke --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Could not build synthetic loader-lock host'}
+          Copy-Item loader-winmm/target/i686-pc-windows-msvc/debug/split_dllmain_client_smoke.exe winmm-split-dllmain-smoke/
+          Copy-Item loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll winmm-split-dllmain-smoke/
+      - name: Stress third-party DllMain WinMM first-call without hanging Windows x86 runner
+        shell: pwsh
+        run: |
+          $folder=(Resolve-Path 'winmm-split-dllmain-smoke').Path
+          $exe=(Resolve-Path 'winmm-split-dllmain-smoke/split_dllmain_client_smoke.exe').Path
+          $client=(Resolve-Path 'winmm-split-dllmain-smoke/winmm_dllmain_client.dll').Path
+          # A separate process per variant guarantees native WinMM was not
+          # previously resolved by the 14-function trampoline.
+          foreach($dll in @('winmm_dllmain_client.dll','winmm_dllmain_client_extra.dll')){
+            $testClient=(Resolve-Path ("winmm-split-dllmain-smoke/" + $dll)).Path
+            $p=Start-Process -FilePath $exe -ArgumentList ('"{0}"' -f $testClient) -WorkingDirectory $folder -PassThru -NoNewWindow
+            try {
+              if(-not $p.WaitForExit(30000)) {
+                $p.Kill()
+                throw "WINMM-DLLMAIN-SMOKE timed out for ${dll}: possible loader-lock deadlock"
+              }
+              if($p.ExitCode -ne 0){throw "WINMM-DLLMAIN-SMOKE failed $dll exit=$($p.ExitCode)"}
+            } finally {
+              $p.Dispose()
+            }
+          }
+      - name: Build synthetic native WinMM / DDraw alias import fixture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'alias-import-smoke' | Out-Null
+          rustc --crate-type cdylib --target i686-pc-windows-msvc --edition 2021 -C target-feature=+crt-static -C panic=abort -o alias-import-smoke/CSFIX.dll loader-winmm/tests/fixtures/csfix_alias_fixture.rs
+          if($LASTEXITCODE -ne 0){throw 'Cannot build synthetic CSFIX alias DLL'}
+          cargo build --manifest-path loader-winmm/Cargo.toml --bin alias_import_launcher --bin alias_import_fixture --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Cannot build synthetic launcher/EXE'}
+          Copy-Item loader-winmm/target/i686-pc-windows-msvc/debug/alias_import_launcher.exe alias-import-smoke/
+          Copy-Item loader-winmm/target/i686-pc-windows-msvc/debug/alias_import_fixture.exe alias-import-smoke/
+      - name: Build independent CSFIX loader without any WinMM imports or exports
+        run: |
+          cargo test --manifest-path loader-alias/Cargo.toml --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Native alias loader tests failed'}
+          cargo build --manifest-path loader-alias/Cargo.toml --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Native alias loader build failed'}
+      - name: Enforce no WinMM/DDraw/core imports in the real CSFIX alias DLL
+        shell: pwsh
+        run: |
+          python loader-alias/tools/test_verify_alias_pe.py -v
+          if($LASTEXITCODE -ne 0){throw 'Alias dependency gate synthetic tests failed'}
+          python loader-alias/tools/verify_alias_pe.py loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll
+          if($LASTEXITCODE -ne 0){throw 'Actual compiled CSFIX.dll imported a forbidden multimedia provider'}
+      - name: Verify production CSFIX alias loader fails closed on synthetic EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'alias-import-real-smoke' | Out-Null
+          Copy-Item loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll alias-import-real-smoke/
+          Copy-Item alias-import-smoke/alias_import_launcher.exe alias-import-real-smoke/
+          Copy-Item alias-import-smoke/alias_import_fixture.exe alias-import-real-smoke/
+          $exe=(Resolve-Path 'alias-import-real-smoke/alias_import_fixture.exe').Path
+          $launcher=(Resolve-Path 'alias-import-real-smoke/alias_import_launcher.exe').Path
+          $env:CRIMSON_ALIAS_REAL='1'
+          & $launcher $exe
+          if($LASTEXITCODE -ne 0){throw "Production alias loader synthetic smoke failed: $LASTEXITCODE"}
+          Remove-Item Env:CRIMSON_ALIAS_REAL
+      - name: Verify suspended-process in-memory DDRAW alias and untouched native WinMM on Windows x86
+        shell: pwsh
+        run: |
+          $fixture=(Resolve-Path 'alias-import-smoke/alias_import_fixture.exe').Path
+          $launcher=(Resolve-Path 'alias-import-smoke/alias_import_launcher.exe').Path
+          & $launcher $fixture
+          if($LASTEXITCODE -ne 0){throw "ALIAS-IMPORT-SMOKE native Windows failed: $LASTEXITCODE"}
+      - name: Verify split loader/runtime exports without copyrighted game files
+        shell: pwsh
+        run: |
+          $hostExe='loader-winmm/target/i686-pc-windows-msvc/debug/split_loader_smoke.exe'
+          $core=(Resolve-Path 'runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll').Path
+          $shim=(Resolve-Path 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll').Path
+          & $hostExe $core $shim
+          if($LASTEXITCODE -ne 0){throw 'Actual x86 split loader/runtime PE smoke failed'}
+      - name: Stage x86 synthetic loader smoke payload for Wine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-split-wine-smoke' | Out-Null
+          Copy-Item 'loader-winmm/target/i686-pc-windows-msvc/debug/split_loader_smoke.exe' 'winmm-split-wine-smoke/'
+          Copy-Item 'loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'winmm-split-dllmain-smoke/winmm_dllmain_client.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'winmm-split-dllmain-smoke/winmm_dllmain_client_extra.dll' 'winmm-split-wine-smoke/'
+          Copy-Item 'winmm-split-dllmain-smoke/split_dllmain_client_smoke.exe' 'winmm-split-wine-smoke/'
+          Copy-Item -Recurse 'alias-import-smoke' 'winmm-split-wine-smoke/alias-import'
+          Copy-Item -Recurse 'alias-import-real-smoke' 'winmm-split-wine-smoke/alias-import-real'
+      - name: Export DLL loader smoke payload (no game files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-X86-WINE-SMOKE
+          path: CrimsonSkiesFix/winmm-split-wine-smoke/*
+          retention-days: 7
+          if-no-files-found: error
+      - name: Organized installer tests
+        run: cargo test --manifest-path installer/Cargo.toml --features winmm-split-install --target i686-pc-windows-msvc
+      - name: Build experimental combined installer
+        run: cargo build --manifest-path installer/Cargo.toml --features winmm-split-install --release --target i686-pc-windows-msvc
+      - name: Verify PE architecture, CLI marker and empty-tree behavior
+        shell: pwsh
+        run: |
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $winmm='loader-winmm/target/i686-pc-windows-msvc/release/winmm.dll'
+          $core='runtime-split/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.dll'
+          foreach($p in @($exe,$winmm,$core)){
+            if(!(Test-Path $p)){throw "Missing $p"}
+            $b=[IO.File]::ReadAllBytes((Resolve-Path $p))
+            $pe=[BitConverter]::ToInt32($b,0x3c)
+            if([BitConverter]::ToUInt16($b,$pe+4) -ne 0x14c){throw "Not PE32 x86: $p"}
+          }
+          $version=(& $exe --version) -join "`n"
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL SPLIT'){
+            throw "Wrong launcher variant: $version"
+          }
+          New-Item -ItemType Directory -Force 'winmm-split-smoke' | Out-Null
+          Copy-Item $exe 'winmm-split-smoke/CrimsonSkiesFix.exe'
+          & './winmm-split-smoke/CrimsonSkiesFix.exe' --launch-no-verify
+          if($LASTEXITCODE -ne 2){throw '--launch-no-verify should not install or create a game directory'}
+          if(Test-Path 'winmm-split-smoke/crimsonskies'){throw 'Unchecked launch modified an empty tree'}
+          Write-Host 'ORGANIZED WINMM SPLIT STANDALONE SMOKE PASS'
+          $global:LASTEXITCODE=0
+      - name: Package explicitly test-only installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'winmm-split-dist' | Out-Null
+          $target='winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $target
+          Copy-Item 'installer/README-winmm-split.md' 'winmm-split-dist/README-EXPERIMENTAL.md'
+          $sha=(Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'winmm-split-dist/CrimsonSkiesFix-WinMM-SPLIT-TEST.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-INSTALLER-X86-TEST-ONLY
+          path: CrimsonSkiesFix/winmm-split-dist/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Build import-alias runtime variant with accurate native WinMM diagnostics
+        run: |
+          cargo test --manifest-path runtime-split/Cargo.toml --features import-alias-bootstrap --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias core unit tests failed'}
+          cargo build --manifest-path runtime-split/Cargo.toml --features import-alias-bootstrap --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias runtime build failed'}
+      - name: Build/tests experimental CSFIX import alias installer (native WinMM)
+        env:
+          CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/loader-alias/target/i686-pc-windows-msvc/release/CSFIX.dll
+        shell: pwsh
+        run: |
+          cargo test --manifest-path installer/Cargo.toml --features import-alias-install --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias installer tests failed'}
+          cargo build --manifest-path installer/Cargo.toml --features import-alias-install --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Alias installer build failed'}
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $version=(& $exe --version) -join "`n"
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL'){throw "Wrong import-alias build: $version"}
+      - name: Package import alias installer for OWNER TEST ONLY
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'alias-import-dist' | Out-Null
+          $out='alias-import-dist/CrimsonSkiesFix-IMPORT-ALIAS-TEST.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $out
+          Copy-Item 'installer/README-import-alias.md' 'alias-import-dist/README-IMPORT-ALIAS-EXPERIMENTAL.md'
+          $sha=(Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SHA256=$sha" | Set-Content 'alias-import-dist/CrimsonSkiesFix-IMPORT-ALIAS-TEST.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-IMPORT-ALIAS-X86-TEST-ONLY
+          path: CrimsonSkiesFix/alias-import-dist/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Test and compile single unified x86 fix.dll (experimental)
+        shell: pwsh
+        run: |
+          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll unit tests failed'}
+          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll build failed'}
+      - name: Verify unified DLL PE imports and exports
+        shell: pwsh
+        run: |
+          python loader-alias/tools/verify_alias_pe.py runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          if($LASTEXITCODE -ne 0){throw 'Unified fix.dll PE dependency gate failed'}
+      - name: Save standalone unified runtime for integration work
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-FIX-DLL-X86-EXPERIMENTAL
+          path: CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          retention-days: 7
+          if-no-files-found: error
+
+  wine32-smoke:
+    name: Native WinMM/Core loader smoke under Wine32 (no game data)
+    needs: split-installer-x86
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-WinMM-SPLIT-X86-WINE-SMOKE
+          path: smoke
+      - name: Verify each artifact is a nonempty Windows i686 PE
+        run: |
+          python3 - <<'PY'
+          import pathlib, struct
+          for name in ("winmm.dll", "CrimsonSkiesFix.dll", "split_loader_smoke.exe", "winmm_dllmain_client.dll", "winmm_dllmain_client_extra.dll", "split_dllmain_client_smoke.exe"):
+              path = pathlib.Path("smoke") / name
+              data = path.read_bytes()
+              assert data[:2] == b"MZ", name
+              header = struct.unpack_from("<I", data, 0x3c)[0]
+              assert data[header:header+4] == b"PE\0\0", name
+              assert struct.unpack_from("<H",data,header+4)[0] == 0x14c, name
+              print("WINE-SMOKE: approved x86 synthetic asset",name,len(data))
+          PY
+      - name: Install clean Ubuntu Wine32 and Xvfb
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends wine wine32:i386 xvfb xauth
+      - name: Run real x86 WinMM/Core GetProcAddress smoke under Wine
+        env:
+          WINEARCH: win32
+          WINEPREFIX: ${{ runner.temp }}/crimson-split-smoke-prefix
+          WINEDEBUG: "-all"
+          WINEDLLOVERRIDES: "winmm=n,b"
+        run: |
+          set -euo pipefail
+          timeout 120s xvfb-run -a wineboot -u
+          core="$(winepath -w "$PWD/smoke/CrimsonSkiesFix.dll" | tr -d '\r')"
+          shim="$(winepath -w "$PWD/smoke/winmm.dll" | tr -d '\r')"
+          timeout 120s xvfb-run -a wine "$PWD/smoke/split_loader_smoke.exe" "$core" "$shim"
+          client="$(winepath -w "$PWD/smoke/winmm_dllmain_client.dll" | tr -d '\r')"
+          timeout 45s xvfb-run -a wine "$PWD/smoke/split_dllmain_client_smoke.exe" "$client"
+          extra="$(winepath -w "$PWD/smoke/winmm_dllmain_client_extra.dll" | tr -d '\r')"
+          timeout 45s xvfb-run -a wine "$PWD/smoke/split_dllmain_client_smoke.exe" "$extra"
+          echo 'WINMM-DLLMAIN-SMOKE: Wine32 dependent DllMain call completed without deadlock'
+          aliasfixture="$(winepath -w "$PWD/smoke/alias-import/alias_import_fixture.exe" | tr -d '\r')"
+          timeout 45s xvfb-run -a wine "$PWD/smoke/alias-import/alias_import_launcher.exe" "$aliasfixture"
+          echo 'ALIAS-IMPORT-SMOKE: Wine32 native WINMM ordinal/provider preserved by in-memory DDRAW alias'
+          realfixture="$(winepath -w "$PWD/smoke/alias-import-real/alias_import_fixture.exe" | tr -d '\r')"
+          CRIMSON_ALIAS_REAL=1 timeout 45s xvfb-run -a wine "$PWD/smoke/alias-import-real/alias_import_launcher.exe" "$realfixture"
+          echo 'ALIAS-BOOTSTRAP-SMOKE: real CSFIX loader does not intercept unknown executable'
+          echo 'WINE-SMOKE: PASS — native WinMM proxy and nested x86 runtime load, non-game EXE refuses hooks'

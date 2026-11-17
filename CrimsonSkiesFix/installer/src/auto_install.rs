@@ -5,8 +5,10 @@
 use super::*;
 use std::ffi::OsStr;
 
-const REBUILT:&str="CrimsonSkiesFix.rebuilding";
-const PREVIOUS:&str="CrimsonSkiesFix.previous";
+const REBUILT:&str=if cfg!(feature="unified-fix-install"){"game.rebuilding"}
+    else if cfg!(feature="winmm-split-install"){"crimsonskies.rebuilding"}else{"CrimsonSkiesFix.rebuilding"};
+const PREVIOUS:&str=if cfg!(feature="unified-fix-install"){"game.previous"}
+    else if cfg!(feature="winmm-split-install"){"crimsonskies.previous"}else{"CrimsonSkiesFix.previous"};
 const EXE_BACKUP:&str="CRIMSON.EXE.protected.bak";
 const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
 // The installer and game use independent logs. The last installation or
@@ -98,7 +100,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
         // A protected-pending install can be activated only with an EXE
         // outside its game directory: keeping an extra alternate candidate
         // there would make validated_game_exe reject the final directory.
-        let pending=fs::read_to_string(existing.join(INSTALL_RECEIPT))
+        let pending=fs::read_to_string(receipt_path(existing))
             .map(|s|s.lines().any(|l|
                 l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"))
             .unwrap_or(false);
@@ -155,7 +157,7 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
         || digest(source)?!=GAME_EXE_HASH {
         return Err("decrypted EXE did not match the only approved 1.02 size/SHA-256".into());
     }
-    let receipt=game.join(INSTALL_RECEIPT);
+    let receipt=receipt_path(game);
     let raw=fs::read_to_string(&receipt).map_err(error)?;
     if !raw.lines().any(|l|l=="InstallState=GAME_FILES_READY_EXECUTABLE_PENDING"){
         return Err("cannot activate an installation that is not verified protected/pending".into());
@@ -252,13 +254,65 @@ fn preserve_player_data(old:&Path,new:&Path)->Result<(),String>{
             copy_player_files(&from,&new.join(folder))?;
         }
     }
-    let ini=old.join("CrimsonSkiesFix.ini");
-    if any_entry(&ini){
-        if !regular(&ini){return Err("unsafe existing player INI; repair refused".into());}
-        let dest=new.join("CrimsonSkiesFix.ini");
+    let active=patch_dir(old).join("CrimsonSkiesFix.ini");
+    // Preserve a legacy flat game-root INI if this is the first organized
+    // repair; the original remains in the old game directory.
+    let old_flat=old.join("CrimsonSkiesFix.ini");
+    let source=if regular(&active){Some(active)}else if regular(&old_flat){Some(old_flat)}else{None};
+    if let Some(ini)=source{
+        let dest_dir=ensure_patch_dir(new)?;
+        let dest=dest_dir.join("CrimsonSkiesFix.ini");
+        // The unified launcher keeps the original INI at the shared root.
+        // A repair must not attempt to copy that file onto itself.
+        if ini==dest{return Ok(());}
         if any_entry(&dest){return Err("refusing to overwrite active player INI".into());}
         fs::copy(ini,dest).map_err(error)?;
     }
+    Ok(())
+}
+
+// A candidate reconstructed from the original CD owns its receipt only while
+// it resides in game.rebuilding/. Publish the receipt at the launcher root
+// together with the game directory, preserving the previous record for rollback.
+#[cfg(feature="unified-fix-install")]
+fn previous_receipt(game:&Path)->Result<PathBuf,String>{
+    Ok(game.parent().ok_or("game directory has no parent")?
+        .join("CrimsonSkiesFix.install-receipt.previous"))
+}
+#[cfg(feature="unified-fix-install")]
+fn publish_unified_receipt(game:&Path)->Result<bool,String>{
+    let private=game.join(INSTALL_RECEIPT);
+    let active=receipt_path(game);
+    let previous=previous_receipt(game)?;
+    if !regular(&private){return Err("rebuilt game has no private installation receipt".into());}
+    if any_entry(&previous){return Err(format!(
+        "previous installation receipt backup exists; preserving {}",previous.display()));}
+    if any_entry(&active)&&!regular(&active){
+        return Err("unsafe existing root installation receipt".into());
+    }
+    let had_previous=regular(&active);
+    if had_previous{fs::rename(&active,&previous).map_err(error)?;}
+    if let Err(e)=fs::rename(&private,&active){
+        if had_previous {
+            fs::rename(&previous,&active).map_err(|restore|format!(
+                "cannot publish receipt: {e}; previous receipt restore failed: {restore}"))?;
+        }
+        return Err(format!("cannot publish verified CD receipt: {e}"));
+    }
+    Ok(had_previous)
+}
+#[cfg(feature="unified-fix-install")]
+fn rollback_unified_receipt(game:&Path,had_previous:bool)->Result<(),String>{
+    let active=receipt_path(game);
+    fs::rename(&active,game.join(INSTALL_RECEIPT)).map_err(error)?;
+    if had_previous{
+        fs::rename(previous_receipt(game)?,active).map_err(error)?;
+    }
+    Ok(())
+}
+#[cfg(feature="unified-fix-install")]
+fn finish_unified_receipt(game:&Path,had_previous:bool)->Result<(),String>{
+    if had_previous {fs::remove_file(previous_receipt(game)?).map_err(error)?;}
     Ok(())
 }
 
@@ -308,9 +362,21 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
             let rollback=fs::rename(&previous,game);
             return Err(format!("cannot publish rebuilt game: {err}; rollback={rollback:?}"));
         }
+        #[cfg(feature="unified-fix-install")]
+        let previous_receipt_present=match publish_unified_receipt(game){
+            Ok(was_present)=>was_present,
+            Err(reason)=>{
+                let staged=fs::rename(game,&new);
+                let restored=fs::rename(&previous,game);
+                return Err(format!("rebuilt game receipt publication failed: {reason}; candidate={staged:?}; old game restoration={restored:?}"));
+            }
+        };
         let validated=verify_installed_cd_assets(game)
             .and_then(|_|verify(game).map(|_|()));
         if let Err(reason)=validated {
+            #[cfg(feature="unified-fix-install")]
+            rollback_unified_receipt(game,previous_receipt_present)
+                .map_err(|e|format!("cannot restore previous receipt after final verification failure ({reason}): {e}; previous game is safe at {}",previous.display()))?;
             if let Err(err)=fs::rename(game,&new){
                 return Err(format!(
                     "repaired installation failed final SHA verification ({reason});                      old installation is safe in {} but new game could not be moved: {err}",
@@ -324,18 +390,38 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
             return Err(format!(
                 "rebuilt game failed post-publication verification ({reason});                  previous game restored; failed rebuild retained at {}",new.display()));
         }
+        #[cfg(feature="unified-fix-install")]
+        finish_unified_receipt(game,previous_receipt_present)?;
         println!("Previous installation preserved at {}.",previous.display());
     }else{
         if any_entry(game){return Err("game target appeared while installing; refusing overwrite".into());}
         fs::rename(&new,game).map_err(error)?;
-        verify_installed_cd_assets(game)?;
-        verify(game)?;
+        #[cfg(feature="unified-fix-install")]
+        let previous_receipt_present=match publish_unified_receipt(game){
+            Ok(was_present)=>was_present,
+            Err(reason)=>{
+                let rollback=fs::rename(game,&new);
+                return Err(format!("new game receipt publication failed: {reason}; candidate rollback={rollback:?}"));
+            }
+        };
+        let validated=verify_installed_cd_assets(game).and_then(|_|verify(game).map(|_|()));
+        if let Err(reason)=validated{
+            #[cfg(feature="unified-fix-install")]
+            {
+                rollback_unified_receipt(game,previous_receipt_present)
+                    .map_err(|e|format!("cannot rollback failed fresh CD receipt ({reason}): {e}"))?;
+                fs::rename(game,&new).map_err(|e|format!("cannot rollback failed new game ({reason}): {e}"))?;
+            }
+            return Err(format!("new game failed post-publication verification: {reason}"));
+        }
+        #[cfg(feature="unified-fix-install")]
+        finish_unified_receipt(game,previous_receipt_present)?;
     }
     Ok(())
 }
 
 fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
-    // The v1.1 WinMM candidate must never mistake an old CrimsonSkiesFix
+    // The v1.1 candidate must never mistake an old CrimsonSkiesFix
     // ddraw.dll (or a third-party wrapper) for a missing file to repair.
     // Refuse *before* CD extraction, installer staging or player-data writes.
     ensure_no_local_ddraw(game)?;
@@ -351,9 +437,10 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         // Existing verified manually imported game: install or upgrade the
         // complete WinMM-only runtime without CD rebuild, EXE replacement or
         // edits to save data. A CD receipt still uses strict verification.
-        if !any_entry(&game.join(INSTALL_RECEIPT)) &&
+        if !any_entry(&receipt_path(game)) &&
             validated_game_exe(game).is_ok() &&
-            current_digest.as_deref()!=Some(expected.as_str()) {
+            (current_digest.as_deref()!=Some(expected.as_str()) || !bundled_core_matches(game)
+             || (cfg!(feature="import-alias-install") && any_entry(&game.join("winmm.dll")))) {
             deploy_runtime(game)?;
             deploy_documentation(game)?;
             return Ok("INSTALLED_WINMM_RUNTIME_ONLY_AND_LAUNCH");
@@ -364,10 +451,10 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
         return Ok("INSTALL_FROM_CD_AND_LAUNCH");
     }
     if !directory(game){return Err("unsafe existing game path (not a real directory)".into());}
-    if any_entry(&game.join(INSTALL_RECEIPT)) && !regular(&game.join(INSTALL_RECEIPT)){
+    if any_entry(&receipt_path(game)) && !regular(&receipt_path(game)){
         return Err("unsafe existing CD installation receipt; refusing to launch".into());
     }
-    if regular(&game.join(INSTALL_RECEIPT)){
+    if regular(&receipt_path(game)){
         match verify_installed_cd_assets(game){
             Ok((_edition,_count))=>{
                 if validated_game_exe(game).is_ok() {
@@ -385,7 +472,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 // previous launcher's log lost this evidence when a later
                 // stale staging directory blocked the reconstruction.
                 // If only the bundled DLL changed, repair that first.
-                let followup=match deploy_runtime(game){
+                let followup=match deploy_runtime(game).and_then(|_|deploy_documentation(game)){
                     Ok(())=>match verify_installed_cd_assets(game){
                         Ok(_)=>{
                             // Keep build-info.txt in sync with the DLL.
@@ -435,8 +522,19 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     }
     // Never log READY unless the final independent validation succeeded.
     let result=auto_prepare(base,game).and_then(|action|{
-        if regular(&game.join(INSTALL_RECEIPT)){verify_installed_cd_assets(game)?;}
+        if regular(&receipt_path(game)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
+        // New organized experimental installations emit the first game log
+        // automatically; do not change any existing user configuration.
+        #[cfg(feature="winmm-split-install")]
+        {
+            #[cfg(feature="unified-fix-install")]
+            let header="; Experimental unified fix.dll compatibility test.\n";
+            #[cfg(not(feature="unified-fix-install"))]
+            let header="; Experimental split-loader compatibility test.\n";
+            let content=format!("{header}[Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n");
+            ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),&content)?;
+        }
         Ok((action,exe))
     });
     let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
@@ -450,7 +548,7 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             "CrimsonSkiesFix AUTO INSTALL v1\nAction={result_action}\nGame={}\n\
              VerifiedGameData={}\nApprovedExecutable={}\n\
              OriginalProtectedBackup={}\nGosOverlayState={}\n{launch_line}AUTO_INSTALL_RESULT=READY\n",
-            game.display(),if regular(&game.join(INSTALL_RECEIPT)){"YES"}else{"LEGACY_ONLY"},
+            game.display(),if regular(&receipt_path(game)){"YES"}else{"LEGACY_ONLY"},
             if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
             if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
             crate::managed_gos_patch::verify_game_overlay(game)
@@ -468,8 +566,31 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         return Ok(0);
     }
     println!("{action}: launching {}...",exe.display());
-    // No environment-marker handoff: the DLL owns CrimsonSkiesFix.log and
-    // truncates it at startup, while the installer report remains untouched.
+    // Organized prototype only: inspect loaded DLLs and read the exact
+    // DirectDraw import slots from the *running process*, without patching
+    // or suspending it. The user-visible game exit code is unchanged.
+    #[cfg(feature="import-alias-install")]
+    let status={
+        use std::os::windows::process::ExitStatusExt;
+        super::alias_import_launcher::launch_child(&exe,u32::MAX)
+            .map(|(code,summary)|{
+                if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
+                    let _=writeln!(report,"{summary}");
+                }
+                println!("{summary}");
+                std::process::ExitStatus::from_raw(code)
+            })
+            .map_err(std::io::Error::other)
+    };
+    #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
+    let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
+        if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
+            let _=writeln!(report,"{summary}");
+        }
+        println!("{summary}");
+        exit
+    });
+    #[cfg(not(feature="winmm-split-install"))]
     let status=Command::new(&exe).current_dir(game).status();
     match status{
         Ok(status)=>{
@@ -624,11 +745,13 @@ mod tests{
         fs::create_dir(&game).unwrap();
         fs::create_dir(&stale).unwrap();
         fs::write(stale.join("keep-me"),b"owner data").unwrap();
-        fs::write(game.join(INSTALL_RECEIPT),b"invalid receipt").unwrap();
+        #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
+        fs::create_dir(patch_dir(&game)).unwrap();
+        fs::write(receipt_path(&game),b"invalid receipt").unwrap();
         let error=auto_prepare(&root,&game).unwrap_err();
         assert!(error.contains("existing installed CD verification failed"));
         assert!(error.contains("rebuild blocked by existing"));
-        assert!(error.contains("CrimsonSkiesFix.rebuilding"));
+        assert!(error.contains(REBUILT));
         assert_eq!(fs::read(stale.join("keep-me")).unwrap(),b"owner data");
         assert!(game.exists());
         fs::remove_dir_all(root).unwrap();
@@ -642,7 +765,7 @@ mod tests{
         fs::create_dir(&pending).unwrap();
         fs::write(pending.join("keep-me"),b"pending owner data").unwrap();
         let error=build_and_publish(&root,&game,true).unwrap_err();
-        assert!(error.contains("CrimsonSkiesFix.rebuilding.installing"));
+        assert!(error.contains(&format!("{REBUILT}.installing")));
         assert_eq!(fs::read(pending.join("keep-me")).unwrap(),b"pending owner data");
         fs::remove_dir_all(root).unwrap();
     }
@@ -678,7 +801,7 @@ mod tests{
         preserve_player_data(&old,&new).unwrap();
         assert_eq!(fs::read(new.join("SavedGames").join("career").join("pilot.dat")).unwrap(),b"original save");
         assert_eq!(fs::read(new.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
-        assert_eq!(fs::read(new.join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
+        assert_eq!(fs::read(patch_dir(&new).join("CrimsonSkiesFix.ini")).unwrap(),b"[System]\nCustom=1");
         assert_eq!(fs::read(old.join("Planes").join("custom.pln")).unwrap(),b"custom plane");
         fs::remove_dir_all(root).unwrap();
     }
@@ -706,6 +829,56 @@ mod tests{
         assert!(!any_entry(&game));
         assert!(!any_entry(&root.join(REBUILT)));
         assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_stays_private_until_game_is_published(){
+        let root=temp();
+        let staged=root.join(REBUILT);
+        fs::create_dir(&staged).unwrap();
+        assert_eq!(receipt_path(&staged),staged.join(INSTALL_RECEIPT));
+        assert_eq!(receipt_path(&root.join("game")),root.join(INSTALL_RECEIPT));
+        fs::write(staged.join(INSTALL_RECEIPT),b"verified pending receipt").unwrap();
+        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        fs::rename(&staged,root.join("game")).unwrap();
+        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        let game=root.join("game");
+        assert!(!publish_unified_receipt(&game).unwrap());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"verified pending receipt");
+        assert!(!any_entry(&game.join(INSTALL_RECEIPT)));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_rollback_preserves_original_root_receipt(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
+        assert!(publish_unified_receipt(&game).unwrap());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"original receipt");
+        rollback_unified_receipt(&game,true).unwrap();
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert!(!any_entry(&previous_receipt(&game).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_refuses_existing_rollback_backup(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
+        fs::write(previous_receipt(&game).unwrap(),b"owner backup").unwrap();
+        assert!(publish_unified_receipt(&game).is_err());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"owner backup");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

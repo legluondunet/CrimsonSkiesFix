@@ -438,6 +438,10 @@ pub(crate) struct VirtualVideo {
     pub data_at:u64,
     pub replacement:Vec<u8>,
     pub expanded_size:u32,
+    // Only the split runtime may substitute the exact, first-run
+    // Lighting Quality script assignment. ReadFile must confirm that
+    // these bytes were actually delivered before the GOS getter writes.
+    pub lighting_first_run:bool,
 }
 pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
     let (base,overlay)=paths().ok()?;
@@ -483,14 +487,79 @@ pub(crate) fn virtual_video_postimage()->Option<VirtualVideo>{
             return None;
         }
     }
+    // The game reads the HUA lighting choice, then its VIDEO script
+    // explicitly rewrites HUA from $NVA$ on message 20001. Updating
+    // the pending DWORD alone (previous split prototype) cannot change
+    // the displayed dropdown. This split-only, one-time override alters
+    // only that exact assignment in the authenticated script delivered
+    // to the process; CRIMSON.ROF and CRIMPTCH.ROF on disk are unchanged.
+    #[cfg(feature="winmm-split-runtime")]
+    let (presentation_script,lighting_first_run)=
+        if crate::lighting_default::one_time_script_eligible(){
+            match crate::lighting_default::modify_verified_video_script(&modified){
+                Some(first_run)=>(first_run,true),
+                None=>{
+                    log("MENU-LIGHTING-DEFAULT: verified in-memory VIDEO replacement unavailable; no change");
+                    (modified.clone(),false)
+                },
+            }
+        }else{(modified.clone(),false)};
+    #[cfg(not(feature="winmm-split-runtime"))]
+    let (presentation_script,lighting_first_run)=(modified.clone(),false);
+
     // Preserve the member's exact compressed length regardless of locale:
     // the parser's other offsets and the ReadFile byte count remain intact.
-    let replacement=encode_exact_zlib(&modified,original.compressed)?;
+    let replacement=encode_exact_zlib(&presentation_script,original.compressed)?;
+    if lighting_first_run{
+        log("MENU-LIGHTING-DEFAULT: exact first-run VIDEO script reset overridden in memory only (HUA selector=3); awaiting real resource read");
+    }
     Some(VirtualVideo{
         size_field_at:header.checked_add(4)? as u64,
         data_at:original.offset as u64,
         replacement,
-        expanded_size:VIDEO_MODIFIED_SIZE as u32,
+        expanded_size:presentation_script.len() as u32,
+        lighting_first_run,
+    })
+}
+
+// The original Windows test selected the installed, authenticated
+// CRIMPTCH.ROF VIDEO member directly, so the fallback substitution of
+// CRIMSON.ROF only updated its descriptor, not its compressed script.
+// The split runtime must intercept the *actual overlay ReadFile* instead.
+// Identical-length script and compressed payload preserve every original
+// descriptor, offset and file handle; nothing is written to either ROF.
+#[cfg(feature="winmm-split-runtime")]
+pub(crate) fn virtual_lighting_overlay_postimage()->Option<VirtualVideo>{
+    if !crate::lighting_default::one_time_script_eligible(){return None;}
+    let (_base,overlay)=paths().ok()?;
+    let backup=overlay.with_file_name(format!("crimptch.rof{BACKUP_SUFFIX}"));
+    if !regular_file(&backup) || fs::metadata(&backup).ok()?.len()!=797{return None;}
+    let previous=checked_patch(&backup).ok()?;
+    if exe_gate::sha256(&previous)!=
+       "7ae28cfb65645a3e22aadc64a68badc23e2543bc56356d599fb59375d9ebbefe"{
+        return None;
+    }
+    let original_airframe=original_airframe(&previous).ok()?;
+    let installed=checked_patch(&overlay).ok()?;
+    if !overlay_video_matches(&installed).ok()?{return None;}
+    let entries=parse(&installed).ok()?;
+    let air=named(&entries,AIRFRAME_PATH)?;
+    if air.kind!=original_airframe.kind ||
+        air.expanded!=original_airframe.expanded ||
+        installed.get(air.offset..air.offset+air.compressed)?!=
+        original_airframe.compressed_bytes.as_slice(){return None;}
+    let video=named(&entries,VIDEO_PATH)?;
+    if video.kind!=2||video.expanded!=VIDEO_MODIFIED_SIZE{return None;}
+    let source=inflate(&installed,video).ok()?;
+    let patched=crate::lighting_default::modify_verified_video_script(&source)?;
+    let replacement=encode_exact_zlib(&patched,video.compressed)?;
+    log("MENU-LIGHTING-DEFAULT: exact first-run overlay VIDEO script ready for read-only memory substitution (High UI index 3)");
+    Some(VirtualVideo{
+        size_field_at:video.descriptor.checked_add(4)? as u64,
+        data_at:video.offset as u64,
+        replacement,
+        expanded_size:patched.len() as u32,
+        lighting_first_run:true,
     })
 }
 

@@ -114,11 +114,27 @@ pub fn install()->bool {
        !diagnostics::is_native_windows() ||
        crate::cfg().directdraw_passthrough {return false;}
     if TRAMPOLINE.load(Ordering::Acquire)!=0{return true;}
-    // Only one physical output: the adapter must never choose a guessed
-    // monitor on multi-screen configurations.
+    // Legacy 1.1 behavior remains single-monitor only. The split installer
+    // can safely install the exact-EXE mode-setup observer on multi-monitor
+    // Windows because THIS bootstrap does not choose a display or mutate a
+    // mode. The later game-owned HWND must independently prove its monitor
+    // and DPI-physical dimensions before exposing any virtual DD4 graph.
     if win32::physical_primary_monitor_dimensions().is_none(){
-        log("NATIVE-BOOTSTRAP: physical one-monitor mode unavailable; refusing game code hook");
-        return false;
+        #[cfg(feature="winmm-split-runtime")]
+        {
+            // Preserve the original fail-closed policy on a single monitor
+            // when its physical display API unexpectedly fails.
+            if !win32::multiple_monitors_detected(){
+                log("NATIVE-BOOTSTRAP: physical display unavailable and multi-monitor topology unverified; refusing native observer");
+                return false;
+            }
+            log("NATIVE-BOOTSTRAP: multi-monitor Windows; split mode defers exact DPI-physical target selection until authenticated game HWND (no display chosen now)");
+        }
+        #[cfg(not(feature="winmm-split-runtime"))]
+        {
+            log("NATIVE-BOOTSTRAP: physical one-monitor mode unavailable; refusing game code hook");
+            return false;
+        }
     }
     unsafe{
         let base=GetModuleHandleW(ptr::null()) as usize;

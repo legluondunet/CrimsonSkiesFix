@@ -896,9 +896,16 @@ mod tests {
         iso
     }
     fn workdir()->PathBuf {
+        // Windows SystemTime granularity is not sufficient to distinguish
+        // parallel x86 tests in the same process. Use a process-wide unique
+        // counter as well, without deleting any other test's directory.
+        static NEXT:std::sync::atomic::AtomicU64=
+            std::sync::atomic::AtomicU64::new(0);
         let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
-        let dir=std::env::temp_dir().join(format!("crimson-inspect-cd-{}-{id}",std::process::id()));
+        let sequence=NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-inspect-cd-{}-{id}-{sequence}",std::process::id()));
         fs::create_dir(&dir).unwrap();
         dir
     }

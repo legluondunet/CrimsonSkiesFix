@@ -732,6 +732,8 @@ unsafe fn real_vtable(real:SurfaceThis)->&'static Surface4VTable{
 /// Native Windows WinMM compatibility probe for precisely the two native
 /// game-owned Surface4 backbuffer types actually observed in game logs:
 /// 1920x1200 RGB565 widescreen 3D, and 800x600 XRGB8888 movie/menu.
+/// Split mode additionally permits the verified 640x480 RGB565 bootstrap
+/// backbuffer encountered during game video initialization on native Win11.
 /// Both have already passed the real native HAL, Z32, size and pixel-format
 /// preflight before their virtual graph is exposed to the game.
 /// The original game asks IID_IDirectDrawSurface (v1) on both modes.
@@ -759,7 +761,17 @@ fn native_backbuffer_surface1_eligible(node:VirtualGraphNode)->bool {
         (m.width as u64)<=(m.height as u64)*4;
     let verified_movie=node.native_movie_rgb32 &&
         (m.width,m.height,m.bpp)==(800,600,16);
-    widescreen || verified_movie
+    // Windows native 2-monitor split-loader regression (16 Nov 2026):
+    // original game asks IID_IDirectDrawSurface (v1) on the *synthetic*
+    // backbuffer during its first 640x480x16 mode setup. The native RGB565
+    // backing has already passed HAL, Z32, format and graph preflight.
+    // Forward the exact v1 QI to that real surface (with real COM AddRef)
+    // ONLY for this split-loader's initial legacy mode, never for the
+    // synthetic Primary/Z, 32-bit movies or unknown sizes. The older
+    // monolithic WinMM and 1.0 variants remain unchanged.
+    let verified_split_bootstrap=cfg!(feature="winmm-split-runtime") &&
+        !node.native_movie_rgb32 && (m.width,m.height,m.bpp)==(640,480,16);
+    widescreen || verified_movie || verified_split_bootstrap
 }
 
 #[cfg(feature="winmm-bootstrap")]
@@ -2076,14 +2088,69 @@ mod tests{
             node(SurfaceRole::Backbuffer,movie,false)));
         assert!(!native_backbuffer_surface1_eligible(
             node(SurfaceRole::Backbuffer,m3,true)));
+        assert_eq!(native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,legacy,false)),
+            cfg!(feature="winmm-split-runtime"));
+        // No accidental expansion to a non-movie 800x600 RGB565
+        // backbuffer or arbitrary 4:3 raster.
         assert!(!native_backbuffer_surface1_eligible(
-            node(SurfaceRole::Backbuffer,legacy,false)));
+            node(SurfaceRole::Backbuffer,movie,false)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,Mode{width:640,height:480,bpp:32},false)));
+        assert!(!native_backbuffer_surface1_eligible(
+            node(SurfaceRole::Backbuffer,Mode{width:640,height:600,bpp:16},false)));
         assert!(!native_backbuffer_surface1_eligible(
             node(SurfaceRole::Primary,movie,true)));
         assert!(!native_backbuffer_surface1_eligible(
             node(SurfaceRole::Depth,movie,true)));
         assert!(!native_backbuffer_surface1_eligible(
             node(SurfaceRole::Backbuffer,Mode{width:800,height:600,bpp:32},true)));
+    }
+
+    #[cfg(all(feature="winmm-bootstrap",feature="winmm-split-runtime"))]
+    #[test]
+    fn split_bootstrap_640x480_rgb565_backbuffer_forwards_real_surface1_query(){
+        static HITS:AtomicUsize=AtomicUsize::new(0);
+        unsafe extern "system" fn native_surface1_qi(
+            this:SurfaceThis,iid:*const Guid,out:*mut SurfaceThis
+        )->i32{
+            if out.is_null(){return E_POINTER;}
+            *out=ptr::null_mut();
+            if iid.is_null() || !same_guid(&*iid,&IID_SURFACE1){
+                return E_NOINTERFACE;
+            }
+            HITS.fetch_add(1,Ordering::SeqCst);
+            *out=this;
+            real_add_ref(this); // underlying IDirectDrawSurface1 owns its ref
+            S_OK
+        }
+        let mut table=mock_table();
+        table.query_interface=native_surface1_qi;
+        let mut real=real_mock(&table);
+        let native=(&mut real as *mut RealMock).cast::<c_void>();
+        let legacy=Mode{width:640,height:480,bpp:16};
+        unsafe{
+            let back=new_graph_surface4_opt_in(native,SurfaceRole::Backbuffer,legacy,true)
+                .unwrap();
+            let primary=new_graph_surface4_opt_in(native,SurfaceRole::Primary,legacy,true)
+                .unwrap();
+            let vback=&**back.cast::<*const Surface4VTable>();
+            let vprimary=&**primary.cast::<*const Surface4VTable>();
+            let mut returned=ptr::null_mut();
+            assert_eq!((vback.query_interface)(back,&IID_SURFACE1,&mut returned),S_OK);
+            assert_eq!(returned,native,"Surface1 must be real, never the Surface4 façade");
+            assert_eq!(HITS.load(Ordering::SeqCst),1);
+            assert_eq!((table.release)(returned),3,"caller releases native QI reference");
+            let mut forbidden=back;
+            assert_eq!((vprimary.query_interface)(primary,&IID_SURFACE1,&mut forbidden),
+                E_NOINTERFACE);
+            assert!(forbidden.is_null());
+            assert_eq!(HITS.load(Ordering::SeqCst),1);
+            assert_eq!((vback.release)(back),0);
+            assert_eq!((vprimary.release)(primary),0);
+        }
+        assert_eq!(real.refs.load(Ordering::SeqCst),1,
+            "all native COM references must be balanced");
     }
 
     #[cfg(feature="winmm-bootstrap")]

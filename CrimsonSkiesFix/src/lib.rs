@@ -10,6 +10,8 @@ mod menu_video_probe;
 mod menu_mode_event;
 mod menu_gos_event;
 mod menu_ui_trace;
+#[cfg(feature="winmm-split-runtime")]
+mod lighting_default; // one-time native Video Lighting Quality High suggestion
 mod menu_ui_list_probe;
 mod menu_resolution_label;
 #[cfg(feature="winmm-bootstrap")]
@@ -20,13 +22,23 @@ mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
 #[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]
 mod ddraw_forward;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 #[path = "../winmm-prototype/src/lib.rs"]
 mod winmm_proxy;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 mod winmm_bootstrap;
-#[cfg(feature = "winmm-bootstrap")]
+#[cfg(all(feature="winmm-bootstrap",feature="winmm-split-runtime"))]
+#[path="winmm_bootstrap_split.rs"]
+mod winmm_bootstrap;
+#[cfg(all(feature="winmm-bootstrap",not(feature="winmm-split-runtime")))]
 mod winmm_compat;
+
+// The import-alias launcher loads fix.dll through the native PE import walker.
+// DLL_PROCESS_ATTACH must remain inert: no WinMM forwarding, dynamic loads,
+// filesystem work, IAT writes, or hook initialization under loader lock.
+#[cfg(feature="unified-fix-dll")]
+#[no_mangle]
+pub extern "system" fn DllMain(_: *mut c_void, _: u32, _: *mut c_void) -> i32 { 1 }
 mod com_vtable;
 mod d3d3_hooks;
 mod legacy_ddraw_hooks;
@@ -291,7 +303,11 @@ fn cfg()->Config {
                 }
             }
             if LOG.get().is_some() {
-                #[cfg(feature = "winmm-bootstrap")]
+                #[cfg(feature = "unified-fix-dll")]
+                let bootstrap_kind="unified fix.dll import alias bootstrap; native WinMM untouched";
+                #[cfg(all(feature = "import-alias-bootstrap",not(feature="unified-fix-dll")))]
+                let bootstrap_kind="CSFIX import alias bootstrap; native WinMM untouched";
+                #[cfg(all(feature = "winmm-bootstrap",not(feature="import-alias-bootstrap")))]
                 let bootstrap_kind="WinMM IAT bootstrap";
                 #[cfg(not(feature = "winmm-bootstrap"))]
                 let bootstrap_kind="DirectDraw proxy";
@@ -358,6 +374,13 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     {
         static WINMM_LOG_ONCE:Once=Once::new();
         WINMM_LOG_ONCE.call_once(||{
+            #[cfg(feature="unified-fix-dll")]
+            log(&format!("UNIFIED-FIX-BOOTSTRAP: native game DirectDraw import alias reached fix.dll; backend_status={} (7=both original DirectDraw exports resolved inside unified DLL); native_winmm_untouched=true",
+                winmm_bootstrap::status()));
+            #[cfg(all(feature="import-alias-bootstrap",not(feature="unified-fix-dll")))]
+            log(&format!("IMPORT-ALIAS-BOOTSTRAP: native game DirectDraw import alias reached; backend_status={} (7=both native DirectDraw exports handed to core); native_winmm_untouched=true",
+                winmm_bootstrap::status()));
+            #[cfg(not(feature="import-alias-bootstrap"))]
             log(&format!("WINMM-BOOTSTRAP: game DirectDraw API reached; iat_status={} (7=two imports redirected, 1=unrecognized image, 2=ddraw absent, 4=IAT mismatch)",
                 winmm_bootstrap::status()));
         });
@@ -541,10 +564,15 @@ fn trace_game_windows(stage:&str) {
     }
 }
 
-#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
+#[cfg_attr(any(not(feature = "winmm-bootstrap"), feature="unified-fix-dll"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr {
     // Must run before the default-enabled startup selector's in-memory patch.
     if !exe_gate::verify_once(){
+        if !out.is_null(){*out=ptr::null_mut();}
+        return DDERR_GENERIC;
+    }
+    #[cfg(feature="unified-fix-dll")]
+    if !winmm_bootstrap::ensure_backend(){
         if !out.is_null(){*out=ptr::null_mut();}
         return DDERR_GENERIC;
     }
@@ -662,8 +690,12 @@ pub unsafe extern "system" fn DirectDrawCreate(guid:*const c_void,out:*mut *mut 
     hr
 }
 
-#[cfg_attr(not(feature = "winmm-bootstrap"), no_mangle)]
+#[cfg_attr(any(not(feature = "winmm-bootstrap"), feature="unified-fix-dll"), no_mangle)]
 pub unsafe extern "system" fn DirectDrawEnumerateA(callback:*mut c_void,context:*mut c_void)->Hr {
+    #[cfg(feature="unified-fix-dll")]
+    if !exe_gate::verify_once() || !winmm_bootstrap::ensure_backend(){
+        return DDERR_GENERIC;
+    }
     let function=symbol(b"DirectDrawEnumerateA\0");
     let trace=cfg().log_enabled &&
         STARTUP_DDRAW_ENUM_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<32;
@@ -702,6 +734,27 @@ pub unsafe extern "system" fn DirectDrawCreateEx(guid:*const c_void,out:*mut *mu
         if let Some(version)=ddraw_iface(iid.cast()){observe_modern_ddraw(*out,version);}
     }
     hr
+}
+
+// Stable, internal-only exports used by the app-local WinMM shim.
+// No exported loader entry point or game hook is renamed in the legacy builds.
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreate(
+    guid:*const c_void,out:*mut *mut c_void,outer:*mut c_void)->Hr{
+    unsafe{DirectDrawCreate(guid,out,outer)}
+}
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawEnumerateA(
+    callback:*mut c_void,context:*mut c_void)->Hr{
+    unsafe{DirectDrawEnumerateA(callback,context)}
+}
+#[cfg(all(feature="winmm-split-runtime",not(feature="unified-fix-dll")))]
+#[no_mangle]
+pub unsafe extern "system" fn CrimsonSkiesFixDDrawCreateEx(
+    guid:*const c_void,out:*mut *mut c_void,iid:*const c_void,outer:*mut c_void)->Hr{
+    unsafe{DirectDrawCreateEx(guid,out,iid,outer)}
 }
 
 #[cfg(test)]

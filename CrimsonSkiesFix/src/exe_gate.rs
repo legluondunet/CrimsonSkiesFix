@@ -117,7 +117,13 @@ pub fn verify_once()->bool{
         // Preserve the rejection hash in the diagnostic log, without exposing
         // log internals or executable provenance in the user-facing dialog.
         let _=write_rejection(&line);
-        dialog(&rejection_message(&actual));
+        // Automated synthetic-loader tests have no interactive desktop.
+        // Suppressing only the dialog never weakens the hash gate: we still
+        // record the rejection and terminate the unsupported process below.
+        // All normal launches keep the existing warning dialog.
+        if std::env::var("CRIMSONSKIESFIX_NONINTERACTIVE").ok().as_deref()!=Some("1"){
+            dialog(&rejection_message(&actual));
+        }
         // Returning DDERR_GENERIC lets the game display a misleading
         // "Reinstall DirectX" dialog. A rejected EXE must never resume.
         // This code runs on the first DirectDraw export, not inside DllMain.

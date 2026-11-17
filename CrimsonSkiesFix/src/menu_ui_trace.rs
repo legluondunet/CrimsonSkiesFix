@@ -1,4 +1,7 @@
-//! Bounded, read-only trace of the game's OWN GOS script interface.
+//! Bounded trace of the game's OWN GOS script interface.
+//! All versions except split WinMM remain read-only. Split WinMM can
+//! propose a one-time, exact-EXE-verified Lighting Quality High default
+//! through the original Video Preferences pending scalar.
 //!
 //! Our v0.1.80 test conclusively showed no native Win32 child ComboBoxes
 //! in Preferences. The exact SHA-256 admitted v1.02 EXE registers these
@@ -107,10 +110,23 @@ type ScriptFn=unsafe extern "system" fn(usize,usize,*const u32)->u32;
 unsafe extern "system" fn ui_data_passthrough(a:usize,b:usize,command:*const u32)->u32{
     // Read only what original uiData reads unconditionally:
     // op [command+0], parameter [command+4].
-    let maybe=if is_menu_trace_enabled() && !command.is_null(){
+    let split_default_context=cfg!(feature="winmm-split-runtime") &&
+        crate::menu_video_probe::legacy_ui_active() &&
+        crate::menu_scene::main_menu_was_seen() &&
+        crate::menu_gos_event::preferences_transaction_active();
+    let maybe=if (is_menu_trace_enabled() || split_default_context) && !command.is_null(){
         Some((ptr::read_unaligned(command),
               ptr::read_unaligned(command.add(1))))
     }else{None};
+    // Split-only default: original VIDEO.SCRIPT calls uiData(0x855,0)
+    // *before* building the five-choice Lighting Quality dropdown.
+    // Proposal is applied only to the pending lighting DWORD, once,
+    // and only after verifying the exact EXE instruction preimages.
+    // No effect on the original game UI when Log=0 on 1.0/monolithic 1.1.
+    #[cfg(feature="winmm-split-runtime")]
+    if matches!(maybe,Some((0x855,0))) {
+        crate::lighting_default::before_video_get();
+    }
     // Disassembly: uiData opcode 0x855 enters 0x40CCE1, reads
     // [0x648370]/[0x64836C] when arg+4 == 0, writes those *pending*
     // video indices when arg+4 != 0. Record changes without touching
@@ -220,9 +236,14 @@ pub unsafe fn install()->(bool,bool){
         log("MENU-GOS-UI: image base mismatch; observers disabled");
         return (false,false);
     }
-    if !crate::cfg().log_enabled {return (false,false);}
+    if !crate::cfg().log_enabled && !cfg!(feature="winmm-split-runtime") {
+        return (false,false);
+    }
     let data=patch_registration(UI_DATA_SITE,UI_DATA_BYTES,ui_data_passthrough as *const () as usize);
-    let control=patch_registration(UI_CONTROL_SITE,UI_CONTROL_BYTES,ui_control_passthrough as *const () as usize);
+    // Logging-only UI Control observer; never needed for lighting defaults.
+    let control=if crate::cfg().log_enabled {
+        patch_registration(UI_CONTROL_SITE,UI_CONTROL_BYTES,ui_control_passthrough as *const () as usize)
+    }else{false};
     log(&format!("MENU-GOS-UI: uiData_hook={data} uiControl_hook={control}; strict 3-argument pass-through, only during GOS Preferences transaction"));
     (data,control)
 }

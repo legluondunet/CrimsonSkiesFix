@@ -415,7 +415,18 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         }
         return None;
     }
-    let Some(monitor)=win32::launch_monitor_or_game_window(hwnd) else{
+    // The verified game HWND is the authoritative monitor on native
+    // multi-display Windows. Early cursor-based capture can refer to an
+    // unrelated screen even when the game launches on the other one.
+    // Resolve once at the first game-owned DD4 cooperative request, before
+    // the original exclusive mode setup is permitted to alter geometry.
+    let selected_monitor=if cfg!(feature="winmm-split-runtime") &&
+        crate::diagnostics::is_native_windows(){
+        win32::monitor_for_game_window(hwnd)
+    }else{
+        win32::launch_monitor_or_game_window(hwnd)
+    };
+    let Some(monitor)=selected_monitor else{
         if strict_native_nonexclusive(){
             log("NATIVE-STRICT-BORDERLESS: invalid monitor/HWND; exclusive cooperative request REJECTED");
             return Some(E_FAIL);
@@ -423,6 +434,10 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         log("WINDOWED-GAME: rejected game HWND; original exclusive path retained");
         return None;
     };
+    #[cfg(feature="winmm-split-runtime")]
+    if crate::diagnostics::is_native_windows(){
+        log("WINDOWED-GAME: split native target selected from authenticated game-owned HWND (not cursor or primary display)");
+    }
     let Some((monitor_w,monitor_h))=monitor.dimensions() else{
         if strict_native_nonexclusive(){
             log("NATIVE-STRICT-BORDERLESS: invalid monitor dimensions; exclusive cooperative request REJECTED");
@@ -439,7 +454,12 @@ pub unsafe fn cooperative(dd4:*mut c_void,hwnd:Hwnd,flags:u32,
         // Win32 HWND coordinates can be DPI-logical even when the DD4 HAL
         // renders at physical monitor pixels. This selection is unchanged
         // from the owner-validated nonexclusive native Windows path.
-        let Some(physical)=win32::physical_primary_monitor_dimensions() else{
+        let physical=if cfg!(feature="winmm-split-runtime"){
+            win32::physical_monitor_dimensions_for_game_window(hwnd)
+        }else{
+            win32::physical_primary_monitor_dimensions()
+        };
+        let Some(physical)=physical else{
             if strict_native_nonexclusive(){
                 log("NATIVE-STRICT-BORDERLESS: physical monitor unknown; exclusive cooperative request REJECTED");
                 return Some(E_FAIL);
@@ -765,7 +785,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             // native virtual mode transition. A successful virtual Blt is
             // not proof that another module did not switch the OS display.
             if crate::cfg().native_dd4_bootstrap && crate::diagnostics::is_native_windows() {
-                let observed=win32::physical_primary_monitor_dimensions();
+                let observed=if cfg!(feature="winmm-split-runtime"){
+                    win32::physical_monitor_dimensions_for_game_window(runtime.hwnd as Hwnd)
+                }else{
+                    win32::physical_primary_monitor_dimensions()
+                };
                 log(&format!(
                     "NATIVE-DESKTOP-VERIFY: virtual_mode={}x{}x{} physical_screen={observed:?} expected_screen={:?} retained={} (read-only)",
                     w,h,bpp,runtime.render_client,observed==Some(runtime.render_client)
