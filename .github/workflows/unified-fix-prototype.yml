@@ -1,0 +1,134 @@
+name: Experimental unified single-DLL CrimsonSkiesFix (NOT RELEASE)
+
+on:
+  push:
+    paths:
+      - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
+      - '.github/workflows/unified-fix-prototype.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
+      - '.github/workflows/unified-fix-prototype.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unified-windows-x86:
+    runs-on: windows-latest
+    name: Build and smoke test single fix.dll + mandatory installer (x86)
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: rustup target add i686-pc-windows-msvc
+      - name: Unit-test and compile combined fix.dll
+        shell: pwsh
+        run: |
+          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified runtime tests failed'}
+          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified runtime build failed'}
+      - name: Verify exact DirectDraw export surface and no static WinMM/DDraw dependencies
+        shell: pwsh
+        run: |
+          python loader-alias/tools/test_verify_alias_pe.py -v
+          if($LASTEXITCODE -ne 0){throw 'PE parser tests failed'}
+          python loader-alias/tools/verify_alias_pe.py runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+          if($LASTEXITCODE -ne 0){throw 'Unified runtime import/export gate failed'}
+      - name: Compile and test unified installer with only fix.dll embedded
+        shell: pwsh
+        run: |
+          cargo test --manifest-path installer/Cargo.toml --features unified-fix-install --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified installer tests failed'}
+          cargo build --manifest-path installer/Cargo.toml --features unified-fix-install --release --target i686-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Unified installer compilation failed'}
+          $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $version=(& $exe --version) -join "`n"
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL UNIFIED'){
+            throw "Wrong installer variant: $version"
+          }
+          New-Item -ItemType Directory -Force 'unified-empty-tree' | Out-Null
+          Copy-Item $exe 'unified-empty-tree/CrimsonSkiesFix.exe'
+          & './unified-empty-tree/CrimsonSkiesFix.exe' --launch-no-verify
+          if($LASTEXITCODE -ne 2){throw 'Unchecked launch of nonexistent game should fail, not install'}
+          if(Test-Path 'unified-empty-tree/game'){throw 'Unchecked launch created unexpected game folder'}
+          $global:LASTEXITCODE=0
+      - name: Build synthetic suspended-process DirectDraw import fixture for fix.dll
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'unified-synthetic-smoke' | Out-Null
+          rustc --edition 2021 --target i686-pc-windows-msvc --cfg 'feature="unified-fix-install"' -C target-feature=+crt-static -C panic=abort -o unified-synthetic-smoke/alias_import_launcher.exe loader-winmm/src/bin/alias_import_launcher.rs
+          if($LASTEXITCODE -ne 0){throw 'Standalone unified import launcher could not compile'}
+          rustc --edition 2021 --target i686-pc-windows-msvc --cfg unified_alias -C target-feature=+crt-static -C panic=abort -o unified-synthetic-smoke/alias_import_fixture.exe loader-winmm/src/bin/alias_import_fixture.rs
+          if($LASTEXITCODE -ne 0){throw 'Synthetic x86 WinMM/DDraw fixture could not compile'}
+          Copy-Item runtime-unified/target/i686-pc-windows-msvc/release/fix.dll unified-synthetic-smoke/
+          $launcher=(Resolve-Path 'unified-synthetic-smoke/alias_import_launcher.exe').Path
+          $fixture=(Resolve-Path 'unified-synthetic-smoke/alias_import_fixture.exe').Path
+          $env:CRIMSON_ALIAS_REAL='1'
+          & $launcher $fixture
+          $exit=$LASTEXITCODE
+          Remove-Item Env:CRIMSON_ALIAS_REAL
+          if($exit -ne 0){throw "Native Win32 unified synthetic fail-closed smoke failed exit=$exit"}
+      - name: Package test-only one-exe installer, SHA and instructions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'unified-dist' | Out-Null
+          $exe='unified-dist/CrimsonSkiesFix.exe'
+          Copy-Item installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe $exe
+          Copy-Item installer/README-unified.md 'unified-dist/README-EXPERIMENTAL.md'
+          "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-X86-TEST-ONLY
+          path: CrimsonSkiesFix/unified-dist/*
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-SYNTHETIC-WINE-SMOKE
+          path: CrimsonSkiesFix/unified-synthetic-smoke/*
+          retention-days: 7
+          if-no-files-found: error
+
+  unified-wine32-smoke:
+    name: Wine32 synthetic import alias and native WinMM (no game data)
+    runs-on: ubuntu-24.04
+    needs: unified-windows-x86
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-SYNTHETIC-WINE-SMOKE
+          path: smoke
+      - name: Install clean Wine32 and virtual display
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends wine wine32:i386 xvfb xauth
+      - name: Run actual unified fix.dll with synthetic unknown game under Wine
+        env:
+          WINEARCH: win32
+          WINEPREFIX: ${{ runner.temp }}/crimson-unified-smoke-prefix
+          WINEDEBUG: -all
+          CRIMSON_ALIAS_REAL: '1'
+        run: |
+          set -euo pipefail
+          timeout 120s xvfb-run -a wineboot -u
+          exe="$(winepath -w "$PWD/smoke/alias_import_fixture.exe" | tr -d '\r')"
+          timeout 120s xvfb-run -a wine "$PWD/smoke/alias_import_launcher.exe" "$exe"
+          echo 'UNIFIED-WINE32-SMOKE PASS: native WinMM unaffected; synthetic executable rejected by core'
