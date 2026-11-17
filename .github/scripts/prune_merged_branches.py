@@ -70,7 +70,8 @@ def request(repo, token, method, suffix):
 def pages(repo, token, resource):
     result = []
     for page in range(1, 101):
-        batch = request(repo, token, "GET", f"{resource}?per_page=100&page={page}")
+        separator = "&" if "?" in resource else "?"
+        batch = request(repo, token, "GET", f"{resource}{separator}per_page=100&page={page}")
         if not isinstance(batch, list):
             raise RuntimeError(f"Unexpected GitHub collection response: {resource}")
         result.extend(batch)
@@ -226,6 +227,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.self_test:
         # Do not contact GitHub or require a token during validation.
-        unittest.main(argv=[sys.argv[0]], exit=False)
-        sys.exit(0)
+        result = unittest.main(argv=[sys.argv[0]], exit=False).result
+        sys.exit(0 if result.wasSuccessful() else 1)
     prune(args)
