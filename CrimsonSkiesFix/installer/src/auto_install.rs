@@ -510,6 +510,110 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     }
 }
 
+// An installer-created INI is the only one eligible for first-launch logging.
+// The marker exists solely between first installation and the first successful
+// game exit. It never grants permission to rewrite a user-customized INI.
+#[cfg(feature="unified-fix-install")]
+const FIRST_LAUNCH_MARKER: &str = "CrimsonSkiesFix.first-launch-log.pending";
+#[cfg(feature="unified-fix-install")]
+const FIRST_LAUNCH_MARKER_BYTES: &[u8] = b"CrimsonSkiesFix managed first-launch log v1\n";
+
+#[cfg(feature="unified-fix-install")]
+fn initial_unified_ini() -> &'static str {
+    "; CrimsonSkiesFix: installer-managed first-launch diagnostic.\n\
+     ; Logging is disabled automatically after the first successful game exit.\n\
+     [Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n"
+}
+#[cfg(feature="unified-fix-install")]
+fn quiet_unified_ini() -> String {
+    initial_unified_ini().replace("Log=1\n", "Log=0\n")
+}
+
+#[cfg(feature="unified-fix-install")]
+fn first_launch_state_dir(base:&Path)->Result<PathBuf,String>{
+    let state=base.join("state");
+    if !directory(&state){
+        if any_entry(&state){
+            return Err("unsafe state/ path: cannot track first-launch logging".into());
+        }
+        fs::create_dir(&state).map_err(error)?;
+    }
+    Ok(state)
+}
+
+#[cfg(feature="unified-fix-install")]
+fn prepare_first_launch_ini(base:&Path)->Result<(),String>{
+    let ini=base.join("CrimsonSkiesFix.ini");
+    if any_entry(&ini){
+        if regular(&ini){return Ok(());} // Never touch a user-owned INI.
+        return Err(format!("unsafe existing INI: {}",ini.display()));
+    }
+    let marker=first_launch_state_dir(base)?.join(FIRST_LAUNCH_MARKER);
+    if any_entry(&marker){
+        return Err("existing first-launch state marker must be preserved".into());
+    }
+    // Create the INI only once. A pre-existing INI can never be enrolled.
+    let mut file=OpenOptions::new().write(true).create_new(true).open(&ini).map_err(error)?;
+    file.write_all(initial_unified_ini().as_bytes()).map_err(error)?;
+    file.sync_all().map_err(error)?;
+    let marker_result=(||->Result<(),String>{
+        let mut f=OpenOptions::new().write(true).create_new(true).open(&marker).map_err(error)?;
+        f.write_all(FIRST_LAUNCH_MARKER_BYTES).map_err(error)?;
+        f.sync_all().map_err(error)
+    })();
+    if let Err(reason)=marker_result{
+        // Do not leave an automatically managed Log=1 INI without its marker.
+        if regular(&marker) && fs::read(&marker).ok().as_deref()!=Some(FIRST_LAUNCH_MARKER_BYTES){
+            let _=fs::remove_file(&marker);
+        }
+        if regular(&ini) && fs::read(&ini).ok().as_deref()==Some(initial_unified_ini().as_bytes()){
+            let _=fs::remove_file(&ini);
+        }
+        return Err(format!("could not initialize first-launch logging: {reason}"));
+    }
+    Ok(())
+}
+
+// Called only after a game process exits. A failed launch/crash never switches
+// off first-launch logging. No switch occurs without a real session log.
+#[cfg(feature="unified-fix-install")]
+fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
+    if code!=0{return Ok(false);}
+    let marker=base.join("state").join(FIRST_LAUNCH_MARKER);
+    if !any_entry(&marker){return Ok(false);}
+    if !regular(&marker) || fs::read(&marker).map_err(error)?!=FIRST_LAUNCH_MARKER_BYTES{
+        return Err("unknown first-launch logging state preserved without changes".into());
+    }
+    let ini=base.join("CrimsonSkiesFix.ini");
+    // Even a one-byte user edit invalidates the automatic opt-out.
+    if !regular(&ini) || fs::read(&ini).map_err(error)?!=initial_unified_ini().as_bytes(){
+        fs::remove_file(&marker).map_err(error)?; // Owner has taken control.
+        return Ok(false);
+    }
+    let session=base.join("CrimsonSkiesFix.log");
+    if !regular(&session) || fs::metadata(&session).map_err(error)?.len()==0{
+        return Ok(false); // No evidence of a first gameplay session.
+    }
+    let temporary=base.join("state").join("CrimsonSkiesFix.ini.first-launch.pending");
+    if any_entry(&temporary){
+        return Err("first-launch INI replacement blocked by an existing pending file".into());
+    }
+    let next=quiet_unified_ini();
+    let mut file=OpenOptions::new().write(true).create_new(true)
+        .open(&temporary).map_err(error)?;
+    if let Err(err)=file.write_all(next.as_bytes()).and_then(|_|file.sync_all()){
+        let _=fs::remove_file(&temporary);
+        return Err(format!("could not stage quiet first-launch INI: {err}"));
+    }
+    // Same volume, atomic file replacement; never modify a customized INI.
+    if let Err(err)=fs::rename(&temporary,&ini){
+        let _=fs::remove_file(&temporary);
+        return Err(format!("cannot finalize first-launch INI: {err}"));
+    }
+    fs::remove_file(&marker).map_err(error)?;
+    Ok(true)
+}
+
 /// Entry point for no-argument execution. The installer keeps its last
 /// meaningful installation/repair/error report in the root installer log.
 /// The DLL writes an independent fresh gameplay log on every game start.
@@ -524,16 +628,15 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     let result=auto_prepare(base,game).and_then(|action|{
         if regular(&receipt_path(game)){verify_installed_cd_assets(game)?;}
         let exe=verify(game)?;
-        // New organized experimental installations emit the first game log
-        // automatically; do not change any existing user configuration.
-        #[cfg(feature="winmm-split-install")]
+        // The unified installer records a one-shot first-launch log only
+        // for an INI it created. Manually supplied INIs remain untouched.
+        #[cfg(feature="unified-fix-install")]
+        prepare_first_launch_ini(&patch_dir(game))?;
+        #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
         {
-            #[cfg(feature="unified-fix-install")]
-            let header="; Experimental unified fix.dll compatibility test.\n";
-            #[cfg(not(feature="unified-fix-install"))]
-            let header="; Experimental split-loader compatibility test.\n";
-            let content=format!("{header}[Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n");
-            ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),&content)?;
+            let content="; Experimental split-loader compatibility test.\n\
+                [Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n";
+            ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),content)?;
         }
         Ok((action,exe))
     });
@@ -601,6 +704,12 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
                 if let Ok(mut session)=OpenOptions::new().append(true).open(&log){
                     let _=writeln!(session,"\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}");
                 }
+            }
+            #[cfg(feature="unified-fix-install")]
+            match finish_first_launch_log(base,code){
+                Ok(true)=>println!("First-launch diagnostics retained; subsequent game sessions use Log=0."),
+                Ok(false)=>{},
+                Err(err)=>eprintln!("Warning: first-launch log finalization skipped: {err}"),
             }
             println!("Game exited with status {code}.");
             Ok(code)
