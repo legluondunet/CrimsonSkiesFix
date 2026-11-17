@@ -99,9 +99,12 @@ def inspect(data: bytes) -> tuple[list[str], list[str]]:
     return imports, exports
 
 
-def verify(data: bytes) -> tuple[list[str], list[str]]:
+def verify(data: bytes, *, unified: bool = False) -> tuple[list[str], list[str]]:
     imported, exported = inspect(data)
     forbidden = {'winmm.dll', 'ddraw.dll', 'csfix.dll', 'crimsonskiesfix.dll'}
+    if unified:
+        # One project DLL; SDL3 remains optional and must be loaded dynamically.
+        forbidden.update({'fix.dll', 'sdl3.dll'})
     bad = [s for s in imported if s.casefold() in forbidden]
     if bad:
         raise PeError(f'CSFIX.dll reintroduced a forbidden static provider/import: {bad}')
@@ -113,15 +116,20 @@ def verify(data: bytes) -> tuple[list[str], list[str]]:
     multimedia_exports = [s for s in exported if s.lower().startswith(('mci', 'mixer', 'wave', 'midi', 'time', 'joy', 'aux'))]
     if multimedia_exports:
         raise PeError(f'CSFIX.dll unexpectedly exports WinMM-like names: {multimedia_exports}')
+    if unified:
+        exact = needed | {'DllMain'}
+        if len(exported) != len(exact) or set(exported) != exact:
+            raise PeError(f'unified fix.dll must export exactly {sorted(exact)}; got {exported}')
     return imported, exported
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print('Usage: verify_alias_pe.py path/to/CSFIX.dll', file=sys.stderr)
+    unified = len(argv) == 3 and argv[1] == '--unified'
+    if not (len(argv) == 2 or unified):
+        print('Usage: verify_alias_pe.py [--unified] path/to/alias.dll', file=sys.stderr)
         return 2
     try:
-        imported, exported = verify(pathlib.Path(argv[1]).read_bytes())
+        imported, exported = verify(pathlib.Path(argv[-1]).read_bytes(), unified=unified)
     except (OSError, PeError, UnicodeDecodeError) as exc:
         print(f'ALIAS-PE-GATE FAIL: {exc}', file=sys.stderr)
         return 1
