@@ -30,6 +30,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
       CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      CRIMSONSKIESFIX_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
     steps:
       - uses: actions/checkout@v4
