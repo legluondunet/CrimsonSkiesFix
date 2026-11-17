@@ -59,6 +59,16 @@ authentic official 1.02 updater, and the approved decrypted 1.02 executable.
 The launcher verifies all prerequisites before extraction. It never
 redistributes the game's files.
 
+**Missing prerequisites:** if neither the approved decrypted 1.02 EXE nor the
+official 1.02 updater is available, the installer reports **both missing
+sources** in the root `CrimsonSkiesFix_installer.log` and stops before CD
+extraction. It does not attempt to launch the protected CD executable or
+replace existing game data. To resume, put one approved EXE and one
+SHA-verified official 1.02 updater beside the launcher and run
+`CrimsonSkiesFix.exe --install-only` (or launch normally). The original
+CD image must also be present for a new installation. No third-party or
+copyrighted game executable is bundled.
+
 Run these commands **from the test folder**:
 
 ```text
