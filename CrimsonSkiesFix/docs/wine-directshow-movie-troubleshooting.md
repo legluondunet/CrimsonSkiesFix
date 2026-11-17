@@ -8,7 +8,70 @@ native Quartz in a particular Wine/Proton build, or an additional decoder, is
 settings UI) with Windows DirectShow movie playback. No dependency is installed
 by CrimsonSkiesFix and Windows native users should not change their setup.
 
-## Reproduce before changing anything
+## Verified current Lutris behavior and the game's movie assets
+
+The owner's [Crimson Skies Lutris installer: CD + d7vk + fixes](https://lutris.net/games/install/40026/view)
+contains exactly:
+
+`yaml
+- task:
+    app: amstream quartz
+    description: Installing codecs...
+    name: winetricks
+    silent: true
+```
+
+This is *not* a request for standalone video codecs. The official Winetricks
+`src/winetricks` recipes extract **Microsoft's** `amstream.dll` and
+`quartz.dll` from Windows 7 SP1 downloads, register them with
+`regsvr32`, and set the DLL priority to **native,builtin**. These files are
+not part of CrimsonSkiesFix and **must not** be bundled as if freely
+redistributable. Replacing Winetricks with a silent downloader of the same
+files is not the intended solution.
+
+Our verified CD manifest `installer/profiles/c_skies_disc_001.tsv` contains:
+- `GOSDATA/ASSETS/GRAPHICS/MPG/MSOPEN1.MPG`
+- `GOSDATA/ASSETS/GRAPHICS/MPG/CHAP0.MPG` through `CHAP5.MPG`
+- `GOSDATA/ASSETS/GRAPHICS/MPG/FINAL.MPG`, `ZIPPER.MPG`, `CRIMFLAG.MPG`
+
+The independent [static-recompilation project](https://github.com/sp00nznet/crimsonskies)
+describes the game's .MPG assets as **MPEG-1 cutscenes**, and lists imports
+from `AVIFIL32.dll`, `WINMM.dll` and `ole32.dll`. This is promising
+evidence, **not** a proof of individual video/audio stream codecs nor of the
+exact game playback call path. Inspect one authenticated locally owned MPG
+with `ffprobe` to verify both stream codecs before choosing a
+self-contained decoder. `AVIFile` imports do not by themselves prove
+that cutscene playback uses AVIFile rather than DirectShow/AMStream.
+
+## Target: no Winetricks and no prefix mutation
+
+1. **First try Wine/Proton's own** `amstream` and `quartz` (DLL override
+   `builtin`) and its GStreamer/FFmpeg-capable media backend, in an
+   *isolated clean prefix*, with no native Microsoft libraries. Do not treat
+   a configured old Lutris prefix as evidence of independence: it may already
+   have native DLLs and registered COM filters.
+2. If those builtins fail, **identify the game call path**, including any
+   `CoCreateInstance` and `IAMMultiMediaStream` usage, via bounded diagnostic
+   hooks or offline analysis of the approved EXE, with no persistent game
+   changes. Record a precise HRESULT / DLL / playback transition.
+3. If Wine's COM/DirectShow route cannot support the verified game, evaluate a
+   **self-contained, portable MPEG-1/MP2 decoder** bundled in the project's
+   existing runtime DLL (e.g. MIT-licensed
+   [PL_MPEG](https://github.com/phoboslab/pl_mpeg)). This would still require
+   a safe interception of the **actual game video player entrypoint**, and
+   game-compatible presentation, A/V sync, skip/stop, alt-tab and lifecycle.
+   The decoder alone **does not provide** any DirectShow COM replacement.
+   PL_MPEG does not cover MPEG-2 streams; confirm the asset codecs first.
+4. Keep Windows native playback untouched. No automatic invocation of
+   Winetricks or Protontricks, installation of Microsoft binaries, global
+   registry changes, or prefix writes. Retain a safe fallback to the current
+   game playback route until the integrated option is verified.
+
+This is an engineering roadmap, **not a claim that an integrated player is
+implemented**. No new INI switch should be exposed until the playback
+entrypoint is understood and a working prototype exists.
+
+\n## Reproduce before changing anything
 
 Use a **new test prefix** or a backup of the real prefix; leave your working
 installation untouched. Record:
@@ -26,61 +89,67 @@ installation untouched. Record:
   temporarily set `[Debug] Log=1` in `CrimsonSkiesFix.ini`, then restore
   your chosen setting.
 
-For a standard Wine prefix, a possible **read-only diagnostic capture** is:
+For a standard Wine installation, compare **two clean-prefix runs** before
+considering any Microsoft DLLs. The second run requests **only Wine builtins**
+for the two multimedia DLL names (no persistent override or registration):
 
 ```bash
-WINEPREFIX="$HOME/path/to/test-prefix" wine --version
-WINEPREFIX="$HOME/path/to/test-prefix" WINEDEBUG=+loaddll,+quartz,+dshow \
-  wine ./CrimsonSkiesFix.exe > wine-movie-before.log 2>&1
+export WINEPREFIX="$HOME/path/to/test-prefix"
+wine --version
+WINEDEBUG=+loaddll wine ./CrimsonSkiesFix.exe \
+  > wine-video-default.log 2>&1
+WINEDLLOVERRIDES='amstream=b;quartz=b' WINEDEBUG=+loaddll \
+  wine ./CrimsonSkiesFix.exe > wine-video-builtin.log 2>&1
 ```
 
-Replace the example prefix with your actual *test* prefix and run from the
-launcher directory. Some Wine builds may not emit every diagnostic channel.
-The `wine-movie-before.log` file may be large and may contain local paths;
-review it before sharing. A DLL-load trace is **not** proof that an actual
-movie graph decoded or presented frames.
+Use your own **clean test prefix** and game folder, not the literal example
+path. Check both **picture and audio** in MSOPEN1.MPG / a chapter transition.
+Only one thing should change between runs: the override. The logs can be
+large and expose file paths; review them before sharing. Wine DLL-loading
+logs are not evidence of successful playback. If both runs work, there is
+no reason to ship/install native Microsoft DLLs for that runner. If both
+fail, inspect missing 32-bit media plugins, video filter availability and
+the actual game video call path before selecting a workaround. The host
+GStreamer plugin set and runner package may differ significantly across
+Wine, Lutris Flatpak, and GE-Proton.
 
-## Compare only one variable
-
-For **plain Wine**, if the first capture identifies a plausible DirectShow
-problem and you are comfortable modifying that **test prefix only**, try:
+For the **codec identity only**, on Linux with ffprobe available, inspect
+one file from *your own installed game*:
 
 ```bash
-WINEPREFIX="$HOME/path/to/test-prefix" winetricks quartz
+ffprobe -v error -show_entries stream=index,codec_type,codec_name \
+  -of compact "game/GOSDATA/ASSETS/GRAPHICS/MPG/MSOPEN1.MPG"
 ```
 
-Winetricks provides a `quartz` verb for `quartz.dll`. This is **not a codec
-pack**, may obtain Microsoft redistributables, and is **not guaranteed** to
-fix playback. Do **not** install unrelated codecs or multiple verbs at once.
-Check winetricks' own messages for errors; if it fails, that is not proof of
-a CrimsonSkiesFix bug. Re-run exactly the same cinematic and capture a second
-log with the same environment, noting any difference. If a video still fails,
-the required decoder/filter and Wine build remain unknown.
+Neither ffprobe nor GStreamer plugins are required by the **CrimsonSkiesFix
+installer** today; this is a development-time investigation.
 
-**GE-Proton / Steam / Protontricks:** do not point ordinary Wine/Winetricks at
-an arbitrary Steam prefix. Confirm the *actual* compatdata prefix and runner
-first; Steam/GE-Proton may manage overrides and media components differently.
-Use an isolated copy/test prefix and the corresponding Proton-aware tooling
-if applicable. Do not assume a plain Wine fix also works under Proton.
+**GE-Proton / Lutris:** do not run a system Wine executable on an unrelated
+Proton prefix. Keep the same runner and use Lutris' per-game environment
+setting to supply `WINEDLLOVERRIDES=amstream=b;quartz=b` for a temporary
+test. This is a launch-only override, not a permanent Wine registry change.
 
 ## Comparison checklist
 
-| Observation | Before | After isolated Quartz test |
+| Observation | Clean default | Clean + builtin override |
 | --- | --- | --- |
 | Runner, prefix and architecture | record | same |
-| Opening movie: video / sound | record | record |
-| In-game cinematic: video / sound | record | record |
+| Opening video (MSOPEN1.MPG): picture / sound | record | record |
+| Chapter movie: picture / sound | record | record |
 | Menu and 3D gameplay | record | must not regress |
-| DirectShow/Quartz DLL loading or COM errors | record | record |
-| Installer and gameplay logs | save | save |
+| Wine DLL loading, COM errors and media plugins | record | record |
+| Game and installer logs | save | save |
 
-A useful result contains the **specific** movie that failed and the two
-captures. It is equally useful if Quartz changes nothing. Only after
-reproduction and diagnosis should the project consider an actionable runtime
-warning; it must never claim that merely finding (or failing to find)
-`quartz.dll` proves the decoder status.
+A useful result identifies the **specific** missing/failing movie and both
+captures. If builtins alone cannot play them, only then begin prototyping a
+portable decoder and correct game-hook integration. Never assume
+`quartz.dll` or `amstream.dll` being present proves a working
+decoder or COM graph.
 
 References:
-- [Winetricks source / quartz verb](https://github.com/Winetricks/winetricks/blob/master/files/verbs/dlls.txt)
-- [Winetricks usage](https://github.com/Winetricks/winetricks/wiki/Usage)
+- [Current Lutris install script (amstream + quartz)](https://lutris.net/games/install/40026/view)
+- [Winetricks implementation (Microsoft amstream/quartz + native,builtin)](https://github.com/Winetricks/winetricks/blob/master/src/winetricks)
+- [Original disc file identity manifest](../installer/profiles/c_skies_disc_001.tsv)
+- [Crimson Skies recompiler format and import inventory](https://github.com/sp00nznet/crimsonskies)
+- [PL_MPEG MPEG-1/MP2 library, MIT](https://github.com/phoboslab/pl_mpeg)
 - [Issue #45](https://github.com/legluondunet/CrimsonSkiesFix/issues/45)
