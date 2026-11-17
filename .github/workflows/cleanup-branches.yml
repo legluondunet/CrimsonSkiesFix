@@ -1,0 +1,69 @@
+name: Cleanup branches - keep main and open PRs
+
+on:
+  push:
+    branches:
+      - main
+      - maintenance/safe-pr-branch-cleanup-20261117
+    paths:
+      - '.github/scripts/cleanup_branches.py'
+      - '.github/workflows/cleanup-branches.yml'
+  schedule:
+    - cron: '31 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulate branch deletions without changing the repository'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cleanup-branches-keep-open-prs
+  cancel-in-progress: false
+
+jobs:
+  policy-tests:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify cleanup policy
+        run: python3 .github/scripts/cleanup_branches.py --self-test
+      - name: Simulate deletion against real repository branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/cleanup_branches.py --dry-run
+
+  cleanup:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify cleanup policy before any deletion
+        run: python3 .github/scripts/cleanup_branches.py --self-test
+      - name: Dry run or delete branches without open PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+          ALLOW_BRANCH_DELETION: 'YES'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            mode=--apply
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${REQUESTED_DRY_RUN}" == "false" ]]; then
+            mode=--apply
+          else
+            mode=--dry-run
+          fi
+          python3 .github/scripts/cleanup_branches.py "${mode}"
