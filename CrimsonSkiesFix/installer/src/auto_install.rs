@@ -825,6 +825,56 @@ mod tests{
         assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
         fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_stays_private_until_game_is_published(){
+        let root=temp();
+        let staged=root.join(REBUILT);
+        fs::create_dir(&staged).unwrap();
+        assert_eq!(receipt_path(&staged),staged.join(INSTALL_RECEIPT));
+        assert_eq!(receipt_path(&root.join("game")),root.join(INSTALL_RECEIPT));
+        fs::write(staged.join(INSTALL_RECEIPT),b"verified pending receipt").unwrap();
+        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        fs::rename(&staged,root.join("game")).unwrap();
+        assert!(!any_entry(&root.join(INSTALL_RECEIPT)));
+        let game=root.join("game");
+        assert!(!publish_unified_receipt(&game).unwrap());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"verified pending receipt");
+        assert!(!any_entry(&game.join(INSTALL_RECEIPT)));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_rollback_preserves_original_root_receipt(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
+        assert!(publish_unified_receipt(&game).unwrap());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"original receipt");
+        rollback_unified_receipt(&game,true).unwrap();
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert!(!any_entry(&previous_receipt(&game).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn unified_cd_receipt_refuses_existing_rollback_backup(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        fs::write(root.join(INSTALL_RECEIPT),b"original receipt").unwrap();
+        fs::write(game.join(INSTALL_RECEIPT),b"replacement receipt").unwrap();
+        fs::write(previous_receipt(&game).unwrap(),b"owner backup").unwrap();
+        assert!(publish_unified_receipt(&game).is_err());
+        assert_eq!(fs::read(root.join(INSTALL_RECEIPT)).unwrap(),b"original receipt");
+        assert_eq!(fs::read(game.join(INSTALL_RECEIPT)).unwrap(),b"replacement receipt");
+        assert_eq!(fs::read(previous_receipt(&game).unwrap()).unwrap(),b"owner backup");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn authentic_executable_is_required_before_any_new_install(){
         let root=temp();
