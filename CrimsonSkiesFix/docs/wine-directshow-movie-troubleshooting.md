@@ -90,6 +90,22 @@ curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wi
 bash ./pr51-wine-video-diagnostics.sh
 ```
 
+**For the current Wine 11.17 MainMenu failure**, the first A/B test has
+already shown both cases used Wine builtins and behaved the same. Use the
+new **single run** with more precise DirectShow/AMStream tracing instead:
+
+```bash
+bash ./pr51-wine-video-diagnostics.sh --menu-only
+```
+
+Before this test, set `[Debug] Log=1` in the test installation's
+`CrimsonSkiesFix.ini`; the diagnostic script does not rewrite INI options
+automatically. Watch the two intro movies and whether the MainMenu becomes
+visible, then exit the game. The script stores both the extended Wine trace
+and bounded `PR51-MENU-FLIP` / `PR51-MENU-UNLOCK` runtime messages if the
+new compiled `fix.dll` has been deployed by the latest launcher.
+It still uses a fresh prefix inside the same installer directory.
+
 The script derives the installation directory from its own file location,
 so there is **no path argument and no `--in-place` flag**. It creates
 `PR51-diagnostics-XXXXXXXX/` **inside that same directory**, including
