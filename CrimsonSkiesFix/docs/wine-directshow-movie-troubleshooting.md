@@ -188,6 +188,58 @@ Proton prefix. Keep the same runner and use Lutris' per-game environment
 setting to supply `WINEDLLOVERRIDES=amstream=b;quartz=b` for a temporary
 test. This is a launch-only override, not a permanent Wine registry change.
 
+## Upstream fix for the Win32 AMStream video flush deadlock (Wine 11.18)
+
+**Strongly supported hypothesis from the user's November 18 black-menu run:**
+the verified 11.17 Wine trace shows the video thread blocked at
+`ddraw_mem_allocator_GetBuffer()` in `amstream`, while the game
+thread requests `multimedia_stream_Seek(..., 0)` and waits for
+`winegstreamer/quartz_parser.c: pin.flushing_cs` held by the video
+thread. It is not a missing MPEG-1 decoder: both intro videos play and
+the menu music continues.
+
+The exact upstream fix is already present in
+[Wine 11.18 `dlls/amstream/ddrawstream.c`](https://github.com/wine-mirror/wine/blob/wine-11.18/dlls/amstream/ddrawstream.c).
+In 11.17, `ddraw_mem_allocator_GetBuffer()` waits indefinitely when
+the stream is committed but no sample is free. Wine 11.18 changes the
+wait predicate to stop when `stream->flushing` becomes true **AND**
+adds `WakeAllConditionVariable(&stream->allocator_cv)` inside
+`ddraw_sink_BeginFlush()`. This pair of changes is essential:
+merely adding the `flushing` predicate without waking the allocator
+would not break an existing wait.
+
+See [official Wine commit 7c48881f](https://gitlab.winehq.org/wine/wine/-/commit/7c48881f4fe2edba88f70b2e1b0892d),
+merged September 11, 2026. Wine 11.18 was released September 18, 2026.
+
+**Next validation:** run the same game installation using Wine 11.18 or
+newer, **unchanged** fix/installer binary and clean temporary prefix,
+without Winetricks or Microsoft native DLLs. The test script
+[pr51-wine-1118-validation.sh](../tools/pr51-wine-1118-validation.sh)
+is placed and run beside the installer; it enforces Wine >= 11.18,
+uses a fresh prefix stored **inside the installer directory**, backs up
+root INI and logs, tests video + menu visibility, then deletes its
+temporary prefix and writes `PR51-wine1118-XXXXXXXX.tar.gz` in the
+same directory.
+
+```bash
+curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wine-directshow-video-diagnostics-20261117/CrimsonSkiesFix/tools/pr51-wine-1118-validation.sh" -o pr51-wine-1118-validation.sh
+bash ./pr51-wine-1118-validation.sh
+```
+
+Run **only in the dedicated test installation**; the installer/game
+may update game files or save data and the script does not back up
+those data. This experiment changes **only the Wine version** relative
+to the prior Wine 11.17 reproduction. If it passes, first consider
+documenting the fixed Wine version rather than shipping an invasive
+application-side seek/COM hook. Do not declare Crimson Skies fixed
+until a real video-menu test confirms it.
+
+**WineDbg caveat:** the previous `pr51-winedbg-hang.sh` run found the
+game PID, but `winedbg-stack.txt` contained a WoW64
+`c0000005` exception instead of usable `CRIMSON.EXE` thread stacks.
+Do not repeat that same debugger test on Wine 11.17. A similar
+WineDbg WoW64 issue was reported as Wine bug #59827 in 2026.
+
 ## Capturing the blocked Wine threads (PR #51 next experiment)
 
 The November 18 Wine 11.17 trace establishes two separate seeks:
