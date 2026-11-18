@@ -90,6 +90,21 @@ bash pr51-wine-video-diagnostics.sh /chemin/vers/crimsonskiesfix
 ```
 
 Pass the directory containing `CrimsonSkiesFix.exe` and `game/CRIMSON.EXE`.
+
+If the user already maintains a **dedicated test installation**, avoid copying
+the game with the explicit `--in-place` option:
+
+```bash
+bash pr51-wine-video-diagnostics.sh --in-place /chemin/vers/crimsonskiesfix
+```
+
+This still uses **two fresh disposable Wine prefixes**, but runs the existing
+test installation directly. The launcher can then modify files in that test
+installation (INI, logs, game state), so **never use `--in-place` on a
+production installation**. The script backs up the existing root INI and two
+root logs in `pre-test-backup/`, but it does **not** back up the game data
+or saved games. The default no-flag mode remains an isolated game-copy test.
+
 No game ISO, official updater, native Microsoft DLLs or Winetricks verbs are
 needed for this **already-installed-game** comparison. The original game,
 saves, root INI and existing Wine prefix are not modified. The temporary game
