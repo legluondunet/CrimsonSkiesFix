@@ -188,6 +188,53 @@ Proton prefix. Keep the same runner and use Lutris' per-game environment
 setting to supply `WINEDLLOVERRIDES=amstream=b;quartz=b` for a temporary
 test. This is a launch-only override, not a permanent Wine registry change.
 
+## Capturing the blocked Wine threads (PR #51 next experiment)
+
+The November 18 Wine 11.17 trace establishes two separate seeks:
+one to 1.102 seconds which continues, and a later call
+`multimedia_stream_Seek(..., 0)` followed by `GST_Seeking_SetPositions`.
+The later path blocks with thread 0x01ac waiting on
+`winegstreamer/quartz_parser.c:pin.flushing_cs` held by thread 0x0244.
+At this point the user sees a **black MainMenu with music still playing**
+after two correctly displayed opening videos. This is consistent with an
+in-flight synchronous flush, but **does not alone prove a complete deadlock**.
+Avoid seeking/no-flush patches until the thread stacks confirm the route.
+
+[pr51-winedbg-hang.sh](../tools/pr51-winedbg-hang.sh) runs one clean
+Wine prefix and captures the game’s live thread backtraces after the
+user observes the black menu. It does not require recompilation and
+uses Wine's own `winedbg` tool rather than Microsoft binaries.
+
+Run it from a terminal opened **in the dedicated test installation's
+directory**; download the script into that directory:
+
+```bash
+curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wine-directshow-video-diagnostics-20261117/CrimsonSkiesFix/tools/pr51-winedbg-hang.sh" -o pr51-winedbg-hang.sh
+bash ./pr51-winedbg-hang.sh
+```
+
+Once the two movies have finished, return to the terminal and press
+**Enter while the black menu and background music are still present**.
+WineDbg locates the game by its Windows process ID (not Linux PID),
+attaches to that process, invokes `info thread` and `bt all`,
+and detaches. It writes the process inventory and call stacks to
+`PR51-hang-XXXXXXXX/` in the **same installer directory**, then
+stops only that freshly created test prefix and produces an archive
+`PR51-hang-XXXXXXXX.tar.gz` beside the installer.
+
+The script backs up the root INI and logs before launch; as with the
+existing in-place experiment, it **does not back up installed game data
+or saves** and should not be used on a production installation. The
+debugger may temporarily pause the game, and can fail if the host has
+debugger restrictions or WineDbg lacks symbols; failure and inventory
+details are preserved without making a false success claim. Inspect
+the archive for private paths before sharing.
+
+Wine debugger command syntax is documented in the
+[WineDbg manual](https://man.archlinux.org/man/winedbg.1.en);
+`--file`, `attach`, `info thread`, `bt all` and `detach` are
+supported in Wine 11.x.
+
 ## Menu transition-specific runtime diagnostics (PR #51)
 
 With `[Debug] Log=1`, the experimental unified `fix.dll` now logs a
