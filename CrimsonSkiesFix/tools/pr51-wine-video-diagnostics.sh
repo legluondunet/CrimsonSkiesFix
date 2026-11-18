@@ -41,7 +41,7 @@ done
   printf 'Wine binary: '
   command -v wine
   wine --version
-  printf 'WINEARCH (inherited): %s\n' "$WINEARCH"
+  printf 'WINEARCH (inherited): %s\n' "$(printenv WINEARCH || true)"
   printf 'Wine prefix test type: TWO new separate disposable prefixes\n'
   printf 'All tests are run with the same Wine executable.\n'
   printf 'Only the second has WINEDLLOVERRIDES=amstream=b;quartz=b.\n'
