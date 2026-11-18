@@ -102,9 +102,13 @@ run_case() {
   fi
   printf '\nCase=%s\nExitCode=%s\n' "$label" "$exit_code" >> "$OUT/observations.txt"
   local observation=""
-  read -r -p "For $label: opening video (picture/audio/black/frozen/skipped)? " observation || true
-  printf 'OpeningVideo=%s\n' "$observation" >> "$OUT/observations.txt"
-  read -r -p "For $label: chapter movie and menu return (if tested)? " observation || true
+  read -r -p "For $label: FIRST opening video (image/audio/other)? " observation || true
+  printf 'FirstOpeningVideo=%s\n' "$observation" >> "$OUT/observations.txt"
+  read -r -p "For $label: SECOND opening video (image/audio/other)? " observation || true
+  printf 'SecondOpeningVideo=%s\n' "$observation" >> "$OUT/observations.txt"
+  read -r -p "For $label: MAIN MENU after videos (visible/black/frozen/missing)? " observation || true
+  printf 'MainMenuAfterVideos=%s\n' "$observation" >> "$OUT/observations.txt"
+  read -r -p "For $label: chapter video and return (not tested if menu is absent)? " observation || true
   printf 'ChapterAndReturn=%s\n' "$observation" >> "$OUT/observations.txt"
   for log in CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
     if [[ -f "$INSTALL_ROOT/$log" ]]; then
