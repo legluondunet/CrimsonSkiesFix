@@ -79,10 +79,15 @@ env -u WINEDLLOVERRIDES WINEPREFIX="$PREFIX" WINEDEBUG=-all \
   "$WINEBOOT_BIN" -u > "$OUT/wineboot.log" 2>&1
 
 echo "Launching the game with Wine builtins quartz and amstream."
+# Minimize observer effects: the previous Wine 11.22 attempt emitted more
+# than two million +sync lines and crashed before MainMenu. Do not trace
+# per-lock calls in the baseline reproduction. Advanced override is opt-in.
+PR51_WINEDEBUG="${PR51_WINEDEBUG:--all}"
+printf 'WineDebugChannels=%s\n' "$PR51_WINEDEBUG" >> "$OUT/environment.txt"
 (
   cd "$ROOT"
   env WINEPREFIX="$PREFIX" WINEDLLOVERRIDES='amstream=b;quartz=b' \
-    WINEDEBUG='+timestamp,+tid,+quartz,+amstream,+winegstreamer,+sync' \
+    WINEDEBUG="$PR51_WINEDEBUG" \
     "$WINE_BIN" "./$NAME"
 ) > "$OUT/wine-fixed.log" 2>&1 &
 launch_pid=$!
@@ -92,10 +97,21 @@ read -r -p "Are both videos correct and the main menu VISIBLE/interactive? (free
 printf 'UserObservation=%s\n' "$note" > "$OUT/observations.txt"
 printf 'SnapshotUTC=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$OUT/observations.txt"
 
-echo "Stopping only the disposable test prefix (existing Wine prefixes unaffected)..."
-env WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINESERVER_BIN" -k \
-  > "$OUT/wineserver-stop.log" 2>&1 || true
-wait "$launch_pid" || true
+# The launcher might have terminated (as in the prior null-page fault).
+# Keep the true Wine launcher exit code in the archive rather than
+# mistaking the forced wineserver shutdown for a normal game exit.
+if kill -0 "$launch_pid" 2>/dev/null; then
+  printf 'LauncherStillRunningWhenObservationRecorded=yes\n' >> "$OUT/observations.txt"
+  echo "Stopping only the disposable test prefix (other Wine prefixes unaffected)..."
+  env WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINESERVER_BIN" -k \
+    > "$OUT/wineserver-stop.log" 2>&1 || true
+else
+  printf 'LauncherStillRunningWhenObservationRecorded=no\n' >> "$OUT/observations.txt"
+  echo "The Wine launcher already finished; no forced prefix shutdown needed."
+fi
+launcher_exit=0
+wait "$launch_pid" || launcher_exit="$?"
+printf 'LauncherExitCode=%s\n' "$launcher_exit" >> "$OUT/observations.txt"
 for item in CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
   [[ ! -f "$ROOT/$item" ]] || cp -p -- "$ROOT/$item" "$OUT/after-$item"
 done
