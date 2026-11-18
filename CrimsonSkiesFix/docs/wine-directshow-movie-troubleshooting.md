@@ -248,6 +248,29 @@ documenting the fixed Wine version rather than shipping an invasive
 application-side seek/COM hook. Do not declare Crimson Skies fixed
 until a real video-menu test confirms it.
 
+### Wine-staging 11.22 regression test (November 18, 2026)
+
+The first dedicated Lutris Wine 11.22 trace
+(`PR51-wine1118-Nxn9eGml.tar.gz`) reported `UserObservation=crash`.
+The runtime reached the 800x600 movie/menu graph and performed its
+first virtual-primary Flip, but it **never logged MainMenu selection**.
+Wine then reported a null-read page fault at **0x005A928F** on thread
+0x01c4, shortly after Quartz filter and AMStream connection operations.
+This is **not** the same point reached in the previous 11.17 black-menu
+deadlock, and is not evidence that the 11.18 upstream flush fix is
+effective (or ineffective) for this game.
+
+The test accidentally enabled **`+sync` Wine tracing**, producing
+**2,196,350 lines** in seconds; this is high-overhead instrumentation
+and can perturb timing. The validation script now defaults to
+**`WINEDEBUG=-all`** for an uninstrumented baseline, records the
+real Wine-launcher exit status, and only stops the dedicated prefix
+if still running. Advanced tracing is opt-in via `PR51_WINEDEBUG`.
+Re-run the unchanged game binary with the same Lutris Wine 11.22
+runner and a new isolated prefix. If the fault remains at 0x005A928F,
+investigate its game-side call chain independently of the 11.17 flush
+deadlock; a game executable address is not a demonstrated Wine fault.
+
 **WineDbg caveat:** the previous `pr51-winedbg-hang.sh` run found the
 game PID, but `winedbg-stack.txt` contained a WoW64
 `c0000005` exception instead of usable `CRIMSON.EXE` thread stacks.
