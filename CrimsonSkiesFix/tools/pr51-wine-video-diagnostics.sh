@@ -1,60 +1,56 @@
 #!/usr/bin/env bash
-# PR #51: isolated Wine builtins comparison for an already installed game.
-# No Winetricks, DLL registration, prefix changes outside temporary directories.
+# PR #51: compare Wine builtins using a DEDICATED installed test game.
+# The script, diagnostic reports and temporary Wine prefixes stay beside the launcher.
+# No Winetricks and no changes to the user's existing Wine prefix.
 set -Eeuo pipefail
 
 usage() {
-  echo "Usage: bash pr51-wine-video-diagnostics.sh [--in-place] /path/to/installed/crimsonskiesfix"
-  echo "Use an installation containing CrimsonSkiesFix.exe and game/CRIMSON.EXE."
+  echo "Usage: cd /folder/containing/CrimsonSkiesFix.exe && bash ./pr51-wine-video-diagnostics.sh"
+  echo "The script must be placed beside CrimsonSkiesFix.exe (or CrimsonFix_installer.exe)."
+  echo "A pre-installed game/CRIMSON.EXE must exist in the same folder."
   exit 2
 }
-MODE=copy
-if [[ "$#" -ge 1 && "$1" == "--in-place" ]]; then
-  MODE=in-place
-  shift
-fi
-[[ "$#" -eq 1 ]] || usage
-for cmd in wine wineboot realpath mktemp cp find gzip sha256sum; do
+[[ "$#" -eq 0 ]] || usage
+for cmd in wine wineboot mktemp cp find gzip sha256sum tar; do
   command -v "$cmd" >/dev/null || { echo "Missing command: $cmd" >&2; exit 2; }
 done
-ROOT=$(realpath -e -- "$1")
-[[ -f "$ROOT/CrimsonSkiesFix.exe" && -f "$ROOT/game/CRIMSON.EXE" ]] || {
-  echo "Expected CrimsonSkiesFix.exe and game/CRIMSON.EXE under $ROOT" >&2
-  exit 2
-}
-
-# Reports are a sibling of the original installation, never underneath it.
-OUT=$(mktemp -d "$ROOT/../CrimsonSkiesFix-PR51-XXXXXX")
-WORK=$(mktemp -d)
-cleanup() { if [[ -n "$WORK" && -d "$WORK" ]]; then rm -rf -- "$WORK"; fi; }
-trap cleanup EXIT
-echo "PR51 diagnostics: $OUT"
-if [[ "$MODE" == in-place ]]; then
-  INSTALL_ROOT="$ROOT"
-  mkdir -p "$OUT/pre-test-backup"
-  for item in CrimsonSkiesFix.ini CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
-    if [[ -f "$ROOT/$item" ]]; then cp -p -- "$ROOT/$item" "$OUT/pre-test-backup/"; fi
-  done
-  echo "IN-PLACE MODE: using the existing dedicated installation (no game copy)."
-  echo "WARNING: the launcher may update INI, runtime, logs, game data or saved games."
-  echo "Existing INI and logs were backed up, but game data and saves were not."
-  echo "Use a dedicated test installation only; do not change saves during the test."
-else
-  INSTALL_ROOT="$WORK/install"
-  mkdir -p "$INSTALL_ROOT"
-  echo "Preparing a PRIVATE TEST COPY of the installed game; source remains unchanged."
-  cp -a -- "$ROOT/CrimsonSkiesFix.exe" "$INSTALL_ROOT/"
-  cp -a -- "$ROOT/game" "$INSTALL_ROOT/"
-  for item in CrimsonSkiesFix.ini state docs; do
-    if [[ -e "$ROOT/$item" ]]; then cp -a -- "$ROOT/$item" "$INSTALL_ROOT/"; fi
-  done
+# Locate the launcher beside this downloaded script, regardless of where bash was called.
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+mapfile -d '' -t LAUNCHERS < <(
+  find "$ROOT" -maxdepth 1 -type f \
+    \( -iname 'CrimsonSkiesFix.exe' -o -iname 'CrimsonFix_installer.exe' \
+       -o -iname 'CrimsonSkiesFix_installer.exe' \) -print0
+)
+if [[ "${#LAUNCHERS[@]}" -ne 1 || ! -f "$ROOT/game/CRIMSON.EXE" ]]; then
+  echo "Expected exactly one CrimsonSkiesFix launcher beside this script and game/CRIMSON.EXE" >&2
+  echo "Supported launcher names: CrimsonSkiesFix.exe, CrimsonFix_installer.exe, CrimsonSkiesFix_installer.exe" >&2
+  usage
 fi
+LAUNCHER="${LAUNCHERS[0]}"
+LAUNCHER_NAME="${LAUNCHER##*/}"
+INSTALL_ROOT="$ROOT"
+
+# Everything this script creates stays INSIDE the launcher's directory.
+OUT=$(mktemp -d "$ROOT/PR51-diagnostics-XXXXXXXX")
+WORK="$OUT/.temporary-wine-prefixes"
+mkdir -p "$WORK" "$OUT/pre-test-backup"
+cleanup() { if [[ -d "$WORK" ]]; then rm -rf -- "$WORK"; fi; }
+trap cleanup EXIT
+for item in CrimsonSkiesFix.ini CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
+  if [[ -f "$ROOT/$item" ]]; then cp -p -- "$ROOT/$item" "$OUT/pre-test-backup/"; fi
+done
+echo "PR51 diagnostics directory: $OUT"
+echo "Using the existing dedicated test installation, without copying game files."
+echo "WARNING: the launcher may update INI, fix.dll, logs, and game state."
+echo "INI and root logs are backed up; game files and saved games are not."
+
 
 {
   printf 'Source installation: %s\n' "$ROOT"
-  printf 'Installation mode: %s\n' "$MODE"
+  printf 'Installation mode: dedicated in-place test\n'
+  printf 'Launcher: %s\n' "$LAUNCHER_NAME"
   printf 'Build SHA256: '
-  sha256sum "$ROOT/CrimsonSkiesFix.exe"
+  sha256sum "$LAUNCHER"
   printf 'Host: '
   uname -a
   printf 'Wine binary: '
@@ -96,12 +92,12 @@ run_case() {
   if [[ "$label" == builtin ]]; then
     (cd "$INSTALL_ROOT" &&
       env WINEPREFIX="$pfx" WINEDLLOVERRIDES='amstream=b;quartz=b' \
-      WINEDEBUG=+loaddll,+ole wine ./CrimsonSkiesFix.exe) \
+      WINEDEBUG=+loaddll,+ole wine "./$LAUNCHER_NAME") \
       > "$OUT/wine-$label.log" 2>&1 || exit_code="$?"
   else
     (cd "$INSTALL_ROOT" &&
       env -u WINEDLLOVERRIDES WINEPREFIX="$pfx" \
-      WINEDEBUG=+loaddll,+ole wine ./CrimsonSkiesFix.exe) \
+      WINEDEBUG=+loaddll,+ole wine "./$LAUNCHER_NAME") \
       > "$OUT/wine-$label.log" 2>&1 || exit_code="$?"
   fi
   printf '\nCase=%s\nExitCode=%s\n' "$label" "$exit_code" >> "$OUT/observations.txt"
@@ -122,6 +118,10 @@ echo "Two interactive tests will follow; each gets its own NEW Wine prefix."
 echo "No native Microsoft DLLs or Winetricks verbs will be installed."
 run_case default
 run_case builtin
+cleanup
+ARCHIVE="$ROOT/$(basename "$OUT").tar.gz"
+tar -czf "$ARCHIVE" -C "$ROOT" "$(basename "$OUT")"
 echo "Results saved under $OUT"
-echo "Share environment.txt, streams.txt, observations.txt and the two wine-*.log.gz files."
+echo "Archive to share: $ARCHIVE"
+echo "Share the archive after checking its logs for private local paths."
 echo "Logs may contain local paths or usernames; review them before sharing."
