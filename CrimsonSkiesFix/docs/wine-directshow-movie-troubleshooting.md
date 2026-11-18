@@ -226,6 +226,20 @@ curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wi
 bash ./pr51-wine-1118-validation.sh
 ```
 
+For the current Manjaro/Lutris test, the script now defaults to this
+**explicit Wine-staging 11.22 runner** (not the system `wine` binary):
+
+```text
+/home/romain/.local/share/lutris/runners/wine/wine-11.22-staging-amd64/bin/wine
+```
+
+It resolves `wineboot` and `wineserver` **from that same runner's
+`bin/` directory**, checks all three executables, and passes consistent
+`PATH`, `WINELOADER`, and `WINESERVER` settings. The version test
+runs the runner's own `wine --version`. The user can override the path
+without editing the script by setting `PR51_WINE_BIN` to another full
+Wine executable path. No system Wine installation/update is required.
+
 Run **only in the dedicated test installation**; the installer/game
 may update game files or save data and the script does not back up
 those data. This experiment changes **only the Wine version** relative
