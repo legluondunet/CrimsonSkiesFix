@@ -74,49 +74,45 @@ entrypoint is understood and a working prototype exists.
 
 ## One-command interactive Wine A/B diagnostic (PR #51)
 
-The companion [pr51-wine-video-diagnostics.sh](../tools/pr51-wine-video-diagnostics.sh)
-script automates a controlled comparison on **ordinary system Wine**. It
-copies the installed game to a temporary directory, initializes **two new
-independent Wine prefixes** (default and Wine builtins only), captures the
-Wine/COM loading trace, and optionally uses `ffprobe` to identify video and
-audio codecs in `MSOPEN1.MPG` and `CHAP0.MPG`. Both runs are interactive:
-inspect the image and sound and exit the game to continue to the next test.
+This experiment uses an **already installed dedicated test game directory**.
+Place the [pr51-wine-video-diagnostics.sh](../tools/pr51-wine-video-diagnostics.sh)
+script **beside** `CrimsonSkiesFix.exe` (or `CrimsonFix_installer.exe`),
+with `game/CRIMSON.EXE` in the same installation root.
+No additional game copy is made.
 
-From a terminal on the Linux computer, after downloading the script from the
-PR branch and checking its contents, run:
+In a Linux terminal, **change to the launcher's directory** and download
+the PR branch script **into that same directory**:
 
 ```bash
-bash pr51-wine-video-diagnostics.sh /chemin/vers/crimsonskiesfix
+cd "/chemin/vers/crimsonskiesfix"
+curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wine-directshow-video-diagnostics-20261117/CrimsonSkiesFix/tools/pr51-wine-video-diagnostics.sh" \
+  -o pr51-wine-video-diagnostics.sh
+bash ./pr51-wine-video-diagnostics.sh
 ```
 
-Pass the directory containing `CrimsonSkiesFix.exe` and `game/CRIMSON.EXE`.
+The script derives the installation directory from its own file location,
+so there is **no path argument and no `--in-place` flag**. It creates
+`PR51-diagnostics-XXXXXXXX/` **inside that same directory**, including
+temporary isolated Wine prefixes, saved logs, codec metadata, and copies of
+the existing root INI and root logs. At completion it deletes only its own
+temporary prefixes, and creates a matching `PR51-diagnostics-XXXXXXXX.tar.gz`
+archive **alongside the launcher** for easy sharing. It does not download
+Winetricks, native DLLs, or a second installation of the game.
 
-If the user already maintains a **dedicated test installation**, avoid copying
-the game with the explicit `--in-place` option:
+The two test launches run against the existing test installation.
+**Do not run this script from a production game installation.**
+The launcher can change INI, logs, fix.dll and game state. Root INI/logs
+are backed up in the local diagnostics folder, but **game data and saves
+are not backed up**. Exit the game after each run and enter your
+observations in the terminal. The script uses two disposable prefixes
+of your system Wine (not GE-Proton). Comparing picture and sound for
+MSOPEN1.MPG and a chapter transition is essential; Wine loading logs alone
+are not proof of playback.
 
-```bash
-bash pr51-wine-video-diagnostics.sh --in-place /chemin/vers/crimsonskiesfix
-```
-
-This still uses **two fresh disposable Wine prefixes**, but runs the existing
-test installation directly. The launcher can then modify files in that test
-installation (INI, logs, game state), so **never use `--in-place` on a
-production installation**. The script backs up the existing root INI and two
-root logs in `pre-test-backup/`, but it does **not** back up the game data
-or saved games. The default no-flag mode remains an isolated game-copy test.
-
-No game ISO, official updater, native Microsoft DLLs or Winetricks verbs are
-needed for this **already-installed-game** comparison. The original game,
-saves, root INI and existing Wine prefix are not modified. The temporary game
-copy and the two temporary prefixes are deleted when the script finishes;
-the diagnostic report folder remains **beside the original installation**.
-The free disk space needed for the temporary copy can be substantial.
-
-Send `environment.txt`, `streams.txt`, `observations.txt` and the
-compressed `wine-default.log.gz` / `wine-builtin.log.gz` files; game and
-installer logs are copied separately when present. Check for private local
-paths before uploading. The test does not prove Proton behavior: Proton
-must be tested with the correct runner afterward.
+The script optionally uses `ffprobe` on installed MPG files to identify
+the exact video and audio codecs. Review diagnostic logs for private paths
+before uploading the `.tar.gz` file. For GE-Proton, follow a separate
+runner-specific test using its own toolchain.
 
 ## Reproduce before changing anything
 
