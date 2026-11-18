@@ -52,9 +52,10 @@ env WINEPREFIX="$PREFIX" WINEDEBUG=-all \
   winedbg --command "info proc" > "$OUT/winedbg-processes.txt" 2>&1 || true
 
 game_pids=()
+pid_pattern='^[[:space:]=>]*([[:xdigit:]]{8})[[:space:]]'
 while IFS= read -r row; do
   if [[ "${row,,}" == *crimson.exe* ]] &&
-     [[ "$row" =~ ^[[:space:]=>]*([[:xdigit:]]{8})[[:space:]] ]]; then
+     [[ "$row" =~ $pid_pattern ]]; then
     game_pids+=("${BASH_REMATCH[1]}")
   fi
 done < "$OUT/winedbg-processes.txt"
