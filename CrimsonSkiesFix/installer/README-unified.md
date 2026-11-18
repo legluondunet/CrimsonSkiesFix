@@ -94,6 +94,31 @@ binary, data and bundled `fix.dll`. The final command launches the game
 through the required suspended-process import alias. Launching
 `game/CRIMSON.EXE` directly **does not activate** our corrections.
 
+## Windows PR #49 prerequisite smoke test (safe, no game files)
+
+Test this diagnostic on a **new, empty directory** separate from any working
+installation. Extract the CI artifact there so only `CrimsonSkiesFix.exe`
+(and its test README/hash files) are present. Do **not** add the CD image,
+updater, game EXE, or an existing `game/` folder for this negative test.
+
+From PowerShell opened in that test directory:
+
+```powershell
+.\CrimsonSkiesFix.exe --version
+.\CrimsonSkiesFix.exe --install-only
+$LASTEXITCODE
+Get-Content .\CrimsonSkiesFix_installer.log
+Test-Path .\game
+Test-Path .\state
+```
+
+**Expected:** `--install-only` returns a nonzero exit code (intentional),
+the installer log contains `AUTO_INSTALL_RESULT=ERROR` and *both*
+`approved decrypted 1.02 EXE` and `official 1.02 updater` diagnostics.
+Both `Test-Path` commands return `False`. No extraction or game launch
+occurs. If any part differs, keep the full installer log for investigation.
+Do not run this negative test in your actual game installation.
+
 **First-launch logging:** a freshly generated INI starts with `[Debug] Log=1`
 so that the first game session produces `CrimsonSkiesFix.log`. After a normal
 exit (code 0) with a nonempty game log, the installer changes only its own
