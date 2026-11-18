@@ -5,12 +5,17 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "Usage: cd /folder/containing/CrimsonSkiesFix.exe && bash ./pr51-wine-video-diagnostics.sh"
+  echo "Usage: cd /folder/containing/CrimsonSkiesFix.exe && bash ./pr51-wine-video-diagnostics.sh [--menu-only]"
   echo "The script must be placed beside CrimsonSkiesFix.exe (or CrimsonFix_installer.exe)."
   echo "A pre-installed game/CRIMSON.EXE must exist in the same folder."
   exit 2
 }
-[[ "$#" -eq 0 ]] || usage
+MODE=compare
+if [[ "$#" -eq 1 && "$1" == "--menu-only" ]]; then
+  MODE=menu-only
+elif [[ "$#" -ne 0 ]]; then
+  usage
+fi
 for cmd in wine wineboot mktemp cp find gzip sha256sum tar; do
   command -v "$cmd" >/dev/null || { echo "Missing command: $cmd" >&2; exit 2; }
 done
@@ -49,6 +54,7 @@ echo "INI and root logs are backed up; game files and saved games are not."
   printf 'Source installation: %s\n' "$ROOT"
   printf 'Installation mode: dedicated in-place test\n'
   printf 'Launcher: %s\n' "$LAUNCHER_NAME"
+  printf 'Diagnostic test mode: %s\n' "$MODE"
   printf 'Build SHA256: '
   sha256sum "$LAUNCHER"
   printf 'Host: '
@@ -90,9 +96,13 @@ run_case() {
   fi
   echo "Launching $label. Observe opening movie (picture AND audio), then exit the game."
   if [[ "$label" == builtin ]]; then
+    local debug="+loaddll,+ole"
+    if [[ "$MODE" == menu-only ]]; then
+      debug="+timestamp,+tid,+loaddll,+ole,+quartz,+amstream,+winegstreamer,+dsound"
+    fi
     (cd "$INSTALL_ROOT" &&
       env WINEPREFIX="$pfx" WINEDLLOVERRIDES='amstream=b;quartz=b' \
-      WINEDEBUG=+loaddll,+ole wine "./$LAUNCHER_NAME") \
+      WINEDEBUG="$debug" wine "./$LAUNCHER_NAME") \
       > "$OUT/wine-$label.log" 2>&1 || exit_code="$?"
   else
     (cd "$INSTALL_ROOT" &&
@@ -118,10 +128,16 @@ run_case() {
   gzip -f -1 -- "$OUT/wine-$label.log"
 }
 
-echo "Two interactive tests will follow; each gets its own NEW Wine prefix."
-echo "No native Microsoft DLLs or Winetricks verbs will be installed."
-run_case default
-run_case builtin
+if [[ "$MODE" == menu-only ]]; then
+  echo "PR51 menu-only: one clean Wine builtin run (no redundant A/B)."
+  echo "Ensure [Debug] Log=1 in the test installer's CrimsonSkiesFix.ini."
+  echo "Observe both videos and whether MainMenu becomes visible."
+  run_case builtin
+else
+  echo "Two interactive tests will follow; each gets its own NEW Wine prefix."
+  run_case default
+  run_case builtin
+fi
 cleanup
 ARCHIVE="$ROOT/$(basename "$OUT").tar.gz"
 tar -czf "$ARCHIVE" -C "$ROOT" "$(basename "$OUT")"
