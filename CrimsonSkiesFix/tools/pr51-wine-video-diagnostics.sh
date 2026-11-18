@@ -4,10 +4,15 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "Usage: bash pr51-wine-video-diagnostics.sh /path/to/installed/crimsonskiesfix"
+  echo "Usage: bash pr51-wine-video-diagnostics.sh [--in-place] /path/to/installed/crimsonskiesfix"
   echo "Use an installation containing CrimsonSkiesFix.exe and game/CRIMSON.EXE."
   exit 2
 }
+MODE=copy
+if [[ "$#" -ge 1 && "$1" == "--in-place" ]]; then
+  MODE=in-place
+  shift
+fi
 [[ "$#" -eq 1 ]] || usage
 for cmd in wine wineboot realpath mktemp cp find gzip sha256sum; do
   command -v "$cmd" >/dev/null || { echo "Missing command: $cmd" >&2; exit 2; }
@@ -23,17 +28,31 @@ OUT=$(mktemp -d "$ROOT/../CrimsonSkiesFix-PR51-XXXXXX")
 WORK=$(mktemp -d)
 cleanup() { if [[ -n "$WORK" && -d "$WORK" ]]; then rm -rf -- "$WORK"; fi; }
 trap cleanup EXIT
-mkdir -p "$WORK/install"
 echo "PR51 diagnostics: $OUT"
-echo "Preparing a PRIVATE TEST COPY of the installed game; source remains unchanged."
-cp -a -- "$ROOT/CrimsonSkiesFix.exe" "$WORK/install/"
-cp -a -- "$ROOT/game" "$WORK/install/"
-for item in CrimsonSkiesFix.ini state docs; do
-  if [[ -e "$ROOT/$item" ]]; then cp -a -- "$ROOT/$item" "$WORK/install/"; fi
-done
+if [[ "$MODE" == in-place ]]; then
+  INSTALL_ROOT="$ROOT"
+  mkdir -p "$OUT/pre-test-backup"
+  for item in CrimsonSkiesFix.ini CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
+    if [[ -f "$ROOT/$item" ]]; then cp -p -- "$ROOT/$item" "$OUT/pre-test-backup/"; fi
+  done
+  echo "IN-PLACE MODE: using the existing dedicated installation (no game copy)."
+  echo "WARNING: the launcher may update INI, runtime, logs, game data or saved games."
+  echo "Existing INI and logs were backed up, but game data and saves were not."
+  echo "Use a dedicated test installation only; do not change saves during the test."
+else
+  INSTALL_ROOT="$WORK/install"
+  mkdir -p "$INSTALL_ROOT"
+  echo "Preparing a PRIVATE TEST COPY of the installed game; source remains unchanged."
+  cp -a -- "$ROOT/CrimsonSkiesFix.exe" "$INSTALL_ROOT/"
+  cp -a -- "$ROOT/game" "$INSTALL_ROOT/"
+  for item in CrimsonSkiesFix.ini state docs; do
+    if [[ -e "$ROOT/$item" ]]; then cp -a -- "$ROOT/$item" "$INSTALL_ROOT/"; fi
+  done
+fi
 
 {
   printf 'Source installation: %s\n' "$ROOT"
+  printf 'Installation mode: %s\n' "$MODE"
   printf 'Build SHA256: '
   sha256sum "$ROOT/CrimsonSkiesFix.exe"
   printf 'Host: '
@@ -75,12 +94,12 @@ run_case() {
   fi
   echo "Launching $label. Observe opening movie (picture AND audio), then exit the game."
   if [[ "$label" == builtin ]]; then
-    (cd "$WORK/install" &&
+    (cd "$INSTALL_ROOT" &&
       env WINEPREFIX="$pfx" WINEDLLOVERRIDES='amstream=b;quartz=b' \
       WINEDEBUG=+loaddll,+ole wine ./CrimsonSkiesFix.exe) \
       > "$OUT/wine-$label.log" 2>&1 || exit_code="$?"
   else
-    (cd "$WORK/install" &&
+    (cd "$INSTALL_ROOT" &&
       env -u WINEDLLOVERRIDES WINEPREFIX="$pfx" \
       WINEDEBUG=+loaddll,+ole wine ./CrimsonSkiesFix.exe) \
       > "$OUT/wine-$label.log" 2>&1 || exit_code="$?"
@@ -92,8 +111,8 @@ run_case() {
   read -r -p "For $label: chapter movie and menu return (if tested)? " observation || true
   printf 'ChapterAndReturn=%s\n' "$observation" >> "$OUT/observations.txt"
   for log in CrimsonSkiesFix.log CrimsonSkiesFix_installer.log; do
-    if [[ -f "$WORK/install/$log" ]]; then
-      cp -- "$WORK/install/$log" "$OUT/$label-$log"
+    if [[ -f "$INSTALL_ROOT/$log" ]]; then
+      cp -- "$INSTALL_ROOT/$log" "$OUT/$label-$log"
     fi
   done
   gzip -f -1 -- "$OUT/wine-$label.log"
