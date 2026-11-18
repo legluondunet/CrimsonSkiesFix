@@ -72,6 +72,37 @@ implemented**. No new INI switch should be exposed until the playback
 entrypoint is understood and a working prototype exists.
 
 
+## One-command interactive Wine A/B diagnostic (PR #51)
+
+The companion [pr51-wine-video-diagnostics.sh](../tools/pr51-wine-video-diagnostics.sh)
+script automates a controlled comparison on **ordinary system Wine**. It
+copies the installed game to a temporary directory, initializes **two new
+independent Wine prefixes** (default and Wine builtins only), captures the
+Wine/COM loading trace, and optionally uses `ffprobe` to identify video and
+audio codecs in `MSOPEN1.MPG` and `CHAP0.MPG`. Both runs are interactive:
+inspect the image and sound and exit the game to continue to the next test.
+
+From a terminal on the Linux computer, after downloading the script from the
+PR branch and checking its contents, run:
+
+```bash
+bash pr51-wine-video-diagnostics.sh /chemin/vers/crimsonskiesfix
+```
+
+Pass the directory containing `CrimsonSkiesFix.exe` and `game/CRIMSON.EXE`.
+No game ISO, official updater, native Microsoft DLLs or Winetricks verbs are
+needed for this **already-installed-game** comparison. The original game,
+saves, root INI and existing Wine prefix are not modified. The temporary game
+copy and the two temporary prefixes are deleted when the script finishes;
+the diagnostic report folder remains **beside the original installation**.
+The free disk space needed for the temporary copy can be substantial.
+
+Send `environment.txt`, `streams.txt`, `observations.txt` and the
+compressed `wine-default.log.gz` / `wine-builtin.log.gz` files; game and
+installer logs are copied separately when present. Check for private local
+paths before uploading. The test does not prove Proton behavior: Proton
+must be tested with the correct runner afterward.
+
 ## Reproduce before changing anything
 
 Use a **new test prefix** or a backup of the real prefix; leave your working
