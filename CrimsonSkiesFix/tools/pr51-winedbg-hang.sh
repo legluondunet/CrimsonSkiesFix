@@ -70,7 +70,15 @@ if (( ${#game_pids[@]} == 1 )); then
     timeout --signal=TERM --kill-after=5 55 \
     winedbg --file "$OUT/winedbg-commands.txt" \
     > "$OUT/winedbg-stack.txt" 2>&1; then
-    printf 'Debugger=completed\n' >> "$OUT/observations.txt"
+    # The process can exit with status 0 despite a WoW64 page fault and
+    # no usable CRIMSON.EXE backtrace (observed with Wine 11.17).
+    if grep -Eq 'Unhandled exception:|Exception c0000005|page fault on' "$OUT/winedbg-stack.txt"; then
+      printf 'Debugger=invalid-wow64-exception\n' >> "$OUT/observations.txt"
+    elif grep -Eq 'Backtracing for thread .* in process ' "$OUT/winedbg-stack.txt"; then
+      printf 'Debugger=completed-review-target-process-stacks\n' >> "$OUT/observations.txt"
+    else
+      printf 'Debugger=no-backtrace\n' >> "$OUT/observations.txt"
+    fi
   else
     printf 'Debugger=error-or-timeout\n' >> "$OUT/observations.txt"
   fi
