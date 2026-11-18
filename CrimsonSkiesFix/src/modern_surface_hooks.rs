@@ -2,6 +2,8 @@
 //! Mechanical extraction of native COM callbacks: no changes to vtable slots,
 //! live virtual Surface4 identity, RG565/ROFFILE hooks, tracing or call order.
 use super::*;
+// PR #51: bounded menu surface Unlock evidence, not screen presentation.
+static PR51_MENU_UNLOCK_COUNT:AtomicUsize=AtomicUsize::new(0);
 
 pub(super) unsafe fn modern_surface_caps(this:*mut c_void)->Option<u32> {
     // The first DWORD is identical in DDSCAPS and DDSCAPS2.
@@ -460,6 +462,15 @@ unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_v
     sample_render_calls("Unlock",&MODERN_UNLOCK_EVENTS,&MODERN_UNLOCK_START,&MODERN_UNLOCK_WINDOW);
     let call:UnlockFn=std::mem::transmute(addr);
     let hr=call(this,data);
+    if cfg().log_enabled && crate::menu_scene::main_menu_active(){
+        let n=PR51_MENU_UNLOCK_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+        if n<=8 || n%120==0{
+            log(&format!(
+                "PR51-MENU-UNLOCK: sequence={n} hr={:#010x} (Unlock is not a display present)",
+                hr as u32
+            ));
+        }
+    }
     record_surface_usage(this,surface_usage::Method::Unlock,hr);
     hr
 }

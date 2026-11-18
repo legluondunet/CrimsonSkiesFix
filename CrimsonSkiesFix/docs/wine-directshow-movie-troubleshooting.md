@@ -172,6 +172,29 @@ Proton prefix. Keep the same runner and use Lutris' per-game environment
 setting to supply `WINEDLLOVERRIDES=amstream=b;quartz=b` for a temporary
 test. This is a launch-only override, not a permanent Wine registry change.
 
+## Menu transition-specific runtime diagnostics (PR #51)
+
+With `[Debug] Log=1`, the experimental unified `fix.dll` now logs a
+bounded series of `PR51-MENU-UNLOCK` and `PR51-MENU-FLIP` events after
+the original MainMenu script is selected. These are diagnostic-only:
+no changes to DirectDraw, COM, rendering order, or return values.
+
+- `PR51-MENU-UNLOCK`: a native surface Unlock completed, **not** a
+  guarantee that a frame reached the screen.
+- `PR51-MENU-FLIP: enter`: a game virtual primary Flip was called
+  after MainMenu selection. An absent matching `return` suggests
+  an in-flight presenter call or lock needs investigation.
+- `PR51-MENU-FLIP: return`: the physical Blt completed, although actual
+  pixels and scanout remain unverified.
+- No post-menu `PR51-MENU-FLIP` indicates the problem is upstream of
+  the game virtual primary Flip, possibly in multimedia graph teardown
+  or menu rendering. It does **not** prove a specific deadlock.
+
+The November 18 baseline showed post-menu surface Unlock sampling but
+no later *periodic* primary-Flip log. Previous logs emitted only the
+first and every 120th Flip, so a few Flips could have been missed. This
+new test distinguishes those cases without adding a video decoder.
+
 ## Comparison checklist
 
 | Observation | Clean default | Clean + builtin override |

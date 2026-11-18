@@ -46,6 +46,9 @@ static GRAPH_COPY_FAILURE_DETAILS:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_MOVIE_CONVERT_SUCCESS:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_MOVIE_CONVERT_FAILED:AtomicUsize=AtomicUsize::new(0);
 static GRAPH_FLIP_COUNT:AtomicUsize=AtomicUsize::new(0);
+// PR #51: log MainMenu Flip attempts without changing COM behavior.
+#[cfg(feature="unified-fix-dll")]
+static PR51_MENU_PRIMARY_FLIP_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
 // Native-only, opt-in RGB32 video diagnostics: enter/leave trace on the
 // real DirectDraw4 surface calls. No COM/DirectShow return values altered.
 // The prior samples ended after successful 120+ Flips, but sampling every
@@ -1414,6 +1417,20 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             count
         }else{0};
         let movie_started=if movie{Some(Instant::now())}else{None};
+        // A script request does not prove pixels were presented. Log before
+        // acquiring the existing presenter mutex, with no additional COM calls.
+        #[cfg(feature="unified-fix-dll")]
+        let pr51_menu_flip=if crate::cfg().log_enabled &&
+            crate::menu_scene::main_menu_active() {
+            let n=PR51_MENU_PRIMARY_FLIP_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
+            if n<=8 || n%120==0{
+                crate::log(&format!(
+                    "PR51-MENU-FLIP: enter sequence={n} internal={}x{} (no screen pixels verified)",
+                    node.mode.width,node.mode.height
+                ));
+            }
+            n
+        }else{0};
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
         // A successful windowed Flip is the sole frame-present boundary.
@@ -1553,6 +1570,13 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // to dispatch even one queued Win32 message. Without the explicit
         // native-only, off-by-default arm this does nothing (including Wine).
         drop(state);
+        #[cfg(feature="unified-fix-dll")]
+        if pr51_menu_flip>0 && (pr51_menu_flip<=8 || pr51_menu_flip%120==0){
+            crate::log(&format!(
+                "PR51-MENU-FLIP: return sequence={pr51_menu_flip} hr={:#010x} (physical Blt returned; pixels unverified)",
+                flip_result as u32
+            ));
+        }
         // Emit at most one summary per 120 successful Flips and outside
         // the graph mutex. No synchronous logging in each sampled frame.
         if let Some(summary)=frame_timing{crate::log(&summary);}
