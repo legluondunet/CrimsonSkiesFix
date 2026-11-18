@@ -1,0 +1,60 @@
+name: Prune old GitHub Actions runs (preserve latest build)
+
+on:
+  push:
+    branches:
+      - maintenance/purge-old-workflow-runs-20261117
+    paths:
+      - '.github/scripts/prune_action_runs.py'
+      - '.github/workflows/prune-action-runs.yml'
+  schedule:
+    - cron: '53 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Inventory only, do not delete workflow history'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crimsonskiesfix-workflow-history-purge
+  cancel-in-progress: false
+
+jobs:
+  safety-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test protected compilation and run-selection policy
+        run: python3 .github/scripts/prune_action_runs.py --self-test
+
+  prune:
+    needs: safety-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete old completed runs (or manually simulate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_RUN_DELETION: 'YES'
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${REQUESTED_DRY_RUN}" != "false" ]]; then
+            mode=--dry-run
+          else
+            mode=--apply
+          fi
+          python3 .github/scripts/prune_action_runs.py "${mode}"
