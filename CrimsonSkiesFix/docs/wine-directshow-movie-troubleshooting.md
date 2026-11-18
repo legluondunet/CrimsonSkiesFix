@@ -271,6 +271,58 @@ runner and a new isolated prefix. If the fault remains at 0x005A928F,
 investigate its game-side call chain independently of the 11.17 flush
 deadlock; a game executable address is not a demonstrated Wine fault.
 
+### Wine 11.22 quiet rerun: GStreamer 32-bit ABI breakage (18 Nov 2026)
+
+The second Wine-staging **11.22 Lutris** experiment
+(`PR51-wine1118-ccJyjRrw.tar.gz`) was already run with
+`WINEDEBUG=-all`. **The same null-read at game instruction
+0x005A928F is reproducible even without `+sync`**. It occurs
+before `MENU-SCENE: entered MainMenu` and is therefore a
+**different failure** from the Wine 11.17 menu transition deadlock.
+The launcher exited with Unix status `84`, and the installer log
+confirms verified game data and an authenticated executable.
+
+The quiet Wine stderr reveals real unresolved host dependencies:
+
+```text
+/usr/lib32/gstreamer-1.0/libgstadaptivedemux2.so
+  -> libnettle.so.8: cannot open shared object
+/usr/lib32/gstreamer-1.0/libgstvpx.so
+  -> libvpx.so.11: cannot open shared object
+GStreamer-CRITICAL: gst_element_set_state GST_IS_ELEMENT assertion
+wine: Unhandled page fault ... at address 005A928F
+```
+
+The *current* Arch/Manjaro multilib ABI versions have changed:
+`lib32-nettle` provides `libnettle.so.9` and
+`lib32-libvpx` provides `libvpx.so.12`.
+The observed old SONAME requests point to **possibly stale/unrepaired
+32-bit GStreamer plugins** after a library upgrade. Their exact
+relationship to the crash is **not yet established**: VPX and
+adaptive-demux plugins are not necessarily used for Crimson Skies'
+MPEG-1 intros; the plugin scanner may simply report failed unrelated
+plugins. Do **not** install old .so files or create symlinks between
+different SONAME major versions.
+
+Before repeating the game test, run the new
+[read-only GStreamer ABI audit](../tools/pr51-gstreamer-abi-audit.sh)
+beside the game installer:
+
+```bash
+curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wine-directshow-video-diagnostics-20261117/CrimsonSkiesFix/tools/pr51-gstreamer-abi-audit.sh" -o pr51-gstreamer-abi-audit.sh
+bash ./pr51-gstreamer-abi-audit.sh
+```
+
+It writes `PR51-gstreamer-abi-XXXXXXXX.tar.gz` to the **same
+installer directory**. It collects package versions and ownership,
+32-bit `readelf` DT_NEEDED and `ldd` resolution for exactly
+the two plugins implicated by the log. It makes **no system changes**,
+needs no sudo, and does not launch Wine or the game. If the plugins
+truly have unresolved old SONAMEs, consider a **coordinated full
+Manjaro update** to bring the multilib plugins and libraries back into
+sync; avoid a partial update. Retest the unchanged game and same Wine
+runner only after verifying plugin dependency resolution.
+
 **WineDbg caveat:** the previous `pr51-winedbg-hang.sh` run found the
 game PID, but `winedbg-stack.txt` contained a WoW64
 `c0000005` exception instead of usable `CRIMSON.EXE` thread stacks.
