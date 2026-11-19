@@ -53,6 +53,7 @@ mod window_erase_guard;
 mod diagnostics;
 mod diagnostics_graphics;
 mod native_video_imports;
+mod crimflag_video_test; // PR #51 isolated Wine-only menu video prototype (off by default)
 mod native_getproc_trace;
 mod native_cursor_trace;
 mod native_dinput_mouse_trace; // opt-in Windows-only DirectInput mouse COM pass-through audit
@@ -370,6 +371,16 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     // installing hooks. On denial the gate logs SHA-256 and shows a dialog.
     if !exe_gate::verify_once(){return ptr::null();}
     let config=cfg();
+    // PR #51 controlled prototype: patch only the authenticated game's
+    // ole32 CoCreateInstance import, before any AMStream objects exist.
+    // Off by default; bypassed entirely on Windows native and on DLL
+    // passthrough. COM interfaces outside the CRIMFLAG stream are unchanged.
+    if !config.directdraw_passthrough &&
+       config.crimflag_video_test!=crimflag_video_test::Mode::Off &&
+       !diagnostics::is_native_windows(){
+        static CRIMFLAG_TEST_ONCE:Once=Once::new();
+        CRIMFLAG_TEST_ONCE.call_once(crimflag_video_test::install);
+    }
     #[cfg(feature = "winmm-bootstrap")]
     {
         static WINMM_LOG_ONCE:Once=Once::new();
