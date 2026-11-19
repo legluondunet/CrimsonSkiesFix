@@ -188,6 +188,94 @@ Proton prefix. Keep the same runner and use Lutris' per-game environment
 setting to supply `WINEDLLOVERRIDES=amstream=b;quartz=b` for a temporary
 test. This is a launch-only override, not a permanent Wine registry change.
 
+## PR #51 — isolated CRIMFLAG.MPG menu video prototype (19 Nov 2026)
+
+### Causal evidence
+
+In the Wine-staging 11.17 debug archive
+`PR51-diagnostics-QAZKaA75.tar.gz`:
+
+- `multimedia_stream_OpenFile(..., Chap0.mpg)` at **13963.218 s**
+  succeeds and the user sees/hears both introductory movies.
+- `multimedia_stream_OpenFile(..., CrimFlag.MPG)` at
+  **13965.297 s**, unique to the menu-video graph.
+- `multimedia_stream_SetState(..., 1 /* STREAMSTATE_RUN */)`
+  at **13965.358 s** on that new graph.
+- Video decoder thread enters
+  `ddraw_mem_allocator_GetBuffer()` at **13965.363 s**.
+- Menu video then executes `multimedia_stream_Seek(..., 0)`
+  at **13965.405 s**, followed by `ddraw_sink_BeginFlush()`.
+- Wine logs `quartz_parser.c: pin.flushing_cs wait timed out`
+  around **13970.397 s**. The user sees a black menu but hears
+  the music; `MENU-SCENE` is entered but no post-menu
+  `PR51-MENU-FLIP` has been observed.
+
+This **supports testing the single menu movie**, but does not prove
+that the UI works without it. In particular, the game might wait for
+a decoded movie sample, so a no-run workaround might cause a different
+wait instead of showing the buttons.
+
+### Two opt-in modes
+
+This branch adds `src/crimflag_video_test.rs` and a strictly optional
+INI key. Neither mode affects Windows native or other movie filenames.
+
+```ini
+[Debug]
+Log=1
+CrimFlagVideoTest=video
+```
+
+- `video` (try first): when the exact
+  `GOSData/Assets/Graphics/MPG/CRIMFLAG.MPG` is successfully opened
+  by the game's `IAMMultiMediaStream`, suppress
+  `SetState(STREAMSTATE_RUN)` and its zero-position `Seek(0)`,
+  returning S_OK to the caller. This is a controlled test of
+  **menu-without-menu-video**, not an emulation of video frame callbacks.
+- `seek` (second test only): allow the original `SetState(RUN)`,
+  but suppress `Seek(0)` on the **same object only**. This isolates
+  a potentially dangerous transition while allowing movie playback.
+- `off` (default): no hook and no changed behavior. The new key
+  is deliberately **absent from generated default INIs**.
+
+#### Technical scoping and rollback
+
+The runtime first applies its existing strict, immutable EXE SHA-256
+gate. It then checks `wine_get_version` and the INI opt-in.
+Only the **game executable's PE32 OLE32!CoCreateInstance IAT slot**
+is changed after its original function pointer is verified.
+`CLSID_AMMultiMediaStream + IID_IAMMultiMediaStream` matching is
+required, and each returned interface receives a **private copied
+19-entry COM vtable**, not a global patch to Wine's `amstream.dll`.
+`OpenFile` forwards unmodified, and only a successful opening of
+the exact normalized menu filepath tags the matching interface object.
+The wrapper for `SetState`/`Seek` forwards all other streams and
+calls unchanged. No game movie is deleted, renamed, replaced or
+rewritten. No new DLL dependencies, native Microsoft binaries, or
+Winetricks are required for this experiment.
+
+The prototype remains **unvalidated at runtime** until the owner
+tests it under the same **Wine-staging 11.17** and a clean prefix
+as the original black-menu reproduction. Do not infer success from
+passing CI alone, nor ship this opt-in bypass as a default fix.
+Restore `CrimFlagVideoTest=off` (or remove the key) to roll back.
+
+#### Acceptance test
+
+Use the new experimental unified `CrimsonSkiesFix.exe` artifact,
+set the **launcher-root** `CrimsonSkiesFix.ini` Debug keys as above,
+then launch with Wine 11.17 built-in `amstream` and `quartz`,
+not Wine 11.22 (where a separate pre-menu crash was observed).
+
+Observe: two intros picture/audio, menu visibility and interactivity,
+mouse and gamepad, navigation into gameplay, chapter videos after
+return, and clean exit. Send the fresh `CrimsonSkiesFix.log` and,
+if the menu is still black, mention whether music continues.
+When `Log=1`, the prototype writes bounded `PR51-CRIMFLAG:`
+lines to confirm the target was recognized and bypassed.
+If a callback is not reached, the hook was not installed or the
+game used another COM acquisition path; **do not guess success**.
+
 ## Upstream fix for the Win32 AMStream video flush deadlock (Wine 11.18)
 
 **Strongly supported hypothesis from the user's November 18 black-menu run:**
