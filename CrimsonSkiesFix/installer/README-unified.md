@@ -68,6 +68,16 @@ authentic official 1.02 updater, and the approved decrypted 1.02 executable.
 The launcher verifies all prerequisites before extraction. It never
 redistributes the game's files.
 
+**Missing prerequisites:** if neither the approved decrypted 1.02 EXE nor the
+official 1.02 updater is available, the installer reports **both missing
+sources** in the root `CrimsonSkiesFix_installer.log` and stops before CD
+extraction. It does not attempt to launch the protected CD executable or
+replace existing game data. To resume, put one approved EXE and one
+SHA-verified official 1.02 updater beside the launcher and run
+`CrimsonSkiesFix.exe --install-only` (or launch normally). The original
+CD image must also be present for a new installation. No third-party or
+copyrighted game executable is bundled.
+
 Run these commands **from the test folder**:
 
 ```text
@@ -83,6 +93,31 @@ installation without starting the game. `--verify` checks the approved
 binary, data and bundled `fix.dll`. The final command launches the game
 through the required suspended-process import alias. Launching
 `game/CRIMSON.EXE` directly **does not activate** our corrections.
+
+## Windows PR #49 prerequisite smoke test (safe, no game files)
+
+Test this diagnostic on a **new, empty directory** separate from any working
+installation. Extract the CI artifact there so only `CrimsonSkiesFix.exe`
+(and its test README/hash files) are present. Do **not** add the CD image,
+updater, game EXE, or an existing `game/` folder for this negative test.
+
+From PowerShell opened in that test directory:
+
+```powershell
+.\CrimsonSkiesFix.exe --version
+.\CrimsonSkiesFix.exe --install-only
+$LASTEXITCODE
+Get-Content .\CrimsonSkiesFix_installer.log
+Test-Path .\game
+Test-Path .\state
+```
+
+**Expected:** `--install-only` returns a nonzero exit code (intentional),
+the installer log contains `AUTO_INSTALL_RESULT=ERROR` and *both*
+`approved decrypted 1.02 EXE` and `official 1.02 updater` diagnostics.
+Both `Test-Path` commands return `False`. No extraction or game launch
+occurs. If any part differs, keep the full installer log for investigation.
+Do not run this negative test in your actual game installation.
 
 **First-launch logging:** a freshly generated INI starts with `[Debug] Log=1`
 so that the first game session produces `CrimsonSkiesFix.log`. After a normal
