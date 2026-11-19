@@ -35,17 +35,20 @@ const CLSID_AM_MULTI:[u8;16]=[
 // IAMMultiMediaStream inherits IMultiMediaStream and has 19 COM entries
 // (Wine 11.17 include/amstream.idl, dlls/amstream/multimedia.c).
 const VTABLE_LENGTH:usize=19;
+const SLOT_RELEASE:usize=2;
 const SLOT_SET_STATE:usize=7;
 const SLOT_SEEK:usize=10;
 const SLOT_OPEN_FILE:usize=16;
 const STREAMSTATE_RUN:u32=1;
 
 type Cocreate=unsafe extern "system" fn(*const c_void,*mut c_void,u32,*const c_void,*mut *mut c_void)->i32;
+type Release=unsafe extern "system" fn(*mut c_void)->u32;
 type OpenFile=unsafe extern "system" fn(*mut c_void,*const u16,u32)->i32;
 type Seek=unsafe extern "system" fn(*mut c_void,i64)->i32;
 type SetState=unsafe extern "system" fn(*mut c_void,u32)->i32;
 
 static CO_CREATE_ORIGINAL:AtomicUsize=AtomicUsize::new(0);
+static ORIGINAL_RELEASE:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_OPEN_FILE:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_SEEK:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_SET_STATE:AtomicUsize=AtomicUsize::new(0);
@@ -124,7 +127,10 @@ fn is_crimflag(path:&[u16])->bool{
     }).collect();
     let Some(bytes)=ascii else{return false;};
     let replaced:Vec<u8>=bytes.into_iter().map(|b|if b==b'/'{b'\\'}else{b}).collect();
-    replaced.ends_with(b"gosdata\\assets\\graphics\\mpg\\crimflag.mpg")
+    let suffix=b"gosdata\\assets\\graphics\\mpg\\crimflag.mpg";
+    let Some(prefix_len)=replaced.len().checked_sub(suffix.len()) else{return false;};
+    replaced[prefix_len..]==*suffix &&
+        (prefix_len==0 || replaced[prefix_len-1]==b'\\')
 }
 unsafe fn target_name(name:*const u16)->bool {
     if name.is_null(){return false;}
@@ -144,6 +150,11 @@ unsafe extern "system" fn open_file(this:*mut c_void,name:*const u16,flags:u32)-
     let f:OpenFile=std::mem::transmute(original);
     let requested=target_name(name);
     let hr=f(this,name,flags);
+    // A reused stream object must never keep its previous CRIMFLAG tag:
+    // chapter movies remain entirely unaffected even after returning to menu.
+    if (!requested || hr<0) && this as usize==TARGET.load(Ordering::Acquire){
+        let _=TARGET.compare_exchange(this as usize,0,Ordering::AcqRel,Ordering::Acquire);
+    }
     // A movie stream must have actually opened before it can be controlled.
     if requested && hr>=0 {
         TARGET.store(this as usize,Ordering::Release);
@@ -155,6 +166,17 @@ unsafe extern "system" fn open_file(this:*mut c_void,name:*const u16,flags:u32)-
         }
     }
     hr
+}
+unsafe extern "system" fn release(this:*mut c_void)->u32{
+    let p=ORIGINAL_RELEASE.load(Ordering::Acquire);
+    if p==0{return 0;}
+    let f:Release=std::mem::transmute(p);
+    let remaining=f(this);
+    if remaining==0 {
+        // Do not dereference the object after its final Release.
+        let _=TARGET.compare_exchange(this as usize,0,Ordering::AcqRel,Ordering::Acquire);
+    }
+    remaining
 }
 unsafe extern "system" fn seek(this:*mut c_void,time:i64)->i32{
     let mode=selected_mode();
@@ -196,11 +218,13 @@ unsafe fn install_on_object(object:*mut c_void)->bool{
             *slot=*original.add(index);
             if *slot==0{return None;}
         }
-        if [copy[SLOT_OPEN_FILE],copy[SLOT_SEEK],copy[SLOT_SET_STATE]]
+        if [copy[SLOT_OPEN_FILE],copy[SLOT_SEEK],copy[SLOT_SET_STATE],copy[SLOT_RELEASE]]
             .contains(&(open_file as usize)) {return None;}
+        ORIGINAL_RELEASE.store(copy[SLOT_RELEASE],Ordering::Release);
         ORIGINAL_OPEN_FILE.store(copy[SLOT_OPEN_FILE],Ordering::Release);
         ORIGINAL_SEEK.store(copy[SLOT_SEEK],Ordering::Release);
         ORIGINAL_SET_STATE.store(copy[SLOT_SET_STATE],Ordering::Release);
+        copy[SLOT_RELEASE]=release as usize;
         copy[SLOT_OPEN_FILE]=open_file as usize;
         copy[SLOT_SEEK]=seek as usize;
         copy[SLOT_SET_STATE]=set_state as usize;
@@ -278,13 +302,15 @@ mod tests{
     fn target_is_exact_game_menu_mpeg(){
         assert!(is_crimflag(&"GOSData\\assets\\graphics\\mpg\\CrimFlag.MPG".encode_utf16().collect::<Vec<_>>()));
         assert!(is_crimflag(&"C:/Games/GOSData/assets/graphics/mpg/CRIMFLAG.MPG".encode_utf16().collect::<Vec<_>>()));
-        for other in ["CHAP0.MPG","MSOPEN1.MPG","CRIMFLAG.MPG.old","CRIMFLAG.MPG\\x","Other\\CRIMFLAG.MPG"]{
+        for other in ["CHAP0.MPG","MSOPEN1.MPG","CRIMFLAG.MPG.old","CRIMFLAG.MPG\\x","Other\\CRIMFLAG.MPG",
+            "fakeGOSData\\assets\\graphics\\mpg\\CRIMFLAG.MPG",
+            "GOSData\\assets\\graphics\\mpg\\CHAP1.MPG"]{
             assert!(!is_crimflag(&other.encode_utf16().collect::<Vec<_>>()));
         }
     }
     #[test]
     fn expected_com_method_slots_are_stable(){
-        assert_eq!((SLOT_SET_STATE,SLOT_SEEK,SLOT_OPEN_FILE,VTABLE_LENGTH),(7,10,16,19));
+        assert_eq!((SLOT_RELEASE,SLOT_SET_STATE,SLOT_SEEK,SLOT_OPEN_FILE,VTABLE_LENGTH),(2,7,10,16,19));
         assert_eq!(std::mem::size_of::<Cocreate>(),std::mem::size_of::<usize>());
     }
 }
