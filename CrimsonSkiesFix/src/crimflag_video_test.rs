@@ -49,7 +49,7 @@ static CO_CREATE_ORIGINAL:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_OPEN_FILE:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_SEEK:AtomicUsize=AtomicUsize::new(0);
 static ORIGINAL_SET_STATE:AtomicUsize=AtomicUsize::new(0);
-static OUR_VTABLE:OnceLock<[usize;VTABLE_LENGTH]>=OnceLock::new();
+static OUR_VTABLE:OnceLock<Option<[usize;VTABLE_LENGTH]>>=OnceLock::new();
 static TARGET:AtomicUsize=AtomicUsize::new(0);
 static HOOK_COUNT:AtomicUsize=AtomicUsize::new(0);
 static OPEN_COUNT:AtomicUsize=AtomicUsize::new(0);
@@ -190,22 +190,22 @@ unsafe fn install_on_object(object:*mut c_void)->bool{
     let object_vptr=object.cast::<*const usize>();
     let original=object_vptr.read();
     if original.is_null(){return false;}
-    let Some(vtable)=OUR_VTABLE.get_or_try_init(||{
+    let Some(vtable)=OUR_VTABLE.get_or_init(||{
         let mut copy=[0usize;VTABLE_LENGTH];
         for (index,slot) in copy.iter_mut().enumerate(){
             *slot=*original.add(index);
-            if *slot==0{return Err(());}
+            if *slot==0{return None;}
         }
         if [copy[SLOT_OPEN_FILE],copy[SLOT_SEEK],copy[SLOT_SET_STATE]]
-            .contains(&(open_file as usize)) {return Err(());}
+            .contains(&(open_file as usize)) {return None;}
         ORIGINAL_OPEN_FILE.store(copy[SLOT_OPEN_FILE],Ordering::Release);
         ORIGINAL_SEEK.store(copy[SLOT_SEEK],Ordering::Release);
         ORIGINAL_SET_STATE.store(copy[SLOT_SET_STATE],Ordering::Release);
         copy[SLOT_OPEN_FILE]=open_file as usize;
         copy[SLOT_SEEK]=seek as usize;
         copy[SLOT_SET_STATE]=set_state as usize;
-        Ok::<[usize;VTABLE_LENGTH],()>(copy)
-    }).ok() else{return false;};
+        Some(copy)
+    }) else{return false;};
     let dest=vtable.as_ptr();
     if original!=dest{
         // Only this concrete IAMMultiMediaStream interface vptr changes.
