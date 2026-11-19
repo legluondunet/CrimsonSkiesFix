@@ -100,7 +100,37 @@ You do **not** need to run the original game `setup.exe` or download a separate 
 
 ## Install on Linux with Wine or Proton
 
-1. Install Wine with **32-bit Windows application support**, or use a suitable Wine/Proton environment (for example Lutris with GE-Proton).
+### Recommended compatibility layer
+
+For Linux, use **one** of the following with **32-bit Windows application support**:
+
+- **Wine Staging 11.19 or newer** (minimum recommended Wine Staging version).
+- **GE-Proton** (through a compatible launcher such as Lutris).
+- **Valve Proton** (through Steam or a compatible Proton launcher).
+
+The older **Wine Staging 11.17** was observed to play the two introductory
+movies but then stall with a black main menu when it tried to initialize
+the `CRIMFLAG.MPG` menu-background video. In November 2026, the same
+CrimsonSkiesFix development build under **Wine Staging 11.19** reached
+`MainMenu`, continued presenting frames and exited cleanly with
+the experimental `CRIMFLAG.MPG` bypass **disabled**. This is consistent
+with an upstream AMStream synchronization fix added in Wine 11.18; it
+does **not** establish that every later runtime or every machine is
+automatically compatible.
+
+GE-Proton has also been used for real-game tests. **Valve Proton is a
+recommended option, not a claim that every Valve Proton version has
+been individually tested with this build.** No particular Proton
+version is pinned. Keep your selected Wine/Proton runner and prefix
+consistent between installation and play.
+
+**CrimsonSkiesFix does not bypass or disable the menu-background movie
+by default, and does not require the experimental PR #51 CRIMFLAG hook.**
+No additional Winetricks step is included in the standard instructions.
+If you experience a black menu, confirm your actual Wine/Proton runner
+version and check its 32-bit multimedia dependencies before reporting it.
+
+1. Select **Wine Staging 11.19+**, **GE-Proton**, or **Valve Proton**, with 32-bit Windows application support.
 2. Put the downloaded `CrimsonSkiesFix.exe` and the same three external items in a writable folder such as `~/Games/CrimsonSkies/`.
 3. Open a terminal and run:
 
