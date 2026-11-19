@@ -314,19 +314,28 @@ curl -fL "https://raw.githubusercontent.com/legluondunet/CrimsonSkiesFix/docs/wi
 bash ./pr51-wine-1118-validation.sh
 ```
 
-For the current Manjaro/Lutris test, the script now defaults to this
-**explicit Wine-staging 11.22 runner** (not the system `wine` binary):
+As of November 19, 2026, the owner's updated Manjaro system
+reports **`wine-11.19 (Staging)`** with `wine --version`.
+The validation script now **defaults to `wine` from the current PATH**
+rather than the previously hardcoded Lutris Wine 11.22 runner. It resolves
+`wineboot` and `wineserver` from that runner's same `bin/` directory
+and passes consistent `PATH`, `WINELOADER`, and `WINESERVER`
+settings. The version check is against that executable.
 
-```text
-/home/romain/.local/share/lutris/runners/wine/wine-11.22-staging-amd64/bin/wine
-```
+To use a different Wine runner for a deliberate A/B, pass
+`PR51_WINE_BIN=/full/path/to/wine`; the old Wine 11.22 Lutris runner
+is no longer the default. No update or new Wine installation is needed
+on Manjaro for the Wine 11.19 comparison.
 
-It resolves `wineboot` and `wineserver` **from that same runner's
-`bin/` directory**, checks all three executables, and passes consistent
-`PATH`, `WINELOADER`, and `WINESERVER` settings. The version test
-runs the runner's own `wine --version`. The user can override the path
-without editing the script by setting `PR51_WINE_BIN` to another full
-Wine executable path. No system Wine installation/update is required.
+**Important for the CRIMFLAG prototype:** Wine 11.19 already contains
+the upstream 11.18 AMStream flush fix. Therefore a successful menu
+with `CrimFlagVideoTest=video` *alone* would not prove the bypass
+helped. Run a baseline first with `CrimFlagVideoTest=off` in
+the same Wine 11.19 build, then enable `video` and, only if needed,
+`seek`. Keep the exact same game executable, Wine runner and
+video DLL overrides. Prefer the existing `--menu-only` script to
+collect comparable logs for each run. The goal is to see if the
+opt-in bypass changes anything beyond Wine's own corrected behavior.
 
 Run **only in the dedicated test installation**; the installer/game
 may update game files or save data and the script does not back up
