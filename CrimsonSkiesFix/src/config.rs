@@ -66,12 +66,14 @@ pub struct Config {
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
     pub frame_time_trace: bool,
+    // PR #51 only: isolated Wine menu movie experiment (off by default).
+    pub crimflag_video_test:crate::crimflag_video_test::Mode,
 
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, crimflag_video_test:crate::crimflag_video_test::Mode::Off, }
     }
 }
 
@@ -142,6 +144,13 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
                 if let Some(v) = enabled(value) { settings.log_enabled = v; },
+            ("debug", "crimflagvideotest") =>
+                match value.trim().to_ascii_lowercase().as_str(){
+                    "off" => settings.crimflag_video_test=crate::crimflag_video_test::Mode::Off,
+                    "seek" => settings.crimflag_video_test=crate::crimflag_video_test::Mode::Seek,
+                    "video" => settings.crimflag_video_test=crate::crimflag_video_test::Mode::Video,
+                    _=>{},
+                },
             ("debug", "nativedd4bootstrap") =>
                 if let Some(v) = enabled(value) { settings.native_dd4_bootstrap = v; },
             ("debug", "nativemoviergb32") =>
@@ -208,6 +217,7 @@ fn known_ini_value_valid(key:&str,line:&str)->bool{
         "graphics/fpslimit"=>value.trim().parse::<u32>().is_ok(),
         "graphics/aspectratio"=>matches!(
             value.trim().to_ascii_lowercase().as_str(),"auto"|"4:3"),
+        "debug/crimflagvideotest"=>matches!(value.trim().to_ascii_lowercase().as_str(),"off"|"seek"|"video"),
         "graphics/gosvideolock"=>
             matches!(value.trim().to_ascii_lowercase().as_str(),
                 "on"|"off"|"restore"|"1"|"0"|"true"|"false"),
@@ -231,6 +241,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "graphics/gosvideolock",
     "compatibility/roffileterminatorfix",
     "debug/log",
+    "debug/crimflagvideotest",
     "debug/deferearlynativepatch",
     "debug/earlynativephysicalmode",
     "debug/nativedpiaware",
@@ -305,6 +316,18 @@ pub fn deduplicate_known_ini(content:&str)->Option<(String,usize)>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pr51_crimflag_experiment_is_opt_in_and_debug_only(){
+        use crate::crimflag_video_test::Mode;
+        assert_eq!(parse(DEFAULT_INI).crimflag_video_test,Mode::Off);
+        assert_eq!(parse("[Debug]\nCrimFlagVideoTest=video").crimflag_video_test,Mode::Video);
+        assert_eq!(parse("[DEBUG]\ncrimflagvideotest=seek").crimflag_video_test,Mode::Seek);
+        assert_eq!(parse("[Graphics]\nCrimFlagVideoTest=video").crimflag_video_test,Mode::Off);
+        let input="[Debug]\nCrimFlagVideoTest=video\nCrimFlagVideoTest=off\n";
+        let (clean,removed)=deduplicate_known_ini(input).unwrap();
+        assert_eq!(removed,1);
+        assert_eq!(parse(&clean),parse(input));
+    }
     #[test]
     fn minimal_first_run_ini_contains_only_user_choices(){
         let generated:Vec<String>=ini_line_keys(DEFAULT_INI)
