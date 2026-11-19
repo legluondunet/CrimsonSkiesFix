@@ -6,9 +6,15 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 cd "$ROOT"
 
-# Explicit Lutris runner: keep Wine, Wineboot and Wineserver on the SAME build.
-# Optional override lets this test script remain usable with another runner.
-WINE_BIN="${PR51_WINE_BIN:-/home/romain/.local/share/lutris/runners/wine/wine-11.22-staging-amd64/bin/wine}"
+# Default to the system Wine chosen by the user (Manjaro: wine-11.19
+# Staging as of 2026-11-19). An explicit runner path can still be supplied
+# by PR51_WINE_BIN, e.g. a Lutris Wine version for an A/B comparison.
+# Resolve wineboot and wineserver from the same bin directory.
+WINE_BIN="${PR51_WINE_BIN:-$(command -v wine || true)}"
+if [[ -z "$WINE_BIN" ]]; then
+  echo "Wine not found in PATH (set PR51_WINE_BIN to a full Wine path)." >&2
+  exit 2
+fi
 RUNNER_DIR="$(dirname -- "$WINE_BIN")"
 WINEBOOT_BIN="$RUNNER_DIR/wineboot"
 WINESERVER_BIN="$RUNNER_DIR/wineserver"
