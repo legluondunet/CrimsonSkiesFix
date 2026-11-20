@@ -667,39 +667,6 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
     Ok(true)
 }
 
-#[cfg(windows)]
-fn show_missing_sources_message(message:&str){
-    use std::{ffi::OsStr,os::windows::ffi::OsStrExt,ptr};
-    // A CLI or GitHub Actions invocation must NEVER block on a modal dialog.
-    // When Explorer starts a console-subsystem EXE by double-click, it owns
-    // the newly allocated console alone. An interactive parent shell normally
-    // makes the console process list contain two or more processes.
-    if std::env::var_os("CI").is_some() ||
-       std::env::var_os("GITHUB_ACTIONS").is_some() {
-        return;
-    }
-    #[link(name="kernel32")]
-    extern "system" {
-        fn GetConsoleProcessList(list:*mut u32,count:u32)->u32;
-    }
-    let mut processes=[0u32;2];
-    let count=unsafe{
-        GetConsoleProcessList(processes.as_mut_ptr(),processes.len() as u32)
-    };
-    if count>1{return;}
-    #[link(name="user32")]
-    extern "system" {
-        fn MessageBoxW(hwnd:*mut std::ffi::c_void,text:*const u16,
-                       caption:*const u16,flags:u32)->i32;
-    }
-    let wide=|text:&str| OsStr::new(text).encode_wide().chain(Some(0)).collect::<Vec<_>>();
-    let body=wide(message);
-    let title=wide("CrimsonSkiesFix - Missing installation files");
-    // MB_OK | MB_ICONWARNING. No game process is started.
-    unsafe{MessageBoxW(ptr::null_mut(),body.as_ptr(),title.as_ptr(),0x30);}
-}
-#[cfg(not(windows))]
-fn show_missing_sources_message(_message:&str){}
 
 /// Entry point for no-argument execution. The installer keeps its last
 /// meaningful installation/repair/error report in the root installer log.
@@ -749,15 +716,9 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             game.display()),
     };
     write_installer_report(base,&message,needed)?;
-    // On double-click, show a persistent message rather than a transient
-    // console error. --install-only remains non-interactive for CI/scripts.
-    if launch {
-        if let Err(err)=&result {
-            if err.starts_with("Missing or invalid installation prerequisites;") {
-                show_missing_sources_message(err);
-            }
-        }
-    }
+    // Return the complete preflight error to the caller: main() prints it
+    // to stderr for both interactive terminals and non-interactive scripts.
+    // Never display a modal GUI dialog.
     let (action,exe)=result?;
     if !launch{
         println!("--install-only: installation verified and ready at {}; game NOT launched.",
