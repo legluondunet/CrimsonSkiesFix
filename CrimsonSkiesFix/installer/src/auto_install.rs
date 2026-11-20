@@ -137,12 +137,12 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// CI independently verifies its entire 22-export PE32 layout.
 pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
-)->Result<(PathBuf,PathBuf),String>{
-    // Check all three user-supplied sources before CD extraction or staging.
+)->Result<(PathBuf,update102::Update102Source),String>{
+    // Check all prerequisites before CD extraction or staging.
     // An orphan BIN/IMG needs its corresponding CUE for sector/track layout.
     // File selection and updater/EXE hash verification are read-only.
     let disc=disc_inspect::preflight_media(base);
-    let updater=update102::find(base,update);
+    let updater=update102::source_for_install(base,update);
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
     if let Err(detail)=&disc{
@@ -366,9 +366,10 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
         return Err("previous game backup already exists; refusing to overwrite it".into());
     }
     if old_present && !directory(game){return Err("unsafe existing game directory".into());}
-    // No new staging directory and no CD read/extraction unless all three
-    // prerequisites exist: approved unwrapped EXE, embedded patch and exact
-    // official 1.02 updater. Preserve this ordering for --install-only too.
+    // Never stage game data until the CD, approved EXE and a verified
+    // updater SOURCE have passed preflight. In explicitly private builds the
+    // updater may be embedded, not a filesystem source. Public builds still
+    // demand a local authentic updater.
     let (source,updater)=preflight_install_sources(base,game,None)?;
     if old_present {
         println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
@@ -977,6 +978,7 @@ mod tests{
         let game=root.join("CrimsonSkiesFix");
         let err=auto_run(&root,&game,false).unwrap_err();
         assert!(err.contains("original game CD image"),"{err}");
+        #[cfg(not(feature="embed-owner-patch102"))]
         assert!(err.contains("official 1.02 updater"),"{err}");
         assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
         assert!(!any_entry(&game));
@@ -987,6 +989,7 @@ mod tests{
         assert!(!report.contains("GAME_EXIT_CODE="));
         fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(not(feature="embed-owner-patch102"))]
     #[test]
     fn missing_exe_and_updater_report_both_without_touching_existing_game(){
         let root=temp();
@@ -1007,6 +1010,7 @@ mod tests{
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(not(feature="embed-owner-patch102"))]
     #[test]
     fn missing_prerequisites_are_both_present_in_installer_error_report(){
         let root=temp();
@@ -1034,6 +1038,7 @@ mod tests{
             fs::write(&media,b"file without CUE sheet").unwrap();
             let err=preflight_install_sources(&root,&game,None).unwrap_err();
             assert!(err.contains("original game CD image"),"{err}");
+            #[cfg(not(feature="embed-owner-patch102"))]
             assert!(err.contains("official 1.02 updater"),"{err}");
             assert!(err.contains("approved decrypted 1.02 EXE"),"{err}");
             assert!(!any_entry(&game));
@@ -1049,10 +1054,24 @@ mod tests{
         fs::write(&media,b"read-only CD source placeholder").unwrap();
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
         assert!(!err.contains("- original game CD image"),"{err}");
+        #[cfg(not(feature="embed-owner-patch102"))]
         assert!(err.contains("- official 1.02 updater"),"{err}");
         assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
         assert!(!any_entry(&game));
         assert_eq!(fs::read(&media).unwrap(),b"read-only CD source placeholder");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="embed-owner-patch102")]
+    #[test]
+    fn private_embed_removes_only_official_update_requirement(){
+        let root=temp();
+        let game=root.join(if cfg!(feature="unified-fix-install"){"game"}else{"CrimsonSkiesFix"});
+        let err=preflight_install_sources(&root,&game,None).unwrap_err();
+        assert!(err.contains("- original game CD image"),"{err}");
+        assert!(!err.contains("- official 1.02 updater"),"{err}");
+        assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
+        assert!(!any_entry(&root.join(REBUILT)));
+        assert!(!any_entry(&game));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

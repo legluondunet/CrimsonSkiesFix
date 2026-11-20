@@ -20,6 +20,10 @@ winmm-split-install = ["winmm-installer"]
 import-alias-install = ["winmm-split-install"]
 # Architecture approved for 1.1: launcher + one fix.dll, game/ child, no system DLL proxy.
 unified-fix-install = ["import-alias-install"]
+# Explicitly private builds only. Requires an owner-supplied, SHA-256-verified
+# official Microsoft 1.02 updater at compile time. NEVER enable in public CI,
+# release workflows, or distributed artifacts without redistribution permission.
+embed-owner-patch102 = []
 
 [dependencies]
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
