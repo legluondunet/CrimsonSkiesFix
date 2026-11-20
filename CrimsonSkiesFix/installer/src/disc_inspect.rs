@@ -58,6 +58,14 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     }
 }
 
+/// Read-only source discovery for the unified installer preflight.
+/// An ISO or a CUE is required; a standalone BIN/IMG is not a usable CD
+/// description because the track offsets and sector geometry are unknown.
+/// Full CD identity validation still happens in extract_for_install().
+pub fn preflight_media(base:&Path)->Result<(),String>{
+    select(base,None).map(|_|())
+}
+
 fn parse_msf(text:&str)->Result<u64,String> {
     let fields=text.split(':').collect::<Vec<_>>();
     if fields.len()!=3 {return Err(format!("invalid CUE MM:SS:FF time: {text}"));}
