@@ -79,8 +79,10 @@ for a new installation, it reports **all three missing sources together**:
 The installer checks the sources **before** CD extraction, lists only those
 that are missing or invalid, and writes the full diagnostic to
 `CrimsonSkiesFix_installer.log` beside the launcher. A normal double-click
-also displays a dismissible Windows/Wine warning dialog; `--install-only`
-prints the error without showing a dialog, so automated scripts do not block.
+also displays a dismissible Windows/Wine warning dialog. Terminal invocations
+use stdout/stderr and the installer log instead, without modal dialogs;
+CI invocations are also non-interactive. `--install-only` never shows a
+dialog, so automated scripts do not block.
 No staging folder, protected EXE launch, or change to existing game data is
 performed on prerequisite failure.
 
