@@ -118,7 +118,35 @@ const EXPECTED_MEMBERS:[(&str,u32);5]=[
 pub const ASSET_SHA256:&str=
     "7ae28cfb65645a3e22aadc64a68badc23e2543bc56356d599fb59375d9ebbefe";
 
-fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String> {
+/// The two protected source files shipped with the authentic Microsoft
+/// updater. They are INPUTS for future local reconstruction research, NOT
+/// executable runtime candidates. Nothing here disables SafeDisc.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct Protected102Sources {
+    pub loader: Vec<u8>,
+    pub icd: Vec<u8>,
+}
+
+/// The caller may request only known, audited CAB members with their exact
+/// expected uncompressed sizes; no arbitrary member extraction is exposed.
+fn checked_request(name:&str,expected_size:u32)->Result<(),String>{
+    if EXPECTED_MEMBERS.iter().any(|(known,size)|*known==name && *size==expected_size){
+        Ok(())
+    }else{
+        Err(format!("unrecognized official 1.02 CAB member request: {name}"))
+    }
+}
+
+/// Read only selected files from an authenticated official update. All
+/// decompressed bytes originate locally from the user's hash-verified patch;
+/// no original Microsoft payload is linked or distributed in CrimsonSkiesFix.
+fn read_members_from_authenticated_update(
+    path:&Path, requested:&[(&str,u32)]
+)->Result<Vec<Vec<u8>>,String>{
+    // Validate requests before touching the patch or opening an output.
+    for &(name,size) in requested{checked_request(name,size)?;}
+
     validate(path)?;
     let mut file=File::open(path).map_err(err)?;
     file.seek(SeekFrom::Start(CAB_OFFSET)).map_err(err)?;
@@ -146,16 +174,54 @@ fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String> {
         return Err(format!("expected {} CAB files, found {}",
             EXPECTED_MEMBERS.len(),inventory.len()));
     }
-    let name=inventory.get("gosdata/assets/crimptch.rof")
-        .ok_or("official CAB is missing CRIMPTCH.ROF")?;
-    let mut contents=Vec::with_capacity(797);
-    let reader=cabinet.read_file(name).map_err(err)?;
-    // Hard cap to reject unexpectedly decompressed payloads.
-    reader.take(798).read_to_end(&mut contents).map_err(err)?;
-    if contents.len()!=797 || sha256::hex(&contents)!=ASSET_SHA256 {
-        return Err("decompressed official 1.02 CRIMPTCH.ROF failed size/SHA256 verification".into());
+    // Read each requested member by its audited CAB name. The extra byte
+    // catches over-expansion even if a cabinet advertises a smaller size.
+    let mut result=Vec::with_capacity(requested.len());
+    for &(key,expected_size) in requested {
+        let actual=inventory.get(key)
+            .ok_or_else(||format!("missing official 1.02 CAB member: {key}"))?;
+        let mut contents=Vec::with_capacity(expected_size as usize);
+        let reader=cabinet.read_file(actual).map_err(err)?;
+        reader.take(u64::from(expected_size)+1)
+            .read_to_end(&mut contents).map_err(err)?;
+        if contents.len()!=expected_size as usize{
+            return Err(format!(
+                "official 1.02 CAB member {key} decompressed to {} bytes; expected {expected_size}",
+                contents.len()
+            ));
+        }
+        result.push(contents);
+    }
+    Ok(result)
+}
+
+fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String>{
+    let mut files=read_members_from_authenticated_update(
+        path,&[("gosdata/assets/crimptch.rof",797)]
+    )?;
+    let contents=files.remove(0);
+    if sha256::hex(&contents)!=ASSET_SHA256 {
+        return Err("decompressed official 1.02 CRIMPTCH.ROF failed SHA256 verification".into());
     }
     Ok(contents)
+}
+
+/// Recover the official protected 1.02 loader and ICD directly from the
+/// owner's authenticated updater, strictly in memory, without writing or
+/// running any game executable. This method does NOT decrypt the files.
+/// A future GPL reconstruction engine may consume these local inputs after
+/// independent legal review and verification.
+#[allow(dead_code)]
+pub fn read_protected_102_sources(path:&Path)->Result<Protected102Sources,String>{
+    let mut files=read_members_from_authenticated_update(
+        path,&[("crimson.exe",344851),("crimson.icd",2580578)]
+    )?;
+    let icd=files.pop().ok_or("authenticated 1.02 CAB is missing its ICD")?;
+    let loader=files.pop().ok_or("authenticated 1.02 CAB is missing its loader")?;
+    if !loader.starts_with(b"MZ"){
+        return Err("official 1.02 protected loader is not a valid MZ image".into());
+    }
+    Ok(Protected102Sources{loader,icd})
 }
 
 /// Stage only the audited 797-byte gameplay asset from a locally provided,
@@ -232,6 +298,12 @@ mod tests {
         assert_eq!(CAB_FILES,5);
         assert_eq!(EXPECTED_MEMBERS.len(),5);
         assert_eq!(ASSET_SHA256.len(),64);
+        assert!(checked_request("crimson.exe",344851).is_ok());
+        assert!(checked_request("crimson.icd",2580578).is_ok());
+        assert!(checked_request("gosdata/assets/crimptch.rof",797).is_ok());
+        assert!(checked_request("crimson.exe",344852).is_err());
+        assert!(checked_request("../game/crimson.exe",344851).is_err());
+        assert!(checked_request("setupenu.dll",32768).is_ok());
     }
     #[test]
     fn refuse_wrong_updater_without_execution(){
@@ -242,6 +314,7 @@ mod tests {
         fs::write(&test,b"MZ").unwrap();
         assert!(inspect(&dir,Some(&test)).unwrap_err().contains("size"));
         assert!(find(&dir,None).is_err());
+        assert!(read_protected_102_sources(&test).unwrap_err().contains("size"));
         fs::remove_dir_all(dir).unwrap();
     }
 }

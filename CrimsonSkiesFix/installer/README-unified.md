@@ -47,6 +47,37 @@ installer returns an explicit error. Existing unrelated fix.dll.bak files
 are never touched. For an already verified manual game import, this repair
 does not require extracting the CD again.
 
+## Issue #46: local 1.02 SafeDisc source preparation (development only)
+
+The installer already authenticates the owner's original official
+`crmsk102.exe` by its fixed size and SHA-256, and extracts the verified
+`CRIMPTCH.ROF` file from the embedded LZX CAB. The installer now also
+has a **read-only, in-memory API** in `src/update102.rs` named
+`read_protected_102_sources`. It can recover exactly two protected
+sources from that same authenticated update:
+
+- `CRIMSON.EXE` — original **SafeDisc loader** (344,851 bytes).
+- `CRIMSON.ICD` — original **SafeDisc-protected game image** (2,580,578 bytes).
+
+The reader first verifies the **entire official updater hash and structure**,
+rejects any unexpected CAB member and checks the exact uncompressed size
+of each requested entry. It does **not** write or run either source. All
+Microsoft bytes come only from the user's local update; none are embedded
+in the open-source launcher.
+
+**This API is a preparation milestone, not an automatic decryptor.**
+The protected files are not approved game executables. The existing
+`--install-only` and normal install paths still require the approved
+decrypted 1.02 game EXE and official updater. The separate GPL
+`legluondunet/unsafedisk` reconstruction prototype still depends on
+a private Windows 98 memory snapshot. A portable autonomous implementation
+and legal review are needed before integrating a SafeDisc step.
+
+Future update acquisition may avoid asking the user to locate the
+official updater manually, but no permanent authorized automated
+download source is integrated yet. ModDB's file page uses temporary
+mirror links rather than a stable static executable URL.
+
 ## Testing this prototype (Windows 11 or Wine/GE-Proton)
 
 Use a **separate test folder** named `crimsonskiesfix`. Do not overwrite an
