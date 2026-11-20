@@ -670,6 +670,23 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
 #[cfg(windows)]
 fn show_missing_sources_message(message:&str){
     use std::{ffi::OsStr,os::windows::ffi::OsStrExt,ptr};
+    // A CLI or GitHub Actions invocation must NEVER block on a modal dialog.
+    // When Explorer starts a console-subsystem EXE by double-click, it owns
+    // the newly allocated console alone. An interactive parent shell normally
+    // makes the console process list contain two or more processes.
+    if std::env::var_os("CI").is_some() ||
+       std::env::var_os("GITHUB_ACTIONS").is_some() {
+        return;
+    }
+    #[link(name="kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(list:*mut u32,count:u32)->u32;
+    }
+    let mut processes=[0u32;2];
+    let count=unsafe{
+        GetConsoleProcessList(processes.as_mut_ptr(),processes.len() as u32)
+    };
+    if count>1{return;}
     #[link(name="user32")]
     extern "system" {
         fn MessageBoxW(hwnd:*mut std::ffi::c_void,text:*const u16,
