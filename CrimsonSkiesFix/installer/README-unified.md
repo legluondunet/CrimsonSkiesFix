@@ -76,13 +76,12 @@ for a new installation, it reports **all three missing sources together**:
 2. The exact official Crimson Skies 1.02 updater (`crmsk102.exe`).
 3. One approved decrypted Crimson Skies 1.02 executable.
 
-The installer checks the sources **before** CD extraction, lists only those
-that are missing or invalid, and writes the full diagnostic to
-`CrimsonSkiesFix_installer.log` beside the launcher. A normal double-click
-also displays a dismissible Windows/Wine warning dialog. Terminal invocations
-use stdout/stderr and the installer log instead, without modal dialogs;
-CI invocations are also non-interactive. `--install-only` never shows a
-dialog, so automated scripts do not block.
+The installer checks the sources **before** CD extraction and lists only
+those that are missing or invalid. The complete error is printed directly
+to the terminal (stderr), for both ordinary launches and `--install-only`,
+and is also saved in `CrimsonSkiesFix_installer.log` beside the launcher.
+**No graphical dialog is shown**, including under Windows and Wine.
+No user interaction is required from scripts or CI.
 No staging folder, protected EXE launch, or change to existing game data is
 performed on prerequisite failure.
 
