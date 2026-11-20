@@ -105,6 +105,54 @@ pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     }
 }
 
+
+/// Source of the authentic, SHA-pinned Microsoft update.
+/// The embedded form can only exist in an explicitly opted-in PRIVATE build.
+#[derive(Debug,Clone)]
+pub enum Update102Source {
+    OwnerFile(PathBuf),
+    #[cfg(feature="embed-owner-patch102")]
+    PrivateEmbedded,
+}
+
+#[cfg(feature="embed-owner-patch102")]
+fn embedded_patch()->&'static [u8]{
+    include_bytes!(env!("CRIMSONSKIESFIX_EMBEDDED_PATCH102"))
+}
+#[cfg(feature="embed-owner-patch102")]
+fn validate_embedded_patch()->Result<(),String>{
+    let bytes=embedded_patch();
+    if bytes.len()!=PATCH_LEN as usize || sha256::hex(bytes)!=PATCH_SHA256 {
+        return Err("private embedded official 1.02 updater failed full size/SHA-256 verification".into());
+    }
+    let offset=CAB_OFFSET as usize;
+    let end=offset+CAB_BYTES as usize;
+    if bytes.len()<end || &bytes[..2]!=b"MZ" || &bytes[offset..offset+4]!=b"MSCF"{
+        return Err("private embedded official 1.02 updater failed CAB/PE integrity checks".into());
+    }
+    Ok(())
+}
+
+/// A private embedded update is preferred over external patch discovery.
+/// Public GPL builds have no bundled Microsoft bytes and keep the exact
+/// previously verified local file behavior. A specifically supplied path
+/// (when present) is still verified independently.
+pub fn source_for_install(base:&Path,specified:Option<&Path>)->Result<Update102Source,String>{
+    if specified.is_some(){
+        return find(base,specified).map(Update102Source::OwnerFile);
+    }
+    #[cfg(feature="embed-owner-patch102")]
+    {
+        let _=base;
+        validate_embedded_patch()?;
+        return Ok(Update102Source::PrivateEmbedded);
+    }
+    #[cfg(not(feature="embed-owner-patch102"))]
+    {
+        find(base,None).map(Update102Source::OwnerFile)
+    }
+}
+
 /// Official 1.02 CAB member names and uncompressed sizes, confirmed by
 /// static inspection of the owner-provided exactly hashed update executable.
 /// Other entries (including execute-after-extract instructions) are refused.
@@ -142,16 +190,27 @@ fn checked_request(name:&str,expected_size:u32)->Result<(),String>{
 /// decompressed bytes originate locally from the user's hash-verified patch;
 /// no original Microsoft payload is linked or distributed in CrimsonSkiesFix.
 fn read_members_from_authenticated_update(
-    path:&Path, requested:&[(&str,u32)]
+    source:&Update102Source, requested:&[(&str,u32)]
 )->Result<Vec<Vec<u8>>,String>{
     // Validate requests before touching the patch or opening an output.
     for &(name,size) in requested{checked_request(name,size)?;}
 
-    validate(path)?;
-    let mut file=File::open(path).map_err(err)?;
-    file.seek(SeekFrom::Start(CAB_OFFSET)).map_err(err)?;
-    let mut bytes=vec![0u8;CAB_BYTES as usize];
-    file.read_exact(&mut bytes).map_err(err)?;
+    let bytes=match source {
+        Update102Source::OwnerFile(path)=>{
+            validate(path)?;
+            let mut file=File::open(path).map_err(err)?;
+            file.seek(SeekFrom::Start(CAB_OFFSET)).map_err(err)?;
+            let mut bytes=vec![0u8;CAB_BYTES as usize];
+            file.read_exact(&mut bytes).map_err(err)?;
+            bytes
+        },
+        #[cfg(feature="embed-owner-patch102")]
+        Update102Source::PrivateEmbedded=>{
+            validate_embedded_patch()?;
+            let offset=CAB_OFFSET as usize;
+            embedded_patch()[offset..offset+CAB_BYTES as usize].to_vec()
+        }
+    };
     let mut cabinet=cab::Cabinet::new(Cursor::new(bytes)).map_err(err)?;
     // Enumerate the archive's uncompressed file directory before opening
     // any member. Ignore archive path strings until they are normalized and
@@ -195,9 +254,9 @@ fn read_members_from_authenticated_update(
     Ok(result)
 }
 
-fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String>{
+fn read_asset_from_authenticated_update(source:&Update102Source)->Result<Vec<u8>,String>{
     let mut files=read_members_from_authenticated_update(
-        path,&[("gosdata/assets/crimptch.rof",797)]
+        source,&[("gosdata/assets/crimptch.rof",797)]
     )?;
     let contents=files.remove(0);
     if sha256::hex(&contents)!=ASSET_SHA256 {
@@ -213,8 +272,13 @@ fn read_asset_from_authenticated_update(path:&Path)->Result<Vec<u8>,String>{
 /// independent legal review and verification.
 #[allow(dead_code)]
 pub fn read_protected_102_sources(path:&Path)->Result<Protected102Sources,String>{
+    read_protected_102_sources_from(&Update102Source::OwnerFile(path.to_path_buf()))
+}
+
+#[allow(dead_code)]
+pub fn read_protected_102_sources_from(source:&Update102Source)->Result<Protected102Sources,String>{
     let mut files=read_members_from_authenticated_update(
-        path,&[("crimson.exe",344851),("crimson.icd",2580578)]
+        source,&[("crimson.exe",344851),("crimson.icd",2580578)]
     )?;
     let icd=files.pop().ok_or("authenticated 1.02 CAB is missing its ICD")?;
     let loader=files.pop().ok_or("authenticated 1.02 CAB is missing its loader")?;
@@ -224,17 +288,16 @@ pub fn read_protected_102_sources(path:&Path)->Result<Protected102Sources,String
     Ok(Protected102Sources{loader,icd})
 }
 
-/// Stage only the audited 797-byte gameplay asset from a locally provided,
-/// hash-pinned official updater. No protected executable is copied, no
-/// historical installer is executed, and a correct FR asset is preserved.
-pub fn apply_asset(base:&Path,game:&Path,edition:&str,specified:Option<&Path>)->Result<&'static str,String> {
+/// Stage only the audited 797-byte gameplay asset from a verified
+/// source: an owner's local update or, for private builds, an embedded
+/// SHA-pinned update. No protected EXE is copied or executed.
+pub fn apply_asset(game:&Path,edition:&str,source:&Update102Source)->Result<&'static str,String> {
     // Before even opening the updater, rehash all original CD game files.
     // This verifies which edition actually occupies this directory and
     // refuses incomplete/corrupted/misidentified prior staging folders.
     let verified=disc_inspect::verify_staging(game,edition)?;
     if verified==0 {return Err("no verified game files in staging".into());}
-    let path=find(base,specified)?;
-    let contents=read_asset_from_authenticated_update(&path)?;
+    let contents=read_asset_from_authenticated_update(source)?;
     let assets=game.join("GOSDATA").join("ASSETS");
     if !fs::symlink_metadata(&assets).map(|m|m.file_type().is_dir()).unwrap_or(false) {
         return Err("extracted game GOSDATA/ASSETS directory is missing or unsafe".into());
@@ -304,6 +367,20 @@ mod tests {
         assert!(checked_request("crimson.exe",344852).is_err());
         assert!(checked_request("../game/crimson.exe",344851).is_err());
         assert!(checked_request("setupenu.dll",32768).is_ok());
+    }
+    #[test]
+    fn external_source_stays_authenticated(){
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-update-source-{}-{:?}",std::process::id(),std::thread::current().id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("invalid.exe"),b"not a patch").unwrap();
+        // Explicit override must not silently fall back to any embedded bytes.
+        assert!(source_for_install(&dir,Some(Path::new("invalid.exe"))).is_err());
+        #[cfg(not(feature="embed-owner-patch102"))]
+        assert!(source_for_install(&dir,None).is_err());
+        #[cfg(feature="embed-owner-patch102")]
+        assert!(matches!(source_for_install(&dir,None).unwrap(),Update102Source::PrivateEmbedded));
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn refuse_wrong_updater_without_execution(){
