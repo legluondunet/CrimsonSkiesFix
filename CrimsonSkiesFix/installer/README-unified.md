@@ -68,15 +68,27 @@ authentic official 1.02 updater, and the approved decrypted 1.02 executable.
 The launcher verifies all prerequisites before extraction. It never
 redistributes the game's files.
 
-**Missing prerequisites:** if neither the approved decrypted 1.02 EXE nor the
-official 1.02 updater is available, the installer reports **both missing
-sources** in the root `CrimsonSkiesFix_installer.log` and stops before CD
-extraction. It does not attempt to launch the protected CD executable or
-replace existing game data. To resume, put one approved EXE and one
-SHA-verified official 1.02 updater beside the launcher and run
-`CrimsonSkiesFix.exe --install-only` (or launch normally). The original
-CD image must also be present for a new installation. No third-party or
-copyrighted game executable is bundled.
+**Missing prerequisites:** when `CrimsonSkiesFix.exe` is launched by itself
+for a new installation, it reports **all three missing sources together**:
+
+1. One authentic game CD image (`.iso`, or `.cue` with its referenced
+   `.bin` / `.img` file; a standalone BIN/IMG is insufficient).
+2. The exact official Crimson Skies 1.02 updater (`crmsk102.exe`).
+3. One approved decrypted Crimson Skies 1.02 executable.
+
+The installer checks the sources **before** CD extraction, lists only those
+that are missing or invalid, and writes the full diagnostic to
+`CrimsonSkiesFix_installer.log` beside the launcher. A normal double-click
+also displays a dismissible Windows/Wine warning dialog; `--install-only`
+prints the error without showing a dialog, so automated scripts do not block.
+No staging folder, protected EXE launch, or change to existing game data is
+performed on prerequisite failure.
+
+To resume, place the required files beside `CrimsonSkiesFix.exe` and run
+it again normally (or use `--install-only`). This is a **current
+precondition**, not the final one-click goal of issue #46, which aims to
+automate acquisition of the update and preparation of the executable.
+No copyrighted game executable or patch is bundled.
 
 Run these commands **from the test folder**:
 
