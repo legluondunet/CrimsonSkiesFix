@@ -558,7 +558,7 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
 
 /// Install authenticated retail files into a private staged directory.
 /// The protected original EXE is kept until the approved EXE activation.
-fn install_from_cd(base:&Path,game:&Path,updater:&Path)->Result<(),String> {
+fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -578,7 +578,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:&Path)->Result<(),String> {
     let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
-    update102::apply_asset(base,&stage,extracted.edition,Some(updater))?;
+    update102::apply_asset(&stage,extracted.edition,updater)?;
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
