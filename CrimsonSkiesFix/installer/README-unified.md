@@ -47,6 +47,46 @@ installer returns an explicit error. Existing unrelated fix.dll.bak files
 are never touched. For an already verified manual game import, this repair
 does not require extracting the CD again.
 
+## Optional offline official 1.02 patch embedding (PRIVATE owner builds only)
+
+**Not enabled in public builds, CI or releases.** The authentic Microsoft
+1.02 update is copyrighted; free availability does **not** grant us
+permission to redistribute it inside CrimsonSkiesFix. Do not publish
+executables built with the `embed-owner-patch102` feature without
+independently confirmed redistribution rights.
+
+For local research using your own legitimate copy of the official update,
+a private build can embed the exact original `crmsk102.exe` bytes:
+
+```powershell
+$env:CRIMSONSKIESFIX_OWNER_PATCH102 = 'C:\my-private-files\crmsk102.exe'
+cargo build --manifest-path installer/Cargo.toml --release --target i686-pc-windows-msvc --features unified-fix-install,embed-owner-patch102
+```
+
+This assumes the normal `CRIMSONSKIESFIX_BUNDLED_DLL` runtime build
+dependency and `CRIMSONSKIESFIX_COMMIT` are already configured, as in
+the existing unified workflow. This is for a private owner build,
+not a public distribution command.
+
+Build-time checks reject files with an unexpected size, SHA-256 or
+CAB signature. Expected size: **2,315,728 bytes**; SHA-256:
+`8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af`.
+No proprietary bytes are committed to the GitHub repository.
+
+The private build uses the embedded update entirely from memory without
+downloading it, executing Microsoft setup or extracting the updater to
+disk. It does **not** require `crmsk102.exe` beside the launcher at
+runtime. It **still requires** a valid original CD ISO/CUE (+ BIN/IMG
+tracks) and an approved decrypted 1.02 game EXE.
+
+The research `unsafedisk` project cannot yet decrypt the protected game
+from those inputs alone. This feature therefore makes the **patch step**
+offline and self-contained, not the entire installation process.
+
+Default public GPL builds continue to require an external owner-supplied
+1.02 patch and are unchanged. Embedding must remain opt-in and private
+unless explicit redistribution rights are secured.
+
 ## Issue #46: local 1.02 SafeDisc source preparation (development only)
 
 The installer already authenticates the owner's original official
