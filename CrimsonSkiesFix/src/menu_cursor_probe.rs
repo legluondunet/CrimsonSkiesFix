@@ -213,6 +213,23 @@ mod tests{
         assert!(text.contains("dinput_call_over_180ms=0"));
     }
     #[test]
+    fn original_directinput_call_duration_is_separate_from_poll_gap(){
+        let before=Snapshot{poll_gaps:100,state_call_timed:100,
+            state_call_total_us:2_000,state_call_over_50ms:0,
+            state_call_over_180ms:0,..Snapshot::default()};
+        let after=Snapshot{poll_gaps:220,state_call_timed:220,
+            state_call_total_us:5_500,state_call_over_50ms:1,
+            state_call_over_180ms:0,poll_gaps_over_180ms:7,
+            state_call_max_us:70_000,..Snapshot::default()};
+        let result=summary(before,after);
+        assert!(result.contains("poll_gaps_over_180ms=7"));
+        assert!(result.contains("dinput_call_timed=120"));
+        assert!(result.contains("dinput_call_total_ms=3.500"));
+        assert!(result.contains("dinput_call_over_50ms=1"));
+        assert!(result.contains("dinput_call_over_180ms=0"));
+        assert!(result.contains("lifetime_max_dinput_call_ms=70.000"));
+    }
+    #[test]
     fn diagnostic_summary_identifies_poll_timestamps_not_hardware_events(){
         let text=summary(Snapshot::default(),Snapshot::default());
         assert!(text.contains("gaps_over_50ms=0"));
