@@ -123,6 +123,17 @@ mod menu_api_timing{
     }
 }
 
+// A standalone resource probe has no original game imported Sleep/Wait
+// thunks and must never install game-process wait observers.
+mod menu_wait_timing{
+    #[derive(Clone,Copy)]
+    pub(crate) struct Snapshot;
+    pub(crate) fn snapshot()->Snapshot{Snapshot}
+    pub(crate) fn summary(_previous:Snapshot,_current:Snapshot)->String{
+        String::new()
+    }
+}
+
 // The standalone surface probe never locks RGB32 movie surfaces.
 
 
