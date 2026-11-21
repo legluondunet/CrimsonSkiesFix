@@ -718,6 +718,29 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     )),
                 }
             }
+            // Exact Wine A/B, 800x600 only: some Win32 games retain the
+            // original tiny HWND ClipCursor rectangle after our verified
+            // borderless transition. The displayed OS pointer then cannot
+            // reach most of the 1440x1080 4:3 menu canvas. Reuse the
+            // *existing* proven-native repair (game IAT provenance required,
+            // OS current clip MUST equal recorded game request). Never
+            // silently release a foreign/custom clip or touch default Wine.
+            if wine_system_cursor_probe_eligible(
+                mode,crate::diagnostics::is_wine_runtime(),
+                crate::cfg().wine_system_cursor_probe &&
+                crate::cfg().wine_system_cursor_sync
+            ){
+                match crate::native_cursor_trace::repair_stale_game_cursor_clip(
+                    runtime.hwnd as *mut c_void
+                ){
+                    Ok(details)=>log(&format!(
+                        "WINE-CURSOR-CLIP-REPAIR: applied {details}"
+                    )),
+                    Err(reason)=>log(&format!(
+                        "WINE-CURSOR-CLIP-REPAIR: not applied ({reason}); OS clip unchanged"
+                    )),
+                }
+            }
             // Isolate original menu pointer invisibility from mouse
             // coordinate scaling: show system arrow only as an explicit
             // native Windows diagnostic after the authentic MainMenu
