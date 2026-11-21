@@ -4,12 +4,14 @@ on:
     branches: [feature/native-usde-updater-20261121, fix/usde-session-crash-diagnostics-20261121]
     paths:
       - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
       - 'CrimsonSkiesFix/runtime-unified/**'
       - 'CrimsonSkiesFix/loader-winmm/**'
       - '.github/workflows/native-usde-updater-prototype.yml'
   pull_request:
     paths:
       - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/src/**'
       - 'CrimsonSkiesFix/runtime-unified/**'
       - 'CrimsonSkiesFix/loader-winmm/**'
       - '.github/workflows/native-usde-updater-prototype.yml'
