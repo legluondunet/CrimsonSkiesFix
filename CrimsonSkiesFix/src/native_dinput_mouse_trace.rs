@@ -1,4 +1,4 @@
-//! Native Windows-only DirectInput mouse provenance + isolated cooperative repair.
+//! Native-only DirectInput mouse repairs, plus read-only Wine/Windows poll cadence probe.
 //! The admitted game imports DINPUT!DirectInputCreateA via PE32 IAT RVA
 //! 0x61fbb0 (confirmed independently against the actual Win11 minidump).
 //! This traces the MOUSE COM path; WM_MOUSEMOVE alone does not prove the
@@ -9,7 +9,7 @@
 //! No synthetic input, changes to dimensions, or direct cursor drawing.
 //! NativeDD4Bootstrap is required; functional native-only cooperative and
 //! cursor repairs do not require Log=1. Optional mouse tracing does.
-//! Never Wine/Proton or normal DirectDraw mode.
+//! Native repairs remain strictly disabled on Wine/Proton and normal DirectDraw mode.
 #![allow(dead_code)]
 use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
 use crate::{diagnostics,log,win32};
@@ -147,6 +147,8 @@ unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
 extern "system"{
     fn GetModuleHandleA(name:*const c_char)->Obj;
     fn GetProcAddress(module:Obj,name:*const c_char)->*const c_void;
+    fn GetLastError()->u32;
+    fn SetLastError(error:u32);
 }
 // Avoid ~200,000 diagnostic lines when the original game polls its mouse
 // >23 million times during the native movie graph. Exponential sampling
@@ -220,14 +222,16 @@ unsafe extern "system" fn observe_create_device(
             let c=crate::cfg();
             // With Log=0, intercept only functions needed to repair the
             // proven original mouse mode and its GOS menu cursor movement.
-            let detailed=c.log_enabled && c.native_direct_input_mouse_trace;
+            let native=diagnostics::is_native_windows();
+            let detailed=native && c.log_enabled && c.native_direct_input_mouse_trace;
+            let passive=c.log_enabled && c.frame_time_trace;
             installed[0]=detailed && observe_slot(device,DEV_ACQUIRE,observe_acquire as usize,&ORIGINAL_ACQUIRE);
             installed[1]=detailed && observe_slot(device,DEV_UNACQUIRE,observe_unacquire as usize,&ORIGINAL_UNACQUIRE);
-            installed[2]=(detailed || c.native_gos_cursor_bridge) &&
+            installed[2]=(detailed || passive || (native && c.native_gos_cursor_bridge)) &&
                 observe_slot(device,DEV_GET_STATE,observe_get_state as usize,&ORIGINAL_STATE);
             installed[3]=detailed && observe_slot(device,DEV_GET_DATA,observe_get_data as usize,&ORIGINAL_DATA);
             installed[4]=detailed && observe_slot(device,DEV_SET_FORMAT,observe_format as usize,&ORIGINAL_FORMAT);
-            installed[5]=(detailed || c.native_direct_input_mouse_coop_repair) &&
+            installed[5]=(detailed || (native && c.native_direct_input_mouse_coop_repair)) &&
                 observe_slot(device,DEV_SET_COOP,observe_coop as usize,&ORIGINAL_COOP);
         }
         if crate::cfg().log_enabled {
@@ -298,14 +302,22 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
     let call:State=std::mem::transmute(p);
     let hr=call(this,size,data);
     if !tracked(this){return hr;}
+    // Preserve the native method's GetLastError, even if a diagnostic clock
+    // query or a logging call uses other Win32 APIs before we return.
+    let original_error=GetLastError();
+    crate::menu_cursor_probe::observe_get_device_state(hr,size,data);
     if hr>=0{
         if let Some(note)=bridge_original_gos_cursor_delta(size,data){
             log(&note);
         }
     }
-    // The GOS cursor bridge still modifies only verified mouse deltas;
-    // skip all extra metrics/formatting in the normal Log=0 profile.
-    if !crate::cfg().log_enabled{return hr;}
+    // Passive diagnostic: zero per-poll log writes and no mouse data edits.
+    // Keep the older detailed per-call sampling native-Windows-only.
+    if !(crate::cfg().log_enabled && crate::cfg().native_direct_input_mouse_trace &&
+         diagnostics::is_native_windows()){
+        SetLastError(original_error);
+        return hr;
+    }
     let n=MOUSE_STATE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     let mut xyz=None;
     let mut buttons=None;
@@ -343,6 +355,7 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
             MOUSE_STATE_FAILED.load(Ordering::Relaxed)
         ));
     }
+    SetLastError(original_error);
     hr
 }
 unsafe extern "system" fn observe_get_data(
@@ -368,14 +381,16 @@ unsafe extern "system" fn observe_get_data(
 /// If another runtime already substituted this import, do nothing.
 fn should_hook_mouse_iat(native:bool,bootstrap:bool,passthrough:bool,
     logging:bool,trace:bool,coop_repair:bool,cursor_bridge:bool)->bool{
-    native && bootstrap && !passthrough &&
-    (coop_repair || cursor_bridge || (logging && trace))
+    bootstrap && !passthrough &&
+    ((native && (coop_repair || cursor_bridge)) || (logging && trace))
 }
 pub fn install(){
     let c=crate::cfg();
+    let native=diagnostics::is_native_windows();
     if !should_hook_mouse_iat(
-        diagnostics::is_native_windows(),c.native_dd4_bootstrap,
-        c.directdraw_passthrough,c.log_enabled,c.native_direct_input_mouse_trace,
+        native,c.native_dd4_bootstrap,
+        c.directdraw_passthrough,c.log_enabled,
+        c.frame_time_trace || (native && c.native_direct_input_mouse_trace),
         c.native_direct_input_mouse_coop_repair,c.native_gos_cursor_bridge
     ){return;}
     unsafe{
@@ -398,7 +413,7 @@ pub fn install(){
             log("NATIVE-DINPUT: EXE IAT patch rejected; audit disabled");
             return;
         }
-        log("NATIVE-DINPUT: exact EXE DirectInputCreateA observed (passive native mouse COM tracing, unchanged arguments/results)");
+        log("MENU-CURSOR-DINPUT: exact game EXE DirectInputCreateA import observed; all native mouse repairs Windows-only; passive Wine/Windows state polling requires Log=1 plus FrameTimeTrace=1");
     }
 }
 #[cfg(test)]
@@ -410,6 +425,9 @@ mod tests{
         assert!(should_hook_mouse_iat(true,true,false,false,false,true,false));
         assert!(should_hook_mouse_iat(true,true,false,false,false,false,true));
         assert!(!should_hook_mouse_iat(false,true,false,false,false,true,true));
+        assert!(should_hook_mouse_iat(false,true,false,true,true,false,false));
+        assert!(!should_hook_mouse_iat(false,true,false,false,true,false,false));
+        assert!(!should_hook_mouse_iat(false,true,true,true,true,false,false));
         assert!(!should_hook_mouse_iat(true,false,false,false,false,true,true));
         assert!(!should_hook_mouse_iat(true,true,true,false,false,true,true));
         assert!(!should_hook_mouse_iat(true,true,false,false,true,false,false));
