@@ -142,6 +142,8 @@ pub(super) enum InstallSources {
     Approved { executable:PathBuf, updater:update102::Update102Source },
     #[cfg(feature="native-fr-cd")]
     NativeFrench,
+    #[cfg(feature="native-usde-updater")]
+    NativeWithUpdater{updater:update102::Update102Source},
 }
 
 /// Confirm the edition from exact internal CD file hashes, not from a filename
@@ -156,6 +158,21 @@ fn verified_french_cd(base:&Path)->Result<bool,String>{
     }
     Ok(edition[0]=="C_SKIES_FR_001" &&
        report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
+}
+
+/// The 1.00 US/EU and German CDs are exact inventory matches, but do NOT
+/// contain 1.02 game code. This experimental path therefore additionally
+/// requires the owner-supplied SHA-pinned official 1.02 updater.
+#[cfg(feature="native-usde-updater")]
+fn verified_usde_cd(base:&Path)->Result<bool,String>{
+    let report=disc_inspect::inspect(base,None)?;
+    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
+        .collect::<Vec<_>>();
+    if edition.len()!=1 || !report.lines().any(|line|
+        line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"){
+        return Ok(false);
+    }
+    Ok(matches!(edition[0],"C_SKIES_DISC_001"|"C_SKIES_DE_001"))
 }
 
 pub(super) fn preflight_install_sources(
@@ -176,6 +193,10 @@ pub(super) fn preflight_install_sources(
     }
 
     let updater=update102::source_for_install(base,update);
+    #[cfg(feature="native-usde-updater")]
+    if disc.is_ok() && updater.is_ok() && verified_usde_cd(base).unwrap_or(false) {
+        return Ok(InstallSources::NativeWithUpdater{updater:updater?});
+    }
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
     if let Err(detail)=&disc{
