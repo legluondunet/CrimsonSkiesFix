@@ -46,6 +46,19 @@ extern "system" {
 
 fn sample(n:usize)->bool {n<12 || (n<480 && n%120==0)}
 
+// Wine's experimental system pointer and GameOS sync must BOTH be enabled.
+// Neither flag alone may alter OS cursor clipping.
+fn wine_clip_repair_scope(wine:bool,probe:bool,sync:bool)->bool{
+    wine && probe && sync
+}
+fn wine_clip_repair_enabled()->bool{
+    let c=crate::cfg();
+    wine_clip_repair_scope(
+        diagnostics::is_wine_runtime(),
+        c.wine_system_cursor_probe,c.wine_system_cursor_sync
+    )
+}
+
 // Pure geometry proof: repair ONLY a smaller, non-empty game-requested
 // clip strictly contained in the verified borderless game client, and
 // only if the current OS restriction is the very same original request.
@@ -74,22 +87,29 @@ fn stale_clip_target(requested:Rect,current:Rect,client:(i32,i32,u32,u32))->Opti
 /// bounds it to the verified game client. No WM, GetCursorPos or pointer
 /// coordinate interception; original ClipCursor IAT hook remains passive.
 pub fn repair_stale_game_cursor_clip(hwnd:*mut c_void)->Result<String,String>{
-    if !crate::diagnostics::is_native_windows() || !crate::cfg().native_dd4_bootstrap ||
-       !crate::cfg().native_mouse_clip_repair || hwnd.is_null(){
-        return Err("native repair not enabled / no verified HWND".into());
+    let c=crate::cfg();
+    let native=c.native_mouse_clip_repair && diagnostics::is_native_windows();
+    let wine=wine_clip_repair_enabled();
+    if !(native || wine) || !c.native_dd4_bootstrap ||
+        c.directdraw_passthrough || hwnd.is_null(){
+        return Err("cursor clip repair not enabled / no verified HWND".into());
     }
     let client=win32::game_client_geometry(hwnd)
         .ok_or("game-owned HWND client geometry unavailable")?;
-    let recorded=GAME_LAST_CLIP.lock()
-        .map_err(|_|"ClipCursor record poisoned")?
-        .ok_or("no successful game ClipCursor(rect) was observed")?;
+    let recorded=*GAME_LAST_CLIP.lock()
+        .map_err(|_|"ClipCursor record poisoned")?;
     let mut current=Rect{left:0,top:0,right:0,bottom:0};
     unsafe {
         if GetClipCursor(&mut current)==0{
             return Err("GetClipCursor failed".into());
         }
+        let recorded=recorded.ok_or_else(||format!(
+            "no successful game ClipCursor(rect) observed; OS_current={current:?} verified_client={client:?}"
+        ))?;
         let target=stale_clip_target(recorded,current,client)
-            .ok_or("existing cursor restriction is not the game's stale small clip")?;
+            .ok_or_else(||format!(
+                "not the game's stale smaller clip; game_requested={recorded:?} OS_current={current:?} verified_client={client:?}"
+            ))?;
         if ClipCursor(&target)==0{
             return Err("ClipCursor(new verified borderless client) failed".into());
         }
@@ -184,14 +204,17 @@ unsafe fn hook_import(
 // belongs to the original game before expanding any stale rectangle.
 // Debug output is NOT a prerequisite for that functional repair.
 fn should_hook_cursor_iat(native:bool,bootstrap:bool,passthrough:bool,
-    logging:bool,clip_repair:bool)->bool{
-    native && bootstrap && !passthrough && (logging || clip_repair)
+    logging:bool,clip_repair:bool,wine_experimental:bool)->bool{
+    bootstrap && !passthrough &&
+    ((native && (logging || clip_repair)) || wine_experimental)
 }
 pub fn install(){
     let cfg=crate::cfg();
+    let wine_experimental=wine_clip_repair_enabled();
     if !should_hook_cursor_iat(
         diagnostics::is_native_windows(),cfg.native_dd4_bootstrap,
-        cfg.directdraw_passthrough,cfg.log_enabled,cfg.native_mouse_clip_repair
+        cfg.directdraw_passthrough,cfg.log_enabled,
+        cfg.native_mouse_clip_repair,wine_experimental
     ){return;}
     unsafe {
         let base=GetModuleHandleW(std::ptr::null()) as usize;
@@ -209,7 +232,7 @@ pub fn install(){
         let client=cfg.log_enabled && hook_import(base,user32,CLIENT_TO_SCREEN_RVA,
             b"ClientToScreen\0",observe_client_to_screen as usize,&CLIENT_ORIG);
         log(&format!(
-            "NATIVE-CURSOR: read-only game IAT trace SetCursorPos={set} ClipCursor={clip} ClientToScreen={client}; original calls preserved"
+            "NATIVE-CURSOR: read-only game IAT trace SetCursorPos={set} ClipCursor={clip} ClientToScreen={client}; wine_experimental={wine_experimental} original calls preserved"
         ));
     }
 }
@@ -218,12 +241,19 @@ mod tests {
     use super::*;
     #[test]
     fn native_clip_provenance_does_not_require_debug_logging(){
-        assert!(should_hook_cursor_iat(true,true,false,false,true));
-        assert!(should_hook_cursor_iat(true,true,false,true,false));
-        assert!(!should_hook_cursor_iat(false,true,false,false,true)); // Wine
-        assert!(!should_hook_cursor_iat(true,false,false,false,true));
-        assert!(!should_hook_cursor_iat(true,true,true,false,true));
-        assert!(!should_hook_cursor_iat(true,true,false,false,false));
+        assert!(should_hook_cursor_iat(true,true,false,false,true,false));
+        assert!(should_hook_cursor_iat(true,true,false,true,false,false));
+        assert!(!should_hook_cursor_iat(false,true,false,false,true,false));
+        assert!(!should_hook_cursor_iat(true,false,false,false,true,false));
+        assert!(!should_hook_cursor_iat(true,true,true,false,true,false));
+        assert!(!should_hook_cursor_iat(true,true,false,false,false,false));
+        assert!(should_hook_cursor_iat(false,true,false,false,false,true));
+        assert!(!should_hook_cursor_iat(false,false,false,false,false,true));
+        assert!(!should_hook_cursor_iat(false,true,true,false,false,true));
+        assert!(!wine_clip_repair_scope(false,true,true));
+        assert!(!wine_clip_repair_scope(true,false,true));
+        assert!(!wine_clip_repair_scope(true,true,false));
+        assert!(wine_clip_repair_scope(true,true,true));
     }
     #[test]
     fn user32_game_import_rvas_and_sample_bound(){
@@ -246,6 +276,12 @@ mod tests {
         assert_eq!(stale_clip_target(old,old,(0,0,640,480)),None);
         assert_eq!(stale_clip_target(old,old,(500,0,1536,960)),None);
         assert_eq!(stale_clip_target(old,old,(0,0,1536,600)),None);
+        // Wine 1920x1080, original 648x533 centered window. Only the
+        // game's identical successful clip may be enlarged.
+        let old_wine=Rect{left:636,top:255,right:1284,bottom:788};
+        let full_wine=Rect{left:0,top:0,right:1920,bottom:1080};
+        assert_eq!(stale_clip_target(old_wine,old_wine,(0,0,1920,1080)),Some(full_wine));
+        assert_eq!(stale_clip_target(old_wine,full_wine,(0,0,1920,1080)),None);
         assert_eq!(stale_clip_target(Rect{left:0,top:0,right:0,bottom:0},
             Rect{left:0,top:0,right:0,bottom:0},(0,0,1536,960)),None);
         let shifted=Rect{left:-500,top:50,right:1036,bottom:1010};
