@@ -610,6 +610,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     // gameplay, without altering the original game mouse/input state.
     if crate::cfg().wine_system_cursor_probe{
         crate::window_erase_guard::disarm_native_system_cursor_probe();
+        crate::window_erase_guard::disarm_native_gos_cursor_bridge();
     }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
@@ -750,6 +751,29 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     ),
                     Err(reason)=>log(&format!(
                         "WINE-SYSTEM-CURSOR-PROBE: unavailable ({reason}); game pointer unchanged"
+                    )),
+                }
+            }
+            // Distinct Wine-only, reversible OS -> GOS coordinate synchronization.
+            // GameOS continues to receive *its own* relative DirectInput
+            // results and buttons, except the X/Y deltas are adjusted by
+            // the original native GOS integration routine to converge to
+            // the system pointer in the physically verified 4:3 viewport.
+            // Keeping the two cursors visible is intentional at this stage.
+            if wine_system_cursor_probe_eligible(
+                mode,crate::diagnostics::is_wine_runtime(),
+                crate::cfg().wine_system_cursor_probe &&
+                crate::cfg().wine_system_cursor_sync
+            ){
+                match crate::window_erase_guard::arm_native_gos_cursor_bridge(
+                    runtime.hwnd,(expected.2,expected.3),
+                    runtime.render_client,false,false
+                ){
+                    Ok(view)=>log(&format!(
+                        "WINE-SYSTEM-CURSOR-SYNC: armed original GameOS relative motion convergence to OS pointer; viewport=({},{} {}x{}) source=800x600; no button injection, no gameplay modification",
+                        view.left,view.top,view.width,view.height)),
+                    Err(reason)=>log(&format!(
+                        "WINE-SYSTEM-CURSOR-SYNC: unavailable ({reason}); original DirectInput deltas unchanged"
                     )),
                 }
             }
