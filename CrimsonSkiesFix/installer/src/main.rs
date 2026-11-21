@@ -558,7 +558,7 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
 
 /// Install authenticated retail files into a private staged directory.
 /// The protected original EXE is kept until the approved EXE activation.
-fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->Result<(),String> {
+fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Source>)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -569,7 +569,8 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     }
     // The automatic install preflight has already authenticated the updater
     // and executable before extraction. The update application rechecks it.
-    println!("Building original game installation from verified CD and official 1.02 updater...");
+    println!("Building original game installation from verified CD; update source: {}...",
+        if updater.is_some(){"authenticated official 1.02 updater"}else{"original French 1.02 CD"});
     let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
@@ -578,7 +579,13 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
-    update102::apply_asset(&stage,extracted.edition,updater)?;
+    match updater {
+        Some(verified_update)=>{update102::apply_asset(&stage,extracted.edition,verified_update)?;}
+        None=>{
+            if !cfg!(feature="native-fr-cd") {return Err("missing authenticated updater".into());}
+            update102::verify_original_french_cd_asset(&stage,extracted.edition)?;
+        }
+    }
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
@@ -611,7 +618,8 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
          RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
-        update102::PATCH_SHA256,update102::ASSET_SHA256,
+        if updater.is_some(){update102::PATCH_SHA256}else{"NOT_REQUIRED_ORIGINAL_FR_102_CD"},
+        update102::ASSET_SHA256,
         finalized.members,finalized.zbd_files,finalized.payload_bytes,
         finalized.manifest_sha,finalized.short_name_candidates,
         extracted.retail_support_files,extracted.retail_support_bytes,renamed
