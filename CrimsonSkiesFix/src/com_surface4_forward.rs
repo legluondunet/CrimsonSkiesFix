@@ -272,8 +272,19 @@ struct GraphFlipSession{
 /// Limit only the *real game* virtual Primary Flip, never intermediate
 /// Blts or the standalone probe. Crucial because the existing passive
 /// ModernFPSPacing option cannot hook a synthetic Surface4 vtable.
-fn pace_graph_flip(session:&mut GraphFlipSession){
-    let Some(fps)=session.fps_limit.filter(|v|*v>0) else{return;};
+// Menu cursor is game-drawn in the virtual 800x600 frame. The only A/B
+// difference is the spacing of fully armed primary Flip submissions;
+// the game clock, original GOS script and DirectInput state are untouched.
+fn graph_fps_target(base:Option<u32>,mode:Mode,menu_120_active:bool)->Option<u32>{
+    if menu_120_active && base.is_some() &&
+       (mode.width,mode.height,mode.bpp)==(800,600,16) {
+        Some(120)
+    }else{base}
+}
+fn pace_graph_flip(session:&mut GraphFlipSession)->Option<u32>{
+    let active_menu=crate::menu_fps_120_active();
+    let target=graph_fps_target(session.fps_limit,session.mode,active_menu);
+    let Some(fps)=target.filter(|v|*v>0) else{return None;};
     let interval=Duration::from_nanos(1_000_000_000/u64::from(fps));
     let now=Instant::now();
     if let Some(previous)=session.last_present {
@@ -282,6 +293,7 @@ fn pace_graph_flip(session:&mut GraphFlipSession){
         }
     }
     session.last_present=Some(Instant::now());
+    Some(fps)
 }
 #[repr(C)]
 struct Surface4Forwarder{
@@ -1478,7 +1490,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 ))
             }
         }
-        pace_graph_flip(session);
+        let pacing_target=pace_graph_flip(session);
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
@@ -1544,7 +1556,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             match (timing_started,timing_finished,session.frame_time_window.as_mut()){
                 (Some(start),Some(end),Some(window))=>
                     window.observe(end,end.saturating_duration_since(start),
-                        node.mode,session.fps_limit),
+                        node.mode,pacing_target),
                 _=>None,
             }
         }else{None};
@@ -2967,5 +2979,23 @@ mod frame_time_telemetry_tests{
         let r=r.unwrap();
         assert!(r.contains("ignored_pauses=1"));
         assert!(r.contains("slow_2x=0 slow_3x=0"));
+    }
+}
+
+
+#[cfg(test)]
+mod menu_120fps_experiment_tests{
+    use super::*;
+    #[test]
+    fn only_authenticated_800x600_menu_changes_target(){
+        let menu=Mode{width:800,height:600,bpp:16};
+        let game=Mode{width:1920,height:1080,bpp:16};
+        let legacy=Mode{width:640,height:480,bpp:16};
+        assert_eq!(graph_fps_target(Some(60),menu,false),Some(60));
+        assert_eq!(graph_fps_target(Some(60),menu,true),Some(120));
+        assert_eq!(graph_fps_target(Some(60),game,true),Some(60));
+        assert_eq!(graph_fps_target(Some(60),legacy,true),Some(60));
+        assert_eq!(graph_fps_target(None,menu,true),None);
+        assert_eq!(graph_fps_target(Some(30),menu,false),Some(30));
     }
 }

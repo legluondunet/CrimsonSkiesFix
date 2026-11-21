@@ -107,6 +107,8 @@ mod menu_brand {
 
 // No game-owned Flip stream exists in this standalone probe.
 fn frame_time_trace_enabled()->bool{false}
+// This standalone probe has no GOS menus, so the experiment is never active.
+fn menu_fps_120_active()->bool{false}
 
 // The standalone surface probe never locks RGB32 movie surfaces.
 

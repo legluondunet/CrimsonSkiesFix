@@ -66,12 +66,15 @@ pub struct Config {
     pub surface_usage_trace: bool,
     pub crash_blt_trace: bool,
     pub frame_time_trace: bool,
+    /// A/B only: increase the verified 800x600 GOS menu Flip cap to 120.
+    /// Gameplay and movies keep the user's FPSLimit; off by default.
+    pub menu_fps_120: bool,
 
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, menu_fps_120: false, }
     }
 }
 
@@ -138,6 +141,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.crash_blt_trace = v; },
             ("debug", "frametimetrace") =>
                 if let Some(v) = enabled(value) { settings.frame_time_trace = v; },
+            ("debug", "menufps120") =>
+                if let Some(v) = enabled(value) { settings.menu_fps_120 = v; },
             ("debug", "surfaceusagetrace") =>
                 if let Some(v) = enabled(value) { settings.surface_usage_trace = v; },
             ("debug", "log") =>
@@ -248,6 +253,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "debug/surfaceusagetrace",
     "debug/crashblttrace",
     "debug/frametimetrace",
+    "debug/menufps120",
 ];
 
 /// Normalize repeated known INI keys while preserving the EXACT effective
@@ -572,6 +578,18 @@ mod tests {
             parse("[Debug]\nColorCapture=1\nColorProbe=1"),
             Config::default()
         );
+    }
+    #[test]
+    fn menu_120fps_is_debug_only_and_off_by_default(){
+        assert!(!Config::default().menu_fps_120);
+        assert!(parse("[Debug]\nMenuFPS120=1").menu_fps_120);
+        assert!(!parse("[Graphics]\nMenuFPS120=1").menu_fps_120);
+        assert!(!parse("[Debug]\nMenuFPS120=1\nMenuFPS120=0").menu_fps_120);
+        assert!(!parse("[Debug]\nMenuFPS120=invalid").menu_fps_120);
+        let text="[Debug]\nMenuFPS120=0\nMenuFPS120=1\n";
+        let (dedup,removed)=deduplicate_known_ini(text).unwrap();
+        assert_eq!(removed,1);
+        assert_eq!(parse(&dedup),parse(text));
     }
     #[test]
     fn frametime_trace_is_debug_only_off_by_default_and_requires_logging(){
