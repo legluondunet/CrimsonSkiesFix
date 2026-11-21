@@ -1777,7 +1777,10 @@ unsafe extern "system" fn forward_get_blt_status(this:SurfaceThis,p1:u32)->i32{
         n
     }else{0};
     let start=if movie{Some(Instant::now())}else{None};
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).get_blt_status)(real,p1);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::Surface4GetBltStatus,native_started);
     if let Some(start)=start{
         movie_com_trace("backbuffer.GetBltStatus",count,Some(hr),
             Some(start.elapsed().as_millis()));
@@ -1814,7 +1817,10 @@ unsafe extern "system" fn forward_get_dc(this:SurfaceThis,p1:*mut *mut c_void)->
     let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).get_dc)(real,p1);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::Surface4GetDC,native_started);
     if let Some(node)=node{
         if native_menu_cursor_probe_enabled(this){
             let n=NATIVE_MENU_GETDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
@@ -1855,7 +1861,11 @@ fn virtual_primary_flip_status(
 unsafe extern "system" fn forward_get_flip_status(this:SurfaceThis,p1:u32)->i32{
     if let Some(node)=graph_node(this){
         if node.role==SurfaceRole::Primary{
-            return virtual_primary_flip_status(&*this.cast::<Surface4Forwarder>(),p1);
+            let native_started=crate::menu_api_timing::start();
+            let result=virtual_primary_flip_status(&*this.cast::<Surface4Forwarder>(),p1);
+            crate::menu_api_timing::finish(
+                crate::menu_api_timing::Kind::Surface4GetFlipStatus,native_started);
+            return result;
         }
     }
     let real=borrowed_real(this);
@@ -1867,7 +1877,10 @@ unsafe extern "system" fn forward_get_flip_status(this:SurfaceThis,p1:u32)->i32{
         n
     }else{0};
     let start=if movie{Some(Instant::now())}else{None};
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).get_flip_status)(real,p1);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::Surface4GetFlipStatus,native_started);
     if let Some(start)=start{
         movie_com_trace("backbuffer.GetFlipStatus",count,Some(hr),
             Some(start.elapsed().as_millis()));
@@ -1947,7 +1960,16 @@ unsafe extern "system" fn forward_lock(this:SurfaceThis,p1:*mut Rect,p2:*mut c_v
         if let Some(n)=node{virtual_issue(n.role,"Lock no verified native target",E_NOTIMPL);}
         return E_NOTIMPL;
     }
+    // The virtual Surface4 path is not the modern native COM-hooked
+    // interface: earlier Blt/Unlock probes did NOT time its native Lock.
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).lock)(real,p1,p2,p3,p4);
+    crate::menu_api_timing::finish(
+        if node.map(|n|n.role)==Some(SurfaceRole::Primary){
+            crate::menu_api_timing::Kind::Surface4LockPrimary
+        }else{
+            crate::menu_api_timing::Kind::Surface4LockOther
+        },native_started);
     if hr<0 {if let Some(n)=node{virtual_issue(n.role,"native Lock failed",hr);}}
     else if let Some(n)=node{
         if n.role==SurfaceRole::Primary{
@@ -1970,7 +1992,10 @@ unsafe extern "system" fn forward_release_dc(this:SurfaceThis,p1:*mut c_void)->i
     let node=graph_node(this);
     let real=borrowed_real(this);
     if real.is_null(){return E_POINTER;}
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).release_dc)(real,p1);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::Surface4ReleaseDC,native_started);
     if let Some(node)=node{
         if native_menu_cursor_probe_enabled(this){
             let n=NATIVE_MENU_RELEASEDC_ATTEMPTS.fetch_add(1,Ordering::Relaxed)+1;
@@ -2021,7 +2046,10 @@ unsafe extern "system" fn forward_unlock(this:SurfaceThis,p1:*mut Rect)->i32{
         (*this.cast::<Surface4Forwarder>()).primary_lock_surface.load(Ordering::Acquire)
     }else{borrowed_real(this)};
     if real.is_null(){return E_NOTIMPL;}
+    let native_started=crate::menu_api_timing::start();
     let hr=(real_vtable(real).unlock)(real,p1);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::Surface4Unlock,native_started);
     if hr<0 {if let Some(n)=node{virtual_issue(n.role,"native Unlock failed",hr);}}
     hr
 }

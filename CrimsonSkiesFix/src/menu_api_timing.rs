@@ -13,16 +13,25 @@ use std::{
 use crate::{cfg,menu_scene,menu_gos_event};
 
 #[derive(Clone,Copy)]
-pub(crate) enum Kind{BeginScene,EndScene,Blt,BltFast,Unlock}
+pub(crate) enum Kind{
+    BeginScene,EndScene,Blt,BltFast,Unlock,
+    Surface4LockPrimary,Surface4LockOther,Surface4Unlock,
+    Surface4GetBltStatus,Surface4GetFlipStatus,
+    Surface4GetDC,Surface4ReleaseDC,
+}
 impl Kind{
     const fn index(self)->usize{
         match self{
             Self::BeginScene=>0,Self::EndScene=>1,Self::Blt=>2,
-            Self::BltFast=>3,Self::Unlock=>4
+            Self::BltFast=>3,Self::Unlock=>4,
+            Self::Surface4LockPrimary=>5,Self::Surface4LockOther=>6,
+            Self::Surface4Unlock=>7,Self::Surface4GetBltStatus=>8,
+            Self::Surface4GetFlipStatus=>9,Self::Surface4GetDC=>10,
+            Self::Surface4ReleaseDC=>11,
         }
     }
 }
-const METHODS:usize=5;
+const METHODS:usize=12;
 const SLOW_16_US:u64=16_667;
 const SLOW_33_US:u64=33_333;
 struct Bucket{
@@ -64,7 +73,8 @@ impl Bucket{
 }
 static BUCKETS:[Bucket;METHODS]=[
     Bucket::new(),Bucket::new(),Bucket::new(),
-    Bucket::new(),Bucket::new(),
+    Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),
+    Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),
 ];
 static GOS_MENU_GRAPH:AtomicBool=AtomicBool::new(false);
 thread_local!{static IN_OUR_VIRTUAL_FLIP:Cell<u32>=const{Cell::new(0)};}
@@ -155,12 +165,19 @@ pub(crate) fn summary(previous:Snapshot,current:Snapshot)->String{
     // totals represent (possibly concurrent) instrumented API calls
     // between two snapshots, not a partition of 120 image intervals.
     format!(
-        "MENU-API-TIMING: approximately_120_Flips=true          BeginScene[{}] EndScene[{}] Blt[{}] BltFast[{}] Unlock[{}]          [wall-time only around original COM calls; this thread's virtual Flip excluded; overlapping and out-of-scope GOS work unmeasured; max is lifetime, not interval]",
+        "MENU-API-TIMING: approximately_120_Flips=true          BeginScene[{}] EndScene[{}] Blt[{}] BltFast[{}] Unlock[{}] Surface4LockPrimary[{}] Surface4LockOther[{}] Surface4Unlock[{}] Surface4GetBltStatus[{}] Surface4GetFlipStatus[{}] Surface4GetDC[{}] Surface4ReleaseDC[{}]          [wall-time around native Surface4 COM forwarder calls; primary GetFlipStatus may be virtual; nested and other-thread samples may overlap; own virtual Flip excluded; max is lifetime, not interval]",
         entry(Kind::BeginScene,previous,current),
         entry(Kind::EndScene,previous,current),
         entry(Kind::Blt,previous,current),
         entry(Kind::BltFast,previous,current),
         entry(Kind::Unlock,previous,current),
+        entry(Kind::Surface4LockPrimary,previous,current),
+        entry(Kind::Surface4LockOther,previous,current),
+        entry(Kind::Surface4Unlock,previous,current),
+        entry(Kind::Surface4GetBltStatus,previous,current),
+        entry(Kind::Surface4GetFlipStatus,previous,current),
+        entry(Kind::Surface4GetDC,previous,current),
+        entry(Kind::Surface4ReleaseDC,previous,current),
     )
 }
 
@@ -184,6 +201,8 @@ mod tests{
         let summary=summary(Snapshot::default(),Snapshot::default());
         assert!(summary.contains("BeginScene[calls=0 total_ms=0.000 avg_ms=0.000"));
         assert!(summary.contains("Unlock[calls=0"));
+        assert!(summary.contains("Surface4LockPrimary[calls=0"));
+        assert!(summary.contains("Surface4GetFlipStatus[calls=0"));
         assert_eq!(summary.matches("total_ms=").count(),METHODS);
     }
     #[test]

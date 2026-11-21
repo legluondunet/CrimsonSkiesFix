@@ -113,6 +113,12 @@ fn frame_time_trace_enabled()->bool{false}
 mod menu_api_timing{
     #[derive(Clone,Copy)]
     pub(crate) struct Snapshot;
+    pub(crate) enum Kind {
+        Surface4LockPrimary,Surface4LockOther,Surface4Unlock,
+        Surface4GetBltStatus,Surface4GetFlipStatus,Surface4GetDC,Surface4ReleaseDC
+    }
+    pub(crate) fn start()->Option<std::time::Instant>{None}
+    pub(crate) fn finish(_kind:Kind,_started:Option<std::time::Instant>){}
     pub(crate) fn snapshot()->Snapshot{Snapshot}
     pub(crate) fn set_graph_mode(_w:u32,_h:u32,_bpp:u32){}
     pub(crate) fn clear_graph_mode(){}
