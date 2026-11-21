@@ -109,7 +109,11 @@ unsafe extern "system" fn observed_sleep(ms:u32){
     let ptr=ORIGINAL_SLEEP.load(Ordering::Acquire);
     if ptr==0 || ptr==observed_sleep as usize{return;}
     let original:SleepFn=std::mem::transmute(ptr);
+    // Ensure the *input* Win32 last-error state also reaches the real API
+    // unchanged: lazy diagnostic TLS/clock initialization may touch it.
+    let incoming_error=GetLastError();
     let started=menu_api_timing::start();
+    SetLastError(incoming_error);
     original(ms);
     let last_error=GetLastError();
     if let Some(started)=started {SLEEP.record(started.elapsed(),ms,None);}
@@ -119,7 +123,9 @@ unsafe extern "system" fn observed_wait(handle:*mut c_void,ms:u32)->u32{
     let ptr=ORIGINAL_WAIT.load(Ordering::Acquire);
     if ptr==0 || ptr==observed_wait as usize {return u32::MAX;}
     let original:WaitFn=std::mem::transmute(ptr);
+    let incoming_error=GetLastError();
     let started=menu_api_timing::start();
+    SetLastError(incoming_error);
     let result=original(handle,ms);
     let last_error=GetLastError();
     if let Some(started)=started{WAIT.record(started.elapsed(),ms,Some(result));}
@@ -132,7 +138,9 @@ unsafe extern "system" fn observed_msg_wait(
     let ptr=ORIGINAL_MSG_WAIT.load(Ordering::Acquire);
     if ptr==0 || ptr==observed_msg_wait as usize {return u32::MAX;}
     let original:MsgWaitFn=std::mem::transmute(ptr);
+    let incoming_error=GetLastError();
     let started=menu_api_timing::start();
+    SetLastError(incoming_error);
     let result=original(n,handles,all,ms,mask);
     let last_error=GetLastError();
     if let Some(started)=started{MSG_WAIT.record(started.elapsed(),ms,Some(result));}
