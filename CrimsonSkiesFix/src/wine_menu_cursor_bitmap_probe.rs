@@ -21,6 +21,32 @@ const PUSH_IMM32:u8=0x68;
 const KEY_ORIGINAL:&[u8;7]=b"CURSOR\0";
 const KEY_HIDDEN_FIRST:u8=b'X';
 static APPLIED:AtomicBool=AtomicBool::new(false);
+static VERIFIED_MENU_MODE:AtomicBool=AtomicBool::new(false);
+
+/// Only the already-validated 800x600x16 DD4 graph can authorize a
+/// subsequent original MainMenu/Preferences script lookup interception.
+pub fn set_verified_menu_mode(verified:bool){
+    VERIFIED_MENU_MODE.store(verified,Ordering::Release);
+    if !verified{restore_if_armed();}
+}
+
+/// The menu dispatcher calls this before forwarding the authentic script
+/// loader. Suppressing lookup outside an authentic script risks unrelated UI.
+pub fn before_original_script(menu_or_preferences:bool){
+    if !menu_or_preferences {
+        restore_if_armed();
+        return;
+    }
+    if !VERIFIED_MENU_MODE.load(Ordering::Acquire){return;}
+    match arm_for_verified_menu((800,600,16)){
+        Ok(details)=>log(&format!("WINE-GOS-CURSOR-BITMAP-PROBE: {details}")),
+        Err(reason)=>{
+            if crate::cfg().wine_menu_cursor_bitmap_probe {
+                log(&format!("WINE-GOS-CURSOR-BITMAP-PROBE: not applied ({reason})"));
+            }
+        }
+    }
+}
 
 #[link(name="kernel32")]
 extern "system" {
@@ -41,6 +67,9 @@ pub fn arm_for_verified_menu(mode:(u32,u32,u32))->Result<String,String>{
         c.wine_menu_cursor_bitmap_probe,mode
     ) || !c.native_dd4_bootstrap || c.directdraw_passthrough {
         return Err("only explicit Wine system-cursor+sync+bitmap probe in 800x600x16 is admitted".into());
+    }
+    if !VERIFIED_MENU_MODE.load(Ordering::Acquire){
+        return Err("verified 800x600 DD4 game window mode not established".into());
     }
     if APPLIED.load(Ordering::Acquire) {
         return Ok("already armed; no additional memory write".into());
