@@ -213,6 +213,9 @@ struct FrameTimeWindow{
     gos_cursor_samples:u32,
     gos_cursor_changed:u32,
     gos_cursor_max_step:u32,
+    gos_motion_after_gap_50ms:u32,
+    gos_motion_after_gap_100ms:u32,
+    gos_motion_after_gap_180ms:u32,
     previous_gos_cursor:Option<(i32,i32)>,
     filled:usize,
     pauses:u32,
@@ -225,7 +228,11 @@ impl Default for FrameTimeWindow{
             sleep_requested_us:[0;FRAME_TIME_WINDOW],
             sleep_actual_us:[0;FRAME_TIME_WINDOW],
             phase_samples:0,gos_cursor_samples:0,gos_cursor_changed:0,
-            gos_cursor_max_step:0,previous_gos_cursor:None,
+            gos_cursor_max_step:0,
+            gos_motion_after_gap_50ms:0,
+            gos_motion_after_gap_100ms:0,
+            gos_motion_after_gap_180ms:0,
+            previous_gos_cursor:None,
             filled:0,pauses:0}
     }
 }
@@ -274,6 +281,15 @@ impl FrameTimeWindow{
                     if max_step>0{
                         self.gos_cursor_changed=self.gos_cursor_changed.saturating_add(1);
                         self.gos_cursor_max_step=self.gos_cursor_max_step.max(max_step);
+                        // Only count delays when the GOS cursor actually
+                        // changed on the frame subsequently presented.
+                        // This is not evidence of a raw hardware event loss.
+                        self.gos_motion_after_gap_50ms=self.gos_motion_after_gap_50ms
+                            .saturating_add(u32::from(us>50_000));
+                        self.gos_motion_after_gap_100ms=self.gos_motion_after_gap_100ms
+                            .saturating_add(u32::from(us>100_000));
+                        self.gos_motion_after_gap_180ms=self.gos_motion_after_gap_180ms
+                            .saturating_add(u32::from(us>180_000));
                     }
                 }
                 self.previous_gos_cursor=Some(cursor);
@@ -307,6 +323,10 @@ impl FrameTimeWindow{
             self.phase_samples,self.gos_cursor_samples,self.gos_cursor_changed,
             self.gos_cursor_max_step
         );
+        let (motion_gap_50,motion_gap_100,motion_gap_180)=(
+            self.gos_motion_after_gap_50ms,self.gos_motion_after_gap_100ms,
+            self.gos_motion_after_gap_180ms
+        );
         let target_us=1_000_000/fps.unwrap_or(60).max(1);
         let slow2=self.intervals_us.iter()
             .filter(|&&v|v>target_us.saturating_mul(2)).count();
@@ -321,8 +341,11 @@ impl FrameTimeWindow{
         self.gos_cursor_samples=0;
         self.gos_cursor_changed=0;
         self.gos_cursor_max_step=0;
+        self.gos_motion_after_gap_50ms=0;
+        self.gos_motion_after_gap_100ms=0;
+        self.gos_motion_after_gap_180ms=0;
         Some(format!(
-            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} phase_samples={} upstream_gap_p50_ms={:.3} sleep_requested_p50_ms={:.3} sleep_actual_p50_ms={:.3} sleep_actual_p95_ms={:.3} gos_cursor_samples={} gos_cursor_changed={} gos_cursor_max_step={} [successful virtual Flip completion spacing; upstream excludes this Flip; GOS cursor is sampled at Flip entry, NOT display or input poll timestamps]",
+            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} phase_samples={} upstream_gap_p50_ms={:.3} sleep_requested_p50_ms={:.3} sleep_actual_p50_ms={:.3} sleep_actual_p95_ms={:.3} gos_cursor_samples={} gos_cursor_changed={} gos_cursor_max_step={} gos_motion_after_gap_50ms={} gos_motion_after_gap_100ms={} gos_motion_after_gap_180ms={} [successful virtual Flip completion spacing; upstream excludes this Flip; GOS cursor is sampled at Flip entry, NOT display or input poll timestamps]",
             mode.width,mode.height,mode.bpp,FRAME_TIME_WINDOW,
             fps.unwrap_or(60),avg_us as f64/1000.0,p50 as f64/1000.0,
             p95 as f64/1000.0,p99 as f64/1000.0,worst as f64/1000.0,
@@ -332,7 +355,8 @@ impl FrameTimeWindow{
             sleep_requested_p50 as f64/1000.0,
             sleep_actual_p50 as f64/1000.0,
             sleep_actual_p95 as f64/1000.0,
-            cursor_samples,cursor_changed,cursor_max_step
+            cursor_samples,cursor_changed,cursor_max_step,
+            motion_gap_50,motion_gap_100,motion_gap_180
         ))
     }
 }
@@ -3205,6 +3229,7 @@ mod gos_flip_cadence_probe_tests{
         assert!(report.contains("sleep_actual_p50_ms=0.000"));
         assert!(report.contains("gos_cursor_samples=120"));
         assert!(report.contains("gos_cursor_changed=120"));
+        assert!(report.contains("gos_motion_after_gap_180ms=0"));
     }
     #[test]
     fn paced_60hz_is_distinguishable_from_an_upstream_30hz_loop(){
