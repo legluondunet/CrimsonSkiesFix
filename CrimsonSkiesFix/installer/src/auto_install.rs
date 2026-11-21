@@ -138,7 +138,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// Precisely one installation input plan. Unknown discs continue to require
 /// the original explicit, hash-pinned updater + approved EXE sources.
 #[derive(Debug)]
-enum InstallSources {
+pub(super) enum InstallSources {
     Approved { executable:PathBuf, updater:update102::Update102Source },
     #[cfg(feature="native-fr-cd")]
     NativeFrench,
