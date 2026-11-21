@@ -73,7 +73,7 @@ jobs:
           Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $exe
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" |
             Set-Content 'native-fr-dist/CrimsonSkiesFix.sha256'
-          Copy-Item installer/README-unified.md native-fr-dist/README-EXPERIMENTAL.md
+          Copy-Item installer/README-native-fr.md native-fr-dist/README-EXPERIMENTAL.md
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-NATIVE-FR-102-X86-TEST-ONLY

@@ -91,8 +91,10 @@ const README: &str = include_str!("../README-winmm-candidate.md");
 const README: &str = include_str!("../README-winmm-split.md");
 #[cfg(all(feature="import-alias-install",not(feature="unified-fix-install")))]
 const README: &str = include_str!("../README-import-alias.md");
-#[cfg(feature="unified-fix-install")]
+#[cfg(all(feature="unified-fix-install",not(feature="native-fr-cd")))]
 const README: &str = include_str!("../README-unified.md");
+#[cfg(feature="native-fr-cd")]
+const README: &str = include_str!("../README-native-fr.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -684,8 +686,8 @@ fn usage() {
          CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         A full installation requires the approved 1.02 EXE, bundled {RUNTIME_DLL} patch,\n\
-         and official 1.02 updater BEFORE CD extraction starts.\n\
+         Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
+         EXPERIMENTAL NATIVE FR builds reconstruct the 1.02 EXE from the original French CD.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
