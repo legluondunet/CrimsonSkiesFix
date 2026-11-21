@@ -257,6 +257,18 @@ fn frame_time_trace_enabled()->bool{
     c.log_enabled && c.frame_time_trace
 }
 
+// Exact-GOS-menu-only pacing A/B. This deliberately does not infer a menu
+// from 800x600 alone: cinematics use the same raster and keep FPSLimit.
+// All three scene flags are maintained by existing, byte-verified hooks;
+// no input processing, rendering or frame-pacing change in the default path.
+fn menu_fps_120_active()->bool{
+    let c=cfg();
+    c.menu_fps_120 && c.experimental_windowed_adapter &&
+        (menu_scene::main_menu_active() ||
+         menu_scene::preferences_active() ||
+         menu_gos_event::preferences_transaction_active())
+}
+
 // All system inventory code now lives in Rust (no C FFI module).
 fn cfg()->Config {
     *CONFIG.get_or_init(|| {

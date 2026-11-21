@@ -70,3 +70,33 @@ Le **CD français original** reste utilisable sans correctif externe, comme dans
 - Les essais CI vérifient la compilation Windows, le refus de CD manquant et le parcours synthétique. L'installation et le gameplay **réels** de ces éditions via cette nouvelle voie demandent encore une validation sous Wine/Windows.
 - Les binaires non reconnus et les résultats différents du SHA-256 attendu sont rejetés.
 - La PR est expérimentale. Conserver la validation FR existante et effectuer une revue technique et juridique avant toute fusion/release.
+
+
+### Experimental menu cursor pacing A/B (draft only)
+
+The verified 1.02 game draws its GOS menu cursor within the 800x600
+software-rendered menu frames. A 60-FPS virtual-Flip cap can therefore
+make the pointer look less fluid on a 120-Hz display, but that cause
+has **not** been established without gameplay measurements.
+
+For a controlled A/B, place the following **hidden experimental** flag
+in the existing top-level `CrimsonSkiesFix.ini`, under `[Debug]`:
+
+```ini
+[Debug]
+MenuFPS120=1
+```
+
+Default: `MenuFPS120=0` (absence means OFF). This raises the cap to
+120 FPS only while the exact GOS MainMenu/Preferences scene is detected
+in a verified 800x600x16 virtual primary. Flight gameplay retains
+`[Graphics] FPSLimit` (maximum 60), and the 800x600 mode alone does
+not enable the override during startup cinematics. The option does not
+replace the cursor, change Windows mouse movement, or alter GOS logic.
+Set it back to 0 to restore the known-good 60-FPS menu behavior.
+
+For evidence rather than a subjective A/B, use `[Debug] Log=1` and
+`FrameTimeTrace=1` in a separate test; the bounded `FRAMETIME:`
+summaries report virtual-Flip intervals (not physical display FPS).
+Never infer a crash or cursor problem from the minimal last-session
+exit code alone.
