@@ -250,7 +250,8 @@ fn native_system_cursor_probe_message(message:u32)->bool{
 fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32)->bool{
     if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=hwnd as usize ||
        MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
-       !native_system_cursor_probe_message(message){return false;}
+       !native_system_cursor_probe_message(message) ||
+       unsafe{GetForegroundWindow()}!=hwnd{return false;}
     unsafe{
         // Win32 standard arrow, not a custom file or a global cursor change.
         let arrow=LoadCursorW(std::ptr::null_mut(),32512usize as *const u16);
@@ -367,6 +368,14 @@ unsafe extern "system" fn guarded_proc(hwnd:Hwnd,msg:u32,wparam:usize,lparam:isi
         menu_mouse_lparam(hwnd,msg,lparam)
     }else{lparam};
     let result=CallWindowProcW(previous,hwnd,msg,wparam,forwarded);
+    // The native/Wine OS-arrow comparison is strictly menu-and-focus
+    // bounded. On Alt-Tab (or any game focus loss), restore only increments
+    // made by this experiment; show it again on the next mouse move.
+    if matching && (msg==WM_KILLFOCUS ||
+        (msg==WM_ACTIVATEAPP && wparam==0)) &&
+        MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)==hwnd as usize {
+        undo_native_system_cursor_probe();
+    }
     if matching && after_game_wndproc_system_cursor_probe(hwnd,msg) &&
         msg==WM_SETCURSOR {
         // Win32 cursor contract: after SetCursor, return TRUE to prevent
