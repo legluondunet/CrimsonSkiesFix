@@ -135,6 +135,16 @@ pub fn is_native_windows()->bool {
     })
 }
 
+/// Wine/Proton must be positively identified before enabling experimental
+/// OS-cursor visibility. A missing ntdll is NOT proof of Wine.
+pub fn is_wine_runtime()->bool{
+    static WINE_RUNTIME:OnceLock<bool>=OnceLock::new();
+    *WINE_RUNTIME.get_or_init(||unsafe{
+        let ntdll=GetModuleHandleA(b"ntdll.dll\0".as_ptr().cast());
+        !ntdll.is_null() && !api(ntdll,b"wine_get_version\0").is_null()
+    })
+}
+
 fn log_os(emit:&mut dyn FnMut(&str)) {
     unsafe {
         let ntdll=GetModuleHandleA(b"ntdll.dll\0".as_ptr().cast());
