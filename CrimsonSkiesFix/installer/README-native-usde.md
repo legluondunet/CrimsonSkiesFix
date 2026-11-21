@@ -37,6 +37,13 @@ graphiques, définir temporairement `[Debug] Log=1` dans le fichier
 Le journal de jeu `CrimsonSkiesFix.log` est recréé à chaque session.
 `Log=0` est la valeur par défaut volontaire.
 
+Les relevés d'appels de rendu `RENDER-SAMPLE` et `RENDER-WINDOW`
+sont réservés au diagnostic approfondi : ajouter temporairement
+`FrameTimeTrace=1` dans `[Debug]`, avec `Log=1`. Ils ne constituent
+**pas** une mesure des FPS réellement affichés. Sans ce drapeau,
+`Log=1` conserve les diagnostics de rendu, de menu et de stabilité
+sans ces échantillons répétitifs.
+
 Sous Wine, pour diagnostiquer un plantage qui ferme aussi le lanceur,
 exécuter depuis un terminal dans le dossier du lanceur :
 
