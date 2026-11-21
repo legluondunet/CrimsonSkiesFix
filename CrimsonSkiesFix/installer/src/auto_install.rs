@@ -137,6 +137,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// CI independently verifies its entire 22-export PE32 layout.
 pub(super) /// Precisely one installation input plan. Unknown discs continue to require
 /// the original explicit, hash-pinned updater + approved EXE sources.
+#[derive(Debug)]
 enum InstallSources {
     Approved { executable:PathBuf, updater:update102::Update102Source },
     #[cfg(feature="native-fr-cd")]
@@ -430,15 +431,24 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     // updater SOURCE have passed preflight. In explicitly private builds the
     // updater may be embedded, not a filesystem source. Public builds still
     // demand a local authentic updater.
-    let (source,updater)=preflight_install_sources(base,game,None)?;
+    let sources=preflight_install_sources(base,game,None)?;
+    let updater=match &sources{
+        InstallSources::Approved{updater,..}=>Some(updater),
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>None,
+    };
     if old_present {
-        println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
+        println!("Rebuilding game in a private verified transaction...");
     }else{
-        println!("Installing new game from original CD and verified official 1.02 patch...");
+        println!("Installing game from exact original CD files...");
     }
-    install_from_cd(base,&new,&updater)?;
+    install_from_cd(base,&new,updater)?;
     if old_present {preserve_player_data(game,&new)?;}
-    activate_verified_exe(&new,&source)?;
+    match sources {
+        InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>activate_pending_exe(base,&new)?,
+    }
     verify_installed_cd_assets(&new)?;
     verify(&new)?;
     if old_present {
