@@ -322,6 +322,27 @@ pub fn apply_asset(game:&Path,edition:&str,source:&Update102Source)->Result<&'st
     Ok("EXTRACTED_VERIFIED_FROM_LZX_CAB")
 }
 
+/// The original French retail disc is already version 1.02 and contains
+/// the exact 797-byte official CRIMPTCH.ROF. In the native-FR path this
+/// asset is independently authenticated from the owner CD: no external
+/// updater is needed, and nothing is downloaded or modified in place.
+pub fn verify_original_french_cd_asset(game:&Path,edition:&str)->Result<(),String>{
+    if edition!="C_SKIES_FR_001" {
+        return Err("a local updater is still required for US/DE retail CDs".into());
+    }
+    if disc_inspect::verify_staging(game,edition)?==0 {
+        return Err("no authenticated French retail CD files in stage".into());
+    }
+    let target=game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF");
+    if !regular_file(&target) || fs::metadata(&target).map_err(err)?.len()!=797 {
+        return Err("original French 1.02 patch asset is missing or unsafe".into());
+    }
+    if file_sha(&target)?!=ASSET_SHA256 {
+        return Err("original French 1.02 patch asset SHA-256 mismatch".into());
+    }
+    Ok(())
+}
+
 // Former standalone updater inspector: preserve only for regression tests.
 #[cfg(test)]
 fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
