@@ -344,6 +344,7 @@ struct GraphFlipSession{
     fps_limit:Option<u32>, // None in standalone probe and COM unit tests
     last_present:Option<Instant>, // reset whenever the mode epoch changes
     frame_time_window:Option<FrameTimeWindow>, // optional steady-state telemetry, no per-frame logging
+    menu_api_previous:Option<crate::menu_api_timing::Snapshot>, // COM call timing, only for trace windows
     window:usize,
     focus_repaint:bool,
     exposure:ExposureState,
@@ -768,8 +769,11 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     *state=Some(GraphFlipSession{bridge,backend,epoch:generation,mode:node.mode,
         fps_limit,last_present:None,
         frame_time_window:crate::frame_time_trace_enabled().then(FrameTimeWindow::default),
+        menu_api_previous:crate::frame_time_trace_enabled()
+            .then(crate::menu_api_timing::snapshot),
         window,focus_repaint,exposure:ExposureState::default(),
         erase_count_seen:0,paint_count_seen:0});
+    crate::menu_api_timing::set_graph_mode(node.mode.width,node.mode.height,node.mode.bpp);
     Ok(())
 }
 
@@ -807,6 +811,7 @@ pub unsafe fn retire_graph_primary_flip(primary:SurfaceThis)->Result<u64,i32>{
     if p.retired.load(Ordering::Acquire){return Err(E_FAIL);}
     let Some(session)=state.take() else{return Err(E_FAIL);};
     let completed=session.bridge.stats().complete_frames;
+    crate::menu_api_timing::clear_graph_mode();
     // Propagate the retired mode generation to the entire known, acyclic
     // Primary -> Backbuffer -> Z32 graph. Old attached COM identities can
     // remain alive for Release/QI, but null-source fills must not render.
@@ -1539,6 +1544,10 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         let movie_started=if movie{Some(Instant::now())}else{None};
         let Ok(mut state)=p.virtual_flip.lock() else{return E_FAIL;};
         let Some(session)=state.as_mut() else{return E_NOTIMPL;};
+        // Exclude ALL nested native COM calls caused by our own virtual
+        // Flip. Otherwise a driver Blt in this presenter would be falsely
+        // counted as time spent by GOS before the Flip.
+        let _api_exclusion=crate::menu_api_timing::exclude_virtual_flip();
         // A successful windowed Flip is the sole frame-present boundary.
         // Do not rely on the passive modern Flip hook: these synthetic COM
         // surfaces never call through that native interface.
@@ -1680,6 +1689,15 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 _=>None,
             }
         }else{None};
+        let api_summary=if frame_timing.is_some() && node.mode.width==800 &&
+            node.mode.height==600 && node.mode.bpp==16 {
+            // Snapshot once per 120 completed Flips, never on each frame.
+            // Figures count only authenticated menu-scene API wall time,
+            // excluding this thread's nested virtual presentation calls.
+            let current=crate::menu_api_timing::snapshot();
+            session.menu_api_previous.replace(current).map(|previous|
+                crate::menu_api_timing::summary(previous,current))
+        }else{None};
         // The OS window procedure can re-enter game code and COM.
         // ABSOLUTELY release the entire virtual Flip mutex before attempting
         // to dispatch even one queued Win32 message. Without the explicit
@@ -1688,6 +1706,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Emit at most one summary per 120 successful Flips and outside
         // the graph mutex. No synchronous logging in each sampled frame.
         if let Some(summary)=frame_timing{crate::log(&summary);}
+        if let Some(summary)=api_summary{crate::log(&summary);}
         if movie {
             if let Some((n,calls,total))=
                 window_erase_guard::pump_native_movie_window(

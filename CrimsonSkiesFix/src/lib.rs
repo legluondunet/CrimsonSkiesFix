@@ -47,6 +47,7 @@ mod modern_surface_hooks;
 mod com_labels;
 mod frame_pacing;
 mod render_sampling;
+mod menu_api_timing; // opt-in GOS menu COM wall-time probes, never modifies API parameters
 mod blt_crash_trace;
 mod window_exposure;
 mod window_erase_guard;
