@@ -432,8 +432,18 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         static NATIVE_DINPUT_IAT_ONCE:Once=Once::new();
         NATIVE_DINPUT_IAT_ONCE.call_once(native_dinput_mouse_trace::install);
     }
+    // Wine A/B only: the 800x600 pointer sync may need the original game's
+    // pre-borderless ClipCursor provenance, just as the existing native
+    // Windows stale-clip repair does. Do not hook other Wine applications,
+    // normal gameplay, or default config; preserve named USER32 calls.
+    if diagnostics::is_wine_runtime() && !config.directdraw_passthrough &&
+        config.wine_system_cursor_probe && config.wine_system_cursor_sync {
+        static WINE_CURSOR_IAT_ONCE:Once=Once::new();
+        WINE_CURSOR_IAT_ONCE.call_once(native_cursor_trace::install);
+    }
     // On Wine only, attach the same exact-game DirectInputCreateA observer
-    // used on native Windows, but strictly for read-only mouse poll telemetry.
+    // used on native Windows, but strictly for read-only mouse poll telemetry
+    // and an independent opt-in Wine system pointer sync.
     // The native-only mouse repairs remain gated off in their own code.
     if !diagnostics::is_native_windows() &&
        !config.directdraw_passthrough &&
