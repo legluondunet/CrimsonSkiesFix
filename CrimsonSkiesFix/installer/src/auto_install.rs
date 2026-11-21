@@ -135,7 +135,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// The patch is embedded in the single-file launcher, not a separately
 /// distributed DLL. It must exist and be a plausible Windows PE image;
 /// CI independently verifies its entire 22-export PE32 layout.
-pub(super) /// Precisely one installation input plan. Unknown discs continue to require
+/// Precisely one installation input plan. Unknown discs continue to require
 /// the original explicit, hash-pinned updater + approved EXE sources.
 #[derive(Debug)]
 enum InstallSources {
@@ -158,7 +158,7 @@ fn verified_french_cd(base:&Path)->Result<bool,String>{
        report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
 }
 
-fn preflight_install_sources(
+pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
 )->Result<InstallSources,String>{
     // No staging or modification until the bundled runtime and chosen input
