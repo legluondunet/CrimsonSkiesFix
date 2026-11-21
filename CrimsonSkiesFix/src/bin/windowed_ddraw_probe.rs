@@ -140,6 +140,16 @@ mod menu_wait_timing{
     }
 }
 
+// Standalone GPU resource probe has no game mouse device or GameOS state.
+mod menu_cursor_probe{
+    #[derive(Clone,Copy)]
+    pub(crate) struct Snapshot;
+    pub(crate) fn snapshot()->Snapshot{Snapshot}
+    pub(crate) fn summary(_previous:Snapshot,_current:Snapshot)->String{
+        String::new()
+    }
+}
+
 // The standalone surface probe never locks RGB32 movie surfaces.
 
 
