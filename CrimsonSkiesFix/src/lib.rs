@@ -49,6 +49,7 @@ mod frame_pacing;
 mod render_sampling;
 mod menu_api_timing; // opt-in GOS menu COM wall-time probes, never modifies API parameters
 mod menu_wait_timing; // opt-in admitted EXE imported wait APIs + menu thread CPU diagnostic
+mod menu_cursor_probe; // bounded passive DirectInput mouse poll timing on Windows/Wine
 mod blt_crash_trace;
 mod window_exposure;
 mod window_erase_guard;
@@ -430,6 +431,15 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         NATIVE_CURSOR_IAT_ONCE.call_once(native_cursor_trace::install);
         static NATIVE_DINPUT_IAT_ONCE:Once=Once::new();
         NATIVE_DINPUT_IAT_ONCE.call_once(native_dinput_mouse_trace::install);
+    }
+    // On Wine only, attach the same exact-game DirectInputCreateA observer
+    // used on native Windows, but strictly for read-only mouse poll telemetry.
+    // The native-only mouse repairs remain gated off in their own code.
+    if !diagnostics::is_native_windows() &&
+       !config.directdraw_passthrough &&
+       config.log_enabled && config.frame_time_trace {
+        static WINE_DINPUT_MOUSE_ONCE:Once=Once::new();
+        WINE_DINPUT_MOUSE_ONCE.call_once(native_dinput_mouse_trace::install);
     }
     // Only the verified original 1.02 game EXE's three named IAT slots,
     // and only when both deep-diagnostic flags are enabled. The original
