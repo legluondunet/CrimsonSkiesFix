@@ -1,0 +1,88 @@
+name: Experimental native FR CD to 1.02 (single EXE, NOT RELEASE)
+on:
+  push:
+    branches: [feature/native-fr-cd-102-20261121]
+    paths:
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - '.github/workflows/native-fr-cd-prototype.yml'
+  pull_request:
+    paths:
+      - 'CrimsonSkiesFix/installer/**'
+      - 'CrimsonSkiesFix/runtime-unified/**'
+      - 'CrimsonSkiesFix/loader-winmm/**'
+      - '.github/workflows/native-fr-cd-prototype.yml'
+  workflow_dispatch:
+concurrency:
+  group: native-fr-cd-20261121
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  windows-x86:
+    runs-on: windows-2022
+    name: Build + test offline native French CD installer (Win32 x86)
+    defaults:
+      run:
+        working-directory: CrimsonSkiesFix
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CRIMSONSKIESFIX_COMMIT: ${{ github.sha }}
+      CRIMSONSKIESFIX_BUILD_COMMIT: ${{ github.sha }}
+      CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add i686-pc-windows-msvc
+      - name: Compile and test combined fix.dll
+        shell: pwsh
+        run: |
+          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Native runtime tests failed' }
+          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Native runtime build failed' }
+      - name: Compile and test single-EXE native-fr-cd installer
+        shell: pwsh
+        run: |
+          cargo test --manifest-path installer/Cargo.toml --features native-fr-cd --target i686-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Native FR installer tests failed' }
+          cargo build --manifest-path installer/Cargo.toml --features native-fr-cd --release --target i686-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Native FR installer build failed' }
+      - name: Smoke test fail-closed no-media installation
+        shell: pwsh
+        run: |
+          $exe = 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
+          $version = & $exe --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch 'NATIVE FR') {
+            throw "Wrong installer variant: $version"
+          }
+          New-Item -ItemType Directory -Path 'native-fr-empty-tree' -Force | Out-Null
+          Copy-Item $exe 'native-fr-empty-tree/CrimsonSkiesFix.exe'
+          & './native-fr-empty-tree/CrimsonSkiesFix.exe' --install-only
+          if ($LASTEXITCODE -ne 2) { throw 'Absent CD must be rejected' }
+          if (Test-Path 'native-fr-empty-tree/game') { throw 'Absent CD created a game directory' }
+          if (!(Test-Path 'native-fr-empty-tree/CrimsonSkiesFix_installer.log')) {
+            throw 'Missing installer diagnostic log'
+          }
+          $global:LASTEXITCODE = 0
+      - name: Package experimental one-file Windows x86 build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'native-fr-dist' -Force | Out-Null
+          $exe = 'native-fr-dist/CrimsonSkiesFix.exe'
+          Copy-Item 'installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe' $exe
+          "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" |
+            Set-Content 'native-fr-dist/CrimsonSkiesFix.sha256'
+          Copy-Item installer/README-unified.md native-fr-dist/README-EXPERIMENTAL.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-NATIVE-FR-102-X86-TEST-ONLY
+          path: CrimsonSkiesFix/native-fr-dist/*
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-NATIVE-FR-CARGO-LOCK
+          path: CrimsonSkiesFix/installer/Cargo.lock
+          retention-days: 7
+          if-no-files-found: error
