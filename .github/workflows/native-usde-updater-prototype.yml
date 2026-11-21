@@ -1,7 +1,7 @@
 name: Experimental native US-DE 1.02 from owner updater (NOT RELEASE)
 on:
   push:
-    branches: [feature/native-usde-updater-20261121]
+    branches: [feature/native-usde-updater-20261121, fix/usde-session-crash-diagnostics-20261121]
     paths:
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/runtime-unified/**'
@@ -15,7 +15,7 @@ on:
       - '.github/workflows/native-usde-updater-prototype.yml'
   workflow_dispatch:
 concurrency:
-  group: native-usde-updater-20261121
+  group: native-usde-updater-${{ github.ref_name }}
   cancel-in-progress: true
 permissions:
   contents: read
@@ -41,13 +41,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native runtime tests failed' }
           cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Native runtime build failed' }
-      - name: Compile and test single-EXE native-fr-cd installer
+      - name: Compile and test single-EXE native US-DE updater installer
         shell: pwsh
         run: |
           cargo test --manifest-path installer/Cargo.toml --features native-usde-updater --target i686-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw 'Native FR installer tests failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Native US-DE installer tests failed' }
           cargo build --manifest-path installer/Cargo.toml --features native-usde-updater --release --target i686-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw 'Native FR installer build failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Native US-DE installer build failed' }
       - name: Smoke test fail-closed no-media installation
         shell: pwsh
         run: |
