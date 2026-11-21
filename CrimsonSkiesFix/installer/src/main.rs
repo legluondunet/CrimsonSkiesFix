@@ -1254,7 +1254,7 @@ mod tests {
         let dest=root.join("CrimsonSkiesFix");
         fs::create_dir(&dest).unwrap();
         fs::write(dest.join("user-save.dat"),b"keep").unwrap();
-        assert!(install_from_cd(&root,&dest,&update102::Update102Source::OwnerFile(root.join("update102.exe"))).is_err());
+        assert!(install_from_cd(&root,&dest,Some(&update102::Update102Source::OwnerFile(root.join("update102.exe")))).is_err());
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }
