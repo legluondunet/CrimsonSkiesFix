@@ -93,9 +93,16 @@ fn gos_relative_delta(current:i32,target:i32,speed:f32)->Option<i32>{
 /// coordinates via the verified native DD4 viewport. Only the returned
 /// DIMOUSESTATE.relative X/Y fields are corrected, before ORIGINAL
 /// GOS 0x5382b0 integrates them; buttons/Z/HRESULT untouched.
+fn wine_os_cursor_sync_enabled()->bool{
+    let c=crate::cfg();
+    c.wine_system_cursor_probe && c.wine_system_cursor_sync &&
+    crate::diagnostics::is_wine_runtime()
+}
 unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
-    if !crate::cfg().native_gos_cursor_bridge ||
-       !crate::diagnostics::is_native_windows() || size!=16 || data.is_null() ||
+    let wine_sync=wine_os_cursor_sync_enabled();
+    let native_bridge=crate::cfg().native_gos_cursor_bridge &&
+        crate::diagnostics::is_native_windows();
+    if !(native_bridge || wine_sync) || size!=16 || data.is_null() ||
        !(crate::menu_scene::main_menu_active() ||
          crate::menu_scene::preferences_active() ||
          crate::window_erase_guard::native_gos_cursor_bridge_post_gameplay_ui()){
@@ -139,7 +146,8 @@ unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
     ptr::write_unaligned(bytes.add(4).cast::<i32>(),delta.1);
     let n=GOS_CURSOR_BRIDGE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     (crate::cfg().log_enabled && (sampled(n) || n==1)).then(||format!(
-        "NATIVE-GOS-CURSOR-BRIDGE: sample={n} target_800x600={target:?} gos_before={before:?} speed={speed:?} physical_dinput_delta={original:?} logical_dinput_delta={delta:?}; buttons and Z unchanged, native GOS cursor renderer retained"
+        "{}: sample={n} target_800x600={target:?} gos_before={before:?} speed={speed:?} physical_dinput_delta={original:?} logical_dinput_delta={delta:?}; buttons and Z unchanged, native GOS cursor renderer retained",
+        if wine_sync{"WINE-SYSTEM-CURSOR-SYNC"}else{"NATIVE-GOS-CURSOR-BRIDGE"}
     ))
 }
 
@@ -227,7 +235,8 @@ unsafe extern "system" fn observe_create_device(
             let passive=c.log_enabled && c.frame_time_trace;
             installed[0]=detailed && observe_slot(device,DEV_ACQUIRE,observe_acquire as usize,&ORIGINAL_ACQUIRE);
             installed[1]=detailed && observe_slot(device,DEV_UNACQUIRE,observe_unacquire as usize,&ORIGINAL_UNACQUIRE);
-            installed[2]=(detailed || passive || (native && c.native_gos_cursor_bridge)) &&
+            installed[2]=(detailed || passive || (native && c.native_gos_cursor_bridge) ||
+                 wine_os_cursor_sync_enabled()) &&
                 observe_slot(device,DEV_GET_STATE,observe_get_state as usize,&ORIGINAL_STATE);
             installed[3]=detailed && observe_slot(device,DEV_GET_DATA,observe_get_data as usize,&ORIGINAL_DATA);
             installed[4]=detailed && observe_slot(device,DEV_SET_FORMAT,observe_format as usize,&ORIGINAL_FORMAT);
@@ -386,9 +395,10 @@ unsafe extern "system" fn observe_get_data(
 /// Hook exactly the admitted EXE's original DirectInputCreateA import.
 /// If another runtime already substituted this import, do nothing.
 fn should_hook_mouse_iat(native:bool,bootstrap:bool,passthrough:bool,
-    logging:bool,trace:bool,coop_repair:bool,cursor_bridge:bool)->bool{
+    logging:bool,trace:bool,coop_repair:bool,cursor_bridge:bool,
+    wine_sync:bool)->bool{
     bootstrap && !passthrough &&
-    ((native && (coop_repair || cursor_bridge)) || (logging && trace))
+    ((native && (coop_repair || cursor_bridge)) || (logging && trace) || wine_sync)
 }
 pub fn install(){
     let c=crate::cfg();
@@ -397,7 +407,8 @@ pub fn install(){
         native,c.native_dd4_bootstrap,
         c.directdraw_passthrough,c.log_enabled,
         c.frame_time_trace || (native && c.native_direct_input_mouse_trace),
-        c.native_direct_input_mouse_coop_repair,c.native_gos_cursor_bridge
+        c.native_direct_input_mouse_coop_repair,c.native_gos_cursor_bridge,
+        wine_os_cursor_sync_enabled()
     ){return;}
     unsafe{
         let exe=GetModuleHandleA(ptr::null());
@@ -419,7 +430,7 @@ pub fn install(){
             log("NATIVE-DINPUT: EXE IAT patch rejected; audit disabled");
             return;
         }
-        log("MENU-CURSOR-DINPUT: exact game EXE DirectInputCreateA import observed; all native mouse repairs Windows-only; passive Wine/Windows state polling requires Log=1 plus FrameTimeTrace=1");
+        log("MENU-CURSOR-DINPUT: exact game EXE DirectInputCreateA import observed; native repairs Windows-only; WineSystemCursorSync separately opt-in; passive timing requires Log=1 plus FrameTimeTrace=1");
     }
 }
 #[cfg(test)]
@@ -427,17 +438,21 @@ mod tests{
     use super::*;
     #[test]
     fn native_functional_mouse_repairs_work_without_logging(){
-        assert!(should_hook_mouse_iat(true,true,false,false,false,true,true));
-        assert!(should_hook_mouse_iat(true,true,false,false,false,true,false));
-        assert!(should_hook_mouse_iat(true,true,false,false,false,false,true));
-        assert!(!should_hook_mouse_iat(false,true,false,false,false,true,true));
-        assert!(should_hook_mouse_iat(false,true,false,true,true,false,false));
-        assert!(!should_hook_mouse_iat(false,true,false,false,true,false,false));
-        assert!(!should_hook_mouse_iat(false,true,true,true,true,false,false));
-        assert!(!should_hook_mouse_iat(true,false,false,false,false,true,true));
-        assert!(!should_hook_mouse_iat(true,true,true,false,false,true,true));
-        assert!(!should_hook_mouse_iat(true,true,false,false,true,false,false));
-        assert!(should_hook_mouse_iat(true,true,false,true,true,false,false));
+        assert!(should_hook_mouse_iat(true,true,false,false,false,true,true,false));
+        assert!(should_hook_mouse_iat(true,true,false,false,false,true,false,false));
+        assert!(should_hook_mouse_iat(true,true,false,false,false,false,true,false));
+        assert!(!should_hook_mouse_iat(false,true,false,false,false,true,true,false));
+        assert!(should_hook_mouse_iat(false,true,false,true,true,false,false,false));
+        assert!(!should_hook_mouse_iat(false,true,false,false,true,false,false,false));
+        assert!(!should_hook_mouse_iat(false,true,true,true,true,false,false,false));
+        assert!(!should_hook_mouse_iat(true,false,false,false,false,true,true,false));
+        assert!(!should_hook_mouse_iat(true,true,true,false,false,true,true,false));
+        assert!(!should_hook_mouse_iat(true,true,false,false,true,false,false,false));
+        assert!(should_hook_mouse_iat(true,true,false,true,true,false,false,false));
+        // Wine may hook with logging disabled only by explicit opt-in.
+        assert!(should_hook_mouse_iat(false,true,false,false,false,false,false,true));
+        assert!(!should_hook_mouse_iat(false,false,false,false,false,false,false,true));
+        assert!(!should_hook_mouse_iat(false,true,true,false,false,false,false,true));
     }
     #[test]
     fn admitted_game_directinput_iat_and_legacy_interface_slots(){
