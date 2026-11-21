@@ -346,6 +346,7 @@ struct GraphFlipSession{
     frame_time_window:Option<FrameTimeWindow>, // optional steady-state telemetry, no per-frame logging
     menu_api_previous:Option<crate::menu_api_timing::Snapshot>, // COM call timing, only for trace windows
     menu_wait_previous:Option<crate::menu_wait_timing::Snapshot>, // original EXE wait API and current Flip thread CPU
+    menu_cursor_previous:Option<crate::menu_cursor_probe::Snapshot>, // true mouse polls (read-only)
     window:usize,
     focus_repaint:bool,
     exposure:ExposureState,
@@ -774,6 +775,8 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
             .then(crate::menu_api_timing::snapshot),
         menu_wait_previous:crate::frame_time_trace_enabled()
             .then(crate::menu_wait_timing::snapshot),
+        menu_cursor_previous:crate::frame_time_trace_enabled()
+            .then(crate::menu_cursor_probe::snapshot),
         window,focus_repaint,exposure:ExposureState::default(),
         erase_count_seen:0,paint_count_seen:0});
     crate::menu_api_timing::set_graph_mode(node.mode.width,node.mode.height,node.mode.bpp);
@@ -1707,6 +1710,12 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             session.menu_wait_previous.replace(current).map(|previous|
                 crate::menu_wait_timing::summary(previous,current))
         }else{None};
+        let cursor_summary=if frame_timing.is_some() &&
+            node.mode.width==800 && node.mode.height==600 && node.mode.bpp==16 {
+            let current=crate::menu_cursor_probe::snapshot();
+            session.menu_cursor_previous.replace(current).map(|previous|
+                crate::menu_cursor_probe::summary(previous,current))
+        }else{None};
         // The OS window procedure can re-enter game code and COM.
         // ABSOLUTELY release the entire virtual Flip mutex before attempting
         // to dispatch even one queued Win32 message. Without the explicit
@@ -1717,6 +1726,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         if let Some(summary)=frame_timing{crate::log(&summary);}
         if let Some(summary)=api_summary{crate::log(&summary);}
         if let Some(summary)=wait_summary{crate::log(&summary);}
+        if let Some(summary)=cursor_summary{crate::log(&summary);}
         if movie {
             if let Some((n,calls,total))=
                 window_erase_guard::pump_native_movie_window(
