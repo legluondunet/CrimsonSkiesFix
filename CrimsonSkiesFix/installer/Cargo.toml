@@ -31,7 +31,7 @@ native-fr-cd = ["unified-fix-install", "dep:unsafedisk-native"]
 [dependencies]
 # GPL native reconstruction from draft unsafedisk PR #5, pinned to a reviewed
 # commit; linked into CrimsonSkiesFix.exe, never shipped as a separate binary.
-unsafedisk-native = { package = "crimson-patcher", git = "https://github.com/legluondunet/unsafedisk.git", rev = "c01e16ee323bb9251fb154a0737326f2157fa1d0", optional = true }
+unsafedisk-native = { package = "crimson-patcher", git = "https://github.com/legluondunet/unsafedisk.git", rev = "0e708315ca2182359f4407cb203f7028f8b1bd32", optional = true }
 
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
 cab = "=0.6.0"
