@@ -135,13 +135,46 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// The patch is embedded in the single-file launcher, not a separately
 /// distributed DLL. It must exist and be a plausible Windows PE image;
 /// CI independently verifies its entire 22-export PE32 layout.
+/// Precisely one installation input plan. Unknown discs continue to require
+/// the original explicit, hash-pinned updater + approved EXE sources.
+#[derive(Debug)]
+pub(super) enum InstallSources {
+    Approved { executable:PathBuf, updater:update102::Update102Source },
+    #[cfg(feature="native-fr-cd")]
+    NativeFrench,
+}
+
+/// Confirm the edition from exact internal CD file hashes, not from a filename
+/// or volume label. A mismatched/unknown disc must never enter native FR mode.
+#[cfg(feature="native-fr-cd")]
+fn verified_french_cd(base:&Path)->Result<bool,String>{
+    let report=disc_inspect::inspect(base,None)?;
+    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
+        .collect::<Vec<_>>();
+    if edition.len()!=1 {
+        return Err("CD inspection has no unique authenticated edition".into());
+    }
+    Ok(edition[0]=="C_SKIES_FR_001" &&
+       report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
+}
+
 pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
-)->Result<(PathBuf,update102::Update102Source),String>{
-    // Check all prerequisites before CD extraction or staging.
-    // An orphan BIN/IMG needs its corresponding CUE for sector/track layout.
-    // File selection and updater/EXE hash verification are read-only.
+)->Result<InstallSources,String>{
+    // No staging or modification until the bundled runtime and chosen input
+    // sources are authenticated. CD inspection reads all original manifest
+    // entries for native FR, rather than trusting the CD name.
+    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
+        return Err(format!(
+            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
+        ));
+    }
     let disc=disc_inspect::preflight_media(base);
+    #[cfg(feature="native-fr-cd")]
+    if disc.is_ok() && update.is_none() && verified_french_cd(base).unwrap_or(false) {
+        return Ok(InstallSources::NativeFrench);
+    }
+
     let updater=update102::source_for_install(base,update);
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
@@ -164,13 +197,7 @@ pub(super) fn preflight_install_sources(
             problems.join("\n")
         ));
     }
-    // The installer runtime is independently verified before staging.
-    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
-        return Err(format!(
-            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
-        ));
-    }
-    Ok((exe?,updater?))
+    Ok(InstallSources::Approved{executable:exe?,updater:updater?})
 }
 
 /// Transactionally replace the original CD-protected entry *inside a newly
@@ -250,6 +277,40 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
     verify(game)?;
     fs::remove_file(&receipt_backup).map_err(error)?;
     Ok(())
+}
+
+/// Activate a verified, locally reconstructed French 1.02 EXE, or retain the
+/// pre-existing exact-hash import policy for other retail editions. This
+/// produces a sibling temporary file, never an extra DLL or executable for
+/// users to locate. Do not modify an original protected CD file.
+fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
+    #[cfg(feature="native-fr-cd")]
+    if installed_cd_edition(game)?=="C_SKIES_FR_001" {
+        // The complete CD receipt and original protected EXE/ICD must verify
+        // BEFORE any disk write. An interrupted candidate is never replaced.
+        verify_installed_cd_assets(game)?;
+        let temporary=base.join("CrimsonSkiesFix.native-fr-102.pending.exe");
+        if any_entry(&temporary){
+            return Err(format!(
+                "abandoned native French reconstruction exists (preserved, not overwritten): {}",
+                temporary.display()));
+        }
+        unsafedisk_native::reconstruct_verified_crimson_102(
+            &game.join("CRIMSON.EXE"),&game.join("CRIMSON.ICD"),&temporary
+        ).map_err(|err|format!("native French 1.02 reconstruction failed: {err}"))?;
+        // The native library has already validated full 1.02 SHA-256 before
+        // writing; activation performs an independent on-disk SHA-256 check.
+        struct TemporaryExecutable(PathBuf);
+        impl Drop for TemporaryExecutable{
+            fn drop(&mut self){
+                if regular(&self.0){let _=fs::remove_file(&self.0);}
+            }
+        }
+        let _cleanup=TemporaryExecutable(temporary.clone());
+        return activate_verified_exe(game,&temporary);
+    }
+    let source=approved_executable(base,game)?;
+    activate_verified_exe(game,&source)
 }
 
 fn copy_player_files(src:&Path,dst:&Path)->Result<(),String>{
@@ -370,15 +431,24 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     // updater SOURCE have passed preflight. In explicitly private builds the
     // updater may be embedded, not a filesystem source. Public builds still
     // demand a local authentic updater.
-    let (source,updater)=preflight_install_sources(base,game,None)?;
+    let sources=preflight_install_sources(base,game,None)?;
+    let updater=match &sources{
+        InstallSources::Approved{updater,..}=>Some(updater),
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>None,
+    };
     if old_present {
-        println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
+        println!("Rebuilding game in a private verified transaction...");
     }else{
-        println!("Installing new game from original CD and verified official 1.02 patch...");
+        println!("Installing game from exact original CD files...");
     }
-    install_from_cd(base,&new,&updater)?;
+    install_from_cd(base,&new,updater)?;
     if old_present {preserve_player_data(game,&new)?;}
-    activate_verified_exe(&new,&source)?;
+    match sources {
+        InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>activate_pending_exe(base,&new)?,
+    }
     verify_installed_cd_assets(&new)?;
     verify(&new)?;
     if old_present {
@@ -493,8 +563,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 }
                 // A fully verified original CD installation awaiting the
                 // approved EXE can be completed with no second CD extraction.
-                let source=approved_executable(base,game)?;
-                activate_verified_exe(game,&source)?;
+                activate_pending_exe(base,game)?;
                 return Ok("ACTIVATE_APPROVED_EXE_AND_LAUNCH");
             }
             Err(reason)=>{
@@ -511,8 +580,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                             if validated_game_exe(game).is_ok(){
                                 return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
                             }
-                            let source=approved_executable(base,game)?;
-                            activate_verified_exe(game,&source)?;
+                            activate_pending_exe(base,game)?;
                             return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                         }
                         Err(after)=>format!(
