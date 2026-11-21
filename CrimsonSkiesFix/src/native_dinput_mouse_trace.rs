@@ -11,7 +11,7 @@
 //! cursor repairs do not require Log=1. Optional mouse tracing does.
 //! Native repairs remain strictly disabled on Wine/Proton and normal DirectDraw mode.
 #![allow(dead_code)]
-use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
+use std::{ffi::{c_char,c_void},ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering},time::Instant};
 use crate::{diagnostics,log,win32};
 
 type Obj=*mut c_void;
@@ -300,12 +300,18 @@ unsafe extern "system" fn observe_get_state(this:Obj,size:u32,data:Obj)->i32{
     let p=ORIGINAL_STATE.load(Ordering::Acquire);
     if p==0{return 0x8000_4005u32 as i32;}
     let call:State=std::mem::transmute(p);
+    let tracked_mouse=tracked(this);
+    // Only the authenticated menu diagnostic times the original call.
+    // This clock is outside the real method; it never delays, alters or
+    // substitutes the requested DIMOUSESTATE values.
+    let timed_start=(tracked_mouse && crate::menu_cursor_probe::timing_enabled())
+        .then(Instant::now);
     let hr=call(this,size,data);
-    if !tracked(this){return hr;}
-    // Preserve the native method's GetLastError, even if a diagnostic clock
-    // query or a logging call uses other Win32 APIs before we return.
+    if !tracked_mouse{return hr;}
+    // Capture the real call's original Win32 LastError before diagnostics.
     let original_error=GetLastError();
-    crate::menu_cursor_probe::observe_get_device_state(hr,size,data);
+    let call_duration=timed_start.map(|start|start.elapsed());
+    crate::menu_cursor_probe::observe_get_device_state(hr,size,data,call_duration);
     if hr>=0{
         if let Some(note)=bridge_original_gos_cursor_delta(size,data){
             log(&note);
