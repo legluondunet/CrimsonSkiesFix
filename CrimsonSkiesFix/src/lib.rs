@@ -48,6 +48,7 @@ mod com_labels;
 mod frame_pacing;
 mod render_sampling;
 mod menu_api_timing; // opt-in GOS menu COM wall-time probes, never modifies API parameters
+mod menu_wait_timing; // opt-in admitted EXE imported wait APIs + menu thread CPU diagnostic
 mod blt_crash_trace;
 mod window_exposure;
 mod window_erase_guard;
@@ -426,6 +427,13 @@ unsafe fn symbol(name:&[u8])->*const c_void {
         NATIVE_CURSOR_IAT_ONCE.call_once(native_cursor_trace::install);
         static NATIVE_DINPUT_IAT_ONCE:Once=Once::new();
         NATIVE_DINPUT_IAT_ONCE.call_once(native_dinput_mouse_trace::install);
+    }
+    // Only the verified original 1.02 game EXE's three named IAT slots,
+    // and only when both deep-diagnostic flags are enabled. The original
+    // Sleep/Wait APIs are forwarded with unchanged args/results/errors.
+    if config.log_enabled && config.frame_time_trace {
+        static GOS_WAIT_IAT_ONCE:Once=Once::new();
+        GOS_WAIT_IAT_ONCE.call_once(menu_wait_timing::install);
     }
     // Diagnostic-only transparent proxy: forward the three exported entry
     // points to the original system DLL, without touching game code, GOS
