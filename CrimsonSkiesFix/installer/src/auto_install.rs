@@ -304,6 +304,50 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
 /// pre-existing exact-hash import policy for other retail editions. This
 /// produces a sibling temporary file, never an extra DLL or executable for
 /// users to locate. Do not modify an original protected CD file.
+/// Reconstruct the approved 1.02 executable from the owner's authentic
+/// Microsoft update CAB, processed entirely in memory. No protected updater
+/// or original SafeDisc source file is written as an intermediate artifact.
+/// The only temporary game EXE is SHA-pinned before activation and deleted.
+#[cfg(feature="native-usde-updater")]
+fn activate_native_usde_from_update(
+    base:&Path,game:&Path,updater:&update102::Update102Source,
+)->Result<(),String>{
+    let edition=installed_cd_edition(game)?;
+    if !matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
+        return Err("native updater reconstruction is US/DE-only".into());
+    }
+    verify_installed_cd_assets(game)?;
+    let protected=update102::read_protected_102_sources_from(updater)?;
+    let image=unsafedisk_native::reconstruct_verified_crimson_102_bytes(
+        &protected.loader,&protected.icd
+    ).map_err(|e|format!("native 1.02 reconstruction from owner updater failed: {e}"))?;
+    if image.len()!=GAME_EXE_SIZE as usize || sha256::hex(&image)!=GAME_EXE_HASH{
+        return Err("native updater reconstruction produced unexpected game EXE hash".into());
+    }
+    let temporary=base.join("CrimsonSkiesFix.native-usde-102.pending.exe");
+    if any_entry(&temporary){
+        return Err(format!(
+            "abandoned native US/DE candidate exists; never overwriting: {}",
+            temporary.display()));
+    }
+    let mut file=OpenOptions::new().write(true).create_new(true)
+        .open(&temporary).map_err(error)?;
+    if let Err(err)=file.write_all(&image).and_then(|_|file.sync_all()){
+        drop(file);
+        let _=fs::remove_file(&temporary);
+        return Err(format!("could not securely write reconstructed 1.02 candidate: {err}"));
+    }
+    drop(file);
+    struct PrivateCandidate(PathBuf);
+    impl Drop for PrivateCandidate{
+        fn drop(&mut self){
+            if regular(&self.0){let _=fs::remove_file(&self.0);}
+        }
+    }
+    let _cleanup=PrivateCandidate(temporary.clone());
+    activate_verified_exe(game,&temporary)
+}
+
 fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
     #[cfg(feature="native-fr-cd")]
     if installed_cd_edition(game)?=="C_SKIES_FR_001" {
@@ -329,6 +373,12 @@ fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
         }
         let _cleanup=TemporaryExecutable(temporary.clone());
         return activate_verified_exe(game,&temporary);
+    }
+    #[cfg(feature="native-usde-updater")]
+    if matches!(installed_cd_edition(game)?,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
+        if let Ok(updater)=update102::source_for_install(base,None){
+            return activate_native_usde_from_update(base,game,&updater);
+        }
     }
     let source=approved_executable(base,game)?;
     activate_verified_exe(game,&source)
@@ -457,6 +507,8 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
         InstallSources::Approved{updater,..}=>Some(updater),
         #[cfg(feature="native-fr-cd")]
         InstallSources::NativeFrench=>None,
+        #[cfg(feature="native-usde-updater")]
+        InstallSources::NativeWithUpdater{updater}=>Some(updater),
     };
     if old_present {
         println!("Rebuilding game in a private verified transaction...");
@@ -469,6 +521,9 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
         InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
         #[cfg(feature="native-fr-cd")]
         InstallSources::NativeFrench=>activate_pending_exe(base,&new)?,
+        #[cfg(feature="native-usde-updater")]
+        InstallSources::NativeWithUpdater{updater}=>
+            activate_native_usde_from_update(base,&new,&updater)?,
     }
     verify_installed_cd_assets(&new)?;
     verify(&new)?;
