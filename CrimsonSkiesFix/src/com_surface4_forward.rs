@@ -3232,6 +3232,41 @@ mod gos_flip_cadence_probe_tests{
         assert!(report.contains("gos_motion_after_gap_180ms=0"));
     }
     #[test]
+    fn delayed_frame_is_only_a_moving_cursor_stutter_candidate_if_gos_changed(){
+        let mode=Mode{width:800,height:600,bpp:16};
+        for moved_during_stall in [false,true]{
+            let mut telemetry=FrameTimeWindow::default();
+            let mut end=Instant::now();
+            telemetry.observe_probe(
+                end,Duration::ZERO,mode,Some(60),
+                Some(FlipPhaseSample{entered_at:end,
+                    sleep_requested:Duration::ZERO,sleep_actual:Duration::ZERO,
+                    cursor:Some((0,0))})
+            );
+            let mut report=None;
+            for frame in 1..=120{
+                end+=if frame==60{Duration::from_millis(205)}
+                     else{Duration::from_millis(33)};
+                let cursor_x=if frame==60 && !moved_during_stall{59}
+                             else{frame};
+                report=telemetry.observe_probe(
+                    end,Duration::ZERO,mode,Some(60),
+                    Some(FlipPhaseSample{
+                        entered_at:end,
+                        sleep_requested:Duration::ZERO,
+                        sleep_actual:Duration::ZERO,
+                        cursor:Some((cursor_x,0))
+                    })
+                );
+            }
+            let summary=report.unwrap();
+            assert!(summary.contains("max_ms=205.000"));
+            let expected=if moved_during_stall{1}else{0};
+            assert!(summary.contains(&format!(
+                "gos_motion_after_gap_180ms={expected}")));
+        }
+    }
+    #[test]
     fn paced_60hz_is_distinguishable_from_an_upstream_30hz_loop(){
         let mut telemetry=FrameTimeWindow::default();
         let mode=Mode{width:800,height:600,bpp:16};
