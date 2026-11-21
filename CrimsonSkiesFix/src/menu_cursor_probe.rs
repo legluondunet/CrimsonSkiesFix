@@ -11,7 +11,7 @@ use std::{
         OnceLock,
         atomic::{AtomicU64,Ordering},
     },
-    time::Instant,
+    time::{Duration,Instant},
 };
 
 static POLLS:AtomicU64=AtomicU64::new(0);
@@ -26,7 +26,7 @@ static LARGEST_DX:AtomicU64=AtomicU64::new(0);
 static LARGEST_DY:AtomicU64=AtomicU64::new(0);
 // Unlike motion-only gaps, these count EVERY real polling interval,
 // including stationary cursor polls, to locate pauses in GetDeviceState.
- // Polling cadence is not the raw hardware event arrival cadence.
+// Polling cadence is not the raw hardware event arrival cadence.
 static LAST_POLL_US:AtomicU64=AtomicU64::new(0);
 static POLL_GAPS:AtomicU64=AtomicU64::new(0);
 static POLL_GAPS_OVER_50MS:AtomicU64=AtomicU64::new(0);
@@ -39,14 +39,34 @@ static ACTIVE_GAPS:AtomicU64=AtomicU64::new(0);
 static GAPS_OVER_33MS:AtomicU64=AtomicU64::new(0);
 static GAPS_OVER_50MS:AtomicU64=AtomicU64::new(0);
 static LARGEST_ACTIVE_GAP_US:AtomicU64=AtomicU64::new(0);
+// Time spent *inside* the original DirectInput GetDeviceState itself.
+// Distinguishes a slow native/Wine API from game work between calls.
+static STATE_CALL_TIMED:AtomicU64=AtomicU64::new(0);
+static STATE_CALL_TOTAL_US:AtomicU64=AtomicU64::new(0);
+static STATE_CALL_OVER_16MS:AtomicU64=AtomicU64::new(0);
+static STATE_CALL_OVER_50MS:AtomicU64=AtomicU64::new(0);
+static STATE_CALL_OVER_180MS:AtomicU64=AtomicU64::new(0);
+static STATE_CALL_MAX_US:AtomicU64=AtomicU64::new(0);
 static CLOCK_ORIGIN:OnceLock<Instant>=OnceLock::new();
 
 fn active()->bool{crate::menu_api_timing::active_menu_trace()}
+pub(crate) fn timing_enabled()->bool{active()}
 
 /// Called AFTER the real COM method completes and BEFORE returning its
 /// unchanged HRESULT/data to the game. No synchronous logging here.
-pub(crate) unsafe fn observe_get_device_state(hr:i32,size:u32,data:*mut c_void){
+pub(crate) unsafe fn observe_get_device_state(
+    hr:i32,size:u32,data:*mut c_void,call_duration:Option<Duration>
+){
     if !active(){return;}
+    if let Some(duration)=call_duration{
+        let us=duration.as_micros().min(u128::from(u64::MAX)) as u64;
+        STATE_CALL_TIMED.fetch_add(1,Ordering::Relaxed);
+        STATE_CALL_TOTAL_US.fetch_add(us,Ordering::Relaxed);
+        STATE_CALL_OVER_16MS.fetch_add(u64::from(us>16_667),Ordering::Relaxed);
+        STATE_CALL_OVER_50MS.fetch_add(u64::from(us>50_000),Ordering::Relaxed);
+        STATE_CALL_OVER_180MS.fetch_add(u64::from(us>180_000),Ordering::Relaxed);
+        STATE_CALL_MAX_US.fetch_max(us,Ordering::Relaxed);
+    }
     POLLS.fetch_add(1,Ordering::Relaxed);
     let now=CLOCK_ORIGIN.get_or_init(Instant::now).elapsed().as_micros()
         .min(u128::from(u64::MAX)-1) as u64 + 1;
@@ -113,6 +133,8 @@ pub(crate) struct Snapshot{
     poll_gaps:u64,poll_gaps_over_50ms:u64,poll_gaps_over_100ms:u64,
     poll_gaps_over_180ms:u64,motion_after_poll_gap_180ms:u64,
     poll_gap_max_us:u64,
+    state_call_timed:u64,state_call_total_us:u64,state_call_over_16ms:u64,
+    state_call_over_50ms:u64,state_call_over_180ms:u64,state_call_max_us:u64,
 }
 pub(crate) fn snapshot()->Snapshot{
     Snapshot{
@@ -137,12 +159,18 @@ pub(crate) fn snapshot()->Snapshot{
         motion_after_poll_gap_180ms:
             MOTION_AFTER_POLL_GAP_180MS.load(Ordering::Relaxed),
         poll_gap_max_us:POLL_GAP_MAX_US.load(Ordering::Relaxed),
+        state_call_timed:STATE_CALL_TIMED.load(Ordering::Relaxed),
+        state_call_total_us:STATE_CALL_TOTAL_US.load(Ordering::Relaxed),
+        state_call_over_16ms:STATE_CALL_OVER_16MS.load(Ordering::Relaxed),
+        state_call_over_50ms:STATE_CALL_OVER_50MS.load(Ordering::Relaxed),
+        state_call_over_180ms:STATE_CALL_OVER_180MS.load(Ordering::Relaxed),
+        state_call_max_us:STATE_CALL_MAX_US.load(Ordering::Relaxed),
     }
 }
 pub(crate) fn summary(before:Snapshot,after:Snapshot)->String{
     let d=|a:u64,b:u64|b.saturating_sub(a);
     format!(
-        "MENU-CURSOR-INPUT: window=approximately_120_Flips dinput_polls={} successful={} motion_polls={} stationary_polls={} failed={} other_format={} abs_dx={} abs_dy={} active_motion_gaps={} gaps_over_33ms={} gaps_over_50ms={} lifetime_max_dx={} lifetime_max_dy={} lifetime_max_active_gap_ms={:.3} poll_gaps={} poll_gaps_over_50ms={} poll_gaps_over_100ms={} poll_gaps_over_180ms={} motion_after_poll_gap_180ms={} lifetime_max_poll_gap_ms={:.3} [real mouse GetDeviceState results, not raw hardware event timestamps; motion gap excludes >250ms pauses but may include intentional stops; GOS cursor sampled separately at Flip entry; zero polls may mean unobserved input route]",
+        "MENU-CURSOR-INPUT: window=approximately_120_Flips dinput_polls={} successful={} motion_polls={} stationary_polls={} failed={} other_format={} abs_dx={} abs_dy={} active_motion_gaps={} gaps_over_33ms={} gaps_over_50ms={} lifetime_max_dx={} lifetime_max_dy={} lifetime_max_active_gap_ms={:.3} poll_gaps={} poll_gaps_over_50ms={} poll_gaps_over_100ms={} poll_gaps_over_180ms={} motion_after_poll_gap_180ms={} lifetime_max_poll_gap_ms={:.3} dinput_call_timed={} dinput_call_total_ms={:.3} dinput_call_over_16ms={} dinput_call_over_50ms={} dinput_call_over_180ms={} lifetime_max_dinput_call_ms={:.3} [real mouse GetDeviceState results, not raw hardware event timestamps; motion gap excludes >250ms pauses but may include intentional stops; GOS cursor sampled separately at Flip entry; zero polls may mean unobserved input route]",
         d(before.polls,after.polls),
         d(before.success,after.success),
         d(before.motion,after.motion),
@@ -162,6 +190,12 @@ pub(crate) fn summary(before:Snapshot,after:Snapshot)->String{
         d(before.poll_gaps_over_180ms,after.poll_gaps_over_180ms),
         d(before.motion_after_poll_gap_180ms,after.motion_after_poll_gap_180ms),
         after.poll_gap_max_us as f64/1000.0,
+        d(before.state_call_timed,after.state_call_timed),
+        d(before.state_call_total_us,after.state_call_total_us) as f64/1000.0,
+        d(before.state_call_over_16ms,after.state_call_over_16ms),
+        d(before.state_call_over_50ms,after.state_call_over_50ms),
+        d(before.state_call_over_180ms,after.state_call_over_180ms),
+        after.state_call_max_us as f64/1000.0,
     )
 }
 #[cfg(test)]
@@ -176,12 +210,14 @@ mod tests{
         assert!(text.contains("motion_polls=0"));
         assert!(text.contains("active_motion_gaps=0"));
         assert!(text.contains("poll_gaps_over_180ms=0"));
+        assert!(text.contains("dinput_call_over_180ms=0"));
     }
     #[test]
     fn diagnostic_summary_identifies_poll_timestamps_not_hardware_events(){
         let text=summary(Snapshot::default(),Snapshot::default());
         assert!(text.contains("gaps_over_50ms=0"));
         assert!(text.contains("poll_gaps_over_50ms=0"));
+        assert!(text.contains("dinput_call_timed=0"));
         assert!(text.contains("not raw hardware event timestamps"));
     }
 }
