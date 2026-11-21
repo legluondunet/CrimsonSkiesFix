@@ -93,8 +93,10 @@ const README: &str = include_str!("../README-winmm-split.md");
 const README: &str = include_str!("../README-import-alias.md");
 #[cfg(all(feature="unified-fix-install",not(feature="native-fr-cd")))]
 const README: &str = include_str!("../README-unified.md");
-#[cfg(feature="native-fr-cd")]
+#[cfg(all(feature="native-fr-cd",not(feature="native-usde-updater")))]
 const README: &str = include_str!("../README-native-fr.md");
+#[cfg(feature="native-usde-updater")]
+const README: &str = include_str!("../README-native-usde.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -687,7 +689,7 @@ fn usage() {
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
          Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
-         EXPERIMENTAL NATIVE FR builds reconstruct the 1.02 EXE from the original French CD.\n\
+         EXPERIMENTAL: FR uses CD alone; US/DE use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
@@ -722,7 +724,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="native-fr-cd"){
+        if cfg!(feature="native-usde-updater"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE US/DE LOCAL UPDATE 1.02 EXPERIMENTAL", &COMMIT[..8]);
+        }else if cfg!(feature="native-fr-cd"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE FR 1.02 EXPERIMENTAL", &COMMIT[..8]);
         }else if cfg!(feature="unified-fix-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll native_winmm=yes EXPERIMENTAL UNIFIED", &COMMIT[..8]);
