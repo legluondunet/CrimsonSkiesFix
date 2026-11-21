@@ -1751,6 +1751,33 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         if let Some(summary)=api_summary{crate::log(&summary);}
         if let Some(summary)=wait_summary{crate::log(&summary);}
         if let Some(summary)=cursor_summary{crate::log(&summary);}
+        // Wine OS-arrow A/B is deliberately not driven by the 30 Hz Flip.
+        // A setup "armed" line cannot tell whether Wine actually delivered
+        // WM_MOUSEMOVE/WM_SETCURSOR or whether the OS arrow became visible.
+        // Sample the existing WndProc counters only once per 120 menu Flips,
+        // after dropping the virtual Flip mutex. No input, cursor or graphics
+        // state is modified here.
+        if crate::cfg().wine_system_cursor_probe &&
+            crate::diagnostics::is_wine_runtime() &&
+            (node.mode.width,node.mode.height,node.mode.bpp)==(800,600,16) &&
+            frame_timing.is_some() {
+            match window_erase_guard::sample_input_state(pump_window) {
+                Some(input)=>{
+                    let c=input.counts;
+                    crate::log(&format!(
+                        "WINE-SYSTEM-CURSOR-STATUS: menu_flips=120 foreground={} same_thread={} wndproc_mouse_moves={} wndproc_mouse_buttons={} wndproc_focus_changes={} os_arrow_activation_events={} os_arrow_restore_events={} os_cursor_visible={:?} cursor_screen={:?} [cumulative WndProc event counts; actual on-screen visibility and fluidity require visual A/B]",
+                        input.game_is_foreground,
+                        input.current_thread==input.window_thread,
+                        c.mouse_moves,c.mouse_buttons,c.focus_changes,
+                        c.system_cursor_probe_events,c.system_cursor_probe_restores,
+                        input.cursor_visible,input.cursor_screen
+                    ));
+                },
+                None=>crate::log(
+                    "WINE-SYSTEM-CURSOR-STATUS: game HWND state unavailable; activation unconfirmed"
+                ),
+            }
+        }
         if movie {
             if let Some((n,calls,total))=
                 window_erase_guard::pump_native_movie_window(
