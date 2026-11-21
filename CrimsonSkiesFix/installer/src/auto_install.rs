@@ -170,7 +170,7 @@ fn preflight_install_sources(
     }
     let disc=disc_inspect::preflight_media(base);
     #[cfg(feature="native-fr-cd")]
-    if disc.is_ok() && update.is_none() && verified_french_cd(base)? {
+    if disc.is_ok() && update.is_none() && verified_french_cd(base).unwrap_or(false) {
         return Ok(InstallSources::NativeFrench);
     }
 
@@ -276,6 +276,40 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
     verify(game)?;
     fs::remove_file(&receipt_backup).map_err(error)?;
     Ok(())
+}
+
+/// Activate a verified, locally reconstructed French 1.02 EXE, or retain the
+/// pre-existing exact-hash import policy for other retail editions. This
+/// produces a sibling temporary file, never an extra DLL or executable for
+/// users to locate. Do not modify an original protected CD file.
+fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
+    #[cfg(feature="native-fr-cd")]
+    if installed_cd_edition(game)?=="C_SKIES_FR_001" {
+        // The complete CD receipt and original protected EXE/ICD must verify
+        // BEFORE any disk write. An interrupted candidate is never replaced.
+        verify_installed_cd_assets(game)?;
+        let temporary=base.join("CrimsonSkiesFix.native-fr-102.pending.exe");
+        if any_entry(&temporary){
+            return Err(format!(
+                "abandoned native French reconstruction exists (preserved, not overwritten): {}",
+                temporary.display()));
+        }
+        unsafedisk_native::reconstruct_verified_crimson_102(
+            &game.join("CRIMSON.EXE"),&game.join("CRIMSON.ICD"),&temporary
+        ).map_err(|err|format!("native French 1.02 reconstruction failed: {err}"))?;
+        // The native library has already validated full 1.02 SHA-256 before
+        // writing; activation performs an independent on-disk SHA-256 check.
+        struct TemporaryExecutable(PathBuf);
+        impl Drop for TemporaryExecutable{
+            fn drop(&mut self){
+                if regular(&self.0){let _=fs::remove_file(&self.0);}
+            }
+        }
+        let _cleanup=TemporaryExecutable(temporary.clone());
+        return activate_verified_exe(game,&temporary);
+    }
+    let source=approved_executable(base,game)?;
+    activate_verified_exe(game,&source)
 }
 
 fn copy_player_files(src:&Path,dst:&Path)->Result<(),String>{
@@ -519,8 +553,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 }
                 // A fully verified original CD installation awaiting the
                 // approved EXE can be completed with no second CD extraction.
-                let source=approved_executable(base,game)?;
-                activate_verified_exe(game,&source)?;
+                activate_pending_exe(base,game)?;
                 return Ok("ACTIVATE_APPROVED_EXE_AND_LAUNCH");
             }
             Err(reason)=>{
@@ -537,8 +570,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                             if validated_game_exe(game).is_ok(){
                                 return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
                             }
-                            let source=approved_executable(base,game)?;
-                            activate_verified_exe(game,&source)?;
+                            activate_pending_exe(base,game)?;
                             return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                         }
                         Err(after)=>format!(
