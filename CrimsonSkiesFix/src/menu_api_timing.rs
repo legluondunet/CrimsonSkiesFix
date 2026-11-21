@@ -18,6 +18,7 @@ pub(crate) enum Kind{
     Surface4LockPrimary,Surface4LockOther,Surface4Unlock,
     Surface4GetBltStatus,Surface4GetFlipStatus,
     Surface4GetDC,Surface4ReleaseDC,
+    DD4WaitForVerticalBlank,DD4GetVerticalBlankStatus,DD4GetScanLine,
 }
 impl Kind{
     const fn index(self)->usize{
@@ -28,10 +29,13 @@ impl Kind{
             Self::Surface4Unlock=>7,Self::Surface4GetBltStatus=>8,
             Self::Surface4GetFlipStatus=>9,Self::Surface4GetDC=>10,
             Self::Surface4ReleaseDC=>11,
+            Self::DD4WaitForVerticalBlank=>12,
+            Self::DD4GetVerticalBlankStatus=>13,
+            Self::DD4GetScanLine=>14,
         }
     }
 }
-const METHODS:usize=12;
+const METHODS:usize=15;
 const SLOW_16_US:u64=16_667;
 const SLOW_33_US:u64=33_333;
 struct Bucket{
@@ -75,6 +79,7 @@ static BUCKETS:[Bucket;METHODS]=[
     Bucket::new(),Bucket::new(),Bucket::new(),
     Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),
     Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),Bucket::new(),
+    Bucket::new(),Bucket::new(),Bucket::new(),
 ];
 static GOS_MENU_GRAPH:AtomicBool=AtomicBool::new(false);
 thread_local!{static IN_OUR_VIRTUAL_FLIP:Cell<u32>=const{Cell::new(0)};}
@@ -165,7 +170,7 @@ pub(crate) fn summary(previous:Snapshot,current:Snapshot)->String{
     // totals represent (possibly concurrent) instrumented API calls
     // between two snapshots, not a partition of 120 image intervals.
     format!(
-        "MENU-API-TIMING: approximately_120_Flips=true          BeginScene[{}] EndScene[{}] Blt[{}] BltFast[{}] Unlock[{}] Surface4LockPrimary[{}] Surface4LockOther[{}] Surface4Unlock[{}] Surface4GetBltStatus[{}] Surface4GetFlipStatus[{}] Surface4GetDC[{}] Surface4ReleaseDC[{}]          [wall-time around native Surface4 COM forwarder calls; primary GetFlipStatus may be virtual; nested and other-thread samples may overlap; own virtual Flip excluded; max is lifetime, not interval]",
+        "MENU-API-TIMING: approximately_120_Flips=true          BeginScene[{}] EndScene[{}] Blt[{}] BltFast[{}] Unlock[{}] Surface4LockPrimary[{}] Surface4LockOther[{}] Surface4Unlock[{}] Surface4GetBltStatus[{}] Surface4GetFlipStatus[{}] Surface4GetDC[{}] Surface4ReleaseDC[{}] DD4WaitForVerticalBlank[{}] DD4GetVerticalBlankStatus[{}] DD4GetScanLine[{}]          [wall-time around original D3D/DDraw calls and observed DD4 vertical-blank calls; primary GetFlipStatus may be virtual; nested and other-thread samples may overlap; own virtual Flip excluded; max is lifetime, not interval]",
         entry(Kind::BeginScene,previous,current),
         entry(Kind::EndScene,previous,current),
         entry(Kind::Blt,previous,current),
@@ -178,6 +183,9 @@ pub(crate) fn summary(previous:Snapshot,current:Snapshot)->String{
         entry(Kind::Surface4GetFlipStatus,previous,current),
         entry(Kind::Surface4GetDC,previous,current),
         entry(Kind::Surface4ReleaseDC,previous,current),
+        entry(Kind::DD4WaitForVerticalBlank,previous,current),
+        entry(Kind::DD4GetVerticalBlankStatus,previous,current),
+        entry(Kind::DD4GetScanLine,previous,current),
     )
 }
 
@@ -203,6 +211,7 @@ mod tests{
         assert!(summary.contains("Unlock[calls=0"));
         assert!(summary.contains("Surface4LockPrimary[calls=0"));
         assert!(summary.contains("Surface4GetFlipStatus[calls=0"));
+        assert!(summary.contains("DD4WaitForVerticalBlank[calls=0"));
         assert_eq!(summary.matches("total_ms=").count(),METHODS);
     }
     #[test]
