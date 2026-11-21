@@ -4,12 +4,18 @@
 use std::{sync::{Mutex,OnceLock,atomic::{AtomicUsize,Ordering}},time::Instant};
 use crate::{cfg,log};
 
+/// API-call sampling is a deeper performance diagnostic, not part of the
+/// normal Log=1 gameplay report. Both flags must be explicitly enabled.
+fn sampling_enabled(config:&crate::config::Config)->bool{
+    config.log_enabled && config.frame_time_trace
+}
+
 // These cumulative rates are COM call rates, not proven on-screen FPS.
 // A scene can issue several Blt/Unlock calls per one displayed frame.
 // At most four samples per API, bounded without background threads.
 pub(crate) fn sample_render_calls(path:&str,count:&AtomicUsize,start:&OnceLock<Instant>,
     window:&OnceLock<Mutex<(usize,Instant)>>) {
-    if !cfg().log_enabled{return;}
+    if !sampling_enabled(&cfg()){return;}
     let n=count.fetch_add(1,Ordering::Relaxed)+1;
     let first=start.get_or_init(Instant::now);
     if [10,60,300,1200].contains(&n) {
@@ -37,3 +43,20 @@ pub(crate) fn sample_render_calls(path:&str,count:&AtomicUsize,start:&OnceLock<I
     }
 }
 
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+
+    #[test]
+    fn api_rate_sampling_is_explicit_opt_in_even_when_log_is_on(){
+        let mut c=crate::config::Config::default();
+        assert!(!sampling_enabled(&c)); // default Log=0 FrameTimeTrace=0
+        c.log_enabled=true;
+        assert!(!sampling_enabled(&c)); // ordinary gameplay diagnostic
+        c.frame_time_trace=true;
+        assert!(sampling_enabled(&c)); // explicit deep diagnostic
+        c.log_enabled=false;
+        assert!(!sampling_enabled(&c)); // cannot leak rate samples with Log=0
+    }
+}

@@ -15,7 +15,46 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 3. **Ne pas ajouter d'EXE déchiffré**. La reconstruction est réalisée par l'installateur.
 4. Exécuter `CrimsonSkiesFix.exe --version` et vérifier `NATIVE US/DE LOCAL UPDATE 1.02 EXPERIMENTAL`.
 5. Exécuter `CrimsonSkiesFix.exe --install-only`, puis `CrimsonSkiesFix.exe --verify` ; ensuite lancer `CrimsonSkiesFix.exe` pour jouer.
-6. Conserver `CrimsonSkiesFix_installer.log` et `CrimsonSkiesFix.log` en cas de problème.
+6. En cas de problème, conserver `CrimsonSkiesFix_installer.log`,
+   `CrimsonSkiesFix_last-session.log` et, si `[Debug] Log=1`,
+   `CrimsonSkiesFix.log` au même niveau que le lanceur.
+
+## Diagnostic des sorties anormales (US/DE, expérimental)
+
+Chaque lancement du jeu crée/remplace **un seul**
+`CrimsonSkiesFix_last-session.log`, **même lorsque `[Debug] Log=0`**.
+Avant le démarrage, `Phase=GAME_LAUNCH_REQUESTED` et
+`ProcessExitCode=UNAVAILABLE` ; lorsque le processus du jeu se termine,
+le lanceur remplace la ligne par `Phase=GAME_PROCESS_RETURNED` et son
+code de retour en hexadécimal. Un code non nul indique une terminaison
+anormale ou une fermeture forcée, **pas automatiquement un bug du jeu ou
+du correctif**. Si le lanceur est lui-même interrompu avant d'écrire la
+fin, la ligne `GAME_LAUNCH_REQUESTED` peut subsister.
+
+Pour obtenir le journal détaillé du runtime sans changer les réglages
+graphiques, définir temporairement `[Debug] Log=1` dans le fichier
+`CrimsonSkiesFix.ini` existant (ne pas supprimer les autres paramètres).
+Le journal de jeu `CrimsonSkiesFix.log` est recréé à chaque session.
+`Log=0` est la valeur par défaut volontaire.
+
+Les relevés d'appels de rendu `RENDER-SAMPLE` et `RENDER-WINDOW`
+sont réservés au diagnostic approfondi : ajouter temporairement
+`FrameTimeTrace=1` dans `[Debug]`, avec `Log=1`. Ils ne constituent
+**pas** une mesure des FPS réellement affichés. Sans ce drapeau,
+`Log=1` conserve les diagnostics de rendu, de menu et de stabilité
+sans ces échantillons répétitifs.
+
+Sous Wine, pour diagnostiquer un plantage qui ferme aussi le lanceur,
+exécuter depuis un terminal dans le dossier du lanceur :
+
+```sh
+WINEDEBUG=-all,+seh wine CrimsonSkiesFix.exe > CrimsonSkiesFix_wine-seh.log 2>&1
+```
+
+Ce fichier Wine n'est pas produit par le jeu et peut être volumineux.
+Il complète le journal de session, sans prétendre être un minidump. Conserver
+également l'heure approximative et l'action (menu, mission, Alt-Tab, etc.)
+qui a précédé le problème.
 
 Le correctif reconnu a une taille de 2 315 728 octets et une empreinte
 SHA-256 `8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af`.
