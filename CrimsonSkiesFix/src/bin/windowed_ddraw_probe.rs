@@ -107,6 +107,21 @@ mod menu_brand {
 
 // No game-owned Flip stream exists in this standalone probe.
 fn frame_time_trace_enabled()->bool{false}
+// The pure hardware resource probe deliberately never initializes the game
+// configuration, scene dispatcher or the diagnostic wall-time counters.
+// The shared Surface4 virtual Flip needs only these no-op signatures here.
+mod menu_api_timing{
+    #[derive(Clone,Copy)]
+    pub(crate) struct Snapshot;
+    pub(crate) fn snapshot()->Snapshot{Snapshot}
+    pub(crate) fn set_graph_mode(_w:u32,_h:u32,_bpp:u32){}
+    pub(crate) fn clear_graph_mode(){}
+    pub(crate) fn exclude_virtual_flip()->VirtualFlipExclusion{VirtualFlipExclusion}
+    pub(crate) struct VirtualFlipExclusion;
+    pub(crate) fn summary(_previous:Snapshot,_current:Snapshot)->String{
+        String::new()
+    }
+}
 
 // The standalone surface probe never locks RGB32 movie surfaces.
 
