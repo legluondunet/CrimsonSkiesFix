@@ -1747,6 +1747,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         drop(state);
         // Emit at most one summary per 120 successful Flips and outside
         // the graph mutex. No synchronous logging in each sampled frame.
+        #[cfg(feature="winmm-bootstrap")]
         let report_wine_cursor_status=frame_timing.is_some() &&
             crate::cfg().wine_system_cursor_probe &&
             crate::diagnostics::is_wine_runtime() &&
@@ -1761,6 +1762,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // Sample the existing WndProc counters only once per 120 menu Flips,
         // after dropping the virtual Flip mutex. No input, cursor or graphics
         // state is modified here.
+        #[cfg(feature="winmm-bootstrap")]
         if report_wine_cursor_status {
             match window_erase_guard::sample_input_state(pump_window) {
                 Some(input)=>{
