@@ -94,6 +94,8 @@ fn menu_enabled()->bool{
     (menu_scene::main_menu_active() || menu_scene::preferences_active() ||
      menu_gos_event::preferences_transaction_active())
 }
+// Reuse the same authenticated menu and graph gate for passive mouse polls.
+pub(crate) fn active_menu_trace()->bool{menu_enabled()}
 pub(crate) fn set_graph_mode(w:u32,h:u32,bpp:u32){
     GOS_MENU_GRAPH.store((w,h,bpp)==(800,600,16),Ordering::Release);
 }
