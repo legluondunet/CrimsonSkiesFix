@@ -17,7 +17,9 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
     // Independently disabled in forced 4:3 and unverified game epochs.
     #[cfg(feature="winmm-bootstrap")]
     crate::native_widescreen::before_gameplay_scene_camera_aspect();
+    let api_started=crate::menu_api_timing::start();
     let hr=original(this);
+    crate::menu_api_timing::finish(crate::menu_api_timing::Kind::BeginScene,api_started);
     if cfg().log_enabled && hr>=0 {
         FIRST_D3D3_SCENE.call_once(||log(
             "D3D3-DEVICE: first successful BeginScene; game 3D rendering active"));
@@ -29,7 +31,9 @@ unsafe extern "system" fn d3d3_device_begin_scene(this:*mut c_void)->Hr {
 unsafe extern "system" fn d3d3_device_end_scene(this:*mut c_void)->Hr {
     let Some(addr)=orig(this,D3D3_DEVICE_END_SCENE) else{return DDERR_GENERIC};
     let original:D3D3SceneFn=std::mem::transmute(addr);
+    let api_started=crate::menu_api_timing::start();
     let hr=original(this);
+    crate::menu_api_timing::finish(crate::menu_api_timing::Kind::EndScene,api_started);
     if cfg().log_enabled && hr>=0 {
         sample_render_calls("D3D3.EndScene",&D3D3_END_EVENTS,&D3D3_END_START,&D3D3_END_WINDOW);
     }

@@ -428,7 +428,11 @@ unsafe extern "system" fn modern_surface_blt(this:*mut c_void,dst:*const c_void,
             "CRASH-BLT: UNWRAP id={trace_id} original_src={src:p} native_src={native_src:p}"));}
     }
     let call:BltFn=std::mem::transmute(addr);
+    // Start AFTER surface identity unwrapping; measure the original native
+    // driver Blt only (not our own source validation or diagnostics).
+    let api_started=crate::menu_api_timing::start();
     let hr=call(this,dst,native_src,src_rect,flags,fx);
+    crate::menu_api_timing::finish(crate::menu_api_timing::Kind::Blt,api_started);
     if tracing{
         crash_blt_line(trace_id,false,&format!("CRASH-BLT: EXIT id={trace_id} hr={:#010x}",hr as u32));
     }
@@ -447,7 +451,9 @@ unsafe extern "system" fn modern_surface_blt_fast(this:*mut c_void,x:u32,y:u32,
     FIRST_MODERN_FAST.call_once(||log("RENDER-MODERN: first newer-surface BltFast (observed; NOT FPS-paced)"));
     sample_render_calls("BltFast",&MODERN_BLTFAST_EVENTS,&MODERN_BLTFAST_START,&MODERN_BLTFAST_WINDOW);
     let call:BltFastFn=std::mem::transmute(addr);
+    let api_started=crate::menu_api_timing::start();
     let hr=call(this,x,y,src,rect,flags);
+    crate::menu_api_timing::finish(crate::menu_api_timing::Kind::BltFast,api_started);
     record_surface_usage(this,surface_usage::Method::BltFast,hr);
     hr
 }
@@ -459,7 +465,9 @@ unsafe extern "system" fn modern_surface_unlock(this:*mut c_void,data:*const c_v
     });
     sample_render_calls("Unlock",&MODERN_UNLOCK_EVENTS,&MODERN_UNLOCK_START,&MODERN_UNLOCK_WINDOW);
     let call:UnlockFn=std::mem::transmute(addr);
+    let api_started=crate::menu_api_timing::start();
     let hr=call(this,data);
+    crate::menu_api_timing::finish(crate::menu_api_timing::Kind::Unlock,api_started);
     record_surface_usage(this,surface_usage::Method::Unlock,hr);
     hr
 }
