@@ -47,6 +47,12 @@ unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
         MAIN_SEEN.store(true,Ordering::Release);
     }
     let old=CURRENT.swap(scene,Ordering::AcqRel);
+    // The original GOS CURSOR bitmap configuration A/B is scoped to
+    // exactly this script loader and a previously verified 800x600 DD4
+    // game window. A failed match restores the real lookup key.
+    crate::wine_menu_cursor_bitmap_probe::before_original_script(
+        scene==MAIN || scene==PREFERENCES
+    );
     // Only the explicit Windows-native 800x600 menu mouse A/B sees
     // this signal. The original script loader still executes unchanged.
     crate::window_erase_guard::set_native_menu_mouse_script_active(
