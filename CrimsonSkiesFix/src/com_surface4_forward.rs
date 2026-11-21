@@ -193,28 +193,60 @@ impl ExposureState {
 // cadence, NOT the moment a frame reaches the physical display or compositor.
 // Leave completely unallocated/disabled by default. No per-frame file writes.
 const FRAME_TIME_WINDOW:usize=120;
+// Collected only when the existing [Debug] Log=1 + FrameTimeTrace=1
+// switch is active. All observations are read-only; no per-Flip writes.
+#[derive(Clone,Copy)]
+struct FlipPhaseSample{
+    entered_at:Instant, // after virtual Flip lock, before frame pacing
+    sleep_requested:Duration,
+    sleep_actual:Duration,
+    cursor:Option<(i32,i32)>, // exact verified 800x600 GOS globals only
+}
 struct FrameTimeWindow{
     previous:Option<Instant>,
     intervals_us:[u32;FRAME_TIME_WINDOW],
     present_call_us:[u32;FRAME_TIME_WINDOW],
+    upstream_gap_us:[u32;FRAME_TIME_WINDOW],
+    sleep_requested_us:[u32;FRAME_TIME_WINDOW],
+    sleep_actual_us:[u32;FRAME_TIME_WINDOW],
+    phase_samples:u32,
+    gos_cursor_samples:u32,
+    gos_cursor_changed:u32,
+    gos_cursor_max_step:u32,
+    previous_gos_cursor:Option<(i32,i32)>,
     filled:usize,
     pauses:u32,
 }
 impl Default for FrameTimeWindow{
     fn default()->Self{
         Self{previous:None,intervals_us:[0;FRAME_TIME_WINDOW],
-            present_call_us:[0;FRAME_TIME_WINDOW],filled:0,pauses:0}
+            present_call_us:[0;FRAME_TIME_WINDOW],
+            upstream_gap_us:[0;FRAME_TIME_WINDOW],
+            sleep_requested_us:[0;FRAME_TIME_WINDOW],
+            sleep_actual_us:[0;FRAME_TIME_WINDOW],
+            phase_samples:0,gos_cursor_samples:0,gos_cursor_changed:0,
+            gos_cursor_max_step:0,previous_gos_cursor:None,
+            filled:0,pauses:0}
     }
 }
 impl FrameTimeWindow{
+    // Keep the original sample API for all historical telemetry unit tests.
     fn observe(&mut self,done_at:Instant,presentation_duration:Duration,
         mode:Mode,fps:Option<u32>)->Option<String>{
-        let Some(previous)=self.previous.replace(done_at) else{return None;};
+        self.observe_probe(done_at,presentation_duration,mode,fps,None)
+    }
+    fn observe_probe(&mut self,done_at:Instant,presentation_duration:Duration,
+        mode:Mode,fps:Option<u32>,phase:Option<FlipPhaseSample>)->Option<String>{
+        let Some(previous)=self.previous.replace(done_at) else{
+            self.previous_gos_cursor=phase.and_then(|p|p.cursor);
+            return None;
+        };
         let elapsed=done_at.saturating_duration_since(previous);
         // Focus loss, loading screens and actual pauses are reported
         // separately rather than mislabeled as ordinary frame jitter.
         if elapsed>=Duration::from_millis(500){
             self.pauses=self.pauses.saturating_add(1);
+            self.previous_gos_cursor=None; // do not label wake-up as motion
             return None;
         }
         let us=elapsed.as_micros().min(u128::from(u32::MAX)) as u32;
@@ -222,6 +254,33 @@ impl FrameTimeWindow{
         self.intervals_us[self.filled]=us;
         self.present_call_us[self.filled]=
             presentation_duration.as_micros().min(u128::from(u32::MAX)) as u32;
+        if let Some(phase)=phase{
+            let micros=|duration:Duration|
+                duration.as_micros().min(u128::from(u32::MAX)) as u32;
+            // This is the gap from the previous successful native present
+            // completion to the *next game's* virtual Flip entry. It
+            // includes game/GOS work, not time spent in our Flip sleep.
+            self.upstream_gap_us[self.filled]=
+                micros(phase.entered_at.saturating_duration_since(previous));
+            self.sleep_requested_us[self.filled]=micros(phase.sleep_requested);
+            self.sleep_actual_us[self.filled]=micros(phase.sleep_actual);
+            self.phase_samples=self.phase_samples.saturating_add(1);
+            if let Some(cursor)=phase.cursor{
+                self.gos_cursor_samples=self.gos_cursor_samples.saturating_add(1);
+                if let Some(prior)=self.previous_gos_cursor{
+                    let dx=cursor.0.abs_diff(prior.0);
+                    let dy=cursor.1.abs_diff(prior.1);
+                    let max_step=dx.max(dy);
+                    if max_step>0{
+                        self.gos_cursor_changed=self.gos_cursor_changed.saturating_add(1);
+                        self.gos_cursor_max_step=self.gos_cursor_max_step.max(max_step);
+                    }
+                }
+                self.previous_gos_cursor=Some(cursor);
+            }else{
+                self.previous_gos_cursor=None;
+            }
+        }
         self.filled+=1;
         if self.filled<FRAME_TIME_WINDOW{return None;}
         let mut sorted=self.intervals_us;
@@ -234,6 +293,20 @@ impl FrameTimeWindow{
         let worst=sorted[FRAME_TIME_WINDOW-1];
         let present95=native_sorted[(FRAME_TIME_WINDOW*95+99)/100-1];
         let presentmax=native_sorted[FRAME_TIME_WINDOW-1];
+        let mut upstream=self.upstream_gap_us;
+        let mut requested=self.sleep_requested_us;
+        let mut actual=self.sleep_actual_us;
+        upstream.sort_unstable();
+        requested.sort_unstable();
+        actual.sort_unstable();
+        let upstream_p50=upstream[FRAME_TIME_WINDOW/2-1];
+        let sleep_requested_p50=requested[FRAME_TIME_WINDOW/2-1];
+        let sleep_actual_p50=actual[FRAME_TIME_WINDOW/2-1];
+        let sleep_actual_p95=actual[(FRAME_TIME_WINDOW*95+99)/100-1];
+        let (phase_samples,cursor_samples,cursor_changed,cursor_max_step)=(
+            self.phase_samples,self.gos_cursor_samples,self.gos_cursor_changed,
+            self.gos_cursor_max_step
+        );
         let target_us=1_000_000/fps.unwrap_or(60).max(1);
         let slow2=self.intervals_us.iter()
             .filter(|&&v|v>target_us.saturating_mul(2)).count();
@@ -244,13 +317,22 @@ impl FrameTimeWindow{
         let pauses=self.pauses;
         self.filled=0;
         self.pauses=0;
+        self.phase_samples=0;
+        self.gos_cursor_samples=0;
+        self.gos_cursor_changed=0;
+        self.gos_cursor_max_step=0;
         Some(format!(
-            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} [successful virtual Flip completion spacing, NOT display/present timestamps]",
+            "FRAMETIME: mode={}x{}x{} samples={} target_fps={} avg_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} slow_2x={} slow_3x={} ignored_pauses={} present_call_p95_ms={:.3} present_call_max_ms={:.3} phase_samples={} upstream_gap_p50_ms={:.3} sleep_requested_p50_ms={:.3} sleep_actual_p50_ms={:.3} sleep_actual_p95_ms={:.3} gos_cursor_samples={} gos_cursor_changed={} gos_cursor_max_step={} [successful virtual Flip completion spacing; upstream excludes this Flip; GOS cursor is sampled at Flip entry, NOT display or input poll timestamps]",
             mode.width,mode.height,mode.bpp,FRAME_TIME_WINDOW,
             fps.unwrap_or(60),avg_us as f64/1000.0,p50 as f64/1000.0,
             p95 as f64/1000.0,p99 as f64/1000.0,worst as f64/1000.0,
             slow2,slow3,pauses,present95 as f64/1000.0,
-            presentmax as f64/1000.0
+            presentmax as f64/1000.0,
+            phase_samples,upstream_p50 as f64/1000.0,
+            sleep_requested_p50 as f64/1000.0,
+            sleep_actual_p50 as f64/1000.0,
+            sleep_actual_p95 as f64/1000.0,
+            cursor_samples,cursor_changed,cursor_max_step
         ))
     }
 }
@@ -272,16 +354,57 @@ struct GraphFlipSession{
 /// Limit only the *real game* virtual Primary Flip, never intermediate
 /// Blts or the standalone probe. Crucial because the existing passive
 /// ModernFPSPacing option cannot hook a synthetic Surface4 vtable.
-fn pace_graph_flip(session:&mut GraphFlipSession){
-    let Some(fps)=session.fps_limit.filter(|v|*v>0) else{return;};
+fn pace_graph_flip(session:&mut GraphFlipSession)->(Duration,Duration){
+    let Some(fps)=session.fps_limit.filter(|v|*v>0) else{
+        return (Duration::ZERO,Duration::ZERO);
+    };
     let interval=Duration::from_nanos(1_000_000_000/u64::from(fps));
     let now=Instant::now();
+    let mut requested=Duration::ZERO;
+    let mut actual=Duration::ZERO;
     if let Some(previous)=session.last_present {
         if let Some(deadline)=previous.checked_add(interval){
-            if deadline>now {std::thread::sleep(deadline.duration_since(now));}
+            if deadline>now {
+                requested=deadline.duration_since(now);
+                // Additional clock sampling is strictly FrameTimeTrace-only.
+                // Measure OS scheduling oversleep separately from the
+                // requested sleep; never adjust sleep length or FPS here.
+                let before=session.frame_time_window.as_ref()
+                    .map(|_|Instant::now());
+                std::thread::sleep(requested);
+                if let Some(before)=before{actual=before.elapsed();}
+            }
         }
     }
     session.last_present=Some(Instant::now());
+    (requested,actual)
+}
+// GOS cursor globals are from the admitted 1.02 image (the installer
+// verifies the full EXE SHA-256). Read only on a verified 800x600 menu,
+// and only when explicit FrameTimeTrace is enabled. The standalone DD4
+// probe and non-game builds never dereference game memory.
+#[cfg(feature="winmm-bootstrap")]
+fn game_menu_cursor_timing_sample(mode:Mode)->Option<(i32,i32)>{
+    if (mode.width,mode.height,mode.bpp)!=(800,600,16) ||
+       !(crate::menu_scene::main_menu_active() ||
+         crate::menu_scene::preferences_active() ||
+         crate::menu_gos_event::preferences_transaction_active()){
+        return None;
+    }
+    unsafe{
+        let width=ptr::read_volatile(0x0075_ccb8usize as *const i32);
+        let height=ptr::read_volatile(0x0075_ccbcusize as *const i32);
+        if (width,height)!=(800,600){return None;}
+        let x=ptr::read_volatile(0x0075_ccc0usize as *const i32);
+        let y=ptr::read_volatile(0x0075_ccc4usize as *const i32);
+        if (0..800).contains(&x) && (0..600).contains(&y){
+            Some((x,y))
+        }else{None}
+    }
+}
+#[cfg(not(feature="winmm-bootstrap"))]
+fn game_menu_cursor_timing_sample(_mode:Mode)->Option<(i32,i32)>{
+    None
 }
 #[repr(C)]
 struct Surface4Forwarder{
@@ -1478,7 +1601,16 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
                 ))
             }
         }
-        pace_graph_flip(session);
+        // Sample the interval since previous presentation BEFORE pacing;
+        // a 33ms Flip interval can mean 30Hz upstream or 60Hz with an
+        // extra sleep. This diagnostic distinguishes them with no new hooks.
+        let pace_entered=session.frame_time_window.as_ref()
+            .map(|_|Instant::now());
+        let (sleep_requested,sleep_actual)=pace_graph_flip(session);
+        let phase=pace_entered.map(|entered_at|FlipPhaseSample{
+            entered_at,sleep_requested,sleep_actual,
+            cursor:game_menu_cursor_timing_sample(session.mode),
+        });
         // Passive, bounded preferences diagnostics only; the original
         // dropdowns and video settings are not modified.
         crate::menu_video_probe::observe_ui_flip(session.mode.width,session.mode.height);
@@ -1543,8 +1675,8 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         let frame_timing=if flip_result==S_OK {
             match (timing_started,timing_finished,session.frame_time_window.as_mut()){
                 (Some(start),Some(end),Some(window))=>
-                    window.observe(end,end.saturating_duration_since(start),
-                        node.mode,session.fps_limit),
+                    window.observe_probe(end,end.saturating_duration_since(start),
+                        node.mode,session.fps_limit,phase),
                 _=>None,
             }
         }else{None};
@@ -2967,5 +3099,69 @@ mod frame_time_telemetry_tests{
         let r=r.unwrap();
         assert!(r.contains("ignored_pauses=1"));
         assert!(r.contains("slow_2x=0 slow_3x=0"));
+    }
+}
+
+
+#[cfg(test)]
+mod gos_flip_cadence_probe_tests{
+    use super::*;
+    #[test]
+    fn upstream_30hz_is_reported_without_fake_sleep_or_cursor_jitter(){
+        let mut telemetry=FrameTimeWindow::default();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let start=Instant::now();
+        assert!(telemetry.observe_probe(
+            start,Duration::from_micros(100),mode,Some(60),
+            Some(FlipPhaseSample{
+                entered_at:start,sleep_requested:Duration::ZERO,
+                sleep_actual:Duration::ZERO,cursor:Some((400,300))
+            })
+        ).is_none());
+        let mut result=None;
+        for n in 1..=120{
+            let end=start+Duration::from_millis(n*33);
+            result=telemetry.observe_probe(
+                end,Duration::from_micros(100),mode,Some(60),
+                Some(FlipPhaseSample{
+                    entered_at:end-Duration::from_millis(3),
+                    sleep_requested:Duration::ZERO,
+                    sleep_actual:Duration::ZERO,
+                    cursor:Some((400+(n%5) as i32,300))
+                })
+            );
+        }
+        let report=result.expect("120 successful game frames");
+        assert!(report.contains("phase_samples=120"));
+        assert!(report.contains("upstream_gap_p50_ms=30.000"));
+        assert!(report.contains("sleep_requested_p50_ms=0.000"));
+        assert!(report.contains("sleep_actual_p50_ms=0.000"));
+        assert!(report.contains("gos_cursor_samples=120"));
+        assert!(report.contains("gos_cursor_changed=120"));
+    }
+    #[test]
+    fn paced_60hz_is_distinguishable_from_an_upstream_30hz_loop(){
+        let mut telemetry=FrameTimeWindow::default();
+        let mode=Mode{width:800,height:600,bpp:16};
+        let start=Instant::now();
+        telemetry.observe_probe(start,Duration::ZERO,mode,Some(60),None);
+        let mut result=None;
+        for n in 1..=120{
+            let end=start+Duration::from_millis(n*33);
+            result=telemetry.observe_probe(
+                end,Duration::ZERO,mode,Some(60),
+                Some(FlipPhaseSample{
+                    entered_at:end-Duration::from_millis(17),
+                    sleep_requested:Duration::from_millis(15),
+                    sleep_actual:Duration::from_millis(16),
+                    cursor:None
+                })
+            );
+        }
+        let report=result.expect("120 frames");
+        assert!(report.contains("upstream_gap_p50_ms=16.000"));
+        assert!(report.contains("sleep_requested_p50_ms=15.000"));
+        assert!(report.contains("sleep_actual_p50_ms=16.000"));
+        assert!(report.contains("gos_cursor_samples=0"));
     }
 }
