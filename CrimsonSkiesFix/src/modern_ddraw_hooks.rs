@@ -198,6 +198,51 @@ pub(super) unsafe fn try_rearm_native_game_dd4(
     crate::com_vtable::rearm_exact_registered_originals(object,&hooks)
 }
 
+
+type Dd4WaitForVerticalBlankFn=
+    unsafe extern "system" fn(*mut c_void,u32,*mut c_void)->Hr;
+type Dd4GetScanLineFn=
+    unsafe extern "system" fn(*mut c_void,*mut u32)->Hr;
+type Dd4GetVerticalBlankStatusFn=
+    unsafe extern "system" fn(*mut c_void,*mut i32)->Hr;
+
+// These are real native IDirectDraw4 calls, not replacements for the game's
+// clock or our own virtual Flip. Measure only the original COM method.
+// No synthetic waits, no result rewriting, no per-call file writes.
+unsafe extern "system" fn traced_dd4_wait_for_vertical_blank(
+    this:*mut c_void,flags:u32,event:*mut c_void
+)->Hr{
+    let Some(addr)=orig(this,DD_WAIT_FOR_VERTICAL_BLANK) else{return DDERR_GENERIC};
+    let original:Dd4WaitForVerticalBlankFn=std::mem::transmute(addr);
+    let started=crate::menu_api_timing::start();
+    let hr=original(this,flags,event);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::DD4WaitForVerticalBlank,started);
+    hr
+}
+unsafe extern "system" fn traced_dd4_get_vertical_blank_status(
+    this:*mut c_void,status:*mut i32
+)->Hr{
+    let Some(addr)=orig(this,DD_GET_VBLANK_STATUS) else{return DDERR_GENERIC};
+    let original:Dd4GetVerticalBlankStatusFn=std::mem::transmute(addr);
+    let started=crate::menu_api_timing::start();
+    let hr=original(this,status);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::DD4GetVerticalBlankStatus,started);
+    hr
+}
+unsafe extern "system" fn traced_dd4_get_scan_line(
+    this:*mut c_void,line:*mut u32
+)->Hr{
+    let Some(addr)=orig(this,DD_GET_SCAN_LINE) else{return DDERR_GENERIC};
+    let original:Dd4GetScanLineFn=std::mem::transmute(addr);
+    let started=crate::menu_api_timing::start();
+    let hr=original(this,line);
+    crate::menu_api_timing::finish(
+        crate::menu_api_timing::Kind::DD4GetScanLine,started);
+    hr
+}
+
 // A single hook can be used on all newer surface versions because these
 // specific method ABIs (and vtable indices) are stable, per ddraw.h.
 // Unlike legacy v1 pacing, this instrumentation NEVER sleeps or edits frames.
@@ -219,6 +264,20 @@ pub(super) unsafe fn observe_modern_ddraw(object:*mut c_void,name:&str){
         let get_mode=replace_method(object,DD_GET_DISPLAY_MODE,modern_get_display_mode as *const () as usize);
         if cfg().log_enabled {log(&format!("WINDOWED-GAME: DD4 GetDisplayMode hook_installed={get_mode}"));}
     }
+    // Never install vblank instrumentation during normal play or on
+    // unrelated DirectDraw interface versions. Only already-authenticated
+    // game DD4 owner (this function is invoked after the EXE checksum gate).
+    if name=="IDirectDraw4" && cfg().log_enabled && cfg().frame_time_trace {
+        let wait=replace_method(object,DD_WAIT_FOR_VERTICAL_BLANK,
+            traced_dd4_wait_for_vertical_blank as usize);
+        let status=replace_method(object,DD_GET_VBLANK_STATUS,
+            traced_dd4_get_vertical_blank_status as usize);
+        let scan=replace_method(object,DD_GET_SCAN_LINE,
+            traced_dd4_get_scan_line as usize);
+        log(&format!(
+            "DD4-VBLANK-PROBE: owner=verified-DirectDraw4 WaitForVerticalBlank={} GetVerticalBlankStatus={} GetScanLine={} original_calls_forwarded=true no_vblank_policy_changed=true",
+            wait,status,scan));
+    }
     if MODERN_DDRAW_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<16 {
         log(&format!("MODERN-DDRAW: interface={name} query_interface={qi} cooperative={cooperative} mode={mode} restore_mode={restore} surface={surface} (observation only)"));
     }
@@ -235,6 +294,9 @@ mod tests {
         let _:ModernDisplayModeFn=modern_set_display_mode;
         let _:GetDisplayModeFn=modern_get_display_mode;
         let _:SurfaceFn=modern_create_surface;
+        let _:Dd4WaitForVerticalBlankFn=traced_dd4_wait_for_vertical_blank;
+        let _:Dd4GetVerticalBlankStatusFn=traced_dd4_get_vertical_blank_status;
+        let _:Dd4GetScanLineFn=traced_dd4_get_scan_line;
     }
 
     #[test]
@@ -257,5 +319,8 @@ mod tests {
         assert_eq!(DD_SET_COOPERATIVE,20);
         assert_eq!(DD_SET_DISPLAY_MODE,21);
         assert_eq!(DD_RESTORE_DISPLAY_MODE,19);
+        assert_eq!(DD_GET_SCAN_LINE,16);
+        assert_eq!(DD_GET_VBLANK_STATUS,17);
+        assert_eq!(DD_WAIT_FOR_VERTICAL_BLANK,22);
     }
 }
