@@ -135,13 +135,45 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// The patch is embedded in the single-file launcher, not a separately
 /// distributed DLL. It must exist and be a plausible Windows PE image;
 /// CI independently verifies its entire 22-export PE32 layout.
-pub(super) fn preflight_install_sources(
+pub(super) /// Precisely one installation input plan. Unknown discs continue to require
+/// the original explicit, hash-pinned updater + approved EXE sources.
+enum InstallSources {
+    Approved { executable:PathBuf, updater:update102::Update102Source },
+    #[cfg(feature="native-fr-cd")]
+    NativeFrench,
+}
+
+/// Confirm the edition from exact internal CD file hashes, not from a filename
+/// or volume label. A mismatched/unknown disc must never enter native FR mode.
+#[cfg(feature="native-fr-cd")]
+fn verified_french_cd(base:&Path)->Result<bool,String>{
+    let report=disc_inspect::inspect(base,None)?;
+    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
+        .collect::<Vec<_>>();
+    if edition.len()!=1 {
+        return Err("CD inspection has no unique authenticated edition".into());
+    }
+    Ok(edition[0]=="C_SKIES_FR_001" &&
+       report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
+}
+
+fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
-)->Result<(PathBuf,update102::Update102Source),String>{
-    // Check all prerequisites before CD extraction or staging.
-    // An orphan BIN/IMG needs its corresponding CUE for sector/track layout.
-    // File selection and updater/EXE hash verification are read-only.
+)->Result<InstallSources,String>{
+    // No staging or modification until the bundled runtime and chosen input
+    // sources are authenticated. CD inspection reads all original manifest
+    // entries for native FR, rather than trusting the CD name.
+    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
+        return Err(format!(
+            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
+        ));
+    }
     let disc=disc_inspect::preflight_media(base);
+    #[cfg(feature="native-fr-cd")]
+    if disc.is_ok() && update.is_none() && verified_french_cd(base)? {
+        return Ok(InstallSources::NativeFrench);
+    }
+
     let updater=update102::source_for_install(base,update);
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
@@ -164,13 +196,7 @@ pub(super) fn preflight_install_sources(
             problems.join("\n")
         ));
     }
-    // The installer runtime is independently verified before staging.
-    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
-        return Err(format!(
-            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
-        ));
-    }
-    Ok((exe?,updater?))
+    Ok(InstallSources::Approved{executable:exe?,updater:updater?})
 }
 
 /// Transactionally replace the original CD-protected entry *inside a newly
