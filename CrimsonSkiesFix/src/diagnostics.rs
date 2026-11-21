@@ -5,7 +5,7 @@
 
 use std::{
     env, ffi::{c_char, c_void, CStr},
-    mem, ptr, time::Instant,
+    mem, ptr, sync::OnceLock, time::Instant,
 };
 
 use crate::diagnostics_graphics;
@@ -123,11 +123,16 @@ unsafe fn api(module:*mut c_void,name:&[u8])->*const c_void {
 
 /// Reuse the same native-versus-Wine detection as SYS-OS. Fail closed if
 /// ntdll cannot be resolved; the caller must not guess physical geometry.
+/// This is a process-wide invariant: an already running process cannot
+/// switch between Wine/Proton and native Windows. The GOS Options label
+/// hook calls this predicate repeatedly, so avoid resolving ntdll exports
+/// on every uiData(0x845) label update.
 pub fn is_native_windows()->bool {
-    unsafe{
+    static NATIVE_WINDOWS:OnceLock<bool>=OnceLock::new();
+    *NATIVE_WINDOWS.get_or_init(||unsafe{
         let ntdll=GetModuleHandleA(b"ntdll.dll\0".as_ptr().cast());
         !ntdll.is_null() && api(ntdll,b"wine_get_version\0").is_null()
-    }
+    })
 }
 
 fn log_os(emit:&mut dyn FnMut(&str)) {
@@ -303,6 +308,13 @@ mod tests {
     fn reject_unknown_proton_env_values(){
         assert_eq!(clean_label("",20),"Unavailable");
         assert_eq!(clean_label("ordinary-model",30),"ordinary-model");
+    }
+    #[test]
+    fn cached_native_windows_identity_is_process_stable(){
+        let first=is_native_windows();
+        // Repeated callers (including GOS preferences callbacks) must
+        // receive the same answer without re-resolving ntdll exports.
+        for _ in 0..32 {assert_eq!(is_native_windows(),first);}
     }
     #[test]
     fn verify_struct_layouts_x86(){
