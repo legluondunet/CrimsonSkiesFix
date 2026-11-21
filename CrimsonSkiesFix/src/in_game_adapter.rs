@@ -606,6 +606,11 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
         crate::window_erase_guard::disarm_native_system_cursor_probe();
         crate::window_erase_guard::disarm_native_gos_cursor_bridge();
     }
+    // Reversible Wine A/B is disarmed before every DD4 transition, including
+    // gameplay, without altering the original game mouse/input state.
+    if crate::cfg().wine_system_cursor_probe{
+        crate::window_erase_guard::disarm_native_system_cursor_probe();
+    }
     if let Some(old)=runtime.epoch.take(){
         if let Err(hr)=com_surface4_forward::retire_graph_primary_flip(old.primary.ptr()){
             log(&format!("WINDOWED-GAME: retiring old primary failed {:#010x}",hr as u32));
@@ -728,6 +733,26 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                         "NATIVE-SYSTEM-CURSOR-PROBE: refused ({reason}); original game cursor unchanged")),
                 }
             }
+            // Wine-only diagnostic A/B: show the compositor/system arrow,
+            // independent of GameOS 800x600 sprite frame presentation.
+            // Exact menu script is a separate gate inside WndProc. The game
+            // still draws its own cursor, so two cursors are EXPECTED.
+            // Never enable without an explicit [Debug] INI opt-in.
+            if wine_system_cursor_probe_eligible(
+                mode,crate::diagnostics::is_wine_runtime(),
+                crate::cfg().wine_system_cursor_probe
+            ){
+                match crate::window_erase_guard::arm_native_system_cursor_probe(
+                    runtime.hwnd,false
+                ){
+                    Ok(())=>log(
+                        "WINE-SYSTEM-CURSOR-PROBE: armed original OS arrow on verified 800x600 menu; two cursors expected; original input, GameOS sprite, clicks, 30fps render unchanged"
+                    ),
+                    Err(reason)=>log(&format!(
+                        "WINE-SYSTEM-CURSOR-PROBE: unavailable ({reason}); game pointer unchanged"
+                    )),
+                }
+            }
             // Standalone native-only GOS mouse cursor bridge. The game's
             // actual MainMenu script must become active BEFORE any relative
             // DirectInput delta is translated; the active virtual 800x600
@@ -817,6 +842,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
             Some(original(dd4,w,h,bpp,refresh,flags))
         }
     }
+}
+// Pure fail-closed scope for the Wine OS-arrow comparison. This does not
+// enable hardware pointers, only the existing reversible Win32 ShowCursor
+// A/B over the verified 4:3 software-drawn menu.
+fn wine_system_cursor_probe_eligible(mode:Mode,is_wine:bool,enabled:bool)->bool{
+    enabled && is_wine &&
+    (mode.width,mode.height,mode.bpp)==(800,600,16)
 }
 fn native_movie_rgb32_mode(mode:Mode)->bool{
     (mode.width,mode.height,mode.bpp)==(800,600,16)
@@ -1500,6 +1532,17 @@ mod tests{
         assert!(!post_gameplay_ui_transition(game,true,true,true));
         assert!(!post_gameplay_ui_transition(
             Mode{width:640,height:480,bpp:16},true,true,false));
+    }
+    #[test]
+    fn wine_cursor_probe_requires_explicit_opt_in_actual_wine_and_exact_menu(){
+        let menu=Mode{width:800,height:600,bpp:16};
+        let gameplay=Mode{width:1920,height:1080,bpp:16};
+        let rgb32=Mode{width:800,height:600,bpp:32};
+        assert!(!wine_system_cursor_probe_eligible(menu,true,false));
+        assert!(!wine_system_cursor_probe_eligible(menu,false,true));
+        assert!(!wine_system_cursor_probe_eligible(gameplay,true,true));
+        assert!(!wine_system_cursor_probe_eligible(rgb32,true,true));
+        assert!(wine_system_cursor_probe_eligible(menu,true,true));
     }
     #[test]
     fn native_movie_rgb32_mode_is_strictly_800x600x16(){
