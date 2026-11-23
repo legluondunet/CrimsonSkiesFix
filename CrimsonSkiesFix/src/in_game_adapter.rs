@@ -610,6 +610,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     // cinematics or gameplay, including reused 800x600 virtual graphs.
     crate::wine_menu_cursor_bitmap_probe::set_verified_menu_mode(false);
     crate::wine_game_cursor_render::set_verified_menu_mode(false);
+    crate::wine_gos_draw_trace::set_verified_menu_mode(false);
     // Reversible Wine A/B is disarmed before every DD4 transition, including
     // gameplay, without altering the original game mouse/input state.
     if crate::cfg().wine_system_cursor_probe{
@@ -736,6 +737,32 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                         crate::wine_game_cursor_render::set_verified_menu_mode(false);
                         log(&format!(
                             "WINE-GOS-CURSOR-RENDER: not applied ({reason}); original sprite rendering unchanged"
+                        ));
+                    }
+                }
+            }
+            // Read-only Wine diagnosis: the previous cursor class draw
+            // vtable hook recorded zero calls despite a visible gold
+            // pointer. Trace only the 11 byte-exact shared GOS 2D draw
+            // callsites and correlate bitmap/XY with live GameOS mouse
+            // coordinates before trying a new suppression target.
+            if wine_system_cursor_probe_eligible(
+                mode,crate::diagnostics::is_wine_runtime(),
+                crate::cfg().wine_system_cursor_probe &&
+                crate::cfg().wine_system_cursor_sync &&
+                crate::cfg().wine_gos_draw_trace &&
+                !crate::cfg().wine_game_cursor_render_suppress &&
+                !crate::cfg().wine_menu_cursor_bitmap_probe
+            ){
+                crate::wine_gos_draw_trace::set_verified_menu_mode(true);
+                match crate::wine_gos_draw_trace::install_for_verified_menu(){
+                    Ok(details)=>log(&format!(
+                        "WINE-GOS-DRAW-TRACE: armed {details}"
+                    )),
+                    Err(reason)=>{
+                        crate::wine_gos_draw_trace::set_verified_menu_mode(false);
+                        log(&format!(
+                            "WINE-GOS-DRAW-TRACE: not applied ({reason}); original GOS rendering untouched"
                         ));
                     }
                 }
