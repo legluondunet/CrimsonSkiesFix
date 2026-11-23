@@ -55,6 +55,14 @@ fn should_sample(n:usize)->bool{n<=3 || n==16 || n==64 || n%256==0}
 pub fn set_verified_menu_mode(verified:bool){
     MENU_VERIFIED.store(verified,Ordering::Release);
 }
+
+/// The original DD4 800x600x16 game-owned HWND was already authenticated.
+/// Shared gating for passive Direct3D3 draw correlation only.
+pub fn verified_menu_active()->bool{
+    MENU_VERIFIED.load(Ordering::Acquire) &&
+    (crate::menu_scene::main_menu_active() ||
+     crate::menu_scene::preferences_active())
+}
 unsafe fn draw_observer<const N:usize>(
     a:u32,b:u32,c:u32,d:u32,e:u32,f:u32,g:u32
 ){
