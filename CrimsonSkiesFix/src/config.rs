@@ -71,6 +71,9 @@ pub struct Config {
     pub wine_gos_draw_trace: bool,
     // Wine-only, opt-in: skip a precisely cursor-aligned D3D3 TL quad.
     pub wine_d3d_cursor_suppress: bool,
+    // Wine experimental: build an OS HCURSOR from the original game sprite
+    // and suppress D3D rendering ONLY after the decorated icon is ready.
+    pub wine_decorated_system_cursor: bool,
     pub native_direct_input_mouse_trace: bool,
     pub native_direct_input_mouse_coop_repair: bool,
     pub native_gos_cursor_bridge: bool,
@@ -87,7 +90,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, wine_decorated_system_cursor:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -182,6 +185,8 @@ pub fn parse(content: &str) -> Config {
                 if let Some(v) = enabled(value) { settings.wine_gos_draw_trace = v; },
             ("debug", "wined3dcursorsuppress") =>
                 if let Some(v) = enabled(value) { settings.wine_d3d_cursor_suppress = v; },
+            ("debug", "winedecoratedsystemcursor") =>
+                if let Some(v) = enabled(value) { settings.wine_decorated_system_cursor = v; },
             ("debug", "nativedirectinputmousetrace") =>
                 if let Some(v) = enabled(value) { settings.native_direct_input_mouse_trace = v; },
             ("debug", "nativedirectinputmousecooprepair") =>
@@ -274,6 +279,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "debug/winegamecursorrendersuppress",
     "debug/winegosdrawtrace",
     "debug/wined3dcursorsuppress",
+    "debug/winedecoratedsystemcursor",
     "debug/nativedirectinputmousetrace",
     "debug/nativedirectinputmousecooprepair",
     "debug/nativegoscursorbridge",
@@ -444,7 +450,7 @@ mod tests {
     #[test]
     fn scoped_keys() {
         assert_eq!(parse("[Other]\nFPSLimit=12\nLog=1\n[Graphics]\nFPSLimit=30\nBorderless=no\nDesktopResolution=off"),
-                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
+                   Config { borderless:false, desktop_resolution:false, fps_limit:30, force_4_by_3:false, modern_fps_pacing:false, experimental_windowed_adapter:true, focus_repaint:true, window_erase_guard:true, legacy_offscreen_rgb565:true, native_3d_widescreen:true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix:true, log_enabled:false, defer_early_native_patch:false, early_native_physical_mode:false, native_dpi_aware:false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, wine_decorated_system_cursor:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough:false, surface_usage_trace:false, crash_blt_trace:false, frame_time_trace:false, });
     }
     #[test]
     fn obsolete_hud_probes_are_ignored_for_upgraded_user_inis(){
@@ -556,6 +562,13 @@ mod tests {
         assert!(parse("[Debug]\nWineD3dCursorSuppress=1").wine_d3d_cursor_suppress);
         assert!(!parse("[Debug]\nWineD3dCursorSuppress=0").wine_d3d_cursor_suppress);
         assert!(!parse("[Graphics]\nWineD3dCursorSuppress=1").wine_d3d_cursor_suppress);
+    }
+    #[test]
+    fn wine_decorated_system_cursor_requires_explicit_debug_opt_in(){
+        assert!(!Config::default().wine_decorated_system_cursor);
+        assert!(parse("[Debug]\nWineDecoratedSystemCursor=1").wine_decorated_system_cursor);
+        assert!(!parse("[Debug]\nWineDecoratedSystemCursor=0").wine_decorated_system_cursor);
+        assert!(!parse("[Graphics]\nWineDecoratedSystemCursor=1").wine_decorated_system_cursor);
     }
     #[test]
     fn native_mouse_clip_repair_is_native_default_and_debug_overridable(){
@@ -756,6 +769,7 @@ mod tests {
         assert!(!initial.wine_game_cursor_render_suppress);
         assert!(!initial.wine_gos_draw_trace);
         assert!(!initial.wine_d3d_cursor_suppress);
+        assert!(!initial.wine_decorated_system_cursor);
         assert!(!initial.native_menu_mouse_remap);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(initial.roffile_terminator_fix);
