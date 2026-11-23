@@ -736,6 +736,14 @@ pub fn set_native_menu_mouse_script_active(active:bool){
         if unsafe{GetWindowThreadProcessId(hwnd,std::ptr::null_mut())}
             ==unsafe{GetCurrentThreadId()}{
             undo_native_system_cursor_probe();
+            // The original-art HCURSOR object stays owned for the entire
+            // process in wine_decorated_cursor::INSTALLED. Only its
+            // *currently active HWND binding* is revoked here.
+            // Otherwise decorated_menu_cursor_active() can report true
+            // immediately after the Campaign-art certificate is renewed
+            // even though ShowCursor was undone, silently skipping the
+            // required immediate re-arm until a future WM_MOUSEMOVE.
+            MENU_CUSTOM_CURSOR_HANDLE.store(0,Ordering::Release);
         }
     }
 }
