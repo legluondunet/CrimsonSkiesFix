@@ -110,7 +110,7 @@ fn record(kind:usize,n:usize,primitive:u32,fvf:u32,vertex:*const c_void,vertices
     if let Ok(mut v)=samples().lock(){
         if v.len()>=72{return;}
         v.push(format!(
-            "WINE-D3D3-DRAW-TRACE: kind={kind} call={n} primitive={primitive} fvf=0x{fvf:X} vertices={vertices} texture_stage0=0x{:08X} first_xy={first:?} gos_mouse={mouse:?} near_mouse={near} [original draw unmodified]",
+            "WINE-D3D3-DRAW-TRACE: kind={kind} call={n} primitive={primitive} fvf=0x{fvf:X} vertices={vertices} texture_stage0=0x{:08X} first_xy={first:?} gos_mouse={mouse:?} near_mouse={near} [draw forwarded except when separately opted-in cursor-hotspot suppression matches]",
             TEXTURE.load(Ordering::Relaxed)
         ));
     }
