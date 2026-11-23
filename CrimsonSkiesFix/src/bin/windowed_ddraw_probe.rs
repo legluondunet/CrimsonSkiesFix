@@ -89,6 +89,19 @@ fn probe_line(line:&str){
 fn log(message:&str){
     probe_line(message);
 }
+// This standalone COM resource tester has no game state and does not own
+// a Crimson Skies menu or the Wine-only HCURSOR experiment. The shared
+// WndProc guard module references these two game-only predicates; provide
+// conservative, permanently-disabled stand-ins instead of importing the
+// runtime config/diagnostics into an unrelated executable.
+struct StandaloneGameConfig{wine_decorated_system_cursor:bool}
+fn cfg()->StandaloneGameConfig{
+    StandaloneGameConfig{wine_decorated_system_cursor:false}
+}
+mod diagnostics{
+    pub fn is_wine_runtime()->bool{false}
+}
+
 // The standalone probe has no game process or MainMenu state. The
 // shared virtual Surface4 module's optional menu drawing hook is inert.
 mod menu_video_probe{
