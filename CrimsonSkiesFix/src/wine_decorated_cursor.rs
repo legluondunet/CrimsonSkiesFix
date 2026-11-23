@@ -142,7 +142,12 @@ fn sprite_match(vertices:&[Vertex;4],mouse:(i32,i32))->bool{
 /// exactly ONE COM reference and four vertex values; NEVER lock GPU
 /// resources or call GDI from inside the graphics submission.
 pub unsafe fn observe_draw(texture:usize,vertices:Obj,mouse:(i32,i32)){
+    // A verified DD4 800x600 graph may also be a movie or a transition.
+    // Never capture an arbitrary sprite until the exact owner game script
+    // identifies MainMenu or Preferences. The admitted game's successful
+    // original-art capture occurs after MainMenu script entry.
     if !enabled() || !MENU_VERIFIED.load(Ordering::Acquire) ||
+       !script_allows_decorated_cursor() ||
        HAVE_SAMPLE.load(Ordering::Acquire) || texture==0 ||
        vertices.is_null(){return;}
     let p=vertices as *const f32;
