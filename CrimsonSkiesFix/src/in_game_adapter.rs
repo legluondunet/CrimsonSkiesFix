@@ -611,6 +611,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     crate::wine_menu_cursor_bitmap_probe::set_verified_menu_mode(false);
     crate::wine_game_cursor_render::set_verified_menu_mode(false);
     crate::wine_gos_draw_trace::set_verified_menu_mode(false);
+    crate::wine_decorated_cursor::set_verified_menu_mode(false);
     // Reversible Wine A/B is disarmed before every DD4 transition, including
     // gameplay, without altering the original game mouse/input state.
     if crate::cfg().wine_system_cursor_probe{
@@ -767,6 +768,21 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     }
                 }
             }
+            // Only the original game's Wine 800x600 4:3 menu is allowed
+            // to capture the game's own gold cursor sprite. No change
+            // to desktop, Windows native, movies or gameplay.
+            crate::wine_decorated_cursor::set_verified_menu_mode(
+                wine_system_cursor_probe_eligible(
+                    mode,crate::diagnostics::is_wine_runtime(),
+                    crate::cfg().wine_system_cursor_probe &&
+                    crate::cfg().wine_system_cursor_sync &&
+                    crate::cfg().wine_decorated_system_cursor &&
+                    crate::cfg().wine_gos_draw_trace &&
+                    !crate::cfg().wine_d3d_cursor_suppress &&
+                    !crate::cfg().wine_menu_cursor_bitmap_probe &&
+                    !crate::cfg().wine_game_cursor_render_suppress
+                )
+            );
             // Windows native only, exact game-owned HWND already verified:
             // repair the game's pre-borderless ClipCursor when (and only
             // when) the OS still reports that same stale small rectangle.
