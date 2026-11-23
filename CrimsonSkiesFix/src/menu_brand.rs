@@ -119,6 +119,13 @@ pub fn note_branded_presented(){
     {
         log("MENU-BRANDING: signature frame actually presented by native RGB565 primary Blt");
     }
+    // The user-owned golden GameOS pointer has to survive a return from
+    // gameplay even if the original MainMenu script is not loaded again.
+    // Unlike a command/script hint, the Campaign gold-button pixels have
+    // been verified on this specific scratch and successfully presented.
+    // This is strictly a Wine-only HCURSOR experiment, off by default.
+    #[cfg(feature="winmm-bootstrap")]
+    crate::wine_decorated_cursor::on_verified_campaign_presented();
 }
 pub fn report_copy_failure(hr:i32){
     report_error(&format!("offscreen RGB565 source copy failed hr={hr:#010x}"));
