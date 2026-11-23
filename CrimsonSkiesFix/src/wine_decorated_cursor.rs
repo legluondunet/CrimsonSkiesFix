@@ -84,6 +84,38 @@ fn enabled()->bool{
 pub fn set_verified_menu_mode(yes:bool){
     MENU_VERIFIED.store(yes,Ordering::Release);
 }
+/// A cursor only belongs to an authenticated MainMenu or Preferences
+/// script; being in the DD4 800x600 graphics mode is NOT sufficient.
+fn script_allows_decorated_cursor()->bool{
+    crate::menu_scene::main_menu_active() ||
+    crate::menu_scene::preferences_active()
+}
+fn can_rearm(verified:bool,script_active:bool,icon_ready:bool)->bool{
+    verified && script_active && icon_ready
+}
+/// The script change and the WndProc owner are the SAME authenticated UI
+/// thread. If we already captured the original artwork, show it immediately
+/// on re-entry, without waiting another 120 completed menu Flips. Never
+/// create a new icon or inspect graphics in the script loader itself.
+pub fn on_menu_script_change(active:bool){
+    if !active || !enabled() {return;}
+    let icon=INSTALLED.load(Ordering::Acquire);
+    if !can_rearm(MENU_VERIFIED.load(Ordering::Acquire),active,icon!=0) ||
+       window_erase_guard::decorated_menu_cursor_active() {return;}
+    match window_erase_guard::activate_decorated_menu_cursor(icon){
+        Ok(())=>{
+            REPORTED.store(false,Ordering::Release);
+            log("WINE-DECORATED-CURSOR: rearmed existing original-art HCURSOR immediately on verified menu script entry");
+        },
+        Err(reason)=>{
+            // Focus can legitimately be elsewhere while the menu script
+            // loads. Reattempt on a later successfully presented Flip.
+            if !REPORTED.swap(true,Ordering::AcqRel){
+                log(&format!("WINE-DECORATED-CURSOR: scene rearm deferred ({reason})"));
+            }
+        },
+    }
+}
 pub fn original_art_hcursor_ready()->bool{
     enabled() && MENU_VERIFIED.load(Ordering::Acquire) &&
     INSTALLED.load(Ordering::Acquire)!=0 &&
@@ -330,16 +362,21 @@ unsafe fn convert_game_texture(sample:&Candidate)->Result<(usize,String),String>
 /// thread; attempts at most once per process. Failure leaves original
 /// texture drawing and the game's normal cursor visibility unchanged.
 pub fn try_install(){
-    if !enabled() || !MENU_VERIFIED.load(Ordering::Acquire){return;}
+    if !enabled() || !MENU_VERIFIED.load(Ordering::Acquire) ||
+       !script_allows_decorated_cursor(){return;}
     let icon=INSTALLED.load(Ordering::Acquire);
     if icon!=0 {
-        // Re-arm after an authenticated mode transition, without reloading
-        // GPU memory or invalidating Windows' cursor lifetime.
+        // Re-arm on a real return to MainMenu/Preferences, never in
+        // arbitrary 800x600 movies or other scripts. The script observer
+        // attempts immediately; this is a later focus-return fallback.
         if !window_erase_guard::decorated_menu_cursor_active(){
-            if let Err(e)=window_erase_guard::activate_decorated_menu_cursor(icon){
-                if !REPORTED.swap(true,Ordering::Relaxed){
-                    log(&format!("WINE-DECORATED-CURSOR: rearm pending ({e})"));
-                }
+            match window_erase_guard::activate_decorated_menu_cursor(icon){
+                Ok(())=>{REPORTED.store(false,Ordering::Release);},
+                Err(e)=>{
+                    if !REPORTED.swap(true,Ordering::AcqRel){
+                        log(&format!("WINE-DECORATED-CURSOR: rearm deferred ({e})"));
+                    }
+                },
             }
         }
         return;
@@ -372,6 +409,13 @@ pub fn try_install(){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn script_rearm_is_scoped_to_original_menu_and_existing_icon(){
+        assert!(can_rearm(true,true,true));
+        assert!(!can_rearm(true,false,true));
+        assert!(!can_rearm(false,true,true));
+        assert!(!can_rearm(true,true,false));
+    }
     #[test]
     fn original_cursor_geometry_and_pixel_decoding(){
         let v=[
