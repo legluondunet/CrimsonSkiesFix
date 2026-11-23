@@ -853,9 +853,13 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                 match crate::window_erase_guard::arm_native_system_cursor_probe(
                     runtime.hwnd,false
                 ){
-                    Ok(())=>log(
-                        "WINE-SYSTEM-CURSOR-PROBE: armed original OS arrow on verified 800x600 menu; two cursors expected; original input, GameOS sprite, clicks, 30fps render unchanged"
-                    ),
+                    Ok(())=>{
+                        if crate::cfg().wine_decorated_system_cursor{
+                            log("WINE-SYSTEM-CURSOR-PROBE: original gold game cursor retained while awaiting verified texture -> HCURSOR; generic OS arrow intentionally DISABLED; D3D sprite can be skipped only after decorated HCURSOR activates");
+                        }else{
+                            log("WINE-SYSTEM-CURSOR-PROBE: diagnostic native arrow armed; original game sprite retained; two cursors expected");
+                        }
+                    },
                     Err(reason)=>log(&format!(
                         "WINE-SYSTEM-CURSOR-PROBE: unavailable ({reason}); game pointer unchanged"
                     )),
