@@ -1,12 +1,15 @@
-//! Passive Direct3DDevice3 draw correlation under the already-opted-in
-//! WineGosDrawTrace experiment. The eleven direct legacy GOS sprite renderer
-//! callsites were completely idle during MainMenu in the 5,400-flip log.
-//! Do not assume the pointer must use them; inspect original D3D3 primitives.
+//! Direct3DDevice3 draw correlation and an independent, Wine-only cursor
+//! quad suppression A/B under the existing WineGosDrawTrace experiment.
 //!
-//! This does NOT hide the original cursor, replace any texture or change a
-//! vertex. Each original COM method receives identical arguments, returns
-//! its original HRESULT and executes with original timing apart from bounded
-//! passive bookkeeping. Native Windows is never hooked by this experiment.
+//! Actual 3adbe981 Wine log: 7,935 DrawPrimitive calls in 360 menu Flips.
+//! Among 216 detailed samples, one 4-vertex, FVF 0x1C4, TRIANGLEFAN=6
+//! follows 77 distinct GameOS cursor positions with exactly 1.5/2.5 px
+//! XY hotspot offsets. No other sampled texture exhibits that signature.
+//! Experimental suppression is OFF unless WineD3dCursorSuppress=1, AND all
+//! original Wine pointer+sync diagnostics are enabled in verified 800x600
+//! MainMenu/Preferences. This is a render-only no-op for that one quad; input,
+//! buttons, FPS/presentation, OS arrow and all other draw calls remain intact.
+//! Native Windows never uses this experimental hook.
 use std::{ffi::c_void,sync::{Mutex,OnceLock,atomic::{AtomicUsize,Ordering}}};
 use crate::{cfg,diagnostics,log};
 use crate::com_vtable::{orig,replace_method};
@@ -27,6 +30,8 @@ type DrawIndexedVB=unsafe extern "system" fn(Obj,u32,Obj,*const u16,u32,u32)->Hr
 type SetTexture=unsafe extern "system" fn(Obj,u32,Obj)->Hr;
 static COUNTS:[AtomicUsize;4]=[const{AtomicUsize::new(0)};4];
 static SAMPLED_NEAR:AtomicUsize=AtomicUsize::new(0);
+static CURSOR_DRAW_SUPPRESSED:AtomicUsize=AtomicUsize::new(0);
+static CURSOR_DRAW_LAST_TEXTURE:AtomicUsize=AtomicUsize::new(0);
 static TEXTURE:AtomicUsize=AtomicUsize::new(0);
 static SAMPLES:OnceLock<Mutex<Vec<String>>>=OnceLock::new();
 
@@ -43,6 +48,33 @@ fn enabled()->bool{
 }
 fn active()->bool{
     enabled() && crate::wine_gos_draw_trace::verified_menu_active()
+}
+// Match ONLY the bitmap-bearing TL triangle-fan quad whose first vertex
+// tracks the original GOS hit-testing cursor's hotspot, as demonstrated
+// at 77 distinct positions in the user's complete 3adbe981 log.
+// Do not use the DX6 texture COM pointer as an identity: it changes per run,
+// and the same atlas may also draw non-cursor UI regions.
+fn cursor_quad_matches(
+    primitive:u32,fvf:u32,vertex_count:u32,
+    texture:usize,first:Option<(f32,f32)>,mouse:(i32,i32)
+)->bool{
+    if primitive!=6 || fvf!=0x1C4 || vertex_count!=4 || texture==0 ||
+        !(0..800).contains(&mouse.0) || !(0..600).contains(&mouse.1) {
+        return false;
+    }
+    let Some((x,y))=first else {return false;};
+    if !x.is_finite() || !y.is_finite(){return false;}
+    let dx=mouse.0 as f32-x;
+    let dy=mouse.1 as f32-y;
+    (1.0..=3.0).contains(&dx) && (1.0..=3.0).contains(&dy)
+}
+fn should_suppress_cursor_quad(
+    wine:bool,menu_verified:bool,experimental:bool,
+    primitive:u32,fvf:u32,vertex_count:u32,
+    texture:usize,first:Option<(f32,f32)>,mouse:(i32,i32)
+)->bool{
+    wine && menu_verified && experimental &&
+    cursor_quad_matches(primitive,fvf,vertex_count,texture,first,mouse)
 }
 fn should_record(n:usize,near:bool)->bool{
     n<=5 || (near && n<=20000) || n==64 || n==512
@@ -86,8 +118,34 @@ fn record(kind:usize,n:usize,primitive:u32,fvf:u32,vertex:*const c_void,vertices
 unsafe extern "system" fn draw(
     this:Obj,primitive:u32,fvf:u32,vertices:Obj,count:u32,flags:u32
 )->Hr{
-    let n=if active(){COUNTS[0].fetch_add(1,Ordering::Relaxed)+1}else{0};
+    let menu_active=active();
+    let n=if menu_active{COUNTS[0].fetch_add(1,Ordering::Relaxed)+1}else{0};
     if n>0{record(0,n,primitive,fvf,vertices,count);}
+    let suppress=if menu_active && cfg().wine_d3d_cursor_suppress &&
+        primitive==6 && fvf==0x1C4 && count==4 &&
+        !vertices.is_null() {
+        // The original renderer already expects four valid TL vertices,
+        // so reading the initial x/y is safe for this exact admitted call.
+        let p=vertices as *const f32;
+        let first=Some((p.read_unaligned(),p.add(1).read_unaligned()));
+        let mouse=((MOUSE_X as *const i32).read_volatile(),
+                   (MOUSE_Y as *const i32).read_volatile());
+        should_suppress_cursor_quad(
+            diagnostics::is_wine_runtime(),
+            crate::wine_gos_draw_trace::verified_menu_active(),
+            cfg().wine_d3d_cursor_suppress,
+            primitive,fvf,count,
+            TEXTURE.load(Ordering::Relaxed),first,mouse
+        )
+    }else{false};
+    if suppress{
+        let texture=TEXTURE.load(Ordering::Relaxed);
+        CURSOR_DRAW_LAST_TEXTURE.store(texture,Ordering::Relaxed);
+        CURSOR_DRAW_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
+        // D3D_OK. The caller's UI/input logic already executed.
+        // No Direct3D state, texture, vertex or OS cursor is changed.
+        return 0;
+    }
     let Some(raw)=orig(this,DRAW_PRIMITIVE) else {return -1;};
     let f:Draw=std::mem::transmute(raw);
     f(this,primitive,fvf,vertices,count,flags)
@@ -152,8 +210,10 @@ pub fn report_sample(){
     let counters:Vec<usize>=COUNTS.iter().map(|x|x.load(Ordering::Relaxed)).collect();
     let near=SAMPLED_NEAR.load(Ordering::Relaxed);
     log(&format!(
-        "WINE-D3D3-DRAW-TRACE-STATUS: primitive={} indexed={} primitive_vb={} indexed_vb={} close_to_mouse_samples={} [cumulative; no rendering altered]",
-        counters[0],counters[1],counters[2],counters[3],near
+        "WINE-D3D3-DRAW-TRACE-STATUS: primitive={} indexed={} primitive_vb={} indexed_vb={} close_to_mouse_samples={} cursor_quads_suppressed={} last_cursor_texture=0x{:08X} [cumulative; all nonmatching draws forwarded]",
+        counters[0],counters[1],counters[2],counters[3],near,
+        CURSOR_DRAW_SUPPRESSED.load(Ordering::Relaxed),
+        CURSOR_DRAW_LAST_TEXTURE.load(Ordering::Relaxed)
     ));
     if let Ok(mut v)=samples().lock(){
         for line in v.drain(..){log(&line);}
@@ -170,6 +230,26 @@ mod tests {
         let _:DrawVB=draw_vb;
         let _:DrawIndexedVB=indexed_vb;
         let _:SetTexture=set_texture;
+    }
+    #[test]
+    fn exact_cursor_alignment_filters_other_menu_quads(){
+        let p=Some((553.5,386.5));
+        assert!(cursor_quad_matches(6,0x1C4,4,0x1234,p,(556,389)));
+        assert!(cursor_quad_matches(6,0x1C4,4,0x1234,Some((553.5,385.5)),(555,388)));
+        // A background tile uses the same texture atlas; coordinate
+        // coupling, not texture identity, is the essential safeguard.
+        assert!(!cursor_quad_matches(6,0x1C4,4,0x1234,Some((645.5,140.5)),(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C4,4,0x1234,Some((389.5,140.5)),(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C4,4,0,Some((553.5,386.5)),(556,389)));
+        assert!(!cursor_quad_matches(5,0x1C4,4,0x1234,p,(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C4,6,0x1234,p,(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C0,4,0x1234,p,(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C4,4,0x1234,None,(556,389)));
+        assert!(!cursor_quad_matches(6,0x1C4,4,0x1234,p,(799,600)));
+        assert!(!should_suppress_cursor_quad(false,true,true,6,0x1C4,4,0x1234,p,(556,389)));
+        assert!(!should_suppress_cursor_quad(true,false,true,6,0x1C4,4,0x1234,p,(556,389)));
+        assert!(!should_suppress_cursor_quad(true,true,false,6,0x1C4,4,0x1234,p,(556,389)));
+        assert!(should_suppress_cursor_quad(true,true,true,6,0x1C4,4,0x1234,p,(556,389)));
     }
     #[test]
     fn bounded_samples(){
