@@ -1745,6 +1745,17 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         // to dispatch even one queued Win32 message. Without the explicit
         // native-only, off-by-default arm this does nothing (including Wine).
         drop(state);
+        // The original MainMenu Campaign pixels were checked by GDI on
+        // the real RGB565 scratch and this exact image was successfully
+        // presented. After releasing the virtual graph mutex, that visual
+        // evidence may restore the original-art HCURSOR on return from
+        // gameplay WITHOUT relying on another MainMenu script callback.
+        // Win32 SetCursor/ShowCursor is never called inside the COM lock.
+        #[cfg(feature="winmm-bootstrap")]
+        if flip_result==S_OK && composed &&
+            (node.mode.width,node.mode.height,node.mode.bpp)==(800,600,16) {
+            crate::wine_decorated_cursor::on_verified_campaign_presented();
+        }
         // Emit at most one summary per 120 successful Flips and outside
         // the graph mutex. No synchronous logging in each sampled frame.
         #[cfg(feature="winmm-bootstrap")]
