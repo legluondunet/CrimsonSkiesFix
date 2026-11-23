@@ -55,9 +55,12 @@ unsafe extern "C" fn observe_script(name:*const c_char,capacity:u32,flags:u32){
     );
     // Only the explicit Windows-native 800x600 menu mouse A/B sees
     // this signal. The original script loader still executes unchanged.
-    crate::window_erase_guard::set_native_menu_mouse_script_active(
-        scene==MAIN || scene==PREFERENCES
-    );
+    let has_menu_script=scene==MAIN || scene==PREFERENCES;
+    crate::window_erase_guard::set_native_menu_mouse_script_active(has_menu_script);
+    // The original gold sprite HCURSOR, if already constructed, can be
+    // reactivated on this verified UI thread at the exact script boundary
+    // instead of awaiting the next 120-Flip diagnostic snapshot.
+    crate::wine_decorated_cursor::on_menu_script_change(has_menu_script);
     if old!=scene {
         log(match scene {
             MAIN=>"MENU-SCENE: entered MainMenu; branding enabled",
