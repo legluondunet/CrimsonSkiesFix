@@ -115,6 +115,10 @@ static MENU_MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
 // allowing a controlled distinction between hidden OS cursor and the
 // game's missing cursor rendering. The normal/legacy cursor is not changed.
 static MENU_SYSTEM_CURSOR_PROBE_HWND:AtomicUsize=AtomicUsize::new(0);
+// One original-game-decorated Win32 HCURSOR constructed at runtime from
+// the user's own Direct3D texture. Handle is retained for process lifetime:
+// never destroy a cursor while Windows/Wine may still be displaying it.
+static MENU_CUSTOM_CURSOR_HANDLE:AtomicUsize=AtomicUsize::new(0);
 static MENU_SYSTEM_CURSOR_PROBE_EVENTS:AtomicUsize=AtomicUsize::new(0);
 static MENU_SYSTEM_CURSOR_PROBE_RESTORES:AtomicUsize=AtomicUsize::new(0);
 // Independent native menu GOS mouse bridge: DirectInput's original buttons
@@ -253,9 +257,18 @@ fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32)->bool{
        !native_system_cursor_probe_message(message) ||
        unsafe{GetForegroundWindow()}!=hwnd{return false;}
     unsafe{
-        // Win32 standard arrow, not a custom file or a global cursor change.
-        let arrow=LoadCursorW(std::ptr::null_mut(),32512usize as *const u16);
-        if arrow.is_null(){return false;}
+        let icon=MENU_CUSTOM_CURSOR_HANDLE.load(Ordering::Acquire);
+        // When the user wants the game's decorated pointer, NEVER show
+        // a generic arrow as a fallback. Until the original texture has
+        // produced a verified HCURSOR, leave the game's sprite visible.
+        if crate::cfg().wine_decorated_system_cursor &&
+            crate::diagnostics::is_wine_runtime() && icon==0 {
+            return false;
+        }
+        let cursor=if icon!=0 {icon as Hwnd} else {
+            LoadCursorW(std::ptr::null_mut(),32512usize as *const u16)
+        };
+        if cursor.is_null(){return false;}
         // ShowCursor is a per-thread reference count; keep any adjustments
         // bounded, one-time and reversible. Never repeatedly increment it
         // on each mousemove; the original game remains the cursor owner.
@@ -272,7 +285,7 @@ fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32)->bool{
             }
             NATIVE_CURSOR_PROBE_SHOW_INCREMENTS.with(|n|n.set(count));
         }
-        SetCursor(arrow);
+        SetCursor(cursor);
         MENU_SYSTEM_CURSOR_PROBE_EVENTS.fetch_add(1,Ordering::Relaxed);
         true
     }
@@ -300,6 +313,7 @@ pub fn arm_native_system_cursor_probe(
     Ok(())
 }
 pub fn disarm_native_system_cursor_probe(){
+    MENU_CUSTOM_CURSOR_HANDLE.store(0,Ordering::Release);
     let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.swap(0,Ordering::AcqRel);
     if hwnd!=0{
         // Mode changes and script dispatch originate on game HWND/UI
@@ -310,6 +324,40 @@ pub fn disarm_native_system_cursor_probe(){
         }
     }
 }
+/// Bind a real original-game decorated HCURSOR to the admitted UI HWND.
+ /// This method never manufactures graphics: caller supplied an HCURSOR
+ /// created from the authentic game texture, and validated its alpha.
+ /// No native Windows behavior changes; only the current Wine menu owner
+ /// may show it and changes are reversible by scene/disarm.
+pub fn activate_decorated_menu_cursor(icon:usize)->Result<(),String>{
+    if icon==0 || !crate::diagnostics::is_wine_runtime() ||
+       !crate::cfg().wine_decorated_system_cursor {
+        return Err("custom cursor is not enabled for Wine".into());
+    }
+    let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire) as Hwnd;
+    if hwnd.is_null() || MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 {
+        return Err("no active authenticated GameOS menu/OS pointer".into());
+    }
+    unsafe{
+        if IsWindow(hwnd)==0 || GetForegroundWindow()!=hwnd ||
+           GetWindowThreadProcessId(hwnd,std::ptr::null_mut())!=GetCurrentThreadId(){
+            return Err("cursor activation must be on focused game UI thread".into());
+        }
+    }
+    MENU_CUSTOM_CURSOR_HANDLE.store(icon,Ordering::Release);
+    if !after_game_wndproc_system_cursor_probe(hwnd,WM_SETCURSOR){
+        MENU_CUSTOM_CURSOR_HANDLE.store(0,Ordering::Release);
+        return Err("failed to show original-decorated HCURSOR".into());
+    }
+    Ok(())
+}
+pub fn decorated_menu_cursor_active()->bool{
+    MENU_CUSTOM_CURSOR_HANDLE.load(Ordering::Acquire)!=0 &&
+    MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0 &&
+    MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)!=0 &&
+    crate::diagnostics::is_wine_runtime()
+}
+
 fn intercept_erase(message:u32,matching:bool)->bool{
     message==WM_ERASEBKGND && matching
 }
