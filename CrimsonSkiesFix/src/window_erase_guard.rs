@@ -862,6 +862,16 @@ mod tests{
         assert_eq!(NATIVE_MOVIE_PUMP_MAX_PER_FLIP,4);
     }
     #[test]
+    fn presented_campaign_art_recovers_only_wine_decorated_menu(){
+        assert!(menu_pointer_scene_eligible(true,false,false,false));
+        assert!(menu_pointer_scene_eligible(false,true,true,true));
+        // Never infer menu context from pixel art on native Windows or
+        // when Wine's gold cursor enhancement is not explicitly enabled.
+        assert!(!menu_pointer_scene_eligible(false,true,false,true));
+        assert!(!menu_pointer_scene_eligible(false,true,true,false));
+        assert!(!menu_pointer_scene_eligible(false,false,true,true));
+    }
+    #[test]
     fn native_system_cursor_probe_message_scope_is_menu_mouse_only(){
         assert!(native_system_cursor_probe_message(WM_SETCURSOR));
         assert!(native_system_cursor_probe_message(WM_MOUSEMOVE));
