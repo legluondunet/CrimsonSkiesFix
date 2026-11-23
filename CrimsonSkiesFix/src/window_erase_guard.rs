@@ -351,6 +351,26 @@ pub fn activate_decorated_menu_cursor(icon:usize)->Result<(),String>{
     }
     Ok(())
 }
+/// Actual 4:3 drawable viewport, derived only from the authenticated
+/// game-owned HWND; no guessed user desktop size or hard-coded DPI.
+pub fn decorated_menu_viewport()->Option<(u32,u32)>{
+    let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire) as Hwnd;
+    if hwnd.is_null(){return None;}
+    unsafe{
+        if IsWindow(hwnd)==0 ||
+           GetWindowThreadProcessId(hwnd,std::ptr::null_mut())!=GetCurrentThreadId(){
+            return None;
+        }
+        let mut rect=MouseRect::default();
+        if GetClientRect(hwnd,&mut rect)==0 {return None;}
+        let w=(rect.right-rect.left).max(0) as u32;
+        let h=(rect.bottom-rect.top).max(0) as u32;
+        if w<640 || h<480{return None;}
+        let view_w=w.min(h.saturating_mul(4)/3);
+        let view_h=h.min(w.saturating_mul(3)/4);
+        (view_w>=640 && view_h>=480).then_some((view_w,view_h))
+    }
+}
 pub fn decorated_menu_cursor_active()->bool{
     MENU_CUSTOM_CURSOR_HANDLE.load(Ordering::Acquire)!=0 &&
     MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0 &&
