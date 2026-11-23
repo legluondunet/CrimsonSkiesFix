@@ -609,6 +609,7 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     // Do not let the exact menu-script bitmap lookup A/B leak into
     // cinematics or gameplay, including reused 800x600 virtual graphs.
     crate::wine_menu_cursor_bitmap_probe::set_verified_menu_mode(false);
+    crate::wine_game_cursor_render::set_verified_menu_mode(false);
     // Reversible Wine A/B is disarmed before every DD4 transition, including
     // gameplay, without altering the original game mouse/input state.
     if crate::cfg().wine_system_cursor_probe{
@@ -713,6 +714,32 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     crate::cfg().wine_menu_cursor_bitmap_probe
                 )
             );
+            // Wine-only A/B: intercept the *one* GameOS menu cursor
+            // object's virtual DRAW method, not the entire UI/COM frame.
+            // This is an independent experiment from the rejected
+            // CURSOR -> XURSOR bitmap-script key probe. Fail closed on
+            // overlapping experiments, wrong EXE/vtable preimages or
+            // any non-800x600x16 graph; original input remains untouched.
+            if wine_system_cursor_probe_eligible(
+                mode,crate::diagnostics::is_wine_runtime(),
+                crate::cfg().wine_system_cursor_probe &&
+                crate::cfg().wine_system_cursor_sync &&
+                crate::cfg().wine_game_cursor_render_suppress &&
+                !crate::cfg().wine_menu_cursor_bitmap_probe
+            ){
+                crate::wine_game_cursor_render::set_verified_menu_mode(true);
+                match crate::wine_game_cursor_render::install_for_verified_menu(){
+                    Ok(details)=>log(&format!(
+                        "WINE-GOS-CURSOR-RENDER: armed {details}"
+                    )),
+                    Err(reason)=>{
+                        crate::wine_game_cursor_render::set_verified_menu_mode(false);
+                        log(&format!(
+                            "WINE-GOS-CURSOR-RENDER: not applied ({reason}); original sprite rendering unchanged"
+                        ));
+                    }
+                }
+            }
             // Windows native only, exact game-owned HWND already verified:
             // repair the game's pre-borderless ClipCursor when (and only
             // when) the OS still reports that same stale small rectangle.
