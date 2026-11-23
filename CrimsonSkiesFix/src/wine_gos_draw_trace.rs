@@ -83,12 +83,25 @@ pub fn set_verified_menu_mode(verified:bool){
     MENU_VERIFIED.store(verified,Ordering::Release);
 }
 
-/// The original DD4 800x600x16 game-owned HWND was already authenticated.
-/// Shared gating for passive Direct3D3 draw correlation only.
+/// A valid cursor scene requires the actual 800x600x16 GameOS menu.
+/// On return from gameplay, the game can show the real MainMenu artwork
+/// WITHOUT calling the MainMenu script dispatcher again (verified Wine log
+/// 844070c8). Treat an authenticated *presented* Campaign frame as the
+/// same menu evidence already accepted by the decorated HCURSOR owner.
+/// Never infer a menu from resolution or an unpresented texture alone.
+fn cursor_menu_scene_evidence(script_menu:bool,campaign_presented:bool)->bool{
+    script_menu || campaign_presented
+}
+fn cursor_menu_script_active()->bool{
+    crate::menu_scene::main_menu_active() ||
+    crate::menu_scene::preferences_active()
+}
 pub fn verified_menu_active()->bool{
     MENU_VERIFIED.load(Ordering::Acquire) &&
-    (crate::menu_scene::main_menu_active() ||
-     crate::menu_scene::preferences_active())
+    cursor_menu_scene_evidence(
+        cursor_menu_script_active(),
+        crate::window_erase_guard::wine_campaign_menu_presented()
+    )
 }
 unsafe fn draw_observer<const N:usize>(
     a:u32,b:u32,c:u32,d:u32,e:u32,f:u32,g:u32
@@ -96,9 +109,10 @@ unsafe fn draw_observer<const N:usize>(
     // The original shared renderer has a cdecl 7×u32 ABI; the 11 verified
     // CALL sites each clean 0x1c bytes after returning. Preserve all bits,
     // including the raw float alpha argument and pointers.
-    let active=MENU_VERIFIED.load(Ordering::Acquire) &&
-        (crate::menu_scene::main_menu_active() ||
-         crate::menu_scene::preferences_active()) && permitted();
+    // Shared evidence with the Win32 cursor's already-authenticated
+    // Campaign-art return path. The original cursor must be skipped on
+    // precisely the same scenes where its decorated HCURSOR is visible.
+    let active=verified_menu_active() && permitted();
     if active {
         let n=COUNTS[N].fetch_add(1,Ordering::Relaxed)+1;
         // Only two exact original cursor-rendering sites are eligible.
@@ -218,8 +232,11 @@ pub fn report_sample(){
     let counts:Vec<String>=COUNTS.iter().enumerate().map(|(i,c)|{
         format!("{i}={}",c.load(Ordering::Relaxed))
     }).collect();
+    let scene_source=if cursor_menu_script_active(){"script"}
+        else if crate::window_erase_guard::wine_campaign_menu_presented(){"presented-Campaign"}
+        else{"none"};
     log(&format!(
-        "WINE-GOS-DRAW-TRACE-STATUS: cumulative_calls_by_original_site=[{}] duplicate_gos_cursor_skipped_site6={} duplicate_gos_cursor_skipped_site7={} all_nonmatching_draws_forwarded=true",
+        "WINE-GOS-DRAW-TRACE-STATUS: scene_evidence={scene_source} cumulative_calls_by_original_site=[{}] duplicate_gos_cursor_skipped_site6={} duplicate_gos_cursor_skipped_site7={} all_nonmatching_draws_forwarded=true",
         counts.join(" "),
         DUPLICATE_CURSOR_SKIPPED[0].load(Ordering::Relaxed),
         DUPLICATE_CURSOR_SKIPPED[1].load(Ordering::Relaxed)
@@ -229,6 +246,12 @@ pub fn report_sample(){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn post_gameplay_campaign_frame_reenables_cursor_render_filters(){
+        assert!(cursor_menu_scene_evidence(true,false));
+        assert!(cursor_menu_scene_evidence(false,true));
+        assert!(!cursor_menu_scene_evidence(false,false));
+    }
     #[test]
     fn all_direct_callsites_are_unique_and_x86(){
         assert_eq!(SITES.len(),11);
