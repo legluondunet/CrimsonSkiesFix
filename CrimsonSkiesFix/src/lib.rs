@@ -61,6 +61,7 @@ mod native_cursor_trace;
 mod wine_menu_cursor_bitmap_probe; // reversible Wine CURSOR-section A/B; no original asset patch
 mod wine_game_cursor_render; // exact cursor object render-vtable Wine A/B only
 mod wine_gos_draw_trace; // exact GOS sprite-draw callsite read-only Wine diagnostic
+mod wine_d3d3_cursor_trace; // passive original DX6 D3D3 primitive/texture cursor correlation
 mod native_dinput_mouse_trace; // opt-in Windows-only DirectInput mouse COM pass-through audit
 mod native_owner_mode_trace;
 mod native_dd4_bootstrap;
