@@ -83,6 +83,10 @@ unsafe fn observe_d3d3_device(device:*mut c_void){
     let end=replace_method(device,D3D3_DEVICE_END_SCENE,d3d3_device_end_scene as *const () as usize);
     let target=replace_method(device,D3D3_DEVICE_SET_RENDER_TARGET,d3d3_device_set_render_target as *const () as usize);
     let get_target=replace_method(device,D3D3_DEVICE_GET_RENDER_TARGET,d3d3_device_get_render_target as *const () as usize);
+    // DX6-compatible additional read-only diagnostic gated by
+    // WineGosDrawTrace; all D3D3 methods are forwarded unchanged.
+    #[cfg(feature="winmm-bootstrap")]
+    crate::wine_d3d3_cursor_trace::install_for_verified_game_device(device);
     if D3D3_DEVICE_HOOK_TRACE_COUNT.fetch_add(1,Ordering::Relaxed)<12 {
         log(&format!(
             "D3D3-DEVICE: hooks BeginScene={begin} EndScene={end} SetRenderTarget={target} GetRenderTarget={get_target} (opt-in adapter support)"));
