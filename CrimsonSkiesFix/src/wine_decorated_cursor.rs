@@ -86,9 +86,26 @@ pub fn set_verified_menu_mode(yes:bool){
 }
 /// A cursor only belongs to an authenticated MainMenu or Preferences
 /// script; being in the DD4 800x600 graphics mode is NOT sufficient.
+fn cursor_menu_evidence(script_active:bool,campaign_presented:bool)->bool{
+    script_active || campaign_presented
+}
 fn script_allows_decorated_cursor()->bool{
-    crate::menu_scene::main_menu_active() ||
-    crate::menu_scene::preferences_active()
+    cursor_menu_evidence(
+        crate::menu_scene::main_menu_active() ||
+        crate::menu_scene::preferences_active(),
+        window_erase_guard::wine_campaign_menu_presented()
+    )
+}
+/// An authenticated pixel sample from the REAL 4:3 menu was successfully
+/// presented in the actual game HWND. Unlike script callbacks, this also
+/// fires on post-gameplay return, as recorded by MENU-BRANDING reentry=...
+/// No activation is possible before the original golden icon was captured.
+pub fn on_verified_campaign_presented(){
+    if !enabled() || !MENU_VERIFIED.load(Ordering::Acquire){return;}
+    if window_erase_guard::note_verified_wine_campaign_presented(){
+        log("WINE-DECORATED-CURSOR: presented Campaign artwork authenticated menu return even without MainMenu script reload");
+        on_menu_script_change(true);
+    }
 }
 fn can_rearm(verified:bool,script_active:bool,icon_ready:bool)->bool{
     verified && script_active && icon_ready
@@ -416,6 +433,9 @@ mod tests{
     use super::*;
     #[test]
     fn script_rearm_is_scoped_to_original_menu_and_existing_icon(){
+        assert!(cursor_menu_evidence(true,false));
+        assert!(cursor_menu_evidence(false,true));
+        assert!(!cursor_menu_evidence(false,false));
         assert!(can_rearm(true,true,true));
         assert!(!can_rearm(true,false,true));
         assert!(!can_rearm(false,true,true));
