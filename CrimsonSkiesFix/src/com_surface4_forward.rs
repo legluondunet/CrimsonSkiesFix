@@ -1767,6 +1767,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             // Passive per-callsite GOS draw correlation is sampled at
             // 120 successful menu flips; no pixels are suppressed.
             crate::wine_gos_draw_trace::report_sample();
+            crate::wine_d3d3_cursor_trace::report_sample();
             match window_erase_guard::sample_input_state(pump_window) {
                 Some(input)=>{
                     let c=input.counts;
