@@ -108,6 +108,11 @@ static MENU_MOUSE_CLIENT_H:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_RENDER_W:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_RENDER_H:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_SCENE_ACTIVE:AtomicUsize=AtomicUsize::new(0);
+// Wine-only alternate evidence of MainMenu after gameplay. The exact
+// Campaign artwork was identified in a SUCCESSFULLY PRESENTED 800x600
+// frame, unlike a stale GOS script ID. Disarmed at non-menu script and
+// mode boundaries; never applies to native Windows.
+static MENU_WINE_CAMPAIGN_ART_PRESENTED:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_MAPPED:AtomicUsize=AtomicUsize::new(0);
 static MENU_MOUSE_LAST_X:AtomicIsize=AtomicIsize::new(0);
 static MENU_MOUSE_LAST_Y:AtomicIsize=AtomicIsize::new(0);
@@ -247,13 +252,40 @@ fn undo_native_system_cursor_probe(){
 fn native_system_cursor_probe_message(message:u32)->bool{
     matches!(message,WM_SETCURSOR|WM_MOUSEMOVE)
 }
+fn menu_pointer_scene_eligible(script:bool,art:bool,wine:bool,decorated:bool)->bool{
+    script || (art && wine && decorated)
+}
+fn menu_pointer_scene_active()->bool{
+    menu_pointer_scene_eligible(
+        MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)!=0,
+        MENU_WINE_CAMPAIGN_ART_PRESENTED.load(Ordering::Acquire)!=0,
+        crate::diagnostics::is_wine_runtime(),
+        crate::cfg().wine_decorated_system_cursor
+    )
+}
+/// Called only after a successful primary presentation with the authentic
+/// pixel-verified Campaign button. In particular, this handles a return
+/// from gameplay where no new MainMenu script load occurs.
+pub fn note_verified_wine_campaign_presented()->bool{
+    if !crate::diagnostics::is_wine_runtime() ||
+       !crate::cfg().wine_decorated_system_cursor ||
+       MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)==0 {
+        return false;
+    }
+    MENU_WINE_CAMPAIGN_ART_PRESENTED.swap(1,Ordering::AcqRel)==0
+}
+pub fn wine_campaign_menu_presented()->bool{
+    MENU_WINE_CAMPAIGN_ART_PRESENTED.load(Ordering::Acquire)!=0 &&
+    crate::diagnostics::is_wine_runtime() &&
+    crate::cfg().wine_decorated_system_cursor
+}
 /// This is a temporary A/B diagnostic, NOT a final game cursor fix.
 /// The game receives original Win32 events first; AFTER its WndProc
 /// returns, show the Windows arrow in MainMenu/Preferences only. Never
 /// change input coordinates, fake events or paint into DirectDraw.
 fn after_game_wndproc_system_cursor_probe(hwnd:Hwnd,message:u32)->bool{
     if MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=hwnd as usize ||
-       MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 ||
+       !menu_pointer_scene_active() ||
        !native_system_cursor_probe_message(message) ||
        unsafe{GetForegroundWindow()}!=hwnd{return false;}
     unsafe{
@@ -314,6 +346,7 @@ pub fn arm_native_system_cursor_probe(
 }
 pub fn disarm_native_system_cursor_probe(){
     MENU_CUSTOM_CURSOR_HANDLE.store(0,Ordering::Release);
+    MENU_WINE_CAMPAIGN_ART_PRESENTED.store(0,Ordering::Release);
     let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.swap(0,Ordering::AcqRel);
     if hwnd!=0{
         // Mode changes and script dispatch originate on game HWND/UI
@@ -335,8 +368,8 @@ pub fn activate_decorated_menu_cursor(icon:usize)->Result<(),String>{
         return Err("custom cursor is not enabled for Wine".into());
     }
     let hwnd=MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire) as Hwnd;
-    if hwnd.is_null() || MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 {
-        return Err("no active authenticated GameOS menu/OS pointer".into());
+    if hwnd.is_null() || !menu_pointer_scene_active() {
+        return Err("no active authenticated GameOS menu script or presented Campaign artwork".into());
     }
     unsafe{
         if IsWindow(hwnd)==0 || GetForegroundWindow()!=hwnd ||
@@ -374,7 +407,7 @@ pub fn decorated_menu_viewport()->Option<(u32,u32)>{
 pub fn decorated_menu_cursor_active()->bool{
     MENU_CUSTOM_CURSOR_HANDLE.load(Ordering::Acquire)!=0 &&
     MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0 &&
-    MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)!=0 &&
+    menu_pointer_scene_active() &&
     crate::diagnostics::is_wine_runtime()
 }
 
@@ -578,6 +611,7 @@ pub fn arm_native_menu_mouse_remap(
         }
     }
     MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
+    MENU_WINE_CAMPAIGN_ART_PRESENTED.store(0,Ordering::Release);
     MENU_MOUSE_CLIENT_W.store(client.0 as usize,Ordering::Release);
     MENU_MOUSE_CLIENT_H.store(client.1 as usize,Ordering::Release);
     MENU_MOUSE_RENDER_W.store(render.0 as usize,Ordering::Release);
@@ -590,6 +624,7 @@ pub struct MenuMouseGeometry{pub left:i32,pub top:i32,pub width:i32,pub height:i
 pub fn disarm_native_menu_mouse_remap(){
     MENU_MOUSE_HWND.store(0,Ordering::Release);
     MENU_MOUSE_SCENE_ACTIVE.store(0,Ordering::Release);
+    MENU_WINE_CAMPAIGN_ART_PRESENTED.store(0,Ordering::Release);
 }
 /// The original Win32 window remains full-size borderless. This opt-in
 /// bridge is allowed only for the native Windows DD4 virtual 800x600 movie
@@ -688,6 +723,11 @@ pub fn native_gos_cursor_bridge_target()->Option<(i32,i32)>{
 }
 pub fn set_native_menu_mouse_script_active(active:bool){
     MENU_MOUSE_SCENE_ACTIVE.store(usize::from(active),Ordering::Release);
+    if !active {
+        // A new non-menu script invalidates the previous art certificate.
+        // The displayed Campaign button can renew it after a real Flip.
+        MENU_WINE_CAMPAIGN_ART_PRESENTED.store(0,Ordering::Release);
+    }
     if !active && MENU_SYSTEM_CURSOR_PROBE_HWND.load(Ordering::Acquire)!=0{
         // The exact game script loader has left MainMenu/Preferences.
         // Reset only our own ShowCursor increments, no global cursor
