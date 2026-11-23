@@ -1756,6 +1756,17 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         if let Some(summary)=api_summary{crate::log(&summary);}
         if let Some(summary)=wait_summary{crate::log(&summary);}
         if let Some(summary)=cursor_summary{crate::log(&summary);}
+        // Once-per-process extraction of the game's original cursor atlas
+        // after its first authenticated menu drawing: run immediately
+        // after a successful Flip and *after releasing the graphics lock*.
+        // This avoids the 120-Flip/seconds-long activation delay and
+        // permits immediate fail-closed fallback to the game's own sprite.
+        #[cfg(feature="winmm-bootstrap")]
+        if flip_result==S_OK &&
+           (node.mode.width,node.mode.height,node.mode.bpp)==(800,600,16) &&
+           crate::cfg().wine_decorated_system_cursor {
+            crate::wine_decorated_cursor::try_install();
+        }
         // Wine OS-arrow A/B is deliberately not driven by the 30 Hz Flip.
         // A setup "armed" line cannot tell whether Wine actually delivered
         // WM_MOUSEMOVE/WM_SETCURSOR or whether the OS arrow became visible.
@@ -1768,10 +1779,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             // 120 successful menu flips; no pixels are suppressed.
             crate::wine_gos_draw_trace::report_sample();
             crate::wine_d3d3_cursor_trace::report_sample();
-            // Delayed once-per-menu art extraction, outside D3D draw and
-            // graph mutex. If it fails, the original GOS sprite remains.
-            crate::wine_decorated_cursor::try_install();
-            match window_erase_guard::sample_input_state(pump_window) {
+             match window_erase_guard::sample_input_state(pump_window) {
                 Some(input)=>{
                     let c=input.counts;
                     crate::log(&format!(
