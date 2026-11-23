@@ -1,18 +1,24 @@
-//! Strict opt-in, passive x86 draw-call inventory for the original GOS UI.
-//! 
-//! The previous cursor-object vtable[1] draw A/B was armed but never called
-//! during 480 observed flips, so it cannot account for the gold game sprite.
-//! This read-only trace forwards the exact eleven direct callsites to the
-//! *original* shared GOS sprite renderer (0x5C0FF0) and logs, per callsite,
-//! bounded source bitmap, raw X/Y coordinates and actual GameOS cursor X/Y.
-//! 
-//! All calls are forwarded in every scene. Never suppress pixels, alter GUI,
-//! change DirectInput, mutate OS cursor, or ship assets. Only install on the
-//! admitted 1.02 EXE under Wine with verified borderless 800x600 UI mode and
-//! a separate explicitly enabled [Debug] WineGosDrawTrace=1.
-//! 
-//! The hook itself changes exactly the CALL rel32 targets of authenticated
-//! instructions (all 5 bytes checked beforehand). Game EXE on disk unchanged.
+//! Wine GOS renderer tracing, with a VERY narrowly scoped duplicate
+//! legacy-cursor draw suppression when the user's original golden sprite
+//! has ALREADY been converted to an active, authenticated Wine HCURSOR.
+//!
+//! User's 2026-11-23 d917dd80 Wine 11.19 log: original artwork HCURSOR
+//! ACTIVE, D3D quad masking succeeded (3329 calls), but certain subsequent
+//! 800x600 UI screens still drew a second gold pointer. New evidence:
+//! site 6 (0x005CC7E0) and site 7 (0x005CDED8) are the ONLY observed GOS
+//! renderer callsites whose draw XY matches the live GameOS cursor XY on
+//! every sampled call (48 and 10 samples respectively). These are the
+//! inherited and specialized original GameOS cursor renderer callsites.
+//! All other sprite/UI drawing must pass through untouched.
+//!
+//! When a decorated HCURSOR is actively showing, skip ONLY those two
+//! cursor-specific calls with authenticated mouse coordinates. Otherwise
+//! continue forwarding ALL calls, preserving the original game art if
+//! capture or scene activation fails. Never modify Win32 cursor, input,
+//! assets, or native Windows and never install on an unknown game EXE.
+//!
+//! The hook patches only signature-verified CALL rel32 instructions in the
+//! admitted, owner-supplied game process memory (not the EXE on disk).
 use std::{ffi::c_void,ptr,sync::atomic::{AtomicBool,AtomicUsize,Ordering}};
 use crate::{diagnostics,log};
 
@@ -31,6 +37,11 @@ const SITES:[usize;11]=[
 static INSTALLED:AtomicBool=AtomicBool::new(false);
 static MENU_VERIFIED:AtomicBool=AtomicBool::new(false);
 static COUNTS:[AtomicUsize;11]=[const{AtomicUsize::new(0)};11];
+// Purely duplicate cursor paint paths (0x5CC7E0 and 0x5CDED8), distinct
+// from ordinary legacy GOS UI renderer calls.
+static DUPLICATE_CURSOR_SKIPPED:[AtomicUsize;2]=[
+    const{AtomicUsize::new(0)};2
+];
 
 #[link(name="kernel32")]
 extern "system"{
@@ -51,6 +62,22 @@ fn permitted()->bool{
     !c.wine_menu_cursor_bitmap_probe
 }
 fn should_sample(n:usize)->bool{n<=3 || n==16 || n==64 || n%256==0}
+// Strict callsite + exact GameOS mouse coordinates, not a bitmap pointer
+// shared by unrelated UI. This is ONLY a candidate to skip after the
+// original game artwork has become a *working* Win32 HCURSOR. No global
+// renderer changes and no generic Windows arrow substitution.
+fn duplicate_gos_cursor_draw(
+    site:usize,decorated_hcursor_ready:bool,
+    bitmap:u32,xy:(i32,i32),gos_mouse:(i32,i32),
+    arg4:u32,alpha:u32,arg7:u32
+)->bool{
+    (site==6 || site==7) &&
+    decorated_hcursor_ready && bitmap!=0 &&
+    (0..800).contains(&gos_mouse.0) &&
+    (0..600).contains(&gos_mouse.1) &&
+    xy==gos_mouse &&
+    arg4==0 && alpha==1.0_f32.to_bits() && arg7==0
+}
 
 pub fn set_verified_menu_mode(verified:bool){
     MENU_VERIFIED.store(verified,Ordering::Release);
@@ -74,13 +101,32 @@ unsafe fn draw_observer<const N:usize>(
          crate::menu_scene::preferences_active()) && permitted();
     if active {
         let n=COUNTS[N].fetch_add(1,Ordering::Relaxed)+1;
+        // Only two exact original cursor-rendering sites are eligible.
+        // In ordinary menus/Windows/capture failures, every call forwards.
+        let mouse=if N==6 || N==7 || should_sample(n){
+            Some(((CURSOR_X as *const i32).read_volatile(),
+                  (CURSOR_Y as *const i32).read_volatile()))
+        }else{None};
+        let skip=if (N==6 || N==7) &&
+            crate::wine_decorated_cursor::original_art_hcursor_ready(){
+            duplicate_gos_cursor_draw(
+                N,true,a,(b as i32,c as i32),mouse.unwrap_or_default(),
+                d,f,g
+            )
+        }else{false};
         if should_sample(n){
-            let x=(CURSOR_X as *const i32).read_volatile();
-            let y=(CURSOR_Y as *const i32).read_volatile();
+            let (x,y)=mouse.unwrap_or_default();
+            let disposition=if skip{
+                "SKIP DUPLICATE GOLD CURSOR; authentic decorated HCURSOR active"
+            }else{"PASS THROUGH"};
             log(&format!(
-                "WINE-GOS-DRAW-TRACE: site={N} original_callsite=0x{:08X} n={n} bitmap=0x{a:08X} draw_xy=({},{}) raw_arg4=0x{d:08X} raw_arg5=0x{e:08X} raw_arg6=0x{f:08X} raw_arg7=0x{g:08X} gos_cursor=({x},{y}) [PASS THROUGH]",
+                "WINE-GOS-DRAW-TRACE: site={N} original_callsite=0x{:08X} n={n} bitmap=0x{a:08X} draw_xy=({},{}) raw_arg4=0x{d:08X} raw_arg5=0x{e:08X} raw_arg6=0x{f:08X} raw_arg7=0x{g:08X} gos_cursor=({x},{y}) [{disposition}]",
                 SITES[N],b as i32,c as i32
             ));
+        }
+        if skip{
+            DUPLICATE_CURSOR_SKIPPED[N-6].fetch_add(1,Ordering::Relaxed);
+            return;
         }
     }
     let original:DrawFn=std::mem::transmute(DRAW);
@@ -130,7 +176,7 @@ pub fn install_for_verified_menu()->Result<String,String>{
         return Err("not eligible for Wine-only diagnostic in verified GOS menu".into());
     }
     if INSTALLED.load(Ordering::Acquire) {
-        return Ok("eleven read-only GOS draw sites already hooked".into());
+        return Ok("eleven GOS draw sites already hooked; only authenticated decorated cursor duplicate may be omitted".into());
     }
     unsafe{
         if GetModuleHandleW(ptr::null()) as usize != BASE{
@@ -161,7 +207,7 @@ pub fn install_for_verified_menu()->Result<String,String>{
             patched+=1;
         }
         INSTALLED.store(true,Ordering::Release);
-        Ok(format!("{patched} exact GOS renderer callsites passively traced; all draws forwarded unchanged"))
+        Ok(format!("{patched} exact GOS renderer callsites traced; only duplicate cursor callsites 6+7 skip when original golden HCURSOR is active, all others forwarded"))
     }
 }
 
@@ -173,8 +219,10 @@ pub fn report_sample(){
         format!("{i}={}",c.load(Ordering::Relaxed))
     }).collect();
     log(&format!(
-        "WINE-GOS-DRAW-TRACE-STATUS: cumulative_calls_by_original_site=[{}] all_draws_pass_through=true",
-        counts.join(" ")
+        "WINE-GOS-DRAW-TRACE-STATUS: cumulative_calls_by_original_site=[{}] duplicate_gos_cursor_skipped_site6={} duplicate_gos_cursor_skipped_site7={} all_nonmatching_draws_forwarded=true",
+        counts.join(" "),
+        DUPLICATE_CURSOR_SKIPPED[0].load(Ordering::Relaxed),
+        DUPLICATE_CURSOR_SKIPPED[1].load(Ordering::Relaxed)
     ));
 }
 
@@ -189,6 +237,35 @@ mod tests{
         assert_eq!(relative_call(0x5ce9c5,DRAW),[0xE8,0x26,0x26,0xFF,0xFF]);
         assert_eq!(std::mem::size_of::<DrawFn>(),std::mem::size_of::<usize>());
         assert_eq!(CURSOR_X,0x75ccc0);
+    }
+    #[test]
+    fn only_two_cursor_specific_calls_skip_after_decorated_cursor_is_ready(){
+        // Two authenticated original callsites with exact mouse position.
+        assert!(duplicate_gos_cursor_draw(6,true,0x1234,(221,505),(221,505),
+                                         0,0x3f800000,0));
+        assert!(duplicate_gos_cursor_draw(7,true,0x5678,(386,566),(386,566),
+                                         0,0x3f800000,0));
+        // Never skip before the native gold art is built or after disarm.
+        assert!(!duplicate_gos_cursor_draw(6,false,0x1234,(221,505),(221,505),
+                                          0,0x3f800000,0));
+        // Never skip an unrelated call, wrong XY/alpha/bitmap, out-of-range
+        // coordinates or a native Windows execution without HCURSOR ready.
+        assert!(!duplicate_gos_cursor_draw(3,true,0x1234,(221,505),(221,505),
+                                          0,0x3f800000,0));
+        assert!(!duplicate_gos_cursor_draw(5,true,0x1234,(221,505),(221,505),
+                                          0,0x3f800000,0));
+        assert!(!duplicate_gos_cursor_draw(6,true,0,(221,505),(221,505),
+                                          0,0x3f800000,0));
+        assert!(!duplicate_gos_cursor_draw(7,true,0x1234,(222,505),(221,505),
+                                          0,0x3f800000,0));
+        assert!(!duplicate_gos_cursor_draw(7,true,0x1234,(221,505),(221,505),
+                                          0,0x3f000000,0));
+        assert!(!duplicate_gos_cursor_draw(7,true,0x1234,(221,505),(221,505),
+                                          1,0x3f800000,0));
+        assert!(!duplicate_gos_cursor_draw(7,true,0x1234,(221,505),(221,505),
+                                          0,0x3f800000,1));
+        assert!(!duplicate_gos_cursor_draw(6,true,0x1234,(800,500),(800,500),
+                                          0,0x3f800000,0));
     }
     #[test]
     fn trace_never_changes_draw_pixel_behavior(){
