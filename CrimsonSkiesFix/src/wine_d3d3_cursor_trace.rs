@@ -121,7 +121,30 @@ unsafe extern "system" fn draw(
     let menu_active=active();
     let n=if menu_active{COUNTS[0].fetch_add(1,Ordering::Relaxed)+1}else{0};
     if n>0{record(0,n,primitive,fvf,vertices,count);}
+    // Authentication of the drawing geometry is reused from the
+    // already-proven 827 suppressed original golden cursor quads.
+    // In decorated mode: snapshot the ORIGINAL texture before touching
+    // the render path; suppress only AFTER the matching HCURSOR is built
+    // and activated. If texture readback fails, never hide the game art.
+    if menu_active && cfg().wine_decorated_system_cursor &&
+       primitive==6 && fvf==0x1C4 && count==4 &&
+       !vertices.is_null() && TEXTURE.load(Ordering::Relaxed)!=0 {
+        let p=vertices as *const f32;
+        let first=Some((p.read_unaligned(),p.add(1).read_unaligned()));
+        let mouse=((MOUSE_X as *const i32).read_volatile(),
+                   (MOUSE_Y as *const i32).read_volatile());
+        if cursor_quad_matches(primitive,fvf,count,
+            TEXTURE.load(Ordering::Relaxed),first,mouse) {
+            if crate::wine_decorated_cursor::original_art_hcursor_ready(){
+                CURSOR_DRAW_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
+                return 0;
+            }
+            crate::wine_decorated_cursor::observe_draw(
+                TEXTURE.load(Ordering::Relaxed),vertices,mouse);
+        }
+    }
     let suppress=if menu_active && cfg().wine_d3d_cursor_suppress &&
+        !cfg().wine_decorated_system_cursor &&
         primitive==6 && fvf==0x1C4 && count==4 &&
         !vertices.is_null() {
         // The original renderer already expects four valid TL vertices,
