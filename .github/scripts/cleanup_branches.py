@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Prune every local branch except main and those with an open pull request.
+"""Prune branches only when no open pull request depends on them.
 
-No merge status, age, prefix, or historical branch names grant an exemption.
-Never delete the default branch or an actively reviewed local PR head.
+Preserve main, active local PR head branches, and every base branch used
+by an open stacked PR. The latter is essential for PR #69's diagnostic
+branch chain: deleting a PR base breaks the pull request diff.
+Never infer obsolescence merely from age or a draft PR's title.
 """
 import argparse
 import json
@@ -31,6 +33,21 @@ def local_open_heads(prs, repo):
         if remote is None or remote.casefold() == repo.casefold():
             heads.add(name)
     return heads
+
+def open_pr_dependencies(prs, repo):
+    """Preserve both heads and bases of all open local pull requests."""
+    refs = local_open_heads(prs, repo)
+    for pr in prs:
+        if pr.get("state") != "open":
+            continue
+        base = pr.get("base") or {}
+        name = base.get("ref")
+        remote = (base.get("repo") or {}).get("full_name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("Open PR without a valid base branch: abort cleanup")
+        if remote is None or remote.casefold() == repo.casefold():
+            refs.add(name)
+    return refs
 
 def decision(branch, open_heads, default):
     name = branch["name"]
@@ -89,9 +106,11 @@ def still_safe(repo, token, old_branch, default):
         return False, "default branch"
     owner = repo.split("/", 1)[0]
     query = quote(owner + ":" + name, safe="")
-    related = collect(repo, token, f"/pulls?state=open&head={query}")
-    if name in local_open_heads(related, repo):
-        return False, "new open PR"
+    # Fetch ALL open PRs. A branch can become a newly selected BASE
+    # of an unrelated open PR without becoming its head.
+    related = collect(repo, token, "/pulls?state=open")
+    if name in open_pr_dependencies(related, repo):
+        return False, "required by open PR as head or base"
     return True, "safe"
 
 def publish(lines):
@@ -115,7 +134,7 @@ def run_cleanup(apply):
     # Obtain a complete snapshot before any deletion.
     branches = collect(repo, token, "/branches")
     open_prs = collect(repo, token, "/pulls?state=open")
-    heads = local_open_heads(open_prs, repo)
+    heads = open_pr_dependencies(open_prs, repo)
     for branch in branches:
         if not branch.get("name") or not (branch.get("commit") or {}).get("sha"):
             raise RuntimeError("Incomplete branch inventory; refusing all deletion")
@@ -133,8 +152,8 @@ def run_cleanup(apply):
         f"- Branches with an open PR preserved: {len(kept_pr)}",
         f"- Delete candidates: **{len(candidates)}**",
         f"- GitHub-protected branches blocking deletion: {len(protected)}",
-        "- Policy: keep only main and branches with an OPEN local PR.",
-        "- Includes MERGED, CLOSED WITHOUT MERGE, and NO-PR branches.",
+        "- Policy: keep main and every head/base referenced by an OPEN local PR.",
+        "- Includes MERGED, CLOSED WITHOUT MERGE, and NO-PR branches only if unreferenced.",
         "",
         "| Candidate branch | Outcome |",
         "|---|---|",
@@ -199,6 +218,25 @@ class PolicyTests(unittest.TestCase):
     def test_open_pr_to_other_base_still_kept(self):
         pr = dict(self.pr, base={"ref": "release"})
         self.assertIn(self.b["name"], local_open_heads([pr], self.repo))
+
+    def test_open_pr_base_is_preserved_when_head_is_different(self):
+        pr = dict(self.pr, base={"ref":"diagnostic/previous",
+                                 "repo":{"full_name":self.repo}})
+        deps = open_pr_dependencies([pr], self.repo)
+        self.assertIn("diagnostic/previous", deps)
+        self.assertIn("feature/sample", deps)
+        self.assertEqual(decision(dict(self.b,name="diagnostic/previous"),
+                                  deps, "main"), "keep-open-pr")
+
+    def test_closed_pr_does_not_protect_old_base_or_head(self):
+        old = dict(self.pr, state="closed",
+                   base={"ref":"old-base","repo":{"full_name":self.repo}})
+        self.assertEqual(open_pr_dependencies([old], self.repo), set())
+
+    def test_different_repo_base_is_not_protected(self):
+        pr = dict(self.pr, base={"ref":"foreign-base",
+                                 "repo":{"full_name":"other/repo"}})
+        self.assertNotIn("foreign-base", open_pr_dependencies([pr], self.repo))
 
     def test_fork_pr_same_name_does_not_protect_local_branch(self):
         pr = dict(self.pr, head={"ref": "feature/sample",
