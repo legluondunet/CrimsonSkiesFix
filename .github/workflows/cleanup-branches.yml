@@ -1,4 +1,4 @@
-name: Cleanup branches - keep main and open PRs
+name: Cleanup branches - keep main and open PR heads/bases
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
         run: python3 .github/scripts/cleanup_branches.py --dry-run
 
   cleanup:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" || ( "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ) ]]; then
             mode=--apply
           elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${REQUESTED_DRY_RUN}" == "false" ]]; then
             mode=--apply
