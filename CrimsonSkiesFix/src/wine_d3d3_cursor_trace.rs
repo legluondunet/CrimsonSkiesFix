@@ -41,7 +41,8 @@ fn samples()->&'static Mutex<Vec<String>>{
 fn enabled()->bool{
     let c=cfg();
     diagnostics::is_wine_runtime() && c.wine_system_cursor_probe &&
-    c.wine_system_cursor_sync && c.wine_gos_draw_trace && c.log_enabled &&
+    c.wine_system_cursor_sync && c.wine_gos_draw_trace &&
+    (c.log_enabled || c.smooth_menu_cursor) &&
     !c.wine_game_cursor_render_suppress &&
     !c.wine_menu_cursor_bitmap_probe &&
     c.native_dd4_bootstrap && !c.directdraw_passthrough
