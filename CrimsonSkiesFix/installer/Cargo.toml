@@ -24,8 +24,18 @@ unified-fix-install = ["import-alias-install"]
 # official Microsoft 1.02 updater at compile time. NEVER enable in public CI,
 # release workflows, or distributed artifacts without redistribution permission.
 embed-owner-patch102 = []
+# Experimental CD FR offline path: reconstruct 1.02 inside the one-file launcher.
+# Uses only the user's exact original CD. Never enabled in public release builds.
+native-fr-cd = ["unified-fix-install", "dep:unsafedisk-native"]
+# Experimental US/DE CDs: authentic local Microsoft 1.02 update supplied by owner;
+# reconstruct approved 1.02 binary from in-memory CAB, no decrypted EXE needed.
+native-usde-updater = ["native-fr-cd"]
 
 [dependencies]
+# GPL native reconstruction from draft unsafedisk PR #5, pinned to a reviewed
+# commit; linked into CrimsonSkiesFix.exe, never shipped as a separate binary.
+unsafedisk-native = { package = "crimson-patcher", git = "https://github.com/legluondunet/unsafedisk.git", rev = "b8a5b64d06012de976c00bcae776820597fcec1c", optional = true }
+
 # MIT-licensed pure-Rust Windows Cabinet reader; supports legacy LZX.
 cab = "=0.6.0"
 # Read-only verification of managed GOS VIDEO.SCRIPT zlib payload.

@@ -91,8 +91,12 @@ const README: &str = include_str!("../README-winmm-candidate.md");
 const README: &str = include_str!("../README-winmm-split.md");
 #[cfg(all(feature="import-alias-install",not(feature="unified-fix-install")))]
 const README: &str = include_str!("../README-import-alias.md");
-#[cfg(feature="unified-fix-install")]
+#[cfg(all(feature="unified-fix-install",not(feature="native-fr-cd")))]
 const README: &str = include_str!("../README-unified.md");
+#[cfg(all(feature="native-fr-cd",not(feature="native-usde-updater")))]
+const README: &str = include_str!("../README-native-fr.md");
+#[cfg(feature="native-usde-updater")]
+const README: &str = include_str!("../README-native-usde.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -558,7 +562,7 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
 
 /// Install authenticated retail files into a private staged directory.
 /// The protected original EXE is kept until the approved EXE activation.
-fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->Result<(),String> {
+fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Source>)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -569,7 +573,8 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     }
     // The automatic install preflight has already authenticated the updater
     // and executable before extraction. The update application rechecks it.
-    println!("Building original game installation from verified CD and official 1.02 updater...");
+    println!("Building original game installation from verified CD; update source: {}...",
+        if updater.is_some(){"authenticated official 1.02 updater"}else{"original French 1.02 CD"});
     let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
@@ -578,7 +583,13 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
-    update102::apply_asset(&stage,extracted.edition,updater)?;
+    match updater {
+        Some(verified_update)=>{update102::apply_asset(&stage,extracted.edition,verified_update)?;}
+        None=>{
+            if !cfg!(feature="native-fr-cd") {return Err("missing authenticated updater".into());}
+            update102::verify_original_french_cd_asset(&stage,extracted.edition)?;
+        }
+    }
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
@@ -611,7 +622,8 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
          RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
-        update102::PATCH_SHA256,update102::ASSET_SHA256,
+        if updater.is_some(){update102::PATCH_SHA256}else{"NOT_REQUIRED_ORIGINAL_FR_102_CD"},
+        update102::ASSET_SHA256,
         finalized.members,finalized.zbd_files,finalized.payload_bytes,
         finalized.manifest_sha,finalized.short_name_candidates,
         extracted.retail_support_files,extracted.retail_support_bytes,renamed
@@ -676,8 +688,8 @@ fn usage() {
          CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         A full installation requires the approved 1.02 EXE, bundled {RUNTIME_DLL} patch,\n\
-         and official 1.02 updater BEFORE CD extraction starts.\n\
+         Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
+         EXPERIMENTAL: FR uses CD alone; US/DE use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
@@ -712,7 +724,11 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="unified-fix-install"){
+        if cfg!(feature="native-usde-updater"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE US/DE LOCAL UPDATE 1.02 EXPERIMENTAL", &COMMIT[..8]);
+        }else if cfg!(feature="native-fr-cd"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE FR 1.02 EXPERIMENTAL", &COMMIT[..8]);
+        }else if cfg!(feature="unified-fix-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll native_winmm=yes EXPERIMENTAL UNIFIED", &COMMIT[..8]);
         }else if cfg!(feature="import-alias-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=CSFIX.dll+crimsonskiesfix/CrimsonSkiesFix.dll native_winmm=yes EXPERIMENTAL IMPORT ALIAS", &COMMIT[..8]);
@@ -1246,7 +1262,7 @@ mod tests {
         let dest=root.join("CrimsonSkiesFix");
         fs::create_dir(&dest).unwrap();
         fs::write(dest.join("user-save.dat"),b"keep").unwrap();
-        assert!(install_from_cd(&root,&dest,&update102::Update102Source::OwnerFile(root.join("update102.exe"))).is_err());
+        assert!(install_from_cd(&root,&dest,Some(&update102::Update102Source::OwnerFile(root.join("update102.exe")))).is_err());
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }

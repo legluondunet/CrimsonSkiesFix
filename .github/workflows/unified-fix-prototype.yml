@@ -39,6 +39,8 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static
       CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       CRIMSONSKIESFIX_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Native CD installation remains an explicitly selected owner-test feature.
+      INSTALLER_FEATURE: ${{ (github.head_ref || github.ref_name) == 'feature/consolidated-install-20261124' && 'native-usde-updater' || 'unified-fix-install' }}
       CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
     steps:
       - uses: actions/checkout@v4
@@ -62,13 +64,14 @@ jobs:
       - name: Compile and test unified installer with only fix.dll embedded
         shell: pwsh
         run: |
-          cargo test --manifest-path installer/Cargo.toml --features unified-fix-install --target i686-pc-windows-msvc
+          cargo test --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer tests failed'}
-          cargo build --manifest-path installer/Cargo.toml --features unified-fix-install --release --target i686-pc-windows-msvc
+          cargo build --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer compilation failed'}
           $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
           $version=(& $exe --version) -join "`n"
-          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL UNIFIED'){
+          $expectedVariant=if($env:INSTALLER_FEATURE -eq 'native-usde-updater'){'NATIVE US/DE LOCAL UPDATE'}else{'EXPERIMENTAL UNIFIED'}
+          if($LASTEXITCODE -ne 0 -or $version -notmatch $expectedVariant -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)){
             throw "Wrong installer variant: $version"
           }
           New-Item -ItemType Directory -Force 'unified-empty-tree' | Out-Null
@@ -76,6 +79,12 @@ jobs:
           & './unified-empty-tree/CrimsonSkiesFix.exe' --launch-no-verify
           if($LASTEXITCODE -ne 2){throw 'Unchecked launch of nonexistent game should fail, not install'}
           if(Test-Path 'unified-empty-tree/game'){throw 'Unchecked launch created unexpected game folder'}
+          if($env:INSTALLER_FEATURE -eq 'native-usde-updater'){
+            & './unified-empty-tree/CrimsonSkiesFix.exe' --install-only
+            if($LASTEXITCODE -ne 2){throw 'Missing authenticated media must be refused'}
+            if(Test-Path 'unified-empty-tree/game'){throw 'Missing media created a game directory'}
+            if(!(Test-Path 'unified-empty-tree/CrimsonSkiesFix_installer.log')){throw 'Missing installer diagnostic'}
+          }
           $global:LASTEXITCODE=0
       - name: Build synthetic suspended-process DirectDraw import fixture for fix.dll
         shell: pwsh
@@ -106,7 +115,11 @@ jobs:
           New-Item -ItemType Directory -Force 'unified-dist' | Out-Null
           $exe='unified-dist/CrimsonSkiesFix.exe'
           Copy-Item installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe $exe
-          Copy-Item installer/README-unified.md 'unified-dist/README-EXPERIMENTAL.md'
+          if($env:INSTALLER_FEATURE -eq 'native-usde-updater'){
+            Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
+          }else{
+            Copy-Item installer/README-unified.md 'unified-dist/README-EXPERIMENTAL.md'
+          }
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
       - uses: actions/upload-artifact@v4
         with:

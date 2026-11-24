@@ -17,6 +17,57 @@ const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
 const OLD_AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
 const PREVIOUS_INSTALLER_LOG:&str="CrimsonSkiesFix-installer.log";
 
+// Extra test-only launch journal for US/DE, always produced even if
+// [Debug] Log=0. It is deliberately separate from the installer report and
+// from fix.dll's opt-in CrimsonSkiesFix.log.
+#[cfg(feature="native-usde-updater")]
+const LAST_SESSION_LOG:&str="CrimsonSkiesFix_last-session.log";
+
+/// Keep exactly one current game-session record. A RUNNING record survives
+/// if the parent process dies abruptly, while normal and abnormal child exits
+/// replace it with the final process status. This is NOT a crash dump and
+/// cannot establish which DLL was responsible for an exception.
+#[cfg(feature="native-usde-updater")]
+fn write_last_session(base:&Path,game:&Path,phase:&str,exit:Option<i32>)->Result<(),String>{
+    let target=base.join(LAST_SESSION_LOG);
+    if any_entry(&target) && !regular(&target){
+        return Err(format!("unsafe last-session report path: {}",target.display()));
+    }
+    let edition=installed_cd_edition(game).unwrap_or("UNKNOWN_OR_UNVERIFIED");
+    let summary=match exit{
+        Some(0)=>"EXIT_CODE_ZERO_NOT_PROOF_OF_GAMEPLAY",
+        Some(_)=>"NONZERO_GAME_PROCESS_EXIT_CAUSE_UNDETERMINED",
+        None=>"WAITING_FOR_GAME_PROCESS_EXIT",
+    };
+    let code=exit.map(|c|format!("0x{:08X}",c as u32))
+        .unwrap_or_else(||"UNAVAILABLE".to_string());
+    let content=format!(
+        "CrimsonSkiesFix GAME SESSION v1\n\
+         Build={VERSION}-{}\n\
+         Edition={edition}\n\
+         ExpectedGameExecutableSHA256={GAME_EXE_HASH}\n\
+         Phase={phase}\n\
+         ProcessExitCode={code}\n\
+         Classification={summary}\n\
+         RuntimeLog=OPTIONAL_DEBUG_LOG_1\n",
+        &COMMIT[..8]
+    );
+    let mut file=OpenOptions::new().create(true).write(true).truncate(true)
+        .open(&target).map_err(error)?;
+    file.write_all(content.as_bytes()).map_err(error)?;
+    file.sync_all().map_err(error)
+}
+
+/// Diagnostics never alter whether a correctly verified game may start or
+/// determine the returned child exit code. Unsafe user files are not touched.
+#[cfg(feature="native-usde-updater")]
+fn note_game_session(base:&Path,game:&Path,phase:&str,exit:Option<i32>){
+    if let Err(e)=write_last_session(base,game,phase,exit){
+        eprintln!("CrimsonSkiesFix: last-session diagnostic unavailable: {e}");
+    }
+}
+
+
 /// Recognize only a previous launcher-generated report before migrating or
 /// retiring it. Unknown user files, symlinks and directories are preserved.
 fn previous_installer_report(path:&Path)->bool{
@@ -135,14 +186,68 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 /// The patch is embedded in the single-file launcher, not a separately
 /// distributed DLL. It must exist and be a plausible Windows PE image;
 /// CI independently verifies its entire 22-export PE32 layout.
+/// Precisely one installation input plan. Unknown discs continue to require
+/// the original explicit, hash-pinned updater + approved EXE sources.
+#[derive(Debug)]
+pub(super) enum InstallSources {
+    Approved { executable:PathBuf, updater:update102::Update102Source },
+    #[cfg(feature="native-fr-cd")]
+    NativeFrench,
+    #[cfg(feature="native-usde-updater")]
+    NativeWithUpdater{updater:update102::Update102Source},
+}
+
+/// Confirm the edition from exact internal CD file hashes, not from a filename
+/// or volume label. A mismatched/unknown disc must never enter native FR mode.
+#[cfg(feature="native-fr-cd")]
+fn verified_french_cd(base:&Path)->Result<bool,String>{
+    let report=disc_inspect::inspect(base,None)?;
+    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
+        .collect::<Vec<_>>();
+    if edition.len()!=1 {
+        return Err("CD inspection has no unique authenticated edition".into());
+    }
+    Ok(edition[0]=="C_SKIES_FR_001" &&
+       report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
+}
+
+/// The 1.00 US/EU and German CDs are exact inventory matches, but do NOT
+/// contain 1.02 game code. This experimental path therefore additionally
+/// requires the owner-supplied SHA-pinned official 1.02 updater.
+#[cfg(feature="native-usde-updater")]
+fn verified_usde_cd(base:&Path)->Result<bool,String>{
+    let report=disc_inspect::inspect(base,None)?;
+    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
+        .collect::<Vec<_>>();
+    if edition.len()!=1 || !report.lines().any(|line|
+        line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"){
+        return Ok(false);
+    }
+    Ok(matches!(edition[0],"C_SKIES_DISC_001"|"C_SKIES_DE_001"))
+}
+
 pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
-)->Result<(PathBuf,update102::Update102Source),String>{
-    // Check all prerequisites before CD extraction or staging.
-    // An orphan BIN/IMG needs its corresponding CUE for sector/track layout.
-    // File selection and updater/EXE hash verification are read-only.
+)->Result<InstallSources,String>{
+    // No staging or modification until the bundled runtime and chosen input
+    // sources are authenticated. CD inspection reads all original manifest
+    // entries for native FR, rather than trusting the CD name.
+    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
+        return Err(format!(
+            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
+        ));
+    }
     let disc=disc_inspect::preflight_media(base);
+    #[cfg(feature="native-fr-cd")]
+    if disc.is_ok() && update.is_none() && verified_french_cd(base).unwrap_or(false) {
+        return Ok(InstallSources::NativeFrench);
+    }
+
     let updater=update102::source_for_install(base,update);
+    #[cfg(feature="native-usde-updater")]
+    if disc.is_ok() && updater.is_ok() && verified_usde_cd(base).unwrap_or(false) {
+        return Ok(InstallSources::NativeWithUpdater{updater:updater?});
+    }
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
     if let Err(detail)=&disc{
@@ -164,13 +269,7 @@ pub(super) fn preflight_install_sources(
             problems.join("\n")
         ));
     }
-    // The installer runtime is independently verified before staging.
-    if BUNDLED_RUNTIME.len()<4096 || !BUNDLED_RUNTIME.starts_with(b"MZ"){
-        return Err(format!(
-            "embedded CrimsonSkiesFix {RUNTIME_DLL} patch is missing or invalid; extraction refused"
-        ));
-    }
-    Ok((exe?,updater?))
+    Ok(InstallSources::Approved{executable:exe?,updater:updater?})
 }
 
 /// Transactionally replace the original CD-protected entry *inside a newly
@@ -250,6 +349,90 @@ fn activate_verified_exe(game:&Path,source:&Path)->Result<(),String>{
     verify(game)?;
     fs::remove_file(&receipt_backup).map_err(error)?;
     Ok(())
+}
+
+/// Activate a verified, locally reconstructed French 1.02 EXE, or retain the
+/// pre-existing exact-hash import policy for other retail editions. This
+/// produces a sibling temporary file, never an extra DLL or executable for
+/// users to locate. Do not modify an original protected CD file.
+/// Reconstruct the approved 1.02 executable from the owner's authentic
+/// Microsoft update CAB, processed entirely in memory. No protected updater
+/// or original SafeDisc source file is written as an intermediate artifact.
+/// The only temporary game EXE is SHA-pinned before activation and deleted.
+#[cfg(feature="native-usde-updater")]
+fn activate_native_usde_from_update(
+    base:&Path,game:&Path,updater:&update102::Update102Source,
+)->Result<(),String>{
+    let edition=installed_cd_edition(game)?;
+    if !matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
+        return Err("native updater reconstruction is US/DE-only".into());
+    }
+    verify_installed_cd_assets(game)?;
+    let protected=update102::read_protected_102_sources_from(updater)?;
+    let image=unsafedisk_native::reconstruct_verified_crimson_102_bytes(
+        &protected.loader,&protected.icd
+    ).map_err(|e|format!("native 1.02 reconstruction from owner updater failed: {e}"))?;
+    if image.len()!=GAME_EXE_SIZE as usize || sha256::hex(&image)!=GAME_EXE_HASH{
+        return Err("native updater reconstruction produced unexpected game EXE hash".into());
+    }
+    let temporary=base.join("CrimsonSkiesFix.native-usde-102.pending.exe");
+    if any_entry(&temporary){
+        return Err(format!(
+            "abandoned native US/DE candidate exists; never overwriting: {}",
+            temporary.display()));
+    }
+    let mut file=OpenOptions::new().write(true).create_new(true)
+        .open(&temporary).map_err(error)?;
+    if let Err(err)=file.write_all(&image).and_then(|_|file.sync_all()){
+        drop(file);
+        let _=fs::remove_file(&temporary);
+        return Err(format!("could not securely write reconstructed 1.02 candidate: {err}"));
+    }
+    drop(file);
+    struct PrivateCandidate(PathBuf);
+    impl Drop for PrivateCandidate{
+        fn drop(&mut self){
+            if regular(&self.0){let _=fs::remove_file(&self.0);}
+        }
+    }
+    let _cleanup=PrivateCandidate(temporary.clone());
+    activate_verified_exe(game,&temporary)
+}
+
+fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
+    #[cfg(feature="native-fr-cd")]
+    if installed_cd_edition(game)?=="C_SKIES_FR_001" {
+        // The complete CD receipt and original protected EXE/ICD must verify
+        // BEFORE any disk write. An interrupted candidate is never replaced.
+        verify_installed_cd_assets(game)?;
+        let temporary=base.join("CrimsonSkiesFix.native-fr-102.pending.exe");
+        if any_entry(&temporary){
+            return Err(format!(
+                "abandoned native French reconstruction exists (preserved, not overwritten): {}",
+                temporary.display()));
+        }
+        unsafedisk_native::reconstruct_verified_crimson_102(
+            &game.join("CRIMSON.EXE"),&game.join("CRIMSON.ICD"),&temporary
+        ).map_err(|err|format!("native French 1.02 reconstruction failed: {err}"))?;
+        // The native library has already validated full 1.02 SHA-256 before
+        // writing; activation performs an independent on-disk SHA-256 check.
+        struct TemporaryExecutable(PathBuf);
+        impl Drop for TemporaryExecutable{
+            fn drop(&mut self){
+                if regular(&self.0){let _=fs::remove_file(&self.0);}
+            }
+        }
+        let _cleanup=TemporaryExecutable(temporary.clone());
+        return activate_verified_exe(game,&temporary);
+    }
+    #[cfg(feature="native-usde-updater")]
+    if matches!(installed_cd_edition(game)?,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
+        if let Ok(updater)=update102::source_for_install(base,None){
+            return activate_native_usde_from_update(base,game,&updater);
+        }
+    }
+    let source=approved_executable(base,game)?;
+    activate_verified_exe(game,&source)
 }
 
 fn copy_player_files(src:&Path,dst:&Path)->Result<(),String>{
@@ -370,15 +553,29 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     // updater SOURCE have passed preflight. In explicitly private builds the
     // updater may be embedded, not a filesystem source. Public builds still
     // demand a local authentic updater.
-    let (source,updater)=preflight_install_sources(base,game,None)?;
+    let sources=preflight_install_sources(base,game,None)?;
+    let updater=match &sources{
+        InstallSources::Approved{updater,..}=>Some(updater),
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>None,
+        #[cfg(feature="native-usde-updater")]
+        InstallSources::NativeWithUpdater{updater}=>Some(updater),
+    };
     if old_present {
-        println!("Rebuilding existing game from original CD and verified official 1.02 patch...");
+        println!("Rebuilding game in a private verified transaction...");
     }else{
-        println!("Installing new game from original CD and verified official 1.02 patch...");
+        println!("Installing game from exact original CD files...");
     }
-    install_from_cd(base,&new,&updater)?;
+    install_from_cd(base,&new,updater)?;
     if old_present {preserve_player_data(game,&new)?;}
-    activate_verified_exe(&new,&source)?;
+    match sources {
+        InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
+        #[cfg(feature="native-fr-cd")]
+        InstallSources::NativeFrench=>activate_pending_exe(base,&new)?,
+        #[cfg(feature="native-usde-updater")]
+        InstallSources::NativeWithUpdater{updater}=>
+            activate_native_usde_from_update(base,&new,&updater)?,
+    }
     verify_installed_cd_assets(&new)?;
     verify(&new)?;
     if old_present {
@@ -493,8 +690,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                 }
                 // A fully verified original CD installation awaiting the
                 // approved EXE can be completed with no second CD extraction.
-                let source=approved_executable(base,game)?;
-                activate_verified_exe(game,&source)?;
+                activate_pending_exe(base,game)?;
                 return Ok("ACTIVATE_APPROVED_EXE_AND_LAUNCH");
             }
             Err(reason)=>{
@@ -511,8 +707,7 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
                             if validated_game_exe(game).is_ok(){
                                 return Ok("REPAIRED_BUNDLED_PROXY_AND_LAUNCH");
                             }
-                            let source=approved_executable(base,game)?;
-                            activate_verified_exe(game,&source)?;
+                            activate_pending_exe(base,game)?;
                             return Ok("REPAIRED_PROXY_AND_ACTIVATED_EXE_AND_LAUNCH");
                         }
                         Err(after)=>format!(
@@ -727,6 +922,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         return Ok(0);
     }
     println!("{action}: launching {}...",exe.display());
+    #[cfg(feature="native-usde-updater")]
+    note_game_session(base,game,"GAME_LAUNCH_REQUESTED",None);
     // Organized prototype only: inspect loaded DLLs and read the exact
     // DirectDraw import slots from the *running process*, without patching
     // or suspending it. The user-visible game exit code is unchanged.
@@ -756,6 +953,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     match status{
         Ok(status)=>{
             let code=status.code().unwrap_or(2);
+            #[cfg(feature="native-usde-updater")]
+            note_game_session(base,game,"GAME_PROCESS_RETURNED",Some(code));
             // Only an actual installation/repair report tracks its child
             // exit. Ordinary verified launches preserve the last report.
             if needed {
@@ -773,6 +972,8 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             Ok(code)
         }
         Err(err)=>{
+            #[cfg(feature="native-usde-updater")]
+            note_game_session(base,game,"GAME_LAUNCH_FAILED",None);
             // A failed game start is a new launcher error worth recording,
             // but never alters the independent DLL-owned gameplay log.
             let failure=format!(
@@ -806,6 +1007,44 @@ mod tests{
             }
         }
         panic!("could not reserve distinct auto-install test directory")
+    }
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn session_report_replaces_prior_launch_even_if_runtime_logging_is_off(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        // The diagnostic is an independent single-session launcher record.
+        write_last_session(&root,&game,"GAME_LAUNCH_REQUESTED",None).unwrap();
+        let log=root.join(LAST_SESSION_LOG);
+        let first=fs::read_to_string(&log).unwrap();
+        assert!(first.contains("WAITING_FOR_GAME_PROCESS_EXIT"));
+        assert!(first.contains("ProcessExitCode=UNAVAILABLE"));
+        assert!(!root.join("CrimsonSkiesFix.log").exists());
+        write_last_session(&root,&game,"GAME_PROCESS_RETURNED",
+            Some(0xC0000005u32 as i32)).unwrap();
+        let second=fs::read_to_string(&log).unwrap();
+        assert!(second.contains("ProcessExitCode=0xC0000005"));
+        assert!(second.contains("NONZERO_GAME_PROCESS_EXIT_CAUSE_UNDETERMINED"));
+        assert!(!second.contains("WAITING_FOR_GAME_PROCESS_EXIT"));
+        assert_eq!(second.matches("CrimsonSkiesFix GAME SESSION v1").count(),1);
+        assert!(!root.join("CrimsonSkiesFix.log").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn session_report_does_not_replace_a_directory_or_installer_log(){
+        let root=temp();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        let existing=b"owner installer diagnostics";
+        fs::write(root.join(INSTALLER_LOG),existing).unwrap();
+        let blocked=root.join(LAST_SESSION_LOG);
+        fs::create_dir(&blocked).unwrap();
+        assert!(write_last_session(&root,&game,"GAME_LAUNCH_REQUESTED",None).is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(fs::read(root.join(INSTALLER_LOG)).unwrap(),existing);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn old_generated_installer_log_removed_only_when_replaced(){
