@@ -7,6 +7,10 @@ AspectRatio=auto
 ; Frame pacing target, 1-60 frames per second.
 FPSLimit=60
 
+[Features]
+; Smooth original golden menu cursor under Wine (0=off, 1=on).
+SmoothMenuCursor=0
+
 [Debug]
 ; Additional game diagnostics (0=off, 1=on).
 Log=0
