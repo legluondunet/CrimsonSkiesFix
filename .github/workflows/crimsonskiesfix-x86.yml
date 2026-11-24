@@ -1,14 +1,7 @@
 name: CrimsonSkiesFix Standalone Installer x86
 
+# Historical architecture: retain for explicit troubleshooting only.
 on:
-  push:
-    paths:
-      - 'CrimsonSkiesFix/**'
-      - '.github/workflows/crimsonskiesfix-x86.yml'
-  pull_request:
-    paths:
-      - 'CrimsonSkiesFix/**'
-      - '.github/workflows/crimsonskiesfix-x86.yml'
   workflow_dispatch:
 
 jobs:

@@ -1,14 +1,7 @@
 name: WinMM x86 bootstrap prototype (experimental)
 
+# Historical architecture: retain for explicit troubleshooting only.
 on:
-  push:
-    paths:
-      - 'CrimsonSkiesFix/winmm-prototype/**'
-      - '.github/workflows/winmm-bootstrap-prototype.yml'
-  pull_request:
-    paths:
-      - 'CrimsonSkiesFix/winmm-prototype/**'
-      - '.github/workflows/winmm-bootstrap-prototype.yml'
   workflow_dispatch:
 
 permissions:

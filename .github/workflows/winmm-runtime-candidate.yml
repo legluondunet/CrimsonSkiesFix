@@ -1,18 +1,7 @@
 name: WinMM-only CrimsonSkiesFix runtime candidate
 
+# Historical architecture: retain for explicit troubleshooting only.
 on:
-  push:
-    paths:
-      - 'CrimsonSkiesFix/src/**'
-      - 'CrimsonSkiesFix/runtime-winmm/**'
-      - 'CrimsonSkiesFix/winmm-prototype/**'
-      - '.github/workflows/winmm-runtime-candidate.yml'
-  pull_request:
-    paths:
-      - 'CrimsonSkiesFix/src/**'
-      - 'CrimsonSkiesFix/runtime-winmm/**'
-      - 'CrimsonSkiesFix/winmm-prototype/**'
-      - '.github/workflows/winmm-runtime-candidate.yml'
   workflow_dispatch:
 
 permissions:
