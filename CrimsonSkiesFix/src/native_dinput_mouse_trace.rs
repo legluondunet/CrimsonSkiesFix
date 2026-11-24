@@ -66,6 +66,7 @@ static MOUSE_STATE_FAILED:AtomicUsize=AtomicUsize::new(0);
 static MOUSE_BUFFERED_CALLS:AtomicUsize=AtomicUsize::new(0);
 static GOS_CURSOR_BRIDGE_CALLS:AtomicUsize=AtomicUsize::new(0);
 static GOS_CURSOR_POST_GAMEPLAY_PROBE:AtomicBool=AtomicBool::new(false);
+static WINE_POST_GAMEPLAY_CAMPAIGN_SYNC_LOGGED:AtomicBool=AtomicBool::new(false);
 // From the exact supported game PE32 image, proven in both native DMPs.
 // 0x5382b0 reads DIMOUSESTATE lX/lY from GetDeviceState and adds
 // rounded scaled deltas to the native GOS mouse cursor, clamping it to
@@ -103,9 +104,7 @@ unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
     let native_bridge=crate::cfg().native_gos_cursor_bridge &&
         crate::diagnostics::is_native_windows();
     if !(native_bridge || wine_sync) || size!=16 || data.is_null() ||
-       !(crate::menu_scene::main_menu_active() ||
-         crate::menu_scene::preferences_active() ||
-         crate::window_erase_guard::native_gos_cursor_bridge_post_gameplay_ui()){
+       !crate::window_erase_guard::native_gos_cursor_bridge_scene_active(){
         return None;
     }
     let target=crate::window_erase_guard::native_gos_cursor_bridge_target()?;
@@ -144,6 +143,23 @@ unsafe fn bridge_original_gos_cursor_delta(size:u32,data:Obj)->Option<String>{
     );
     ptr::write_unaligned(bytes.cast::<i32>(),delta.0);
     ptr::write_unaligned(bytes.add(4).cast::<i32>(),delta.1);
+    // When MainMenu is visually restored after gameplay, its GOS
+    // script dispatcher often stays on "other". Previously we restored
+    // the golden HCURSOR and hid its double D3D sprite, but continued
+    // sending *unmapped* mouse deltas to GOS hit-testing. The OS pointer
+    // moved and WM clicks arrived while buttons under it were inert.
+    // Record the first real recovered GOS input convergence. The game
+    // still integrates its own mouse deltas, buttons and wheel unchanged.
+    if wine_sync &&
+       crate::window_erase_guard::wine_campaign_menu_presented() &&
+       !crate::menu_scene::main_menu_active() &&
+       !crate::menu_scene::preferences_active() &&
+       crate::cfg().log_enabled &&
+       !WINE_POST_GAMEPLAY_CAMPAIGN_SYNC_LOGGED.swap(true,Ordering::AcqRel) {
+        log(&format!(
+            "WINE-SYSTEM-CURSOR-SYNC: POST-GAMEPLAY CAMPAIGN original GameOS hit-test coordinate sync RESTORED; target_800x600={target:?} gos_before={before:?} logical_dinput_delta={delta:?}; original mouse button bytes and wheel unchanged"
+        ));
+    }
     let n=GOS_CURSOR_BRIDGE_CALLS.fetch_add(1,Ordering::Relaxed)+1;
     (crate::cfg().log_enabled && (sampled(n) || n==1)).then(||format!(
         "{}: sample={n} target_800x600={target:?} gos_before={before:?} speed={speed:?} physical_dinput_delta={original:?} logical_dinput_delta={delta:?}; buttons and Z unchanged, native GOS cursor renderer retained",
