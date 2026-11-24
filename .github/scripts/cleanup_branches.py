@@ -4,6 +4,7 @@
 Preserve main, active local PR head branches, and every base branch used
 by an open stacked PR. The latter is essential for PR #69's diagnostic
 branch chain: deleting a PR base breaks the pull request diff.
+Explicitly retained research archives are exempt even after PR closure.
 Never infer obsolescence merely from age or a draft PR's title.
 """
 import argparse
@@ -16,6 +17,7 @@ from urllib.request import Request, urlopen
 import unittest
 
 REPOSITORY = "legluondunet/CrimsonSkiesFix"
+ARCHIVED_BRANCHES = {"archive/smooth-menu-cursor-20261124"}
 
 def local_open_heads(prs, repo):
     """Get open PR heads in this repository, ignoring unrelated fork heads."""
@@ -53,6 +55,8 @@ def decision(branch, open_heads, default):
     name = branch["name"]
     if name == default:
         return "keep-main"
+    if name in ARCHIVED_BRANCHES:
+        return "keep-archive"
     if name in open_heads:
         return "keep-open-pr"
     # GitHub won't allow ref deletion if branch protection is enabled.
@@ -104,6 +108,8 @@ def still_safe(repo, token, old_branch, default):
         return False, "GitHub branch protection enabled"
     if name == default:
         return False, "default branch"
+    if name in ARCHIVED_BRANCHES:
+        return False, "explicitly retained research archive"
     owner = repo.split("/", 1)[0]
     query = quote(owner + ":" + name, safe="")
     # Fetch ALL open PRs. A branch can become a newly selected BASE
@@ -150,9 +156,10 @@ def run_cleanup(apply):
         f"- Mode: **{'APPLY' if apply else 'DRY RUN'}**",
         f"- Branches inspected: {len(branches)}",
         f"- Branches with an open PR preserved: {len(kept_pr)}",
+        f"- Research archive branches preserved: {sum(verdict == 'keep-archive' for _, verdict in categories)}",
         f"- Delete candidates: **{len(candidates)}**",
         f"- GitHub-protected branches blocking deletion: {len(protected)}",
-        "- Policy: keep main and every head/base referenced by an OPEN local PR.",
+        "- Policy: keep main, explicit research archives and every head/base referenced by an OPEN local PR.",
         "- Includes MERGED, CLOSED WITHOUT MERGE, and NO-PR branches only if unreferenced.",
         "",
         "| Candidate branch | Outcome |",
@@ -210,6 +217,10 @@ class PolicyTests(unittest.TestCase):
     def test_main_is_always_kept(self):
         self.assertEqual(decision(dict(self.b, name="main"), set(), "main"),
                          "keep-main")
+
+    def test_explicit_research_archive_is_kept_after_pr_closure(self):
+        self.assertEqual(decision(dict(self.b, name="archive/smooth-menu-cursor-20261124"), set(), "main"),
+                         "keep-archive")
 
     def test_open_local_pr_is_kept(self):
         heads = local_open_heads([self.pr], self.repo)
