@@ -75,7 +75,7 @@ fn enabled()->bool{
     let c=cfg();
     diagnostics::is_wine_runtime() && c.wine_decorated_system_cursor &&
     c.wine_system_cursor_probe && c.wine_system_cursor_sync &&
-    c.wine_gos_draw_trace && c.log_enabled &&
+    c.wine_gos_draw_trace && (c.log_enabled || c.smooth_menu_cursor) &&
     !c.wine_game_cursor_render_suppress &&
     !c.wine_d3d_cursor_suppress &&
     !c.wine_menu_cursor_bitmap_probe &&
