@@ -172,11 +172,29 @@ The generated `CrimsonSkiesFix.ini` contains these basic settings:
 AspectRatio=auto
 FPSLimit=60
 
+[Features]
+SmoothMenuCursor=0
+
 [Debug]
 Log=0
 ```
 
-Set `AspectRatio=4:3` for 4:3 gameplay with black sidebars. An existing custom INI is not overwritten.
+Set `AspectRatio=4:3` for 4:3 gameplay with black sidebars.
+
+**`[Features] SmoothMenuCursor=0`** (default) keeps the game's original
+menu cursor and click handling. Set **`SmoothMenuCursor=1`** to opt into
+the smoother **original gold menu cursor under Wine**. The fix derives a
+Win32 `HCURSOR` from the installed game's own cursor artwork, hides only
+duplicate game-drawn cursor sprites, and synchronizes GameOS hit-testing
+coordinates so buttons still work after returning from gameplay.
+The feature does **not** replace the gold cursor with a generic Windows
+arrow and does not alter native Windows behavior. All dependent Wine
+cursor hooks are enabled automatically; **`[Debug] Log=1` is not required**.
+
+A user-selected `SmoothMenuCursor=0` or `1` overrides the older separate
+Wine cursor `[Debug]` A/B switches regardless of section order. Existing
+custom INIs are **never overwritten**: add the `[Features]` section manually
+to an older INI to use this toggle. Restart the game to apply a change.
 
 ## Commands
 
