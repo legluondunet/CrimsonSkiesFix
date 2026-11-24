@@ -14,6 +14,10 @@ pub const DEFAULT_INI: &str = concat!(
     "; Frame pacing target, 1-60 frames per second.\n",
     "FPSLimit=60\n",
     "\n",
+    "[Features]\n",
+    "; Smooth original golden menu cursor under Wine (0=off, 1=on).\n",
+    "SmoothMenuCursor=0\n",
+    "\n",
     "[Debug]\n",
     "; Additional game diagnostics (0=off, 1=on).\n",
     "Log=0\n",
@@ -26,6 +30,10 @@ pub struct Config {
     pub fps_limit: u32,
     /// Explicitly render 3D in true 4:3; never squash an already-wide image.
     pub force_4_by_3: bool,
+    /// User feature: original golden game cursor as a smooth Wine HCURSOR.
+    /// Disabled by default; when selected, all necessary Wine hooks are
+    /// enabled as one coherent unit, without requiring Debug/Log=1.
+    pub smooth_menu_cursor: bool,
     pub modern_fps_pacing: bool,
     pub experimental_windowed_adapter: bool,
     pub focus_repaint: bool,
@@ -90,7 +98,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, wine_decorated_system_cursor:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
+        Self { borderless: true, desktop_resolution: true, fps_limit: 60, force_4_by_3: false, smooth_menu_cursor: false, modern_fps_pacing: false, experimental_windowed_adapter: true, focus_repaint: true, window_erase_guard: true, legacy_offscreen_rgb565: true, native_3d_widescreen: true, gos_video_lock: crate::gos_video_lock::Mode::On, roffile_terminator_fix: true, log_enabled: false, defer_early_native_patch: false, early_native_physical_mode: false, native_dpi_aware: false, native_dd4_bootstrap: true, native_movie_rgb32: true, native_movie_message_pump: true, native_menu_mouse_remap:false, native_mouse_clip_repair: true, native_system_cursor_probe:false, wine_system_cursor_probe:false, wine_system_cursor_sync:false, wine_menu_cursor_bitmap_probe:false, wine_game_cursor_render_suppress:false, wine_gos_draw_trace:false, wine_d3d_cursor_suppress:false, wine_decorated_system_cursor:false, native_direct_input_mouse_trace:false, native_direct_input_mouse_coop_repair: true, native_gos_cursor_bridge: true, native_full_frame_compose: true, directdraw_passthrough: false, surface_usage_trace: false, crash_blt_trace: false, frame_time_trace: false, }
     }
 }
 
@@ -104,6 +112,10 @@ fn enabled(text: &str) -> Option<bool> {
 
 pub fn parse(content: &str) -> Config {
     let mut settings = Config::default();
+    // Explicit [Features] selection is authoritative over legacy
+    // [Debug] Wine cursor switches, regardless of INI section order.
+    // INIs predating this feature (no key) retain their old debug behavior.
+    let mut smooth_menu_cursor_selected:Option<bool>=None;
     let mut section = "";
     for line in content.lines() {
         let text = line.split([';', '#']).next().unwrap_or("").trim();
@@ -111,6 +123,8 @@ pub fn parse(content: &str) -> Config {
         if text.starts_with('[') && text.ends_with(']') {
             section = if text[1..text.len() - 1].eq_ignore_ascii_case("Graphics") {
                 "graphics"
+            } else if text[1..text.len() - 1].eq_ignore_ascii_case("Features") {
+                "features"
             } else if text[1..text.len() - 1].eq_ignore_ascii_case("Debug") {
                 "debug"
             } else if text[1..text.len() - 1].eq_ignore_ascii_case("Compatibility") {
@@ -120,6 +134,8 @@ pub fn parse(content: &str) -> Config {
         }
         let Some((name, value)) = text.split_once('=') else { continue };
         match (section, name.trim().to_ascii_lowercase().as_str()) {
+            ("features", "smoothmenucursor") =>
+                if let Some(v)=enabled(value){smooth_menu_cursor_selected=Some(v);},
             ("graphics", "borderless") =>
                 if let Some(v) = enabled(value) { settings.borderless = v; },
             ("graphics", "desktopresolution") =>
@@ -206,6 +222,19 @@ pub fn parse(content: &str) -> Config {
             _ => {},
         }
     }
+    if let Some(on)=smooth_menu_cursor_selected {
+        settings.smooth_menu_cursor=on;
+        // Retire the old, independent Wine diagnostics as an activation
+        // interface when the user supplies this one feature key. Even
+        // [Debug] switches below [Features] cannot silently override =0.
+        settings.wine_system_cursor_probe=on;
+        settings.wine_system_cursor_sync=on;
+        settings.wine_gos_draw_trace=on;
+        settings.wine_decorated_system_cursor=on;
+        settings.wine_menu_cursor_bitmap_probe=false;
+        settings.wine_game_cursor_render_suppress=false;
+        settings.wine_d3d_cursor_suppress=false;
+    }
     settings
 }
 
@@ -219,7 +248,7 @@ fn ini_line_keys(content:&str)->Vec<Option<String>>{
         if clean.starts_with('[') && clean.ends_with(']') && clean.len()>2{
             let candidate=clean[1..clean.len()-1].trim().to_ascii_lowercase();
             section=if matches!(candidate.as_str(),
-                "graphics"|"debug"|"compatibility"){candidate}else{String::new()};
+                "graphics"|"features"|"debug"|"compatibility"){candidate}else{String::new()};
             return None;
         }
         if section.is_empty(){return None;}
@@ -262,6 +291,7 @@ const KNOWN_INI_KEYS:&[&str]=&[
     "graphics/legacyoffscreenrgb565",
     "graphics/native3dwidescreen",
     "graphics/gosvideolock",
+    "features/smoothmenucursor",
     "compatibility/roffileterminatorfix",
     "debug/log",
     "debug/deferearlynativepatch",
@@ -352,6 +382,7 @@ mod tests {
         assert_eq!(generated,vec![
             "graphics/aspectratio".to_owned(),
             "graphics/fpslimit".to_owned(),
+            "features/smoothmenucursor".to_owned(),
             "debug/log".to_owned(),
         ]);
         assert_eq!(parse(DEFAULT_INI),Config::default());
@@ -564,6 +595,52 @@ mod tests {
         assert!(!parse("[Graphics]\nWineD3dCursorSuppress=1").wine_d3d_cursor_suppress);
     }
     #[test]
+    fn smooth_menu_cursor_feature_is_off_by_default_and_self_contained(){
+        let off=parse(DEFAULT_INI);
+        assert!(!off.smooth_menu_cursor);
+        assert!(!off.wine_system_cursor_probe);
+        assert!(!off.wine_system_cursor_sync);
+        assert!(!off.wine_gos_draw_trace);
+        assert!(!off.wine_decorated_system_cursor);
+        assert!(!off.log_enabled);
+        let on=parse("[Features]\nSmoothMenuCursor=1\n[Debug]\nLog=0");
+        assert!(on.smooth_menu_cursor);
+        assert!(on.wine_system_cursor_probe);
+        assert!(on.wine_system_cursor_sync);
+        assert!(on.wine_gos_draw_trace);
+        assert!(on.wine_decorated_system_cursor);
+        assert!(!on.wine_d3d_cursor_suppress);
+        assert!(!on.wine_game_cursor_render_suppress);
+        assert!(!on.wine_menu_cursor_bitmap_probe);
+        assert!(!on.log_enabled);
+        // The feature key has priority independent of section order.
+        for ini in [
+            "[Features]\nSmoothMenuCursor=0\n[Debug]\nWineDecoratedSystemCursor=1\nWineSystemCursorProbe=1\nWineSystemCursorSync=1\nWineGosDrawTrace=1",
+            "[Debug]\nWineDecoratedSystemCursor=1\nWineSystemCursorProbe=1\nWineSystemCursorSync=1\nWineGosDrawTrace=1\n[Features]\nSmoothMenuCursor=0"
+        ]{
+            let disabled=parse(ini);
+            assert!(!disabled.smooth_menu_cursor);
+            assert!(!disabled.wine_decorated_system_cursor);
+            assert!(!disabled.wine_system_cursor_probe);
+            assert!(!disabled.wine_system_cursor_sync);
+            assert!(!disabled.wine_gos_draw_trace);
+        }
+        assert!(!parse("[Graphics]\nSmoothMenuCursor=1").smooth_menu_cursor);
+        assert!(!parse("[Debug]\nSmoothMenuCursor=1").smooth_menu_cursor);
+        assert!(!parse("[Features]\nSmoothMenuCursor=invalid").smooth_menu_cursor);
+        // Explicit legacy [Debug] A/B remains supported in older INIs
+        // without a [Features] key, and can be opted out via this key.
+        assert!(parse("[Debug]\nWineDecoratedSystemCursor=1").wine_decorated_system_cursor);
+    }
+    #[test]
+    fn smooth_menu_cursor_duplicate_cleanup_preserves_effective_selection(){
+        let ini="[Features]\nSmoothMenuCursor=1\nSmoothMenuCursor=0\n[Debug]\nLog=0\n";
+        let (cleaned,removed)=deduplicate_known_ini(ini).unwrap();
+        assert_eq!(removed,1);
+        assert_eq!(parse(ini),parse(&cleaned));
+        assert!(cleaned.contains("SmoothMenuCursor=0"));
+    }
+    #[test]
     fn wine_decorated_system_cursor_requires_explicit_debug_opt_in(){
         assert!(!Config::default().wine_decorated_system_cursor);
         assert!(parse("[Debug]\nWineDecoratedSystemCursor=1").wine_decorated_system_cursor);
@@ -770,6 +847,7 @@ mod tests {
         assert!(!initial.wine_gos_draw_trace);
         assert!(!initial.wine_d3d_cursor_suppress);
         assert!(!initial.wine_decorated_system_cursor);
+        assert!(!initial.smooth_menu_cursor);
         assert!(!initial.native_menu_mouse_remap);
         assert_eq!(initial.gos_video_lock, crate::gos_video_lock::Mode::On);
         assert!(initial.roffile_terminator_fix);
