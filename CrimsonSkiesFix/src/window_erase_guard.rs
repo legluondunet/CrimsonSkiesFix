@@ -681,17 +681,35 @@ pub fn native_gos_cursor_bridge_post_gameplay_ui()->bool {
     MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire)!=0 &&
     MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.load(Ordering::Acquire)!=0
 }
+// The Win32 decorated pointer and the native GameOS hit-test cursor
+// must agree on the same validated menu scene. On Wine, the MainMenu
+// script is NOT necessarily reloaded after gameplay; rely on the exact
+// authenticated Campaign artwork AFTER it was presented successfully.
+// The certificate is cleared on non-menu scripts/mode changes and is
+// only accepted under WineDecoratedSystemCursor=1.
+fn gos_bridge_scene_evidence(
+    script_menu:bool,native_post_gameplay:bool,wine_campaign_presented:bool
+)->bool {
+    script_menu || native_post_gameplay || wine_campaign_presented
+}
+pub fn native_gos_cursor_bridge_scene_active()->bool {
+    MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire)!=0 &&
+    gos_bridge_scene_evidence(
+        MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)!=0,
+        MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.load(Ordering::Acquire)!=0,
+        wine_campaign_menu_presented()
+    )
+}
 /// Snapshot the *actual* Windows pointer and transform through the SAME
 /// viewport as presentation. The game cursor still belongs to GOS; this
 /// function itself does not modify the game or the OS. Gated by exact
-/// MainMenu/Preferences script or exact 3D -> 800x600 post-gameplay UI,
+/// MainMenu/Preferences script, verified native post-gameplay UI OR
+/// Wine-only genuinely presented Campaign artwork after gameplay,
 /// plus owner HWND, focus, UI thread and verified physical 4:3 viewport.
 /// Non-menu / gutter input is ignored. Gameplay never arms this bridge.
 pub fn native_gos_cursor_bridge_target()->Option<(i32,i32)>{
     let hwnd=MENU_GOS_BRIDGE_HWND.load(Ordering::Acquire);
-    if hwnd==0 ||
-       (MENU_MOUSE_SCENE_ACTIVE.load(Ordering::Acquire)==0 &&
-        MENU_GOS_BRIDGE_POST_GAMEPLAY_UI.load(Ordering::Acquire)==0) ||
+    if hwnd==0 || !native_gos_cursor_bridge_scene_active() ||
        PREVIOUS.load(Ordering::Acquire)==0 ||
        HOOK_HWND.load(Ordering::Acquire)!=hwnd{return None;}
     let w=MENU_GOS_BRIDGE_CLIENT_W.load(Ordering::Acquire) as i32;
@@ -868,6 +886,20 @@ mod tests{
         assert_eq!(std::mem::size_of::<WinMessage>(),32); // x86 only
         assert_eq!(std::mem::size_of::<MouseRect>(),16);
         assert_eq!(NATIVE_MOVIE_PUMP_MAX_PER_FLIP,4);
+    }
+    #[test]
+    fn original_gos_cursor_hit_test_recovers_with_presented_campaign(){
+        assert!(gos_bridge_scene_evidence(true,false,false));
+        assert!(gos_bridge_scene_evidence(false,true,false));
+        // This is precisely the return-to-menu case on Wine: no
+        // MainMenu script callback, native post-gameplay flag disabled,
+        // but the verified Campaign artwork is actually on screen.
+        assert!(gos_bridge_scene_evidence(false,false,true));
+        assert!(!gos_bridge_scene_evidence(false,false,false));
+        // The bit is obtained from wine_campaign_menu_presented(), which
+        // already rejects native Windows and disabled decorated cursor.
+        assert!(!menu_pointer_scene_eligible(false,true,false,true));
+        assert!(!menu_pointer_scene_eligible(false,true,true,false));
     }
     #[test]
     fn presented_campaign_art_recovers_only_wine_decorated_menu(){
