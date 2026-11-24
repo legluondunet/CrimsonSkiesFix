@@ -17,7 +17,9 @@ from urllib.request import Request, urlopen
 import unittest
 
 REPOSITORY = "legluondunet/CrimsonSkiesFix"
-ARCHIVED_BRANCHES = {"archive/smooth-menu-cursor-20261124"}
+# Keep the exact base of the closed cursor PR so its original diff remains usable.
+ARCHIVED_BRANCHES = {"archive/smooth-menu-cursor-20261124",
+                     "diagnostic/gos-menu-mouse-input-cadence-20261121"}
 
 def local_open_heads(prs, repo):
     """Get open PR heads in this repository, ignoring unrelated fork heads."""
@@ -220,6 +222,10 @@ class PolicyTests(unittest.TestCase):
 
     def test_explicit_research_archive_is_kept_after_pr_closure(self):
         self.assertEqual(decision(dict(self.b, name="archive/smooth-menu-cursor-20261124"), set(), "main"),
+                         "keep-archive")
+
+    def test_archived_cursor_pr_base_is_kept(self):
+        self.assertEqual(decision(dict(self.b, name="diagnostic/gos-menu-mouse-input-cadence-20261121"), set(), "main"),
                          "keep-archive")
 
     def test_open_local_pr_is_kept(self):
