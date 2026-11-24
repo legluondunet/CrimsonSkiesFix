@@ -3,6 +3,7 @@ name: Prune old GitHub Actions runs (preserve latest build)
 on:
   push:
     branches:
+      - main
       - maintenance/purge-old-workflow-runs-20261117
     paths:
       - '.github/scripts/prune_action_runs.py'
