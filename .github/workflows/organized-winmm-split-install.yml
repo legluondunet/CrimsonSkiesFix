@@ -1,22 +1,7 @@
 name: Experimental organized WinMM split installation (NOT RELEASE)
 
+# Historical architecture: retain for explicit troubleshooting only.
 on:
-  push:
-    paths:
-      - 'CrimsonSkiesFix/loader-winmm/**'
-      - 'CrimsonSkiesFix/loader-alias/**'
-      - 'CrimsonSkiesFix/runtime-split/**'
-      - 'CrimsonSkiesFix/installer/**'
-      - 'CrimsonSkiesFix/src/**'
-      - '.github/workflows/organized-winmm-split-install.yml'
-  pull_request:
-    paths:
-      - 'CrimsonSkiesFix/loader-winmm/**'
-      - 'CrimsonSkiesFix/loader-alias/**'
-      - 'CrimsonSkiesFix/runtime-split/**'
-      - 'CrimsonSkiesFix/installer/**'
-      - 'CrimsonSkiesFix/src/**'
-      - '.github/workflows/organized-winmm-split-install.yml'
   workflow_dispatch:
 
 permissions:

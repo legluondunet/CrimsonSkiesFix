@@ -2,6 +2,7 @@ name: Experimental unified single-DLL CrimsonSkiesFix (NOT RELEASE)
 
 on:
   push:
+    branches: [main]
     paths:
       - 'CrimsonSkiesFix/runtime-unified/**'
       - 'CrimsonSkiesFix/loader-alias/tools/**'
@@ -111,13 +112,13 @@ jobs:
         with:
           name: CrimsonSkiesFix-UNIFIED-X86-TEST-ONLY
           path: CrimsonSkiesFix/unified-dist/*
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-UNIFIED-SYNTHETIC-WINE-SMOKE
           path: CrimsonSkiesFix/unified-synthetic-smoke/*
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
   unified-wine32-smoke:

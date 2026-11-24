@@ -1,18 +1,7 @@
 name: Experimental WinMM-only standalone installer x86
 
+# Historical architecture: retain for explicit troubleshooting only.
 on:
-  push:
-    paths:
-      - 'CrimsonSkiesFix/installer/**'
-      - 'CrimsonSkiesFix/runtime-winmm/**'
-      - 'CrimsonSkiesFix/src/**'
-      - '.github/workflows/winmm-installer-candidate.yml'
-  pull_request:
-    paths:
-      - 'CrimsonSkiesFix/installer/**'
-      - 'CrimsonSkiesFix/runtime-winmm/**'
-      - 'CrimsonSkiesFix/src/**'
-      - '.github/workflows/winmm-installer-candidate.yml'
   workflow_dispatch:
 
 permissions:
