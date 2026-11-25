@@ -603,7 +603,6 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
     if crate::cfg().native_dd4_bootstrap &&
         crate::diagnostics::is_native_windows(){
         crate::window_erase_guard::disarm_native_menu_mouse_remap();
-        crate::window_erase_guard::disarm_native_system_cursor_probe();
         crate::window_erase_guard::disarm_native_gos_cursor_bridge();
     }
     if let Some(old)=runtime.epoch.take(){
@@ -710,22 +709,6 @@ pub unsafe fn display_mode(dd4:*mut c_void,w:u32,h:u32,bpp:u32,
                     Err(reason)=>log(&format!(
                         "NATIVE-CURSOR-CLIP-REPAIR: not applied ({reason}); OS clip unchanged"
                     )),
-                }
-            }
-            // Isolate original menu pointer invisibility from mouse
-            // coordinate scaling: show system arrow only as an explicit
-            // native Windows diagnostic after the authentic MainMenu
-            // script is active. Refuse if old remap remains enabled.
-            if crate::cfg().native_system_cursor_probe &&
-                crate::cfg().native_dd4_bootstrap &&
-                crate::diagnostics::is_native_windows() &&
-                native_movie_rgb32_enabled(mode) {
-                match crate::window_erase_guard::arm_native_system_cursor_probe(
-                    runtime.hwnd,crate::cfg().native_menu_mouse_remap
-                ){
-                    Ok(())=>log("NATIVE-SYSTEM-CURSOR-PROBE: armed for actual MainMenu/Preferences; original input untouched, game WndProc executes first; OS arrow diagnostic only"),
-                    Err(reason)=>log(&format!(
-                        "NATIVE-SYSTEM-CURSOR-PROBE: refused ({reason}); original game cursor unchanged")),
                 }
             }
             // Standalone native-only GOS mouse cursor bridge. The game's
