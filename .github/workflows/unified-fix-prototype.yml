@@ -84,6 +84,25 @@ jobs:
             if($LASTEXITCODE -ne 2){throw 'Missing authenticated media must be refused'}
             if(Test-Path 'unified-empty-tree/game'){throw 'Missing media created a game directory'}
             if(!(Test-Path 'unified-empty-tree/CrimsonSkiesFix_installer.log')){throw 'Missing installer diagnostic'}
+            # A no-argument, detached process must also fail without a modal
+            # dialog when the existing noninteractive flag is set.
+            $psi=[System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName=(Resolve-Path 'unified-empty-tree/CrimsonSkiesFix.exe').Path
+            $psi.UseShellExecute=$false
+            $psi.CreateNoWindow=$true
+            $psi.Environment.Remove('CI') | Out-Null
+            $psi.Environment.Remove('GITHUB_ACTIONS') | Out-Null
+            $psi.Environment['CRIMSONSKIESFIX_NONINTERACTIVE']='1'
+            $child=[System.Diagnostics.Process]::Start($psi)
+            try {
+              if(!$child.WaitForExit(20000)){
+                $child.Kill()
+                throw 'Unattended installer did not exit (unexpected blocking dialog)'
+              }
+              if($child.ExitCode -ne 2){throw "Unexpected unattended exit: $($child.ExitCode)"}
+            } finally { $child.Dispose() }
+            if(Test-Path 'unified-empty-tree/game'){throw 'Unattended missing-media launch created game folder'}
+            Write-Host 'INSTALLER-NONINTERACTIVE PASS: detached no-argument launch exits with 2'
           }
           $global:LASTEXITCODE=0
       - name: Build synthetic suspended-process DirectDraw import fixture for fix.dll
@@ -144,6 +163,10 @@ jobs:
         with:
           name: CrimsonSkiesFix-UNIFIED-SYNTHETIC-WINE-SMOKE
           path: smoke
+      - uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-X86-TEST-ONLY
+          path: installer-smoke
       - name: Install clean Wine32 and virtual display
         run: |
           sudo dpkg --add-architecture i386
@@ -169,3 +192,28 @@ jobs:
             exit 1
           fi
           echo 'UNIFIED-WINE32-SMOKE PASS: native WinMM unaffected; synthetic executable rejected by core'
+
+      - name: Wine32 unattended installer error path (no game data)
+        env:
+          WINEARCH: win32
+          WINEPREFIX: ${{ runner.temp }}/crimson-unified-smoke-prefix
+          WINEDEBUG: -all
+          CRIMSONSKIESFIX_NONINTERACTIVE: '1'
+        run: |
+          set -euo pipefail
+          version="$(timeout 60s xvfb-run -a wine "$PWD/installer-smoke/CrimsonSkiesFix.exe" --version)"
+          if [[ "$version" != *"NATIVE US/DE LOCAL UPDATE"* ]]; then
+            echo 'Desktop notifier not enabled in this legacy variant'
+            exit 0
+          fi
+          set +e
+          timeout 60s xvfb-run -a env -u CI -u GITHUB_ACTIONS wine "$PWD/installer-smoke/CrimsonSkiesFix.exe"
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "Expected unattended missing-media exit 2, got $code"
+            exit 1
+          fi
+          test ! -e installer-smoke/game
+          grep -q 'AUTO_INSTALL_RESULT=ERROR' installer-smoke/CrimsonSkiesFix_installer.log
+          echo 'INSTALLER-WINE32-NONINTERACTIVE PASS: no-argument launch exits with 2'

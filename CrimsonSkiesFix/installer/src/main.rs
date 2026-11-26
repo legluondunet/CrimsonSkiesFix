@@ -6,6 +6,8 @@ mod update102;
 mod managed_gos_patch;
 mod chapter_cabs;
 mod auto_install;
+#[cfg(feature="native-usde-updater")]
+mod error_dialog;
 #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
 mod split_process_probe;
 #[cfg(feature="import-alias-install")]
@@ -680,7 +682,9 @@ fn usage() {
         Place all required files beside CrimsonSkiesFix.exe. No separate decrypted EXE is needed.\n\
         {}\n\
         Extract crmsk102.exe if downloaded in an archive.\n\
-        Do not run the updater yourself. The launcher verifies and applies it offline.",
+        Do not run the updater yourself. The launcher verifies and applies it offline.\n\
+        Desktop launches can show an error dialog. Explicit commands remain console-only.\n\
+        Set CRIMSONSKIESFIX_NONINTERACTIVE=1 for unattended execution.",
         update102::download_help());
     #[cfg(not(feature="native-usde-updater"))]
     let sources="Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
@@ -800,7 +804,12 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(err) => {
-            eprintln!("CrimsonSkiesFix: ERROR: {err}");
+            // A detached GUI launch may have no writable console. Keep the
+            // complete stderr diagnostic when possible, but do not let a
+            // closed stderr pipe prevent the desktop error notification.
+            let _=writeln!(std::io::stderr().lock(),"CrimsonSkiesFix: ERROR: {err}");
+            #[cfg(feature="native-usde-updater")]
+            error_dialog::show_if_desktop(&err);
             std::process::exit(2);
         }
     }

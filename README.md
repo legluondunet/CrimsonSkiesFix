@@ -39,7 +39,7 @@ The installer identifies supported media by the exact paths, sizes and SHA-256 h
 
 CrimsonSkiesFix targets the final official PC game version, **1.02**, which includes important stability, performance and save-game fixes. An original version 1.0 CD is supported, but it does not contain all of the required 1.02 game data. Without the authentic update file, the launcher cannot complete installation or start the game.
 
-If the terminal says that the 1.02 update is required:
+If the terminal or desktop error dialog says that the 1.02 update is required:
 
 1. Download the official Microsoft 1.02 update (`crmsk102.exe`) from **one** of these sources:
    - [Project Releases](https://github.com/legluondunet/CrimsonSkiesFix/releases) (if listed there).
@@ -56,6 +56,12 @@ The launcher accepts the update by content, even if its filename has changed. It
 - SHA-256: `8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af`
 
 If a copy is already present but rejected, check the size and SHA-256; if multiple valid copies are detected, keep only one beside the launcher.
+
+### If the launcher cannot start the game
+
+For a normal desktop launch without arguments, CrimsonSkiesFix can display a native Windows error dialog instead of letting the console close without an explanation. For a recognized version 1.0 CD that requires the update, choose **Yes** to open the download instructions in your default browser. Choose **No** to close the message without opening anything. Other blocking installer errors show an explanation. Successful installations show no dialog.
+
+The full error is still written to the terminal when available, and installation errors are recorded in `CrimsonSkiesFix_installer.log` beside the launcher when logging is possible. Explicit commands (including `--install-only`, `--verify` and `--verbose`), detected terminals and CI runs are console-only. Desktop-versus-terminal detection is best effort, especially under Wine. For scripts, detached launches or unattended operation, set `CRIMSONSKIESFIX_NONINTERACTIVE=1` to guarantee that the installer does not display a blocking error dialog.
 
 ### Example folder before installing
 

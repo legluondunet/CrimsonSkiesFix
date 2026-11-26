@@ -12,6 +12,8 @@ use std::{
 #[cfg(feature="native-usde-updater")]
 pub const PROJECT_DOWNLOADS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix/releases";
 #[cfg(feature="native-usde-updater")]
+pub const UPDATE_INSTRUCTIONS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix#official-102-update";
+#[cfg(feature="native-usde-updater")]
 pub const MODDB_DOWNLOAD_URL:&str="https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102";
 #[cfg(feature="native-usde-updater")]
 pub const LUTRIS_ARCHIVE_URL:&str="https://github.com/legluondunet/MyLittleLutrisScripts/raw/refs/heads/master/Crimson%20Skies/crmsk102.7z";

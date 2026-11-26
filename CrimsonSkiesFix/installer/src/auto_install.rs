@@ -187,6 +187,11 @@ fn earlier_cd_update_source(base:&Path,update:Option<&Path>,edition:&str)
         .map_err(|e|earlier_cd_update_help(base,edition,&e))
 }
 
+// Shared, exact prefix of the recognized-older-CD prerequisite error.
+// The desktop notifier uses only this prefix, not arbitrary detail text.
+#[cfg(feature="native-usde-updater")]
+pub(super) const EARLIER_CD_UPDATE_PREFIX:&str="\nSupported original CD recognized:";
+
 #[cfg(feature="native-usde-updater")]
 fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
     let label=match edition{
@@ -195,8 +200,7 @@ fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
         "C_SKIES_FR_002"=>"French, original version 1.0",
         _=>"Earlier supported CD",
     };
-    format!("\n\
-        Supported original CD recognized: {label} ({edition}).\n\
+    format!("{EARLIER_CD_UPDATE_PREFIX} {label} ({edition}).\n\
         CrimsonSkiesFix requires game version 1.02. Your CD contains an earlier version.\n\
         The official 1.02 updater required for this installation is missing, invalid or ambiguous.\n\
         Details: {detail}\n\
