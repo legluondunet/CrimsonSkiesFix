@@ -48,6 +48,31 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: rustup target add i686-pc-windows-msvc
+      - name: Record resolved dependency and compiler metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'unified-dependency-locks' | Out-Null
+          $runtime = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml
+          if($LASTEXITCODE -ne 0){throw 'Runtime metadata failed'}
+          $installer = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE
+          if($LASTEXITCODE -ne 0){throw 'Installer metadata failed'}
+          foreach($item in @(@{Name='runtime-unified';Data=$runtime},@{Name='installer';Data=$installer})){
+            $meta=($item.Data -join "`n") | ConvertFrom-Json
+            $inventory=@($meta.packages | Sort-Object name,version | ForEach-Object {
+              [ordered]@{name=$_.name;version=$_.version;source=$_.source;license=$_.license;license_file=if($_.license_file){Split-Path -Leaf $_.license_file}else{$null};repository=$_.repository}
+            })
+            ConvertTo-Json -InputObject $inventory -Depth 5 | Set-Content -Encoding utf8 "unified-dependency-locks/$($item.Name)-packages.json"
+            if($item.Name -eq 'runtime-unified'){
+              $root=@($meta.packages | Where-Object name -eq 'crimsonskiesfix-unified-runtime')
+              if($root.Count -ne 1){throw 'Missing unique runtime package'}
+              "EXPECTED_CANDIDATE_VERSION=$($root[0].version)" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+            }
+          }
+          $rust=rustc -Vv
+          if($LASTEXITCODE -ne 0){throw 'rustc version failed'}
+          $cargo=cargo -Vv
+          if($LASTEXITCODE -ne 0){throw 'cargo version failed'}
+          @($rust; $cargo; "ImageOS=$env:ImageOS"; "ImageVersion=$env:ImageVersion") | Set-Content -Encoding utf8 'unified-dependency-locks/toolchain.txt'
       - name: Unit-test and compile combined fix.dll
         shell: pwsh
         run: |
@@ -74,6 +99,8 @@ jobs:
           if($LASTEXITCODE -ne 0 -or $version -notmatch 'NATIVE US/DE LOCAL UPDATE' -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)){
             throw "Wrong installer variant: $version"
           }
+          $expectedIdentity="CrimsonSkiesFix $env:EXPECTED_CANDIDATE_VERSION-$($env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) Windows-x86"
+          if(!$version.StartsWith($expectedIdentity+' ')){throw "Launcher/runtime version mismatch: $version; expected $expectedIdentity"}
           New-Item -ItemType Directory -Force 'unified-empty-tree' | Out-Null
           Copy-Item $exe 'unified-empty-tree/CrimsonSkiesFix.exe'
           & './unified-empty-tree/CrimsonSkiesFix.exe' --launch-no-verify
@@ -161,7 +188,12 @@ jobs:
           New-Item -ItemType Directory -Force 'unified-dependency-locks' | Out-Null
           Copy-Item installer/Cargo.lock 'unified-dependency-locks/installer-Cargo.lock'
           Copy-Item runtime-unified/Cargo.lock 'unified-dependency-locks/runtime-unified-Cargo.lock'
-          "Commit=$env:CRIMSONSKIESFIX_COMMIT" | Set-Content 'unified-dependency-locks/build-commit.txt'
+          @("Commit=$env:CRIMSONSKIESFIX_COMMIT",
+            "CandidateVersion=$env:EXPECTED_CANDIDATE_VERSION",
+            "LauncherSHA256=$((Get-FileHash 'unified-dist/CrimsonSkiesFix.exe' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "RuntimeSHA256=$((Get-FileHash 'runtime-unified/target/i686-pc-windows-msvc/release/fix.dll' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "InstallerCargoLockSHA256=$((Get-FileHash 'installer/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "RuntimeCargoLockSHA256=$((Get-FileHash 'runtime-unified/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-UNIFIED-DEPENDENCY-LOCKS

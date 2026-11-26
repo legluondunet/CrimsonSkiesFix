@@ -236,6 +236,12 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_CORE),BUNDLED_CORE.len()));
     #[cfg(feature="unified-fix-install")]
     build_info.push_str("GameFolder=game\nCoreDll=game/fix.dll\nFixFolder=.\n");
+    #[cfg(feature="native-usde-updater")]
+    build_info.push_str(&format!(
+        "InstallerCargoLockSHA256={}\nRuntimeCargoLockSHA256={}\n",
+        sha256::hex(include_bytes!("../Cargo.lock")),
+        sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock"))
+    ));
     let manifest = docs.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
@@ -856,6 +862,15 @@ mod tests {
             assert!(regular(&root.join("docs").join(name)));
             assert!(!any_entry(&root.join(name)),"unexpected root document: {name}");
             assert!(!any_entry(&game.join(name)));
+        }
+        let info=fs::read_to_string(root.join("docs").join("build-info.txt")).unwrap();
+        assert!(info.lines().any(|line|line==format!("Version={VERSION}")));
+        assert!(info.lines().any(|line|line==format!("Commit={COMMIT}")));
+        assert!(info.lines().any(|line|line==format!("DllSha256={}",sha256::hex(BUNDLED_RUNTIME))));
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(info.lines().any(|line|line==format!("InstallerCargoLockSHA256={}",sha256::hex(include_bytes!("../Cargo.lock")))));
+            assert!(info.lines().any(|line|line==format!("RuntimeCargoLockSHA256={}",sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock")))));
         }
         assert!(!any_entry(&root.join("state"))); // no CD receipt for manual import
         assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\nAspectRatio=4:3\n");

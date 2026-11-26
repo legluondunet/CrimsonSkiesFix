@@ -1,6 +1,6 @@
 # CrimsonSkiesFix 1.1 — draft release notes
 
-**Not published.** The current stable release is v1.0. Candidate baseline: 1.1.0-rc.1-3287914a, validated on 26 November 2026. Do not publish these notes as a completed release until the release gates are satisfied.
+**Not published.** The current stable release is v1.0. Candidate baseline: 1.1.0-rc.1-09aad277, validated on 26 November 2026 (existing installation; 3287914a for the earlier fresh German installation). Do not publish these notes as a completed release until the release gates are satisfied.
 
 ## What's new since 1.0
 
@@ -17,4 +17,4 @@ Use a new writable directory; automatic migration from the 1.0 layout is not sup
 
 ## Validation and limitations
 
-Real installation/launch evidence exists for all five profiles across different candidate revisions and operating systems. Latest 3287914a confirmed under Wine 11.19 with German 1.0 + official update: compact dialogs, browser opening, fresh install, verified EXE and data, main menu, exit 0 and final Log=0. CI 45904563284: 341 runtime + 89 installer tests, Windows x86 and Wine32 success. This is not exhaustive Windows/Wine/Proton coverage, nor evidence of all gameplay or multiplayer behaviors. No claim of CD-only conversion for the earlier discs. See the main README for update sources, supported inputs and current limitations.
+Real installation/launch evidence exists for all five profiles across different candidate revisions and operating systems. Fresh-install candidate 3287914a confirmed under Wine 11.19 with German 1.0 + official update: compact dialogs, browser opening, fresh install, verified EXE and data, main menu, exit 0 and final Log=0. CI 45904563284: 341 runtime + 89 installer tests, Windows x86 and Wine32 success. The later 09aad277 candidate passed locked Cargo CI 45911197219 (Windows x86 and Wine32) and an existing-install gameplay/menu-return smoke under Wine 11.19. Exact Alt-Tab gesture was not confirmed by the logs. This is not exhaustive Windows/Wine/Proton coverage, nor evidence of all gameplay or multiplayer behaviors. No claim of CD-only conversion for the earlier discs. See the main README for update sources, supported inputs and current limitations.
