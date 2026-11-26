@@ -191,6 +191,8 @@ fn earlier_cd_update_source(base:&Path,update:Option<&Path>,edition:&str)
 // The desktop notifier uses only this prefix, not arbitrary detail text.
 #[cfg(feature="native-usde-updater")]
 pub(super) const EARLIER_CD_UPDATE_PREFIX:&str="\nSupported original CD recognized:";
+#[cfg(feature="native-usde-updater")]
+pub(super) const CD_MEDIA_ERROR_PREFIX:&str="Missing or invalid original game CD image (.iso or .cue + .bin/.img): ";
 
 #[cfg(feature="native-usde-updater")]
 fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
@@ -200,9 +202,16 @@ fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
         "C_SKIES_FR_002"=>"French, original version 1.0",
         _=>"Earlier supported CD",
     };
+    use update102::UpdateFailure;
+    let reason=match update102::failure_kind(detail){
+        UpdateFailure::Missing=>"No verified update file was found.",
+        UpdateFailure::Invalid=>"An update candidate failed verification.",
+        UpdateFailure::Multiple=>"More than one verified update file was found.",
+        UpdateFailure::Other=>"The update could not be verified.",
+    };
     format!("{EARLIER_CD_UPDATE_PREFIX} {label} ({edition}).\n\
         CrimsonSkiesFix requires game version 1.02. Your CD contains an earlier version.\n\
-        The official 1.02 updater required for this installation is missing, invalid or ambiguous.\n\
+        The official 1.02 updater required for this installation is unavailable. {reason}\n\
         Details: {detail}\n\
         The game has not been launched.\n\
         \nHow to continue:\n\
@@ -212,7 +221,7 @@ fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
            Expected size of the extracted EXE: {} bytes.\n\
         2. Keep exactly one authentic copy beside CrimsonSkiesFix.exe, in:\n\
            {}\n\
-        3. Do NOT run the updater yourself. Run CrimsonSkiesFix.exe again.\n\
+        3. Run CrimsonSkiesFix.exe again.\n\
         \nThe launcher verifies the update and completes installation automatically.\n\
         No separate decrypted EXE is needed. No Internet connection is required by the launcher.",
         update102::download_help(),update102::PATCH_LEN,base.display())
@@ -236,7 +245,7 @@ pub(super) fn preflight_install_sources(
     // Until a CD is identified, its updater requirement is unknown.
     #[cfg(feature="native-usde-updater")]
     if let Err(detail)=&disc{
-        return Err(format!("Missing or invalid original game CD image (.iso or .cue + .bin/.img): {detail}. Place exactly one supported CD image beside CrimsonSkiesFix.exe; no extraction or game launch attempted."));
+        return Err(format!("{CD_MEDIA_ERROR_PREFIX}{}\nPlace exactly one supported CD image beside CrimsonSkiesFix.exe. No extraction or game launch attempted.",detail.trim_end_matches('.')));
     }
     #[cfg(feature="native-fr-cd")]
     if disc.is_ok() {
@@ -1408,7 +1417,8 @@ mod tests{
             assert!(err.contains(update102::PCGAMINGWIKI_DOWNLOAD_URL),"{err}");
             assert!(err.contains(update102::MYABANDONWARE_DOWNLOAD_URL),"{err}");
             assert!(err.contains("extract crmsk102.exe first"),"{err}");
-            assert!(err.contains("Do NOT run the updater yourself"),"{err}");
+            assert!(err.contains("No verified update file was found"),"{err}");
+            assert!(!err.contains("Do NOT run"),"{err}");
             assert!(err.contains("Run CrimsonSkiesFix.exe again"),"{err}");
             assert!(err.contains("No separate decrypted EXE is needed"),"{err}");
             assert!(!any_entry(&root.join("CrimsonSkiesFix.native-usde-102.pending.exe")));
@@ -1428,7 +1438,7 @@ mod tests{
             let detail="found 2 verified 1.02 updater copies; keep exactly one";
             let msg=earlier_cd_update_help(&root,edition,detail);
             for expected in [edition,label,detail,"2315728","crmsk102.exe",
-                "Keep exactly one authentic copy", "Do NOT run the updater yourself",
+                "Keep exactly one authentic copy",
                 "Run CrimsonSkiesFix.exe again", update102::PROJECT_DOWNLOADS_URL,
                 update102::MODDB_DOWNLOAD_URL,update102::LUTRIS_ARCHIVE_URL,
                 update102::PCGAMINGWIKI_DOWNLOAD_URL,update102::MYABANDONWARE_DOWNLOAD_URL,

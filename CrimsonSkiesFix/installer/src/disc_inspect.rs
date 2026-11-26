@@ -52,8 +52,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     match candidates.len() {
         1=>Ok(candidates.remove(0)),
         count=>Err(format!(
-            "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}. \
-             Keep exactly one original ISO or CUE beside CrimsonSkiesFix.exe."
+            "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}"
         ))
     }
 }

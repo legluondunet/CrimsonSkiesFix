@@ -1,15 +1,41 @@
 //! Native error notification for the consolidated installer.
 //! Never modify files, download the updater or change the launch exit code.
 //! This is an optional UI after the original diagnostic has been emitted.
-use crate::auto_install::EARLIER_CD_UPDATE_PREFIX;
+use crate::auto_install::{EARLIER_CD_UPDATE_PREFIX,CD_MEDIA_ERROR_PREFIX};
+use crate::update102::{self,UpdateFailure};
 
 fn should_show(noninteractive:bool,ci:bool,github_actions:bool)->bool{
     !(noninteractive || ci || github_actions)
 }
 
-fn update_edition(error:&str)->Option<&str>{
-    error.strip_prefix(EARLIER_CD_UPDATE_PREFIX)?
-        .lines().next().map(str::trim).filter(|s|!s.is_empty())
+fn update_edition(error:&str)->Option<&'static str>{
+    let edition=error.strip_prefix(EARLIER_CD_UPDATE_PREFIX)?.lines().next()?.trim();
+    match edition{
+        "English (USA/Europe), original version 1.0 (C_SKIES_DISC_001)."=>Some("English (USA/Europe)"),
+        "German, original version 1.0 (C_SKIES_DE_001)."=>Some("German"),
+        "French, original version 1.0 (C_SKIES_FR_002)."=>Some("French"),
+        _=>None,
+    }
+}
+
+fn update_failure(error:&str)->UpdateFailure{
+    error.lines().find_map(|line|line.strip_prefix("Details: "))
+        .map(update102::failure_kind).unwrap_or(UpdateFailure::Other)
+}
+
+fn cd_message(error:&str)->Option<(&'static str,String)>{
+    let detail=error.strip_prefix(CD_MEDIA_ERROR_PREFIX)?;
+    let count=detail.lines().next()?.strip_prefix(
+        "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found ")
+        .and_then(|s|s.parse::<usize>().ok());
+    let (title,reason)=match count{
+        Some(0)=>("CrimsonSkiesFix - Missing game CD","No original Crimson Skies CD image was found."),
+        Some(n) if n>1=>("CrimsonSkiesFix - Multiple CDs","More than one original CD image was found."),
+        _=>("CrimsonSkiesFix - CD image error","The original CD image could not be opened."),
+    };
+    Some((title,format!("{reason}\n\n\
+        Place one supported CD image (.iso or .cue with its .bin/.img) beside CrimsonSkiesFix.exe.\n\n\
+        Restart CrimsonSkiesFix.exe.")))
 }
 
 fn bounded(error:&str)->String{
@@ -21,15 +47,27 @@ fn bounded(error:&str)->String{
     s
 }
 
-fn update_message(edition:&str,folder:&str)->String{
-    bounded(&format!("Your original Crimson Skies CD was recognized:\n{edition}\n\n\
-        CrimsonSkiesFix requires version 1.02. The official Microsoft 1.02 update \
-        is missing, invalid or ambiguous. The game has not started.\n\n\
-        1. Download the official update (crmsk102.exe).\n\
-        2. If it is an archive, extract the EXE first. Keep exactly one authentic copy \
-        beside CrimsonSkiesFix.exe:\n{folder}\n\
-        3. Do NOT run the Microsoft updater. Restart CrimsonSkiesFix.exe.\n\n\
-        Open the download instructions in your default browser now?"))
+fn update_message(edition:&str,failure:UpdateFailure)->String{
+    let heading=format!("Crimson Skies 1.0 ({edition}) detected.\n\n\
+        The official 1.02 update is required to play.");
+    if failure==UpdateFailure::Multiple{
+        return format!("{heading}\n\nMore than one verified update file was found.\n\
+            Keep only one copy beside CrimsonSkiesFix.exe, then restart CrimsonSkiesFix.exe.");
+    }
+    let reason=match failure{
+        UpdateFailure::Missing=>"The update file was not found.",
+        UpdateFailure::Invalid=>"An update file failed verification.",
+        UpdateFailure::Other=>"The update could not be verified.",
+        UpdateFailure::Multiple=>unreachable!(),
+    };
+    let download=if failure==UpdateFailure::Invalid{
+        "Replace the invalid file with the official crmsk102.exe."
+    }else{"Download crmsk102.exe."};
+    format!("{heading}\n{reason}\n\n\
+        1. {download}\n\
+        2. Extract it if necessary and place it beside CrimsonSkiesFix.exe.\n\
+        3. Restart CrimsonSkiesFix.exe.\n\n\
+        Open the download page now?")
 }
 
 fn generic_message(error:&str)->String{
@@ -92,13 +130,16 @@ mod native{
         if !should_show(noninteractive,env::var_os("CI").is_some(),
             env::var_os("GITHUB_ACTIONS").is_some()){return;}
         if let Some(edition)=update_edition(error){
-            let folder=env::current_exe().ok()
-                .and_then(|p|p.parent().map(|d|d.display().to_string()))
-                .unwrap_or_else(||"the directory containing CrimsonSkiesFix.exe".into());
-            if dialog("CrimsonSkiesFix - Official 1.02 update required",
-                &update_message(edition,&folder),MB_ICONWARNING|MB_YESNO|MB_DEFBUTTON2)==IDYES{
+            let failure=update_failure(error);
+            let message=update_message(edition,failure);
+            if failure==UpdateFailure::Multiple{
+                dialog("CrimsonSkiesFix - Update required",&message,MB_ICONWARNING);
+            }else if dialog("CrimsonSkiesFix - Update required",
+                &message,MB_ICONWARNING|MB_YESNO|MB_DEFBUTTON2)==IDYES{
                 open_download_instructions();
             }
+        }else if let Some((title,message))=cd_message(error){
+            dialog(title,&message,MB_ICONERROR);
         }else{
             dialog("CrimsonSkiesFix - Error",&generic_message(error),MB_ICONERROR);
         }
@@ -131,17 +172,50 @@ mod tests{
         }
     }
     #[test]
-    fn update_dialog_requires_exact_recognized_cd_prefix(){
-        let err=format!("{EARLIER_CD_UPDATE_PREFIX} German, original version 1.0 (C_SKIES_DE_001).\nDetails: missing");
-        assert_eq!(update_edition(&err),Some("German, original version 1.0 (C_SKIES_DE_001)."));
-        assert_eq!(update_edition("missing CD image"),None);
-        assert_eq!(update_edition(&format!("generic error:{err}")),None);
-        assert_eq!(update_edition(EARLIER_CD_UPDATE_PREFIX),None);
-        let msg=update_message(update_edition(&err).unwrap(),r"C:\Games\Crimson");
-        for expected in ["German","1.02","crmsk102.exe",r"C:\Games\Crimson",
-            "Do NOT run","Restart CrimsonSkiesFix.exe","default browser"]{
-            assert!(msg.contains(expected),"{msg}");
+    fn update_dialog_uses_short_labels_and_cause_specific_text(){
+        for (original,short) in [
+            ("German, original version 1.0 (C_SKIES_DE_001).","German"),
+            ("French, original version 1.0 (C_SKIES_FR_002).","French"),
+            ("English (USA/Europe), original version 1.0 (C_SKIES_DISC_001).","English (USA/Europe)"),
+        ]{
+            let err=format!("{EARLIER_CD_UPDATE_PREFIX} {original}\nDetails: no exact verified Crimson Skies 1.02 updater found beside launcher");
+            assert_eq!(update_edition(&err),Some(short));
+            assert_eq!(update_failure(&err),UpdateFailure::Missing);
+            let msg=update_message(short,update_failure(&err));
+            for expected in [short,"1.02","crmsk102.exe","not found","Restart CrimsonSkiesFix.exe","Open the download page now?"]{
+                assert!(msg.contains(expected),"{msg}");
+            }
+            assert!(!msg.contains("C_SKIES_"));
+            assert!(!msg.contains("Do NOT run"));
         }
+        assert_eq!(update_edition("missing CD image"),None);
+        assert_eq!(update_edition(EARLIER_CD_UPDATE_PREFIX),None);
+        let invalid=update_message("German",UpdateFailure::Invalid);
+        assert!(invalid.contains("failed verification"));
+        assert!(invalid.contains("Replace the invalid file"));
+        let duplicate=update_message("German",UpdateFailure::Multiple);
+        assert!(duplicate.contains("Keep only one copy"));
+        assert!(!duplicate.contains("Download"));
+        assert!(!duplicate.contains("Open the download page"));
+        assert_eq!(update_failure("Details: found 2 verified 1.02 updater copies; keep exactly one beside the launcher"),UpdateFailure::Multiple);
+        assert_eq!(update_failure("Details: no exact verified Crimson Skies 1.02 updater; a candidate failed verification: bad size"),UpdateFailure::Invalid);
+        assert_eq!(update_failure("Details: permission denied"),UpdateFailure::Other);
+    }
+    #[test]
+    fn cd_dialog_distinguishes_missing_multiple_and_invalid_media(){
+        for (detail,title,reason) in [
+            ("expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found 0","CrimsonSkiesFix - Missing game CD","No original"),
+            ("expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found 2","CrimsonSkiesFix - Multiple CDs","More than one"),
+            ("not a regular file: bad.iso","CrimsonSkiesFix - CD image error","could not be opened"),
+        ]{
+            let err=format!("{CD_MEDIA_ERROR_PREFIX}{detail}\nPlace exactly one supported CD image beside CrimsonSkiesFix.exe.");
+            let (actual,msg)=cd_message(&err).unwrap();
+            assert_eq!(actual,title);
+            assert!(msg.contains(reason),"{msg}");
+            assert!(msg.contains("Restart CrimsonSkiesFix.exe"));
+            assert!(!msg.contains(detail));
+        }
+        assert!(cd_message("unrelated error").is_none());
     }
     #[test]
     fn generic_diagnostic_has_log_and_safe_bounded_text(){

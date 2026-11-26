@@ -104,6 +104,22 @@ pub fn validate(path:&Path)->Result<(),String> {
 }
 
 // A user can rename this file; recognition is by content, not filename.
+const NO_VERIFIED_UPDATER:&str="no exact verified Crimson Skies 1.02 updater found beside launcher";
+const INVALID_UPDATER_PREFIX:&str="no exact verified Crimson Skies 1.02 updater; a candidate failed verification";
+const DUPLICATE_UPDATER_SUFFIX:&str="verified 1.02 updater copies; keep exactly one beside the launcher";
+
+#[cfg(feature="native-usde-updater")]
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub(super) enum UpdateFailure { Missing, Invalid, Multiple, Other }
+
+#[cfg(feature="native-usde-updater")]
+pub(super) fn failure_kind(detail:&str)->UpdateFailure{
+    if detail==NO_VERIFIED_UPDATER {UpdateFailure::Missing}
+    else if detail.starts_with(INVALID_UPDATER_PREFIX) {UpdateFailure::Invalid}
+    else if detail.starts_with("found ") && detail.ends_with(DUPLICATE_UPDATER_SUFFIX) {UpdateFailure::Multiple}
+    else {UpdateFailure::Other}
+}
+
 pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     if let Some(name)=specified {
         let path=if name.is_absolute(){name.to_path_buf()}else{base.join(name)};
@@ -111,18 +127,32 @@ pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
         return Ok(path);
     }
     let mut valid=Vec::new();
+    let mut invalid=Vec::new();
     for item in fs::read_dir(base).map_err(err)? {
         let item=item.map_err(err)?;
         let path=item.path();
-        if !regular_file(&path) {continue;}
-        if fs::metadata(&path).map_err(err)?.len()==PATCH_LEN &&
-            validate(&path).is_ok() {valid.push(path);}
+        let known_name=path.file_name().and_then(|n|n.to_str()).is_some_and(|n|
+            n.eq_ignore_ascii_case("crmsk102.exe") ||
+            n.eq_ignore_ascii_case("Crimson_Skies_Patch_102.exe"));
+        if !regular_file(&path) {
+            if known_name {invalid.push(format!("{} is not a regular file",path.display()));}
+            continue;
+        }
+        if fs::metadata(&path).map_err(err)?.len()==PATCH_LEN || known_name {
+            match validate(&path){
+                Ok(())=>valid.push(path),
+                Err(e)=>invalid.push(format!("{}: {e}",path.display())),
+            }
+        }
     }
     match valid.len() {
         1=>Ok(valid.remove(0)),
-        0=>Err("no exact verified Crimson Skies 1.02 updater found beside launcher; \
-                place exactly one authentic updater beside CrimsonSkiesFix.exe".into()),
-        n=>Err(format!("found {n} verified 1.02 updater copies; keep exactly one beside the launcher")),
+        0 if !invalid.is_empty()=>{
+            invalid.sort();
+            Err(format!("{INVALID_UPDATER_PREFIX}: {}",invalid.join("; ")))
+        },
+        0=>Err(NO_VERIFIED_UPDATER.into()),
+        n=>Err(format!("found {n} {DUPLICATE_UPDATER_SUFFIX}")),
     }
 }
 
@@ -422,6 +452,21 @@ mod tests {
         assert!(source_for_install(&dir,None).is_err());
         #[cfg(feature="embed-owner-patch102")]
         assert!(matches!(source_for_install(&dir,None).unwrap(),Update102Source::PrivateEmbedded));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn update_discovery_distinguishes_missing_and_invalid_candidates(){
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-update-diagnostic-{}-{:?}",std::process::id(),std::thread::current().id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(failure_kind(&find(&dir,None).unwrap_err()),UpdateFailure::Missing);
+        fs::write(dir.join("unrelated.exe"),b"MZ").unwrap();
+        assert_eq!(failure_kind(&find(&dir,None).unwrap_err()),UpdateFailure::Missing);
+        fs::write(dir.join("crmsk102.exe"),b"MZ").unwrap();
+        let err=find(&dir,None).unwrap_err();
+        assert_eq!(failure_kind(&err),UpdateFailure::Invalid);
+        assert!(err.contains("size"),"{err}");
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

@@ -682,7 +682,7 @@ fn usage() {
         Place all required files beside CrimsonSkiesFix.exe. No separate decrypted EXE is needed.\n\
         {}\n\
         Extract crmsk102.exe if downloaded in an archive.\n\
-        Do not run the updater yourself. The launcher verifies and applies it offline.\n\
+        The launcher verifies and applies the update offline.\n\
         Blocking errors are printed to the terminal and shown in a native error dialog.\n\
         Set CRIMSONSKIESFIX_NONINTERACTIVE=1 for unattended execution.",
         update102::download_help());
