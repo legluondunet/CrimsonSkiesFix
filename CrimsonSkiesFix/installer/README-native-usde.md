@@ -17,7 +17,7 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 | C_SKIES_DISC_001 (US/Europe) | 112 | Correctif officiel 1.02 local |
 | C_SKIES_DE_001 (DE) | 107 | Correctif officiel 1.02 local |
 
-Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les noms des images et leurs tailles globales ne déterminent pas l'édition. Les fichiers `.iso` peuvent contenir des secteurs classiques de 2048 octets ou des secteurs bruts MODE1/2352 et MODE2/2352 Form 1 ; leur géométrie est détectée par les descripteurs ISO9660 et les en-têtes bruts, sans conversion. Une géométrie ambiguë est refusée ; fournir alors le CUE original.
+Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les noms des images et leurs tailles globales ne déterminent pas l'édition.
 
 ## Test d'installation neuve
 
