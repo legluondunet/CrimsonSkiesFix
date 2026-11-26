@@ -66,6 +66,20 @@ fn write_installer_report(base:&Path,report:&str,needed:bool)->Result<(),String>
     Ok(())
 }
 
+/// Preserve the prior installation report on ordinary successful launches.
+/// A real installation/repair or nonzero child exit produces one bounded
+/// report, not an accumulated history. Diagnostics never change exit codes.
+fn record_game_exit(base:&Path,report:&str,needed:bool,summary:Option<&str>,code:i32)->Result<(),String>{
+    if !needed && code==0{return Ok(());}
+    let mut completed=report.to_owned();
+    if let Some(summary)=summary{
+        completed.push_str(summary);
+        completed.push('\n');
+    }
+    completed.push_str(&format!("\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}\nGameExitCodeHex=0x{:08X}\n",code as u32));
+    write_installer_report(base,&completed,true)
+}
+
 /// Retire generated old spellings only after a new report was written.
 /// Preserve unknown files or owner data at any old spelling.
 fn remove_old_installer_log(base:&Path){
@@ -718,6 +732,21 @@ fn quiet_unified_ini() -> String {
     initial_unified_ini().replace("Log=1\n", "Log=0\n")
 }
 
+// The runtime's once-only High lighting confirmation appends this exact
+// suffix. It is not a player edit to the logging/graphics preferences.
+// Permit only that byte-for-byte suffix, not arbitrary compatibility keys.
+#[cfg(feature="unified-fix-install")]
+const LIGHTING_CONFIRMATION_SUFFIX:&str="\n[Compatibility]\nCrimsonSkiesFixLightingHighDefaultApplied=1\n";
+#[cfg(feature="unified-fix-install")]
+fn managed_quiet_ini(current:&[u8])->Option<String>{
+    let suffix=current.strip_prefix(initial_unified_ini().as_bytes())?;
+    if suffix.is_empty(){return Some(quiet_unified_ini());}
+    if suffix==LIGHTING_CONFIRMATION_SUFFIX.as_bytes(){
+        return Some(quiet_unified_ini()+LIGHTING_CONFIRMATION_SUFFIX);
+    }
+    None
+}
+
 #[cfg(feature="unified-fix-install")]
 fn first_launch_state_dir(base:&Path)->Result<PathBuf,String>{
     let state=base.join("state");
@@ -778,11 +807,15 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
         return Err("unknown first-launch logging state preserved without changes".into());
     }
     let ini=base.join("CrimsonSkiesFix.ini");
-    // Even a one-byte user edit invalidates the automatic opt-out.
-    if !regular(&ini) || fs::read(&ini).map_err(error)?!=initial_unified_ini().as_bytes(){
+    // Apart from the exact runtime-generated compatibility marker, any
+    // edit invalidates the automatic opt-out.
+    let next=if regular(&ini){
+        managed_quiet_ini(&fs::read(&ini).map_err(error)?)
+    }else{None};
+    let Some(next)=next else{
         fs::remove_file(&marker).map_err(error)?; // Owner has taken control.
         return Ok(false);
-    }
+    };
     let session=base.join("CrimsonSkiesFix.log");
     if !regular(&session) || fs::metadata(&session).map_err(error)?.len()==0{
         return Ok(false); // No evidence of a first gameplay session.
@@ -791,7 +824,6 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
     if any_entry(&temporary){
         return Err("first-launch INI replacement blocked by an existing pending file".into());
     }
-    let next=quiet_unified_ini();
     let mut file=OpenOptions::new().write(true).create_new(true)
         .open(&temporary).map_err(error)?;
     let staged=file.write_all(next.as_bytes()).and_then(|_|file.sync_all());
@@ -868,6 +900,10 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         return Ok(0);
     }
     println!("{action}: launching {}...",exe.display());
+    #[cfg(feature="winmm-split-install")]
+    let mut launch_summary:Option<String>=None;
+    #[cfg(not(feature="winmm-split-install"))]
+    let launch_summary:Option<String>=None;
     // Organized prototype only: inspect loaded DLLs and read the exact
     // DirectDraw import slots from the *running process*, without patching
     // or suspending it. The user-visible game exit code is unchanged.
@@ -876,20 +912,16 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         use std::os::windows::process::ExitStatusExt;
         super::alias_import_launcher::launch_child(&exe,u32::MAX)
             .map(|(code,summary)|{
-                if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
-                    let _=writeln!(report,"{summary}");
-                }
                 println!("{summary}");
+                launch_summary=Some(summary);
                 std::process::ExitStatus::from_raw(code)
             })
             .map_err(std::io::Error::other)
     };
     #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
     let status=super::split_process_probe::launch(&exe,game).map(|(exit,summary)|{
-        if let Ok(mut report)=OpenOptions::new().create(true).append(true).open(&log){
-            let _=writeln!(report,"{summary}");
-        }
         println!("{summary}");
+        launch_summary=Some(summary);
         exit
     });
     #[cfg(not(feature="winmm-split-install"))]
@@ -897,12 +929,10 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     match status{
         Ok(status)=>{
             let code=status.code().unwrap_or(2);
-            // Only an actual installation/repair report tracks its child
-            // exit. Ordinary verified launches preserve the last report.
-            if needed {
-                if let Ok(mut session)=OpenOptions::new().append(true).open(&log){
-                    let _=writeln!(session,"\nCrimsonSkiesFix AUTO INSTALL: GAME_EXIT_CODE={code}");
-                }
+            // Keep the install report bounded and retain unexpected exits
+            // even after removing the separate experimental session journal.
+            if let Err(err)=record_game_exit(base,&message,needed,launch_summary.as_deref(),code){
+                eprintln!("Warning: game exit diagnostic unavailable: {err}");
             }
             #[cfg(feature="unified-fix-install")]
             match finish_first_launch_log(base,code){
@@ -1031,6 +1061,32 @@ mod tests{
         write_installer_report(&root,"AUTO_INSTALL_RESULT=ERROR\n",report_needed(None)).unwrap();
         assert_eq!(fs::read(&log).unwrap(),b"AUTO_INSTALL_RESULT=ERROR\n");
         assert!(fs::read_to_string(&game_log).unwrap().starts_with("GameSession="));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn exit_report_does_not_accumulate_on_verified_relaunch(){
+        let root=temp();
+        let target=root.join(INSTALLER_LOG);
+        let game_log=root.join("CrimsonSkiesFix.log");
+        let report="CrimsonSkiesFix AUTO INSTALL v1\nAction=INSTALL_FROM_CD_AND_LAUNCH\n";
+        fs::write(&game_log,b"owner gameplay log").unwrap();
+        record_game_exit(&root,report,true,Some("ALIAS-LAUNCH: first"),0).unwrap();
+        let first=fs::read(&target).unwrap();
+        for _ in 0..10{
+            record_game_exit(&root,"Action=VERIFIED_EXISTING_AND_LAUNCH\n",false,Some("ALIAS-LAUNCH: later"),0).unwrap();
+        }
+        assert_eq!(fs::read(&target).unwrap(),first);
+        let current="CrimsonSkiesFix AUTO INSTALL v1\nAction=VERIFIED_EXISTING_AND_LAUNCH\n";
+        for code in [1,0xC0000005u32 as i32]{
+            record_game_exit(&root,current,false,Some("ALIAS-LAUNCH: abnormal"),code).unwrap();
+        }
+        let last=fs::read_to_string(&target).unwrap();
+        assert_eq!(last.matches("ALIAS-LAUNCH:").count(),1);
+        assert_eq!(last.matches("GAME_EXIT_CODE=").count(),1);
+        assert!(last.contains("GameExitCodeHex=0xC0000005"));
+        assert!(!last.contains("INSTALL_FROM_CD"));
+        assert_eq!(fs::read(&game_log).unwrap(),b"owner gameplay log");
+        assert!(!root.join("CrimsonSkiesFix_last-session.log").exists());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1373,6 +1429,33 @@ mod tests{
         assert_eq!(fs::read_to_string(&ini).unwrap(),edited);
         assert!(!any_entry(&root.join("state").join(FIRST_LAUNCH_MARKER)));
         fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn first_launch_preserves_runtime_lighting_confirmation_and_disables_log(){
+        let root=temp();
+        prepare_first_launch_ini(&root).unwrap();
+        let ini=root.join("CrimsonSkiesFix.ini");
+        let with_marker=initial_unified_ini().to_owned()+LIGHTING_CONFIRMATION_SUFFIX;
+        fs::write(&ini,&with_marker).unwrap();
+        fs::write(root.join("CrimsonSkiesFix.log"),b"first game diagnostics").unwrap();
+        assert!(!finish_first_launch_log(&root,1).unwrap());
+        assert_eq!(fs::read_to_string(&ini).unwrap(),with_marker);
+        assert!(finish_first_launch_log(&root,0).unwrap());
+        assert_eq!(fs::read_to_string(&ini).unwrap(),quiet_unified_ini()+LIGHTING_CONFIRMATION_SUFFIX);
+        assert!(!any_entry(&root.join("state").join(FIRST_LAUNCH_MARKER)));
+        assert_eq!(fs::read(root.join("CrimsonSkiesFix.log")).unwrap(),b"first game diagnostics");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="unified-fix-install")]
+    #[test]
+    fn lighting_suffix_does_not_authorize_other_ini_edits(){
+        let edited=initial_unified_ini().replace("FPSLimit=60","FPSLimit=30")+LIGHTING_CONFIRMATION_SUFFIX;
+        assert!(managed_quiet_ini(edited.as_bytes()).is_none());
+        let edited=initial_unified_ini().to_owned()+LIGHTING_CONFIRMATION_SUFFIX+"Custom=1\n";
+        assert!(managed_quiet_ini(edited.as_bytes()).is_none());
+        let edited=initial_unified_ini().to_owned()+LIGHTING_CONFIRMATION_SUFFIX+LIGHTING_CONFIRMATION_SUFFIX;
+        assert!(managed_quiet_ini(edited.as_bytes()).is_none());
     }
     #[cfg(feature="unified-fix-install")]
     #[test]
