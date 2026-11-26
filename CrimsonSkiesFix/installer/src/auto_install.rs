@@ -17,57 +17,6 @@ const EXE_PENDING:&str="CRIMSON.EXE.approved.installing";
 const OLD_AUTO_LOG:&str="CrimsonSkiesFix.installer.log";
 const PREVIOUS_INSTALLER_LOG:&str="CrimsonSkiesFix-installer.log";
 
-// Extra test-only launch journal for US/DE, always produced even if
-// [Debug] Log=0. It is deliberately separate from the installer report and
-// from fix.dll's opt-in CrimsonSkiesFix.log.
-#[cfg(feature="native-usde-updater")]
-const LAST_SESSION_LOG:&str="CrimsonSkiesFix_last-session.log";
-
-/// Keep exactly one current game-session record. A RUNNING record survives
-/// if the parent process dies abruptly, while normal and abnormal child exits
-/// replace it with the final process status. This is NOT a crash dump and
-/// cannot establish which DLL was responsible for an exception.
-#[cfg(feature="native-usde-updater")]
-fn write_last_session(base:&Path,game:&Path,phase:&str,exit:Option<i32>)->Result<(),String>{
-    let target=base.join(LAST_SESSION_LOG);
-    if any_entry(&target) && !regular(&target){
-        return Err(format!("unsafe last-session report path: {}",target.display()));
-    }
-    let edition=installed_cd_edition(game).unwrap_or("UNKNOWN_OR_UNVERIFIED");
-    let summary=match exit{
-        Some(0)=>"EXIT_CODE_ZERO_NOT_PROOF_OF_GAMEPLAY",
-        Some(_)=>"NONZERO_GAME_PROCESS_EXIT_CAUSE_UNDETERMINED",
-        None=>"WAITING_FOR_GAME_PROCESS_EXIT",
-    };
-    let code=exit.map(|c|format!("0x{:08X}",c as u32))
-        .unwrap_or_else(||"UNAVAILABLE".to_string());
-    let content=format!(
-        "CrimsonSkiesFix GAME SESSION v1\n\
-         Build={VERSION}-{}\n\
-         Edition={edition}\n\
-         ExpectedGameExecutableSHA256={GAME_EXE_HASH}\n\
-         Phase={phase}\n\
-         ProcessExitCode={code}\n\
-         Classification={summary}\n\
-         RuntimeLog=OPTIONAL_DEBUG_LOG_1\n",
-        &COMMIT[..8]
-    );
-    let mut file=OpenOptions::new().create(true).write(true).truncate(true)
-        .open(&target).map_err(error)?;
-    file.write_all(content.as_bytes()).map_err(error)?;
-    file.sync_all().map_err(error)
-}
-
-/// Diagnostics never alter whether a correctly verified game may start or
-/// determine the returned child exit code. Unsafe user files are not touched.
-#[cfg(feature="native-usde-updater")]
-fn note_game_session(base:&Path,game:&Path,phase:&str,exit:Option<i32>){
-    if let Err(e)=write_last_session(base,game,phase,exit){
-        eprintln!("CrimsonSkiesFix: last-session diagnostic unavailable: {e}");
-    }
-}
-
-
 /// Recognize only a previous launcher-generated report before migrating or
 /// retiring it. Unknown user files, symlinks and directories are preserved.
 fn previous_installer_report(path:&Path)->bool{
@@ -919,8 +868,6 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         return Ok(0);
     }
     println!("{action}: launching {}...",exe.display());
-    #[cfg(feature="native-usde-updater")]
-    note_game_session(base,game,"GAME_LAUNCH_REQUESTED",None);
     // Organized prototype only: inspect loaded DLLs and read the exact
     // DirectDraw import slots from the *running process*, without patching
     // or suspending it. The user-visible game exit code is unchanged.
@@ -950,8 +897,6 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     match status{
         Ok(status)=>{
             let code=status.code().unwrap_or(2);
-            #[cfg(feature="native-usde-updater")]
-            note_game_session(base,game,"GAME_PROCESS_RETURNED",Some(code));
             // Only an actual installation/repair report tracks its child
             // exit. Ordinary verified launches preserve the last report.
             if needed {
@@ -969,8 +914,6 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             Ok(code)
         }
         Err(err)=>{
-            #[cfg(feature="native-usde-updater")]
-            note_game_session(base,game,"GAME_LAUNCH_FAILED",None);
             // A failed game start is a new launcher error worth recording,
             // but never alters the independent DLL-owned gameplay log.
             let failure=format!(
@@ -1004,44 +947,6 @@ mod tests{
             }
         }
         panic!("could not reserve distinct auto-install test directory")
-    }
-    #[cfg(feature="native-usde-updater")]
-    #[test]
-    fn session_report_replaces_prior_launch_even_if_runtime_logging_is_off(){
-        let root=temp();
-        let game=root.join("game");
-        fs::create_dir(&game).unwrap();
-        // The diagnostic is an independent single-session launcher record.
-        write_last_session(&root,&game,"GAME_LAUNCH_REQUESTED",None).unwrap();
-        let log=root.join(LAST_SESSION_LOG);
-        let first=fs::read_to_string(&log).unwrap();
-        assert!(first.contains("WAITING_FOR_GAME_PROCESS_EXIT"));
-        assert!(first.contains("ProcessExitCode=UNAVAILABLE"));
-        assert!(!root.join("CrimsonSkiesFix.log").exists());
-        write_last_session(&root,&game,"GAME_PROCESS_RETURNED",
-            Some(0xC0000005u32 as i32)).unwrap();
-        let second=fs::read_to_string(&log).unwrap();
-        assert!(second.contains("ProcessExitCode=0xC0000005"));
-        assert!(second.contains("NONZERO_GAME_PROCESS_EXIT_CAUSE_UNDETERMINED"));
-        assert!(!second.contains("WAITING_FOR_GAME_PROCESS_EXIT"));
-        assert_eq!(second.matches("CrimsonSkiesFix GAME SESSION v1").count(),1);
-        assert!(!root.join("CrimsonSkiesFix.log").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[cfg(feature="native-usde-updater")]
-    #[test]
-    fn session_report_does_not_replace_a_directory_or_installer_log(){
-        let root=temp();
-        let game=root.join("game");
-        fs::create_dir(&game).unwrap();
-        let existing=b"owner installer diagnostics";
-        fs::write(root.join(INSTALLER_LOG),existing).unwrap();
-        let blocked=root.join(LAST_SESSION_LOG);
-        fs::create_dir(&blocked).unwrap();
-        assert!(write_last_session(&root,&game,"GAME_LAUNCH_REQUESTED",None).is_err());
-        assert!(blocked.is_dir());
-        assert_eq!(fs::read(root.join(INSTALLER_LOG)).unwrap(),existing);
-        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn old_generated_installer_log_removed_only_when_replaced(){

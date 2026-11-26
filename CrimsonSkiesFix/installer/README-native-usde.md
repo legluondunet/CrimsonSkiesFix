@@ -16,20 +16,12 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 4. Exécuter `CrimsonSkiesFix.exe --version` et vérifier `NATIVE US/DE LOCAL UPDATE 1.02 EXPERIMENTAL`.
 5. Exécuter `CrimsonSkiesFix.exe --install-only`, puis `CrimsonSkiesFix.exe --verify` ; ensuite lancer `CrimsonSkiesFix.exe` pour jouer.
 6. En cas de problème, conserver `CrimsonSkiesFix_installer.log`,
-   `CrimsonSkiesFix_last-session.log` et, si `[Debug] Log=1`,
+   et, si `[Debug] Log=1`,
    `CrimsonSkiesFix.log` au même niveau que le lanceur.
 
-## Diagnostic des sorties anormales (US/DE, expérimental)
+## Diagnostic des sorties anormales
 
-Chaque lancement du jeu crée/remplace **un seul**
-`CrimsonSkiesFix_last-session.log`, **même lorsque `[Debug] Log=0`**.
-Avant le démarrage, `Phase=GAME_LAUNCH_REQUESTED` et
-`ProcessExitCode=UNAVAILABLE` ; lorsque le processus du jeu se termine,
-le lanceur remplace la ligne par `Phase=GAME_PROCESS_RETURNED` et son
-code de retour en hexadécimal. Un code non nul indique une terminaison
-anormale ou une fermeture forcée, **pas automatiquement un bug du jeu ou
-du correctif**. Si le lanceur est lui-même interrompu avant d'écrire la
-fin, la ligne `GAME_LAUNCH_REQUESTED` peut subsister.
+Le lanceur affiche le code de retour du jeu dans la console et le consigne dans le rapport lors d’une installation ou réparation suivie d’un lancement. Un code non nul ne prouve pas à lui seul un bug. Les lancements ordinaires ne créent plus de journal de session séparé ; les anciens fichiers peuvent être supprimés manuellement. Si le lanceur est interrompu, le code de retour peut rester inconnu.
 
 Pour obtenir le journal détaillé du runtime sans changer les réglages
 graphiques, définir temporairement `[Debug] Log=1` dans le fichier
@@ -52,7 +44,7 @@ WINEDEBUG=-all,+seh wine CrimsonSkiesFix.exe > CrimsonSkiesFix_wine-seh.log 2>&1
 ```
 
 Ce fichier Wine n'est pas produit par le jeu et peut être volumineux.
-Il complète le journal de session, sans prétendre être un minidump. Conserver
+Il complète le journal du runtime, sans prétendre être un minidump. Conserver
 également l'heure approximative et l'action (menu, mission, Alt-Tab, etc.)
 qui a précédé le problème.
 
@@ -62,11 +54,11 @@ Les données exécutables finales sont validées sur le SHA-256 officiel de notr
 
 La source CD protégée est conservée en `game/CRIMSON.EXE.protected.bak`. Les données sauvegardées `SavedGames/` et `Planes/` et le mécanisme de rollback restent pris en charge. Le jeu et `fix.dll` résident dans `game/`, avec `state/`, `docs/` et les logs à côté du lanceur.
 
-Le **CD français révision 1.02** (`C_SKIES_FR_001`, 112 fichiers) reste utilisable sans correctif externe. Le nouveau profil expérimental `C_SKIES_FR_002` (107 fichiers, ancien ICD, CRIMPTCH.ROF absent) nécessite le correctif local comme US/DE. Il reste à valider sur une installation réelle. Un CD non reconnu est refusé avec une erreur d'identification explicite, sans demander inutilement un EXE.
+Le **CD français révision 1.02** (`C_SKIES_FR_001`, 112 fichiers) reste utilisable sans correctif externe. Le nouveau profil expérimental `C_SKIES_FR_002` (107 fichiers, ancien ICD, CRIMPTCH.ROF absent) nécessite le correctif local comme US/DE. Une première installation réelle suivie d’un lancement sous Windows 11 a réussi avec `3b7b5597` (code de sortie 0). Un CD non reconnu est refusé avec une erreur d'identification explicite, sans demander inutilement un EXE.
 
 ## Limites
 
-- Cette compilation nécessite encore le correctif 1.02 **local** pour US/DE. Aucun téléchargement, aucune redistribution, aucun correctif privé incorporé.
+- Cette compilation nécessite encore le correctif 1.02 **local** pour US/DE/FR_002. Aucun téléchargement, aucune redistribution, aucun correctif privé incorporé.
 - Les essais CI vérifient la compilation Windows, le refus de CD manquant et le parcours synthétique. L'installation et le gameplay **réels** de ces éditions via cette nouvelle voie demandent encore une validation sous Wine/Windows.
 - Les binaires non reconnus et les résultats différents du SHA-256 attendu sont rejetés.
 - La PR est expérimentale. Conserver la validation FR existante et effectuer une revue technique et juridique avant toute fusion/release.
