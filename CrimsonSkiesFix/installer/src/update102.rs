@@ -9,6 +9,10 @@ use std::{
     path::{Path,PathBuf},
 };
 
+#[cfg(feature="native-usde-updater")]
+pub const PROJECT_DOWNLOADS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix/releases";
+#[cfg(feature="native-usde-updater")]
+pub const MODDB_DOWNLOAD_URL:&str="https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102";
 pub const PATCH_LEN:u64=2_315_728;
 pub const PATCH_SHA256:&str="8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af";
 pub const CAB_OFFSET:u64=0x346f0;

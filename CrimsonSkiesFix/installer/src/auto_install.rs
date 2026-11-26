@@ -184,7 +184,36 @@ fn authenticated_cd_edition(report:&str)->Result<&'static str,String>{
 fn earlier_cd_update_source(base:&Path,update:Option<&Path>,edition:&str)
     ->Result<update102::Update102Source,String>{
     update102::source_for_install(base,update)
-        .map_err(|e|format!("Recognized CD {edition}: official 1.02 updater required: {e}. No separate decrypted EXE is needed; no extraction attempted."))
+        .map_err(|e|earlier_cd_update_help(base,edition,&e))
+}
+
+#[cfg(feature="native-usde-updater")]
+fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
+    let label=match edition{
+        "C_SKIES_DISC_001"=>"English (USA/Europe), original version 1.0",
+        "C_SKIES_DE_001"=>"German, original version 1.0",
+        "C_SKIES_FR_002"=>"French, original version 1.0",
+        _=>"Earlier supported CD",
+    };
+    format!("\n\
+        Supported original CD recognized: {label} ({edition}).\n\
+        CrimsonSkiesFix requires game version 1.02. Your CD contains an earlier version.\n\
+        The official 1.02 updater required for this installation is missing, invalid or ambiguous.\n\
+        Details: {detail}\n\
+        The game has not been launched.\n\
+        \nHow to continue:\n\
+        1. If needed, download the official Microsoft update (crmsk102.exe).\n\
+           Project download page: {}\n\
+           Alternative: {}\n\
+           Expected size: {} bytes.\n\
+        2. Keep exactly one authentic copy beside CrimsonSkiesFix.exe, in:\n\
+           {}\n\
+        3. Do NOT run the updater yourself. Run CrimsonSkiesFix.exe again.\n\
+        \nThe launcher verifies the update and completes installation automatically.\n\
+        No separate decrypted EXE is needed. No Internet connection is required by the launcher.",
+        update102::PROJECT_DOWNLOADS_URL,update102::MODDB_DOWNLOAD_URL,
+        update102::PATCH_LEN,base.display())
+
 }
 
 pub(super) fn preflight_install_sources(
@@ -1368,10 +1397,37 @@ mod tests{
             let err=activate_pending_exe(&root,&game).unwrap_err();
             assert!(err.contains(edition),"{err}");
             assert!(err.contains("official 1.02 updater required"),"{err}");
+            assert!(err.contains("Supported original CD recognized"),"{err}");
+            assert!(err.contains("The game has not been launched"),"{err}");
+            assert!(err.contains(update102::PROJECT_DOWNLOADS_URL),"{err}");
+            assert!(err.contains(update102::MODDB_DOWNLOAD_URL),"{err}");
+            assert!(err.contains("Do NOT run the updater yourself"),"{err}");
+            assert!(err.contains("Run CrimsonSkiesFix.exe again"),"{err}");
             assert!(err.contains("No separate decrypted EXE is needed"),"{err}");
             assert!(!any_entry(&root.join("CrimsonSkiesFix.native-usde-102.pending.exe")));
         }
         assert_eq!(fs::read(game.join("SavedGames.dat")).unwrap(),b"preserve");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn updater_help_preserves_failure_reason_and_names_actual_launcher_directory(){
+        let root=temp();
+        for (edition,label) in [
+            ("C_SKIES_DISC_001","English (USA/Europe)"),
+            ("C_SKIES_DE_001","German"),
+            ("C_SKIES_FR_002","French"),
+        ]{
+            let detail="found 2 verified 1.02 updater copies; keep exactly one";
+            let msg=earlier_cd_update_help(&root,edition,detail);
+            for expected in [edition,label,detail,"2315728","crmsk102.exe",
+                "Keep exactly one authentic copy", "Do NOT run the updater yourself",
+                "Run CrimsonSkiesFix.exe again", update102::PROJECT_DOWNLOADS_URL,
+                update102::MODDB_DOWNLOAD_URL]{
+                assert!(msg.contains(expected),"{msg}");
+            }
+            assert!(msg.contains(&root.display().to_string()),"{msg}");
+        }
         fs::remove_dir_all(root).unwrap();
     }
     #[cfg(feature="native-fr-cd")]

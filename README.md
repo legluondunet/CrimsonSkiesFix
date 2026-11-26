@@ -2,9 +2,11 @@
 
 **Crimson Skies (2000) on modern Windows and Wine/Proton.**
 
-CrimsonSkiesFix 1.0 is a standalone Windows x86 installer, launcher and open-source DirectDraw compatibility patch for the original PC game. A single `CrimsonSkiesFix.exe` prepares the game, applies the official 1.02 data update, installs the integrated `ddraw.dll` patch and launches Crimson Skies.
+CrimsonSkiesFix is a standalone Windows x86 installer, launcher and open-source compatibility patch for the original PC game. A single `CrimsonSkiesFix.exe` prepares the game, installs the integrated compatibility patch and launches Crimson Skies 1.02.
 
-**[Download CrimsonSkiesFix 1.0](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0)** · [Report a problem](https://github.com/legluondunet/CrimsonSkiesFix/issues)
+**Development documentation for 1.1 (not yet released).** The current stable release is [1.0](https://github.com/legluondunet/CrimsonSkiesFix/releases/tag/v1.0), which has different installation requirements; see its [version-specific README](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/README.md).
+
+[Project downloads](https://github.com/legluondunet/CrimsonSkiesFix/releases) · [Report a problem](https://github.com/legluondunet/CrimsonSkiesFix/issues)
 
 ## Main features
 
@@ -14,50 +16,60 @@ CrimsonSkiesFix 1.0 is a standalone Windows x86 installer, launcher and open-sou
 - **Original 4:3 menus and videos**, with an optional 4:3 gameplay mode and black sidebars.
 - **FPS limiting** (60 FPS by default), focus/Alt-Tab handling and display startup fixes.
 - **Simplified video options**, removing the old graphics selector and preventing incompatible in-game Graphics/Resolution changes.
-- **Integrated DirectDraw proxy**, version signature in the main menu and separate installer/game logs.
+- **Integrated compatibility DLL**, version signature in the main menu and separate installer/game logs.
 - **Common Windows/Wine implementation**, including a targeted Wine-only ROFFILE.DLL compatibility fix.
 
-## Files you must provide (not included)
+## Files you must provide
 
-For a **new installation** or full repair, put all three items below **beside `CrimsonSkiesFix.exe`**:
+Put `CrimsonSkiesFix.exe` and **one supported original game CD image** in the same writable directory. Use an ISO, or a CUE together with all of its referenced BIN/IMG tracks.
 
-| Required item | What you need |
-| --- | --- |
-| **Original game CD image** | Exactly one authentic supported `.iso`, or one `.cue` together with its referenced `.bin`/`.img` track file(s). Supported CD editions: USA/Europe, FR and DE. |
-| **Official Crimson Skies 1.02 update** | The original `crmsk102.exe`, [archived on ModDB](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102). The installer verifies and extracts its game data without running the updater. |
-| **Approved SafeDisc-free 1.02 executable** | Your own decrypted, unmodified `CRIMSON.EXE` version 1.0.2.0. **CrimsonSkiesFix does not decrypt, generate or supply this file.** |
+### Supported CD editions
 
-Only the exact supported files are accepted. The updater and approved executable may be renamed, as they are identified by their contents, but keep just **one valid copy of each** beside the launcher.
+| Original CD | Internal profile | Official 1.02 update required? |
+| --- | --- | --- |
+| English (USA/Europe), 1.0 | `C_SKIES_DISC_001` | Yes |
+| German, 1.0 | `C_SKIES_DE_001` | Yes |
+| French, 1.0 | `C_SKIES_FR_002` | Yes |
+| French, 1.02 | `C_SKIES_FR_001` | No |
+| English (Europe), 1.02 | `C_SKIES_DISC_002` | No |
 
-**Required decrypted game executable:**
-- Size: `2,580,480` bytes
-- SHA-256: `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
+The installer identifies supported media by the exact paths, sizes and SHA-256 hashes of the files inside the CD, not the image filename. **You do not need to determine your CD version yourself.** If the update is required, the launcher identifies your edition and explains what to do in the terminal and installer log. No separately supplied decrypted game executable is required in 1.1.
 
-**Required official 1.02 updater:**
-- Size: `2,315,728` bytes
+### Official 1.02 update
+
+CrimsonSkiesFix targets the final official PC game version, **1.02**, which includes important stability, performance and save-game fixes. An original version 1.0 CD is supported, but it does not contain all of the required 1.02 game data. Without the authentic update file, the launcher cannot complete installation or start the game.
+
+If the terminal says that the 1.02 update is required:
+
+1. Download `crmsk102.exe` from the [project downloads page](https://github.com/legluondunet/CrimsonSkiesFix/releases) if it is listed there, or from the [ModDB archive](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102).
+2. Place exactly one authentic copy **beside `CrimsonSkiesFix.exe`**, not inside `game/`.
+3. **Do not run the Microsoft updater.** Run `CrimsonSkiesFix.exe` again; it verifies the file and finishes installation automatically.
+
+The launcher accepts the update by content, even if its filename has changed. It does not download the update or run its historical setup program. Installation is offline once the required files are present.
+
+- Expected size: `2,315,728` bytes
 - SHA-256: `8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af`
 
-The original CD's SafeDisc-protected executable, other game versions and third-party modified or widescreen executables are not accepted as the playable EXE. The official update itself does **not** remove SafeDisc.
+If a copy is already present but rejected, check the size and SHA-256; if multiple valid copies are detected, keep only one beside the launcher.
 
 ### Example folder before installing
 
 ```text
 CrimsonSkies/
-├── CrimsonSkiesFix.exe          # Downloaded from the 1.0 release
-├── original-disc.cue            # Or a supported .iso instead
-├── original-disc.bin            # Required if referenced by the CUE
-├── crmsk102.exe                 # Official 1.02 updater
-└── CRIMSON-UNWRAPPED.EXE        # Your matching decrypted 1.02 EXE
+├── CrimsonSkiesFix.exe
+├── original-disc.cue
+├── original-disc.bin
+└── crmsk102.exe         # Only required for original version 1.0 CDs
 ```
 
-Names are illustrative. A CUE file must reference the **actual filename** of its BIN/IMG track file. Keep only one ISO or CUE beside the launcher for automatic detection.
+A supported ISO can replace the CUE/BIN pair. The CUE must reference the actual track filenames. For the supported 1.02 CDs, omit the update file. Keep only one ISO or CUE beside the launcher.
 
 ## Install on Windows
 
-1. Download **[CrimsonSkiesFix.exe](https://github.com/legluondunet/CrimsonSkiesFix/releases/download/v1.0/CrimsonSkiesFix.exe)** from the version 1.0 release.
+1. Obtain the 1.1 launcher from the [project downloads page](https://github.com/legluondunet/CrimsonSkiesFix/releases) when released; these instructions do not apply to the existing 1.0 launcher.
 2. Create a writable directory, such as `C:\Games\CrimsonSkies\`. Put the launcher and the required external files there.
-3. Double-click `CrimsonSkiesFix.exe`. It authenticates the original sources, installs the game and its DirectDraw patch, and launches Crimson Skies.
-4. For future sessions, run **the same launcher**. The CD image, updater and external decrypted EXE are no longer needed for an installation that verifies successfully; keep them available in case a full repair becomes necessary.
+3. Run `CrimsonSkiesFix.exe`. If an update is required, follow the instructions in the terminal. It authenticates the sources, installs the game and integrated patch, and launches Crimson Skies.
+4. For future sessions, run **the same launcher**. The CD image and updater are no longer needed for an installation that verifies successfully; keep them available in case a full repair becomes necessary.
 
 To **install without launching** the game, open PowerShell in the launcher directory:
 
@@ -100,7 +112,7 @@ If you experience a black menu, confirm your actual Wine/Proton runner
 version and check its 32-bit multimedia dependencies before reporting it.
 
 1. Select **Wine Staging 11.19+**, **GE-Proton**, or **Valve Proton**, with 32-bit Windows application support.
-2. Put the downloaded `CrimsonSkiesFix.exe` and the same three external items in a writable folder such as `~/Games/CrimsonSkies/`.
+2. Put `CrimsonSkiesFix.exe`, the original CD image, and the official update if required, in a writable folder such as `~/Games/CrimsonSkies/`.
 3. Open a terminal and run:
 
 ```bash
@@ -118,19 +130,25 @@ When using **Lutris, Proton or a custom Wine prefix**, launch `CrimsonSkiesFix.e
 
 ## After installation
 
-The game is installed in a new `CrimsonSkiesFix/` folder **next to the launcher**:
+The game is installed in a new `game/` folder next to the launcher. Always start the game through the launcher, not directly through `game/CRIMSON.EXE`.
 
 ```text
 CrimsonSkies/
 ├── CrimsonSkiesFix.exe
+├── CrimsonSkiesFix.ini
 ├── CrimsonSkiesFix_installer.log
 ├── CrimsonSkiesFix.log
-└── CrimsonSkiesFix/
-    ├── CRIMSON.EXE              # Approved game executable
-    ├── ddraw.dll                # Integrated patch installed automatically
-    ├── GOSDATA/                 # Original game assets
-    └── CrimsonSkiesFix.ini      # Created on first game launch
+├── docs/
+├── state/
+└── game/
+    ├── CRIMSON.EXE
+    ├── fix.dll
+    ├── GOSDATA/
+    ├── Planes/
+    └── SavedGames/
 ```
+
+Use a separate directory for a fresh 1.1 installation rather than expecting automatic migration of an older layout.
 
 The protected CD executable is preserved as `CRIMSON.EXE.protected.bak`. The repair workflow preserves player saves, custom planes and the active INI, and retains the former installation as a backup.
 
@@ -168,6 +186,6 @@ CrimsonSkiesFix is designed for the **original Crimson Skies (2000) PC game** on
 
 ## License
 
-CrimsonSkiesFix is licensed under **GPL-3.0-or-later** ([source license](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/LICENSE)). It does **not** distribute the original game, CD images, official updater or decrypted game executable.
+CrimsonSkiesFix is licensed under **GPL-3.0-or-later** ([source license](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/LICENSE)). The GPL covers the project code, not Microsoft game files. The launcher does not bundle the original game, CD images, the official updater or a decrypted game executable. The official update remains a separate Microsoft file; hosting it separately requires applicable redistribution permission.
 
 legluondunet assisted by ChatGPT (OpenAI)

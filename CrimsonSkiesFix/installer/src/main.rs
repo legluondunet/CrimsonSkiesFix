@@ -673,6 +673,18 @@ fn supported_command(args:&[OsString])->bool{
 }
 
 fn usage() {
+    #[cfg(feature="native-usde-updater")]
+    let sources=format!("\
+        Supported original CDs already in version 1.02: CD image only.\n\
+        Supported original CDs in version 1.0: CD image + official Microsoft 1.02 update (crmsk102.exe).\n\
+        Place all required files beside CrimsonSkiesFix.exe. No separate decrypted EXE is needed.\n\
+        Project downloads: {}\n\
+        Alternative update download: {}\n\
+        Do not run the updater yourself. The launcher verifies and applies it offline.",
+        update102::PROJECT_DOWNLOADS_URL,update102::MODDB_DOWNLOAD_URL);
+    #[cfg(not(feature="native-usde-updater"))]
+    let sources="Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
+        Experimental native CD support depends on this build's enabled features.";
     println!(
         "CrimsonSkiesFix {VERSION} ({})\n\
          Automatic installer / verifier / launcher for Crimson Skies 1.02.\n\
@@ -689,8 +701,7 @@ fn usage() {
          CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
-         EXPERIMENTAL: FR_001 and DISC_002 use CD alone; DISC_001/DE/FR_002 use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
+         {sources}\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]

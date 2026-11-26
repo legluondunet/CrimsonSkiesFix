@@ -6,7 +6,7 @@ Ce test apporte une installation automatisée pour cinq profils de CD originaux.
 
 L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il lit le CAB intégré **en mémoire** après vérification de la taille, du SHA-256 et de sa structure ; les sources protégées 1.02 sont traitées par la bibliothèque Rust `unsafedisk` dans le même processus. Seul l'EXE 1.02 final est produit temporairement, puis activé via la transaction existante et sa sauvegarde du chargeur protégé CD. Aucun fichier propriétaire n'est embarqué.
 
-**Important :** la voie **CD US/DE/FR_002 seul**, sans correctif, reste un chantier distinct et non résolu. Cette compilation sert d'étape fonctionnelle, et ne représente pas encore le critère final de l'issue #46.
+**Décision de périmètre :** les CD US/DE/FR_002 nécessitent un correctif 1.02 externe. La reconstruction 1.00 vers 1.02 est suspendue ; l'utilisateur télécharge le correctif une fois si nécessaire. L'installation elle-même reste hors ligne.
 
 ## Éditions reconnues
 
@@ -19,6 +19,10 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 | C_SKIES_DISC_002 (Europe anglais 1.02) | 118 | Aucune — validé sous Wine 11.19 |
 
 Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les éditions non officielles, repacks et traductions non authentifiées ne sont pas pris en charge. Les noms des images et leurs tailles globales ne déterminent pas l'édition. L'extraction vérifie de nouveau le profil complet et refuse tout changement d'édition depuis la sélection du parcours d'installation. Pour les deux CD déjà en 1.02, un correctif externe éventuellement présent n'est pas nécessaire.
+
+## Si le correctif est demandé
+
+Le terminal identifie le CD reconnu et explique pourquoi la version 1.02 est indispensable. Télécharger `crmsk102.exe` depuis les [Releases du projet](https://github.com/legluondunet/CrimsonSkiesFix/releases) s'il y est proposé, ou [ModDB](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102). Placer un seul exemplaire authentique à côté du lanceur (pas dans game/), ne pas l'exécuter, puis relancer CrimsonSkiesFix.exe. Le fichier est vérifié et appliqué automatiquement. Aucun EXE déchiffré séparé n'est demandé.
 
 ## Test d'installation neuve
 

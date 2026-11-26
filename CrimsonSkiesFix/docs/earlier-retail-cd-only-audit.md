@@ -1,5 +1,7 @@
 # CD-only installation: earlier retail editions (26 November 2026)
 
+**Historical research audit.** The maintainer has since chosen to stop the exact 1.00-to-1.02 reconstruction investigation for this release. The three earlier CD editions retain their authenticated external updater requirement. See the project README for the user-facing instructions.
+
 Research baseline: validated candidate 771b566e, unsafedisk a869653e; issue #46. No new runtime or executable support in this audit.
 
 | Profile | Protected ICD bytes | 797-byte official patch asset on CD | Currently validated route |
