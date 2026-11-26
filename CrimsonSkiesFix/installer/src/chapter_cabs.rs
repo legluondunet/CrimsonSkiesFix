@@ -311,7 +311,7 @@ const US_DE_C2B_NAMES:[(&str,&str);5]=[
 ];
 
 fn valid_retail_edition(edition:&str)->bool{
-    matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DE_001"|"C_SKIES_DISC_001")
+    matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002"|"C_SKIES_DE_001"|"C_SKIES_DISC_001")
 }
 
 fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathBuf,String>{
@@ -327,7 +327,7 @@ fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathB
         return Err(format!("CAB member outside expected chapter {source}: {original}"));
     }
     let matched=if source=="C2B.CAB" && edition!="C_SKIES_FR_001"{
-        // USA and DE carry the SAME original C2B.CAB bytes. Their actual
+        // USA, DE and FR_002 carry the SAME original C2B.CAB bytes. Their actual
         // CAB member aliases must be interpreted with this common table.
         US_DE_C2B_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
     } else {
@@ -743,13 +743,13 @@ mod tests{
         let mut targets=HashSet::new();
         for (source,target) in US_DE_C2B_NAMES {
             assert!(targets.insert(target.to_ascii_lowercase()));
-            for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001"]{
+            for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001","C_SKIES_FR_002"]{
                 assert_eq!(canonical_chapter_name("C2B.CAB",Path::new(source),edition)
                     .unwrap(),PathBuf::from(target));
             }
         }
         // Regression: exact archived member rejected during owner's DE test.
-        for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001"]{
+        for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001","C_SKIES_FR_002"]{
             assert_eq!(canonical_chapter_name("C2B.CAB",
                 Path::new("c2b/RT6C9C~1.ZBD"),edition).unwrap(),
                 PathBuf::from("C2B/rtexture8.zbd"));
@@ -785,6 +785,7 @@ mod tests{
         let fr=cab_hash(include_str!("../profiles/c_skies_fr_001.tsv"));
         assert_eq!(us,"59ee7b5eb79f1e53fc7c7a1b3b063fae44b1b1e438eb0273a61de1eb2ab2be5e");
         assert_eq!(us,de);
+        assert_eq!(us,cab_hash(include_str!("../profiles/c_skies_fr_002.tsv")));
         assert_eq!(fr,"3d4c41d62658ff294dab3c11603092dd59719add039fd02fa990fe91df014968");
         assert_ne!(fr,de);
     }

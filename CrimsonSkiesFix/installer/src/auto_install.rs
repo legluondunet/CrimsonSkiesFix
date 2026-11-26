@@ -197,33 +197,23 @@ pub(super) enum InstallSources {
     NativeWithUpdater{updater:update102::Update102Source},
 }
 
-/// Confirm the edition from exact internal CD file hashes, not from a filename
-/// or volume label. A mismatched/unknown disc must never enter native FR mode.
+/// Authenticate the CD once. Do not mask inspection failures as missing
+/// EXE/updater prerequisites or trust a filename or volume label.
 #[cfg(feature="native-fr-cd")]
-fn verified_french_cd(base:&Path)->Result<bool,String>{
-    let report=disc_inspect::inspect(base,None)?;
-    let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
-        .collect::<Vec<_>>();
-    if edition.len()!=1 {
-        return Err("CD inspection has no unique authenticated edition".into());
-    }
-    Ok(edition[0]=="C_SKIES_FR_001" &&
-       report.lines().any(|line|line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"))
-}
-
-/// The 1.00 US/EU and German CDs are exact inventory matches, but do NOT
-/// contain 1.02 game code. This experimental path therefore additionally
-/// requires the owner-supplied SHA-pinned official 1.02 updater.
-#[cfg(feature="native-usde-updater")]
-fn verified_usde_cd(base:&Path)->Result<bool,String>{
-    let report=disc_inspect::inspect(base,None)?;
+fn authenticated_cd_edition(report:&str)->Result<&'static str,String>{
     let edition=report.lines().filter_map(|line|line.strip_prefix("Edition="))
         .collect::<Vec<_>>();
     if edition.len()!=1 || !report.lines().any(|line|
         line=="EditionRecognition=EXACT_INTERNAL_FILE_MANIFEST"){
-        return Ok(false);
+        return Err("CD content does not match a supported exact internal file manifest; run --inspect with the image filename and provide CrimsonSkiesFix_inspect.log".into());
     }
-    Ok(matches!(edition[0],"C_SKIES_DISC_001"|"C_SKIES_DE_001"))
+    match edition[0] {
+        "C_SKIES_FR_001"=>Ok("C_SKIES_FR_001"),
+        "C_SKIES_FR_002"=>Ok("C_SKIES_FR_002"),
+        "C_SKIES_DISC_001"=>Ok("C_SKIES_DISC_001"),
+        "C_SKIES_DE_001"=>Ok("C_SKIES_DE_001"),
+        _=>Err("unrecognized authenticated CD edition".into()),
+    }
 }
 
 pub(super) fn preflight_install_sources(
@@ -239,15 +229,22 @@ pub(super) fn preflight_install_sources(
     }
     let disc=disc_inspect::preflight_media(base);
     #[cfg(feature="native-fr-cd")]
-    if disc.is_ok() && update.is_none() && verified_french_cd(base).unwrap_or(false) {
-        return Ok(InstallSources::NativeFrench);
+    if disc.is_ok() {
+        let report=disc_inspect::inspect(base,None)
+            .map_err(|e|format!("CD content inspection failed; no extraction attempted: {e}. Run --inspect with the image filename."))?;
+        let edition=authenticated_cd_edition(&report)?;
+        if edition=="C_SKIES_FR_001" && update.is_none(){
+            return Ok(InstallSources::NativeFrench);
+        }
+        #[cfg(feature="native-usde-updater")]
+        if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
+            let updater=update102::source_for_install(base,update)
+                .map_err(|e|format!("Recognized CD {edition}: official 1.02 updater required: {e}. No separate decrypted EXE is needed; no extraction attempted."))?;
+            return Ok(InstallSources::NativeWithUpdater{updater});
+        }
     }
 
     let updater=update102::source_for_install(base,update);
-    #[cfg(feature="native-usde-updater")]
-    if disc.is_ok() && updater.is_ok() && verified_usde_cd(base).unwrap_or(false) {
-        return Ok(InstallSources::NativeWithUpdater{updater:updater?});
-    }
     let exe=approved_executable(base,existing);
     let mut problems=Vec::new();
     if let Err(detail)=&disc{
@@ -364,8 +361,8 @@ fn activate_native_usde_from_update(
     base:&Path,game:&Path,updater:&update102::Update102Source,
 )->Result<(),String>{
     let edition=installed_cd_edition(game)?;
-    if !matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
-        return Err("native updater reconstruction is US/DE-only".into());
+    if !matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
+        return Err("native updater reconstruction requires an approved earlier retail CD".into());
     }
     verify_installed_cd_assets(game)?;
     let protected=update102::read_protected_102_sources_from(updater)?;
@@ -426,7 +423,7 @@ fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
         return activate_verified_exe(game,&temporary);
     }
     #[cfg(feature="native-usde-updater")]
-    if matches!(installed_cd_edition(game)?,"C_SKIES_DISC_001"|"C_SKIES_DE_001"){
+    if matches!(installed_cd_edition(game)?,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
         if let Ok(updater)=update102::source_for_install(base,None){
             return activate_native_usde_from_update(base,game,&updater);
         }
@@ -1238,9 +1235,14 @@ mod tests{
         fs::write(game.join("SavedGames").join("pilot.dat"),b"owner save").unwrap();
         fs::write(root.join("disc.iso"),b"owner CD image placeholder").unwrap();
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
-        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
-        assert!(err.contains("no exact verified Crimson Skies 1.02 updater"),"{err}");
-        assert!(err.contains("rerun --install-only"),"{err}");
+        #[cfg(feature="native-fr-cd")]
+        assert!(err.contains("CD content inspection failed"),"{err}");
+        #[cfg(not(feature="native-fr-cd"))]
+        {
+            assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+            assert!(err.contains("no exact verified Crimson Skies 1.02 updater"),"{err}");
+            assert!(err.contains("rerun --install-only"),"{err}");
+        }
         assert_eq!(fs::read(game.join("SavedGames").join("pilot.dat")).unwrap(),b"owner save");
         assert_eq!(fs::read(root.join("disc.iso")).unwrap(),b"owner CD image placeholder");
         assert!(!any_entry(&root.join(REBUILT)));
@@ -1285,6 +1287,21 @@ mod tests{
             fs::remove_dir_all(root).unwrap();
         }
     }
+    #[cfg(feature="native-fr-cd")]
+    #[test]
+    fn cd_identification_does_not_fall_back_on_unknown_or_ambiguous_manifest(){
+        for edition in ["C_SKIES_FR_001","C_SKIES_FR_002","C_SKIES_DISC_001","C_SKIES_DE_001"]{
+            let report=format!("Edition={edition}\nEditionRecognition=EXACT_INTERNAL_FILE_MANIFEST\n");
+            assert_eq!(authenticated_cd_edition(&report).unwrap(),edition);
+        }
+        for report in [
+            "Edition=UNKNOWN\nEditionRecognition=NO_EXACT_INTERNAL_FILE_MANIFEST_MATCH",
+            "Edition=C_SKIES_FR_001",
+            "Edition=C_SKIES_FR_001\nEdition=C_SKIES_FR_002\nEditionRecognition=EXACT_INTERNAL_FILE_MANIFEST",
+        ]{
+            assert!(authenticated_cd_edition(report).is_err());
+        }
+    }
     #[test]
     fn available_iso_is_not_reported_missing_when_other_two_are_absent(){
         let root=temp();
@@ -1293,9 +1310,17 @@ mod tests{
         fs::write(&media,b"read-only CD source placeholder").unwrap();
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
         assert!(!err.contains("- original game CD image"),"{err}");
-        #[cfg(not(feature="embed-owner-patch102"))]
-        assert!(err.contains("- official 1.02 updater"),"{err}");
-        assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
+        #[cfg(feature="native-fr-cd")]
+        {
+            assert!(err.contains("CD content inspection failed"),"{err}");
+            assert!(!err.contains("approved decrypted 1.02 EXE"),"{err}");
+        }
+        #[cfg(not(feature="native-fr-cd"))]
+        {
+            #[cfg(not(feature="embed-owner-patch102"))]
+            assert!(err.contains("- official 1.02 updater"),"{err}");
+            assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
+        }
         assert!(!any_entry(&game));
         assert_eq!(fs::read(&media).unwrap(),b"read-only CD source placeholder");
         fs::remove_dir_all(root).unwrap();

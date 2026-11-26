@@ -62,7 +62,7 @@ Les données exécutables finales sont validées sur le SHA-256 officiel de notr
 
 La source CD protégée est conservée en `game/CRIMSON.EXE.protected.bak`. Les données sauvegardées `SavedGames/` et `Planes/` et le mécanisme de rollback restent pris en charge. Le jeu et `fix.dll` résident dans `game/`, avec `state/`, `docs/` et les logs à côté du lanceur.
 
-Le **CD français original** reste utilisable sans correctif externe, comme dans la branche native FR précédemment validée.
+Le **CD français révision 1.02** (`C_SKIES_FR_001`, 112 fichiers) reste utilisable sans correctif externe. Le nouveau profil expérimental `C_SKIES_FR_002` (107 fichiers, ancien ICD, CRIMPTCH.ROF absent) nécessite le correctif local comme US/DE. Il reste à valider sur une installation réelle. Un CD non reconnu est refusé avec une erreur d'identification explicite, sans demander inutilement un EXE.
 
 ## Limites
 

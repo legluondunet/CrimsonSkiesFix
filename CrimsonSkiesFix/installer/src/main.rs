@@ -689,7 +689,7 @@ fn usage() {
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
          Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
-         EXPERIMENTAL: FR uses CD alone; US/DE use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
+         EXPERIMENTAL: FR_001 uses CD alone; US/DE/FR_002 use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
