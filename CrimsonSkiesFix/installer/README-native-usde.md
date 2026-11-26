@@ -18,7 +18,7 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 | C_SKIES_DE_001 (DE) | 107 | Correctif officiel 1.02 local |
 | C_SKIES_DISC_002 (Europe anglais 1.02) | 118 | Aucune — validé sous Wine 11.19 |
 
-Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les éditions non officielles, repacks et traductions non authentifiées ne sont pas pris en charge. Les noms des images et leurs tailles globales ne déterminent pas l'édition.
+Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les éditions non officielles, repacks et traductions non authentifiées ne sont pas pris en charge. Les noms des images et leurs tailles globales ne déterminent pas l'édition. L'extraction vérifie de nouveau le profil complet et refuse tout changement d'édition depuis la sélection du parcours d'installation. Pour les deux CD déjà en 1.02, un correctif externe éventuellement présent n'est pas nécessaire.
 
 ## Test d'installation neuve
 

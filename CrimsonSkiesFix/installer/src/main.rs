@@ -562,7 +562,8 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
 
 /// Install authenticated retail files into a private staged directory.
 /// The protected original EXE is kept until the approved EXE activation.
-fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Source>)->Result<(),String> {
+fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Source>,
+    expected_edition:Option<&str>)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -575,7 +576,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Sou
     // and executable before extraction. The update application rechecks it.
     println!("Building original game installation from verified CD; update source: {}...",
         if updater.is_some(){"authenticated official 1.02 updater"}else{"original 1.02 CD"});
-    let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
+    let extracted=disc_inspect::extract_for_install(base,None,&stage,expected_edition)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
     // expand all eight chapter CABs with edition-specific long ZBD names
@@ -1271,7 +1272,7 @@ mod tests {
         let dest=root.join("CrimsonSkiesFix");
         fs::create_dir(&dest).unwrap();
         fs::write(dest.join("user-save.dat"),b"keep").unwrap();
-        assert!(install_from_cd(&root,&dest,Some(&update102::Update102Source::OwnerFile(root.join("update102.exe")))).is_err());
+        assert!(install_from_cd(&root,&dest,Some(&update102::Update102Source::OwnerFile(root.join("update102.exe"))),None).is_err());
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }

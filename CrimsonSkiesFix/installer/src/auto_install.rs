@@ -155,9 +155,9 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 pub(super) enum InstallSources {
     Approved { executable:PathBuf, updater:update102::Update102Source },
     #[cfg(feature="native-fr-cd")]
-    NativeCd102,
+    NativeCd102{edition:&'static str},
     #[cfg(feature="native-usde-updater")]
-    NativeWithUpdater{updater:update102::Update102Source},
+    NativeWithUpdater{edition:&'static str,updater:update102::Update102Source},
 }
 
 /// Authenticate the CD once. Do not mask inspection failures as missing
@@ -197,14 +197,16 @@ pub(super) fn preflight_install_sources(
         let report=disc_inspect::inspect(base,None)
             .map_err(|e|format!("CD content inspection failed; no extraction attempted: {e}. Run --inspect with the image filename."))?;
         let edition=authenticated_cd_edition(&report)?;
-        if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DISC_002") && update.is_none(){
-            return Ok(InstallSources::NativeCd102);
+        // The native CD path never needs the external updater, even if a
+        // caller passes one. No fallback to the legacy decrypted-EXE route.
+        if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DISC_002"){
+            return Ok(InstallSources::NativeCd102{edition});
         }
         #[cfg(feature="native-usde-updater")]
         if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
             let updater=update102::source_for_install(base,update)
                 .map_err(|e|format!("Recognized CD {edition}: official 1.02 updater required: {e}. No separate decrypted EXE is needed; no extraction attempted."))?;
-            return Ok(InstallSources::NativeWithUpdater{updater});
+            return Ok(InstallSources::NativeWithUpdater{edition,updater});
         }
     }
 
@@ -515,26 +517,28 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     // updater may be embedded, not a filesystem source. Public builds still
     // demand a local authentic updater.
     let sources=preflight_install_sources(base,game,None)?;
-    let updater=match &sources{
-        InstallSources::Approved{updater,..}=>Some(updater),
+    // Bind the chosen native source plan to the exact CD edition verified
+    // during preflight. Extraction independently rechecks it before writes.
+    let (updater,expected_edition)=match &sources{
+        InstallSources::Approved{updater,..}=>(Some(updater),None),
         #[cfg(feature="native-fr-cd")]
-        InstallSources::NativeCd102=>None,
+        InstallSources::NativeCd102{edition}=>(None,Some(*edition)),
         #[cfg(feature="native-usde-updater")]
-        InstallSources::NativeWithUpdater{updater}=>Some(updater),
+        InstallSources::NativeWithUpdater{edition,updater}=>(Some(updater),Some(*edition)),
     };
     if old_present {
         println!("Rebuilding game in a private verified transaction...");
     }else{
         println!("Installing game from exact original CD files...");
     }
-    install_from_cd(base,&new,updater)?;
+    install_from_cd(base,&new,updater,expected_edition)?;
     if old_present {preserve_player_data(game,&new)?;}
     match sources {
         InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
         #[cfg(feature="native-fr-cd")]
-        InstallSources::NativeCd102=>activate_pending_exe(base,&new)?,
+        InstallSources::NativeCd102{..}=>activate_pending_exe(base,&new)?,
         #[cfg(feature="native-usde-updater")]
-        InstallSources::NativeWithUpdater{updater}=>
+        InstallSources::NativeWithUpdater{updater,..}=>
             activate_native_usde_from_update(base,&new,&updater)?,
     }
     verify_installed_cd_assets(&new)?;

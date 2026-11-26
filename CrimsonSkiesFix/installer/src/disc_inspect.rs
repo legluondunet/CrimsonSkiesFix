@@ -461,6 +461,25 @@ fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
     seen>0 && seen==files.len()
 }
 
+/// Both inspection and extraction require one, and only one, matching
+/// complete profile. A native installation plan may additionally require
+/// the edition already identified before the external-source selection.
+fn recognize_profile(files:&BTreeMap<String,FileRecord>,
+    profiles:&[(&'static str,&str)],expected:Option<&str>)->Result<&'static str,String>{
+    let mut matching=profiles.iter().filter(|(_,profile)|matches_profile(files,profile));
+    let edition=matching.next().map(|(name,_)|*name)
+        .ok_or("unknown or ambiguous CD file manifest; no extraction performed")?;
+    if matching.next().is_some(){
+        return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
+    }
+    if let Some(expected)=expected{
+        if edition!=expected{
+            return Err(format!("CD edition changed after preflight: expected {expected}, found {edition}; no extraction performed"));
+        }
+    }
+    Ok(edition)
+}
+
 /// Selectors name an *approved* CD file-content profile, not an image
 /// filename/volume label. FR and DE must never share the same test output.
 pub fn edition_selector(label:&str)->Option<&'static str> {
@@ -733,13 +752,13 @@ fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->R
 
 /// The automatic installer extracts only into its own private transaction.
 /// SHA-256 and full retail-edition profile checks run before publishing.
-pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
-    ->Result<Extraction,String> {
-    extract_game_to(base,specified,transaction)
+pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path,
+    expected_edition:Option<&str>)->Result<Extraction,String> {
+    extract_game_to(base,specified,transaction,expected_edition)
 }
 
-fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
-    ->Result<Extraction,String> {
+fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path,
+    expected_edition:Option<&str>)->Result<Extraction,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media,None)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
@@ -748,11 +767,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
         results:BTreeMap::new(),visited:HashSet::new()};
     walker.walk(volume.root.extent,volume.root.size,"",0)?;
     // Fail *before* creating a directory unless the full known edition matches.
-    let matches=PROFILES.iter().filter(|(_,profile)|matches_profile(&walker.results,profile))
-        .map(|(name,_)|*name).collect::<Vec<_>>();
-    let [edition]=matches.as_slice() else {
-        return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
-    };
+    let edition=recognize_profile(&walker.results,&PROFILES,expected_edition)?;
     let dest=target.to_path_buf();
     if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} staging already exists; refusing to overwrite: {}",
@@ -799,7 +814,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
     for (record,name) in &additional {
         extract_one(&image,&mut disc,record,&dest.join(name))?;
     }
-    Ok(Extraction{edition:*edition,file_count:files.len(),bytes,
+    Ok(Extraction{edition,file_count:files.len(),bytes,
         retail_support_files:additional.len(),retail_support_bytes})
 }
 
@@ -830,8 +845,7 @@ pub fn inspect_with_override(base:&Path,specified:Option<&Path>,
     let total=walk.results.values().filter(|r|r.status=="OK")
         .map(|r|r.size as u64).sum::<u64>();
     let edition=if bad==0 {
-        PROFILES.iter().find(|(_,profile)|matches_profile(&walk.results,profile))
-            .map(|(name,_)|*name).unwrap_or("UNKNOWN")
+        recognize_profile(&walk.results,&PROFILES,None).unwrap_or("UNKNOWN")
     } else {"UNKNOWN"};
     let recognition=if edition=="UNKNOWN" {
         "NO_EXACT_INTERNAL_FILE_MANIFEST_MATCH"
@@ -941,9 +955,22 @@ mod tests {
             }
             assert_eq!(files.len(),count);
             assert!(matches_profile(&files,profile),"{edition} failed exact matching");
+            assert_eq!(recognize_profile(&files,&PROFILES,None).unwrap(),*edition);
+            assert_eq!(recognize_profile(&files,&PROFILES,Some(edition)).unwrap(),*edition);
+            for (other,_) in PROFILES {
+                if other!=*edition{
+                    let error=recognize_profile(&files,&PROFILES,Some(other)).unwrap_err();
+                    assert!(error.contains("CD edition changed after preflight"),"{error}");
+                }
+            }
+            // Even two matching compiled-in profiles are ambiguous.
+            let duplicate=[("FIRST",*profile),("SECOND",*profile)];
+            assert!(recognize_profile(&files,&duplicate,None).is_err());
+            assert!(recognize_profile(&files,&duplicate,Some("FIRST")).is_err());
             // A byte-content change must not match.
             files.get_mut("game/crimson.exe").unwrap().sha="0".repeat(64);
             assert!(!matches_profile(&files,profile));
+            assert!(recognize_profile(&files,&PROFILES,Some(edition)).is_err());
             // Neither should an incomplete profile.
             files.remove("game/crimson.exe");
             assert!(!matches_profile(&files,profile));
@@ -957,7 +984,7 @@ mod tests {
         let marker=transaction.join("user-data.txt");
         fs::write(&marker,b"preserve").unwrap();
         let image=dir.join("missing.iso");
-        assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
+        assert!(extract_for_install(&dir,Some(&image),&transaction,None).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1076,7 +1103,7 @@ mod tests {
         changed.sha="0".repeat(64);
         assert!(extract_one(&image,&mut src,&changed,&dir.join("invalid")).is_err());
         let stage=dir.join("CrimsonSkiesFix.installing");
-        assert!(extract_for_install(&dir,Some(&iso_file),&stage).is_err());
+        assert!(extract_for_install(&dir,Some(&iso_file),&stage,None).is_err());
         assert!(!stage.exists());
         fs::remove_dir_all(dir).unwrap();
     }
