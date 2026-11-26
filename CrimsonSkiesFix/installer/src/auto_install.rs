@@ -1418,7 +1418,7 @@ mod tests{
         let root=temp();
         let game=root.join(if cfg!(feature="unified-fix-install"){"game"}else{"CrimsonSkiesFix"});
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
-        assert!(err.contains("- original game CD image"),"{err}");
+        assert!(err.contains("original game CD image"),"{err}");
         assert!(!err.contains("- official 1.02 updater"),"{err}");
         #[cfg(not(feature="native-usde-updater"))]
         assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
@@ -1615,11 +1615,17 @@ mod tests{
     }
 
     #[test]
-    fn authentic_executable_is_required_before_any_new_install(){
+    fn missing_required_media_blocks_new_install(){
         let root=temp();
         let game=root.join("CrimsonSkiesFix");
         let error=auto_prepare(&root,&game).unwrap_err();
+        #[cfg(not(feature="native-usde-updater"))]
         assert!(error.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(error.contains("original game CD image"),"{error}");
+            assert!(!error.contains("approved decrypted"),"{error}");
+        }
         assert!(!game.exists());
         assert!(!root.join(REBUILT).exists());
         fs::remove_dir_all(root).unwrap();
