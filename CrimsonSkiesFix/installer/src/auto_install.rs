@@ -180,6 +180,13 @@ fn authenticated_cd_edition(report:&str)->Result<&'static str,String>{
     }
 }
 
+#[cfg(feature="native-usde-updater")]
+fn earlier_cd_update_source(base:&Path,update:Option<&Path>,edition:&str)
+    ->Result<update102::Update102Source,String>{
+    update102::source_for_install(base,update)
+        .map_err(|e|format!("Recognized CD {edition}: official 1.02 updater required: {e}. No separate decrypted EXE is needed; no extraction attempted."))
+}
+
 pub(super) fn preflight_install_sources(
     base:&Path,existing:&Path,update:Option<&Path>,
 )->Result<InstallSources,String>{
@@ -192,6 +199,13 @@ pub(super) fn preflight_install_sources(
         ));
     }
     let disc=disc_inspect::preflight_media(base);
+    // All five profiles in the consolidated native installer can derive
+    // the approved EXE without a separately supplied decrypted file.
+    // Until a CD is identified, its updater requirement is unknown.
+    #[cfg(feature="native-usde-updater")]
+    if let Err(detail)=&disc{
+        return Err(format!("Missing or invalid original game CD image (.iso or .cue + .bin/.img): {detail}. Place exactly one supported CD image beside CrimsonSkiesFix.exe; no extraction or game launch attempted."));
+    }
     #[cfg(feature="native-fr-cd")]
     if disc.is_ok() {
         let report=disc_inspect::inspect(base,None)
@@ -204,8 +218,7 @@ pub(super) fn preflight_install_sources(
         }
         #[cfg(feature="native-usde-updater")]
         if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
-            let updater=update102::source_for_install(base,update)
-                .map_err(|e|format!("Recognized CD {edition}: official 1.02 updater required: {e}. No separate decrypted EXE is needed; no extraction attempted."))?;
+            let updater=earlier_cd_update_source(base,update,edition)?;
             return Ok(InstallSources::NativeWithUpdater{edition,updater});
         }
     }
@@ -389,8 +402,12 @@ fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
         return activate_verified_exe(game,&temporary);
     }
     #[cfg(feature="native-usde-updater")]
-    if matches!(installed_cd_edition(game)?,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
-        if let Ok(updater)=update102::source_for_install(base,None){
+    {
+        let edition=installed_cd_edition(game)?;
+        if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
+            // A missing or ambiguous updater on a resumed install must not
+            // turn into an unrelated request for a decrypted executable.
+            let updater=earlier_cd_update_source(base,None,edition)?;
             return activate_native_usde_from_update(base,game,&updater);
         }
     }
@@ -1244,9 +1261,15 @@ mod tests{
         let game=root.join("CrimsonSkiesFix");
         let err=auto_run(&root,&game,false).unwrap_err();
         assert!(err.contains("original game CD image"),"{err}");
-        #[cfg(not(feature="embed-owner-patch102"))]
+        #[cfg(all(not(feature="embed-owner-patch102"),not(feature="native-usde-updater")))]
         assert!(err.contains("official 1.02 updater"),"{err}");
+        #[cfg(not(feature="native-usde-updater"))]
         assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(!err.contains("approved decrypted"),"{err}");
+            assert!(!err.contains("official 1.02 updater"),"{err}");
+        }
         assert!(!any_entry(&game));
         assert!(!any_entry(&root.join(REBUILT)));
         assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
@@ -1289,10 +1312,18 @@ mod tests{
         let err=auto_run(&root,&game,false).unwrap_err();
         let report=fs::read_to_string(root.join(INSTALLER_LOG)).unwrap();
         assert!(err.contains("original game CD image"),"{err}");
-        assert!(err.contains("official 1.02 updater"),"{err}");
         assert!(report.contains("original game CD image"),"{report}");
-        assert!(report.contains("approved decrypted 1.02 EXE"),"{report}");
-        assert!(report.contains("official 1.02 updater"),"{report}");
+        #[cfg(not(feature="native-usde-updater"))]
+        {
+            assert!(err.contains("official 1.02 updater"),"{err}");
+            assert!(report.contains("approved decrypted 1.02 EXE"),"{report}");
+            assert!(report.contains("official 1.02 updater"),"{report}");
+        }
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(!report.contains("approved decrypted"),"{report}");
+            assert!(!report.contains("official 1.02 updater"),"{report}");
+        }
         assert!(report.contains("AUTO_INSTALL_RESULT=ERROR"));
         assert!(!any_entry(&game));
         assert!(!any_entry(&root.join(REBUILT)));
@@ -1309,13 +1340,39 @@ mod tests{
             fs::write(&media,b"file without CUE sheet").unwrap();
             let err=preflight_install_sources(&root,&game,None).unwrap_err();
             assert!(err.contains("original game CD image"),"{err}");
-            #[cfg(not(feature="embed-owner-patch102"))]
+            #[cfg(all(not(feature="embed-owner-patch102"),not(feature="native-usde-updater")))]
             assert!(err.contains("official 1.02 updater"),"{err}");
+            #[cfg(not(feature="native-usde-updater"))]
             assert!(err.contains("approved decrypted 1.02 EXE"),"{err}");
+            #[cfg(feature="native-usde-updater")]
+            {
+                assert!(!err.contains("approved decrypted"),"{err}");
+                assert!(!err.contains("official 1.02 updater"),"{err}");
+            }
             assert!(!any_entry(&game));
             assert_eq!(fs::read(&media).unwrap(),b"file without CUE sheet");
             fs::remove_dir_all(root).unwrap();
         }
+    }
+    #[cfg(all(feature="native-usde-updater",not(feature="embed-owner-patch102")))]
+    #[test]
+    fn earlier_cd_missing_update_keeps_native_diagnostic_on_resume(){
+        let root=temp();
+        let game=root.join(GAME_FOLDER);
+        fs::create_dir(&game).unwrap();
+        let receipt=receipt_path(&game);
+        fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+        fs::write(game.join("SavedGames.dat"),b"preserve").unwrap();
+        for edition in ["C_SKIES_DISC_001","C_SKIES_DE_001","C_SKIES_FR_002"]{
+            fs::write(&receipt,format!("Project=CrimsonSkiesFix\nEdition={edition}\nInstallState=GAME_FILES_READY_EXECUTABLE_PENDING\n")).unwrap();
+            let err=activate_pending_exe(&root,&game).unwrap_err();
+            assert!(err.contains(edition),"{err}");
+            assert!(err.contains("official 1.02 updater required"),"{err}");
+            assert!(err.contains("No separate decrypted EXE is needed"),"{err}");
+            assert!(!any_entry(&root.join("CrimsonSkiesFix.native-usde-102.pending.exe")));
+        }
+        assert_eq!(fs::read(game.join("SavedGames.dat")).unwrap(),b"preserve");
+        fs::remove_dir_all(root).unwrap();
     }
     #[cfg(feature="native-fr-cd")]
     #[test]
@@ -1363,7 +1420,10 @@ mod tests{
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
         assert!(err.contains("- original game CD image"),"{err}");
         assert!(!err.contains("- official 1.02 updater"),"{err}");
+        #[cfg(not(feature="native-usde-updater"))]
         assert!(err.contains("- approved decrypted 1.02 EXE"),"{err}");
+        #[cfg(feature="native-usde-updater")]
+        assert!(!err.contains("approved decrypted"),"{err}");
         assert!(!any_entry(&root.join(REBUILT)));
         assert!(!any_entry(&game));
         fs::remove_dir_all(root).unwrap();
@@ -1374,7 +1434,13 @@ mod tests{
         let game=root.join("CrimsonSkiesFix");
         fs::write(root.join("untrusted.exe"),b"not a valid Crimson Skies binary").unwrap();
         let err=preflight_install_sources(&root,&game,None).unwrap_err();
+        #[cfg(not(feature="native-usde-updater"))]
         assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(err.contains("original game CD image"),"{err}");
+            assert!(!err.contains("approved decrypted"),"{err}");
+        }
         assert!(!any_entry(&game));
         assert!(!any_entry(&root.join(REBUILT)));
         assert!(!any_entry(&root.join(format!("{REBUILT}.installing"))));
