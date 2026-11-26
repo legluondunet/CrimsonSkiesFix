@@ -51,9 +51,9 @@ jobs:
       - name: Unit-test and compile combined fix.dll
         shell: pwsh
         run: |
-          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime tests failed'}
-          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          cargo build --locked --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime build failed'}
       - name: Verify exact DirectDraw export surface and no static WinMM/DDraw dependencies
         shell: pwsh
@@ -65,9 +65,9 @@ jobs:
       - name: Compile and test unified installer with only fix.dll embedded
         shell: pwsh
         run: |
-          cargo test --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer tests failed'}
-          cargo build --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --release --target i686-pc-windows-msvc
+          cargo build --locked --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer compilation failed'}
           $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
           $version=(& $exe --version) -join "`n"
@@ -150,6 +150,11 @@ jobs:
           $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md')
           if(Compare-Object $files $expected){throw 'Unexpected test artifact contents'}
           Write-Host "CANDIDATE-PACKAGE PASS: single x86 launcher, hash and instructions; commit $env:CRIMSONSKIESFIX_COMMIT"
+      - name: Check that dependency locks stayed unchanged
+        shell: pwsh
+        run: |
+          git diff --exit-code -- installer/Cargo.lock runtime-unified/Cargo.lock
+          if($LASTEXITCODE -ne 0){throw 'Cargo dependency locks changed during build'}
       - name: Record resolved Cargo dependency locks for review
         shell: pwsh
         run: |
