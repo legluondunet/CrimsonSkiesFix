@@ -988,7 +988,16 @@ mod tests {
         fs::write(root.join("disc.iso"),b"fake authenticated source").unwrap();
         let game=root.join("CrimsonSkiesFix");
         let err=auto_install::preflight_install_sources(&root,&game,None).unwrap_err();
-        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        // Native media preflight now identifies unreadable media directly,
+        // instead of asking for an unrelated decrypted executable.
+        #[cfg(feature="native-fr-cd")]
+        {
+            assert!(err.contains("CD content inspection failed"),"{err}");
+            assert!(!err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        }
+        #[cfg(not(feature="native-fr-cd"))]
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        assert_eq!(fs::read(root.join("disc.iso")).unwrap(),b"fake authenticated source");
         assert!(!any_entry(&root.join("CrimsonSkiesFix")));
         // The preflight must not create ANY directory, regardless of how
         // future staging names are changed.
