@@ -143,14 +143,44 @@ impl ImageSource {
         Ok(bytes)
     }
 }
+// An .iso suffix does not guarantee cooked 2048-byte sectors. Some
+// original disc dumps use raw 2352-byte sectors with the same suffix.
+// Require real descriptor geometry, not an image-length heuristic.
+fn raw_descriptor_header(file:&mut File,mode:u8)->Result<bool,String>{
+    let mut header=[0u8;24];
+    file.seek(SeekFrom::Start(16*2352)).map_err(err)?;
+    file.read_exact(&mut header).map_err(err)?;
+    let sync=header[0]==0 && header[1..11]==[0xff;10] && header[11]==0;
+    if !sync || header[15]!=mode{return Ok(false);}
+    // XA Mode 2 Form 1 has duplicate subheaders and 2048 user bytes.
+    Ok(mode==1 || (header[16..20]==header[20..24] && header[18]&0x20==0))
+}
 fn open_iso(path:&Path)->Result<ImageSource,String> {
     safe_file(path)?;
-    let size=fs::metadata(path).map_err(err)?.len();
+    let mut file=File::open(path).map_err(err)?;
+    let size=file.metadata().map_err(err)?.len();
     if size<20*USER_SECTOR as u64 {return Err("ISO too small for ISO9660 descriptors".into());}
-    Ok(ImageSource{
-        file:path.to_path_buf(),sector_bytes:2048,user_offset:0,
-        first_byte:0,end_byte:size,format:"ISO/2048".into(),tracks:1
-    })
+    let mut candidates=Vec::new();
+    for (sector_bytes,user_offset,format,mode) in [
+        (2048u64,0u64,"ISO/2048",0u8),
+        (2352,16,"ISO/MODE1/2352",1),
+        (2352,24,"ISO/MODE2/2352",2),
+    ]{
+        if mode!=0 && (size%sector_bytes!=0 || size<20*sector_bytes ||
+            !raw_descriptor_header(&mut file,mode)?){continue;}
+        let image=ImageSource{
+            file:path.to_path_buf(),sector_bytes,user_offset,
+            first_byte:0,end_byte:size,format:format.into(),tracks:1
+        };
+        // A valid descriptor alone is not edition authentication. Both
+        // inspection and extraction still walk and hash every required file.
+        if parse_volume(&image,&mut file).is_ok(){candidates.push(image);}
+    }
+    match candidates.len(){
+        1=>Ok(candidates.remove(0)),
+        0=>Err(format!("no valid ISO9660 volume at LBA 16 in ISO/2048 or raw MODE1/2352 or MODE2/2352 (image size {size} bytes); provide the original CUE if available")),
+        _=>Err("ambiguous ISO sector geometry; provide an original CUE with the correct data-track mode".into()),
+    }
 }
 fn open_cue(path:&Path,bin_override:Option<&Path>)->Result<ImageSource,String> {
     let alternative=if let Some(path)=bin_override {
@@ -1088,6 +1118,76 @@ mod tests {
         fs::write(&path,padded).unwrap();
         let second=inspect(&dir,None).unwrap();
         assert_eq!(first,second);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    fn raw_iso_fixture(mode:u8)->Vec<u8>{
+        let iso=make_iso();
+        let mut raw=vec![0u8;21*2352];
+        for (i,payload) in iso.chunks_exact(USER_SECTOR).enumerate(){
+            let sector=&mut raw[i*2352..(i+1)*2352];
+            sector[1..11].fill(0xff);
+            sector[15]=mode;
+            let offset=if mode==1{16}else{24};
+            if mode==2{
+                sector[18]=8; // Form 1, data
+                sector[22]=8; // duplicate subheader
+            }
+            sector[offset..offset+USER_SECTOR].copy_from_slice(payload);
+        }
+        raw
+    }
+    #[test]
+    fn raw_iso_mode1_and_mode2_have_identical_payload_hashes(){
+        let dir=workdir();
+        let path=dir.join("SKIES.iso");
+        for (mode,format) in [(1,"ISO/MODE1/2352"),(2,"ISO/MODE2/2352")]{
+            let raw=raw_iso_fixture(mode);
+            fs::write(&path,&raw).unwrap();
+            let report=inspect(&dir,Some(&path)).unwrap();
+            assert!(report.contains(&format!("Format={format}")));
+            assert!(report.contains(&format!("CRIMSON.EXE\t5\t{}\tOK",sha256::hex(b"hello"))));
+            assert!(report.contains("Edition=UNKNOWN"));
+            let image=open_iso(&path).unwrap();
+            let mut file=File::open(&path).unwrap();
+            let record=FileRecord{path:"CRIMSON.EXE".into(),size:5,
+                sha:sha256::hex(b"hello"),status:"OK".into(),extent:20};
+            let target=dir.join(format!("mode{mode}.out"));
+            extract_one(&image,&mut file,&record,&target).unwrap();
+            assert_eq!(fs::read(target).unwrap(),b"hello");
+            assert_eq!(fs::read(&path).unwrap(),raw);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn raw_iso_refuses_invalid_sync_form_and_missing_descriptor(){
+        let dir=workdir();
+        let path=dir.join("SKIES.iso");
+        let mut bad=raw_iso_fixture(1);
+        bad[16*2352+1]=0;
+        fs::write(&path,bad).unwrap();
+        assert!(open_iso(&path).is_err());
+        let mut bad=raw_iso_fixture(2);
+        bad[16*2352+18]|=0x20;
+        bad[16*2352+22]|=0x20;
+        fs::write(&path,bad).unwrap();
+        assert!(open_iso(&path).is_err());
+        let mut bad=raw_iso_fixture(1);
+        bad[16*2352+17]=0;
+        fs::write(&path,bad).unwrap();
+        assert!(open_iso(&path).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn raw_iso_rejects_ambiguous_descriptor_geometry(){
+        let dir=workdir();
+        let path=dir.join("SKIES.iso");
+        let mut raw=raw_iso_fixture(1);
+        // Cooked descriptors at their separate offsets coexist with the
+        // original raw descriptors. Neither interpretation may win silently.
+        let iso=make_iso();
+        raw[16*2048..18*2048].copy_from_slice(&iso[16*2048..18*2048]);
+        fs::write(&path,raw).unwrap();
+        assert!(open_iso(&path).err().unwrap().contains("ambiguous"));
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
