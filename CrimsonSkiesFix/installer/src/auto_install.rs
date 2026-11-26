@@ -979,7 +979,7 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     write_installer_report(base,&message,needed)?;
     // Return the complete preflight error to the caller: main() prints it
     // to stderr for both interactive terminals and non-interactive scripts.
-    // Never display a modal GUI dialog.
+    // The top-level caller also handles native error notification after logging.
     let (action,exe,edition)=result?;
     if !launch{
         println!("--install-only: installation verified and ready at {}; game NOT launched.",

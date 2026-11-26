@@ -1,19 +1,10 @@
-//! Native desktop error notification for the consolidated installer.
+//! Native error notification for the consolidated installer.
 //! Never modify files, download the updater or change the launch exit code.
 //! This is an optional UI after the original diagnostic has been emitted.
 use crate::auto_install::EARLIER_CD_UPDATE_PREFIX;
 
-fn should_show(has_arguments:bool,noninteractive:bool,console_processes:u32,
-               terminal_handle:bool,terminal_hint:bool)->bool{
-    if has_arguments || noninteractive || terminal_hint || console_processes>1{
-        return false;
-    }
-    // A console-subsystem EXE launched by Explorer normally has its own
-    // newly created console (one attached process). An inherited console
-    // normally has at least two attached processes. With no Win32 console,
-    // a detectable terminal handle still means console-only. Wine/GUI
-    // launchers can have no console and redirected stdout/stderr.
-    !(console_processes==0 && terminal_handle)
+fn should_show(noninteractive:bool,ci:bool,github_actions:bool)->bool{
+    !(noninteractive || ci || github_actions)
 }
 
 fn update_edition(error:&str)->Option<&str>{
@@ -51,7 +42,7 @@ fn generic_message(error:&str)->String{
 #[cfg(windows)]
 mod native{
     use super::*;
-    use std::{env,ffi::{c_void,OsStr},io::IsTerminal,ptr};
+    use std::{env,ffi::{c_void,OsStr},ptr};
 
     const MB_ICONERROR:u32=0x10;
     const MB_ICONWARNING:u32=0x30;
@@ -59,10 +50,6 @@ mod native{
     const MB_DEFBUTTON2:u32=0x100;
     const MB_SETFOREGROUND:u32=0x10000;
     const IDYES:i32=6;
-    #[link(name="kernel32")]
-    extern "system"{
-        fn GetConsoleProcessList(list:*mut u32,count:u32)->u32;
-    }
     #[link(name="user32")]
     extern "system"{
         fn MessageBoxW(window:*mut c_void,text:*const u16,caption:*const u16,kind:u32)->i32;
@@ -81,17 +68,6 @@ mod native{
         let message=wide(message);
         unsafe{MessageBoxW(ptr::null_mut(),message.as_ptr(),title.as_ptr(),kind|MB_SETFOREGROUND)}
     }
-    fn env_nonempty(name:&str)->bool{
-        env::var_os(name).is_some_and(|s|!s.is_empty())
-    }
-    fn terminal_hint()->bool{
-        // Wine may expose Unix terminal streams as pipes instead of Win32
-        // consoles. TERM / MSYSTEM / SSH_TTY / WT_SESSION are additional,
-        // conservative hints, not proof of a terminal. The explicit
-        // noninteractive switch remains the guarantee for unattended runs.
-        env::var_os("TERM").is_some_and(|s|!s.is_empty() && s!=OsStr::new("dumb"))
-            || ["MSYSTEM","SSH_TTY","WT_SESSION"].iter().any(|name|env_nonempty(name))
-    }
     fn open_download_instructions(){
         // Never pass paths or error details from untrusted input to the
         // shell. Only open this fixed project HTTPS URL after explicit Yes.
@@ -108,18 +84,13 @@ mod native{
     }
 
     pub(super) fn show(error:&str){
-        // No arguments is the only desktop path. In particular diagnostics,
-        // install-only, verify, verbose and direct-launch options never block.
-        let has_arguments=env::args_os().nth(1).is_some();
+        // Report every blocking launcher error in both stderr and a native
+        // dialog, regardless of terminal, GUI launch or command-line arguments.
+        // Only the explicit unattended flag and CI suppress the modal UI.
         let noninteractive=env::var_os("CRIMSONSKIESFIX_NONINTERACTIVE").as_deref()
-            ==Some(OsStr::new("1")) || env::var_os("CI").is_some()
-            || env::var_os("GITHUB_ACTIONS").is_some();
-        if has_arguments || noninteractive {return;}
-        let mut processes=[0u32;2];
-        let count=unsafe{GetConsoleProcessList(processes.as_mut_ptr(),processes.len() as u32)};
-        let terminal=std::io::stdin().is_terminal() || std::io::stdout().is_terminal()
-            || std::io::stderr().is_terminal();
-        if !should_show(has_arguments,noninteractive,count,terminal,terminal_hint()){return;}
+            ==Some(OsStr::new("1"));
+        if !should_show(noninteractive,env::var_os("CI").is_some(),
+            env::var_os("GITHUB_ACTIONS").is_some()){return;}
         if let Some(edition)=update_edition(error){
             let folder=env::current_exe().ok()
                 .and_then(|p|p.parent().map(|d|d.display().to_string()))
@@ -134,7 +105,7 @@ mod native{
     }
 }
 
-pub(super) fn show_if_desktop(error:&str){
+pub(super) fn show_unless_noninteractive(error:&str){
     #[cfg(windows)]
     native::show(error);
     #[cfg(not(windows))]
@@ -145,27 +116,19 @@ pub(super) fn show_if_desktop(error:&str){
 mod tests{
     use super::*;
     #[test]
-    fn desktop_policy_allows_own_console_and_detached_gui(){
-        assert!(should_show(false,false,1,true,false));
-        assert!(should_show(false,false,0,false,false));
-        assert!(should_show(false,false,1,false,false));
+    fn interactive_errors_always_show_dialog(){
+        assert!(should_show(false,false,false));
     }
     #[test]
-    fn desktop_policy_never_blocks_explicit_commands_or_automation(){
-        for n in [0,1,2,100]{
-            for tty in [false,true]{
-                assert!(!should_show(true,false,n,tty,false));
-                assert!(!should_show(false,true,n,tty,false));
+    fn only_unattended_or_ci_suppress_dialog(){
+        for noninteractive in [false,true]{
+            for ci in [false,true]{
+                for github_actions in [false,true]{
+                    assert_eq!(should_show(noninteractive,ci,github_actions),
+                        !noninteractive && !ci && !github_actions);
+                }
             }
         }
-    }
-    #[test]
-    fn desktop_policy_suppresses_detected_terminal(){
-        assert!(!should_show(false,false,2,true,false));
-        assert!(!should_show(false,false,5,false,false));
-        assert!(!should_show(false,false,0,true,false));
-        assert!(!should_show(false,false,0,false,true));
-        assert!(!should_show(false,false,1,true,true));
     }
     #[test]
     fn update_dialog_requires_exact_recognized_cd_prefix(){

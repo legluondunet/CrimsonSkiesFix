@@ -683,7 +683,7 @@ fn usage() {
         {}\n\
         Extract crmsk102.exe if downloaded in an archive.\n\
         Do not run the updater yourself. The launcher verifies and applies it offline.\n\
-        Desktop launches can show an error dialog. Explicit commands remain console-only.\n\
+        Blocking errors are printed to the terminal and shown in a native error dialog.\n\
         Set CRIMSONSKIESFIX_NONINTERACTIVE=1 for unattended execution.",
         update102::download_help());
     #[cfg(not(feature="native-usde-updater"))]
@@ -806,10 +806,10 @@ fn main() {
         Err(err) => {
             // A detached GUI launch may have no writable console. Keep the
             // complete stderr diagnostic when possible, but do not let a
-            // closed stderr pipe prevent the desktop error notification.
+            // closed stderr pipe prevent the native error notification.
             let _=writeln!(std::io::stderr().lock(),"CrimsonSkiesFix: ERROR: {err}");
             #[cfg(feature="native-usde-updater")]
-            error_dialog::show_if_desktop(&err);
+            error_dialog::show_unless_noninteractive(&err);
             std::process::exit(2);
         }
     }

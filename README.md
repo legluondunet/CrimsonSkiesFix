@@ -59,9 +59,9 @@ If a copy is already present but rejected, check the size and SHA-256; if multip
 
 ### If the launcher cannot start the game
 
-For a normal desktop launch without arguments, CrimsonSkiesFix can display a native Windows error dialog instead of letting the console close without an explanation. For a recognized version 1.0 CD that requires the update, choose **Yes** to open the download instructions in your default browser. Choose **No** to close the message without opening anything. Other blocking installer errors show an explanation. Successful installations show no dialog.
+CrimsonSkiesFix displays blocking launcher errors both in the terminal and in a native Windows error dialog, whether launched from the desktop or a terminal, with or without command-line arguments. For a recognized version 1.0 CD that requires the update, choose **Yes** to open the download instructions in your default browser. Choose **No** to close the message without opening anything. Other blocking installer errors show an explanation. Successful installations show no dialog.
 
-The full error is still written to the terminal when available, and installation errors are recorded in `CrimsonSkiesFix_installer.log` beside the launcher when logging is possible. Explicit commands (including `--install-only`, `--verify` and `--verbose`), detected terminals and CI runs are console-only. Desktop-versus-terminal detection is best effort, especially under Wine. For scripts, detached launches or unattended operation, set `CRIMSONSKIESFIX_NONINTERACTIVE=1` to guarantee that the installer does not display a blocking error dialog.
+The full error is still written to the terminal when available, and installation errors are recorded in `CrimsonSkiesFix_installer.log` beside the launcher when logging is possible. Only CI and the explicit unattended mode suppress error dialogs. For scripts or unattended operation, set `CRIMSONSKIESFIX_NONINTERACTIVE=1` to keep the console diagnostics without blocking on a dialog.
 
 ### Example folder before installing
 
