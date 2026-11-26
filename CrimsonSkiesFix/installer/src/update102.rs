@@ -13,6 +13,21 @@ use std::{
 pub const PROJECT_DOWNLOADS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix/releases";
 #[cfg(feature="native-usde-updater")]
 pub const MODDB_DOWNLOAD_URL:&str="https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102";
+#[cfg(feature="native-usde-updater")]
+pub const LUTRIS_ARCHIVE_URL:&str="https://github.com/legluondunet/MyLittleLutrisScripts/raw/refs/heads/master/Crimson%20Skies/crmsk102.7z";
+#[cfg(feature="native-usde-updater")]
+pub const PCGAMINGWIKI_DOWNLOAD_URL:&str="https://community.pcgamingwiki.com/files/file/62-crimson-skies-patch/";
+#[cfg(feature="native-usde-updater")]
+pub const MYABANDONWARE_DOWNLOAD_URL:&str="https://www.myabandonware.com/game/crimson-skies-be7";
+
+#[cfg(feature="native-usde-updater")]
+pub fn download_help()->String{
+    format!("Project Releases (if listed): {PROJECT_DOWNLOADS_URL}\n\
+        MyLittleLutrisScripts (7z archive): {LUTRIS_ARCHIVE_URL}\n\
+        PCGamingWiki: {PCGAMINGWIKI_DOWNLOAD_URL}\n\
+        ModDB: {MODDB_DOWNLOAD_URL}\n\
+        My Abandonware (Extras > International patch v1.02): {MYABANDONWARE_DOWNLOAD_URL}")
+}
 pub const PATCH_LEN:u64=2_315_728;
 pub const PATCH_SHA256:&str="8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af";
 pub const CAB_OFFSET:u64=0x346f0;

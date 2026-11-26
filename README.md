@@ -41,8 +41,13 @@ CrimsonSkiesFix targets the final official PC game version, **1.02**, which incl
 
 If the terminal says that the 1.02 update is required:
 
-1. Download `crmsk102.exe` from the [project downloads page](https://github.com/legluondunet/CrimsonSkiesFix/releases) if it is listed there, or from the [ModDB archive](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102).
-2. Place exactly one authentic copy **beside `CrimsonSkiesFix.exe`**, not inside `game/`.
+1. Download the official Microsoft 1.02 update (`crmsk102.exe`) from **one** of these sources:
+   - [Project Releases](https://github.com/legluondunet/CrimsonSkiesFix/releases) (if listed there).
+   - [MyLittleLutrisScripts — crmsk102.7z](https://github.com/legluondunet/MyLittleLutrisScripts/raw/refs/heads/master/Crimson%20Skies/crmsk102.7z).
+   - [PCGamingWiki — official Crimson Skies patch](https://community.pcgamingwiki.com/files/file/62-crimson-skies-patch/).
+   - [ModDB — Crimson Skies Update v1.02](https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102).
+   - [My Abandonware](https://www.myabandonware.com/game/crimson-skies-be7) — under **Extras**, select **International patch v1.02**, not the game download or other fixes.
+2. If the download is a 7z or ZIP archive, extract `crmsk102.exe` first. Place exactly one authentic copy of the extracted EXE **beside `CrimsonSkiesFix.exe`**, not inside `game/`.
 3. **Do not run the Microsoft updater.** Run `CrimsonSkiesFix.exe` again; it verifies the file and finishes installation automatically.
 
 The launcher accepts the update by content, even if its filename has changed. It does not download the update or run its historical setup program. Installation is offline once the required files are present.

@@ -203,16 +203,15 @@ fn earlier_cd_update_help(base:&Path,edition:&str,detail:&str)->String{
         The game has not been launched.\n\
         \nHow to continue:\n\
         1. If needed, download the official Microsoft update (crmsk102.exe).\n\
-           Project download page: {}\n\
-           Alternative: {}\n\
-           Expected size: {} bytes.\n\
+           {}\n\
+           If downloaded as a 7z or ZIP archive, extract crmsk102.exe first.\n\
+           Expected size of the extracted EXE: {} bytes.\n\
         2. Keep exactly one authentic copy beside CrimsonSkiesFix.exe, in:\n\
            {}\n\
         3. Do NOT run the updater yourself. Run CrimsonSkiesFix.exe again.\n\
         \nThe launcher verifies the update and completes installation automatically.\n\
         No separate decrypted EXE is needed. No Internet connection is required by the launcher.",
-        update102::PROJECT_DOWNLOADS_URL,update102::MODDB_DOWNLOAD_URL,
-        update102::PATCH_LEN,base.display())
+        update102::download_help(),update102::PATCH_LEN,base.display())
 
 }
 
@@ -1401,6 +1400,10 @@ mod tests{
             assert!(err.contains("The game has not been launched"),"{err}");
             assert!(err.contains(update102::PROJECT_DOWNLOADS_URL),"{err}");
             assert!(err.contains(update102::MODDB_DOWNLOAD_URL),"{err}");
+            assert!(err.contains(update102::LUTRIS_ARCHIVE_URL),"{err}");
+            assert!(err.contains(update102::PCGAMINGWIKI_DOWNLOAD_URL),"{err}");
+            assert!(err.contains(update102::MYABANDONWARE_DOWNLOAD_URL),"{err}");
+            assert!(err.contains("extract crmsk102.exe first"),"{err}");
             assert!(err.contains("Do NOT run the updater yourself"),"{err}");
             assert!(err.contains("Run CrimsonSkiesFix.exe again"),"{err}");
             assert!(err.contains("No separate decrypted EXE is needed"),"{err}");
@@ -1423,7 +1426,9 @@ mod tests{
             for expected in [edition,label,detail,"2315728","crmsk102.exe",
                 "Keep exactly one authentic copy", "Do NOT run the updater yourself",
                 "Run CrimsonSkiesFix.exe again", update102::PROJECT_DOWNLOADS_URL,
-                update102::MODDB_DOWNLOAD_URL]{
+                update102::MODDB_DOWNLOAD_URL,update102::LUTRIS_ARCHIVE_URL,
+                update102::PCGAMINGWIKI_DOWNLOAD_URL,update102::MYABANDONWARE_DOWNLOAD_URL,
+                "extract crmsk102.exe first", "International patch v1.02"]{
                 assert!(msg.contains(expected),"{msg}");
             }
             assert!(msg.contains(&root.display().to_string()),"{msg}");

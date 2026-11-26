@@ -678,10 +678,10 @@ fn usage() {
         Supported original CDs already in version 1.02: CD image only.\n\
         Supported original CDs in version 1.0: CD image + official Microsoft 1.02 update (crmsk102.exe).\n\
         Place all required files beside CrimsonSkiesFix.exe. No separate decrypted EXE is needed.\n\
-        Project downloads: {}\n\
-        Alternative update download: {}\n\
+        {}\n\
+        Extract crmsk102.exe if downloaded in an archive.\n\
         Do not run the updater yourself. The launcher verifies and applies it offline.",
-        update102::PROJECT_DOWNLOADS_URL,update102::MODDB_DOWNLOAD_URL);
+        update102::download_help());
     #[cfg(not(feature="native-usde-updater"))]
     let sources="Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
         Experimental native CD support depends on this build's enabled features.";
