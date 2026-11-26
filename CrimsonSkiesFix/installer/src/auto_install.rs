@@ -155,7 +155,7 @@ fn approved_executable(base:&Path,existing:&Path)->Result<PathBuf,String>{
 pub(super) enum InstallSources {
     Approved { executable:PathBuf, updater:update102::Update102Source },
     #[cfg(feature="native-fr-cd")]
-    NativeFrench,
+    NativeCd102,
     #[cfg(feature="native-usde-updater")]
     NativeWithUpdater{updater:update102::Update102Source},
 }
@@ -174,6 +174,7 @@ fn authenticated_cd_edition(report:&str)->Result<&'static str,String>{
         "C_SKIES_FR_001"=>Ok("C_SKIES_FR_001"),
         "C_SKIES_FR_002"=>Ok("C_SKIES_FR_002"),
         "C_SKIES_DISC_001"=>Ok("C_SKIES_DISC_001"),
+        "C_SKIES_DISC_002"=>Ok("C_SKIES_DISC_002"),
         "C_SKIES_DE_001"=>Ok("C_SKIES_DE_001"),
         _=>Err("unrecognized authenticated CD edition".into()),
     }
@@ -196,8 +197,8 @@ pub(super) fn preflight_install_sources(
         let report=disc_inspect::inspect(base,None)
             .map_err(|e|format!("CD content inspection failed; no extraction attempted: {e}. Run --inspect with the image filename."))?;
         let edition=authenticated_cd_edition(&report)?;
-        if edition=="C_SKIES_FR_001" && update.is_none(){
-            return Ok(InstallSources::NativeFrench);
+        if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DISC_002") && update.is_none(){
+            return Ok(InstallSources::NativeCd102);
         }
         #[cfg(feature="native-usde-updater")]
         if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
@@ -361,14 +362,14 @@ fn activate_native_usde_from_update(
 
 fn activate_pending_exe(base:&Path,game:&Path)->Result<(),String>{
     #[cfg(feature="native-fr-cd")]
-    if installed_cd_edition(game)?=="C_SKIES_FR_001" {
+    if matches!(installed_cd_edition(game)?,"C_SKIES_FR_001"|"C_SKIES_DISC_002") {
         // The complete CD receipt and original protected EXE/ICD must verify
         // BEFORE any disk write. An interrupted candidate is never replaced.
         verify_installed_cd_assets(game)?;
         let temporary=base.join("CrimsonSkiesFix.native-fr-102.pending.exe");
         if any_entry(&temporary){
             return Err(format!(
-                "abandoned native French reconstruction exists (preserved, not overwritten): {}",
+                "abandoned native CD 1.02 reconstruction exists (preserved, not overwritten): {}",
                 temporary.display()));
         }
         unsafedisk_native::reconstruct_verified_crimson_102(
@@ -517,7 +518,7 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     let updater=match &sources{
         InstallSources::Approved{updater,..}=>Some(updater),
         #[cfg(feature="native-fr-cd")]
-        InstallSources::NativeFrench=>None,
+        InstallSources::NativeCd102=>None,
         #[cfg(feature="native-usde-updater")]
         InstallSources::NativeWithUpdater{updater}=>Some(updater),
     };
@@ -531,7 +532,7 @@ fn build_and_publish(base:&Path,game:&Path,old_present:bool)->Result<(),String>{
     match sources {
         InstallSources::Approved{executable,..}=>activate_verified_exe(&new,&executable)?,
         #[cfg(feature="native-fr-cd")]
-        InstallSources::NativeFrench=>activate_pending_exe(base,&new)?,
+        InstallSources::NativeCd102=>activate_pending_exe(base,&new)?,
         #[cfg(feature="native-usde-updater")]
         InstallSources::NativeWithUpdater{updater}=>
             activate_native_usde_from_update(base,&new,&updater)?,
@@ -1251,7 +1252,7 @@ mod tests{
     #[cfg(feature="native-fr-cd")]
     #[test]
     fn cd_identification_does_not_fall_back_on_unknown_or_ambiguous_manifest(){
-        for edition in ["C_SKIES_FR_001","C_SKIES_FR_002","C_SKIES_DISC_001","C_SKIES_DE_001"]{
+        for edition in ["C_SKIES_FR_001","C_SKIES_FR_002","C_SKIES_DISC_001","C_SKIES_DE_001","C_SKIES_DISC_002"]{
             let report=format!("Edition={edition}\nEditionRecognition=EXACT_INTERNAL_FILE_MANIFEST\n");
             assert_eq!(authenticated_cd_edition(&report).unwrap(),edition);
         }

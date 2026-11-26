@@ -1,8 +1,8 @@
-# CrimsonSkiesFix — installateur expérimental, quatre éditions
+# CrimsonSkiesFix — installateur expérimental, cinq éditions
 
 **Build expérimental Win32 x86, non destiné à une release publique.**
 
-Ce test apporte une installation automatisée pour quatre profils de CD originaux. Le launcher vérifie l'image de CD et une copie **déjà possédée** du correctif officiel Microsoft 1.02, mais **n'exige plus d'exécutable déchiffré**.
+Ce test apporte une installation automatisée pour cinq profils de CD originaux. Le launcher vérifie l'image de CD et une copie **déjà possédée** du correctif officiel Microsoft 1.02, mais **n'exige plus d'exécutable déchiffré**.
 
 L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il lit le CAB intégré **en mémoire** après vérification de la taille, du SHA-256 et de sa structure ; les sources protégées 1.02 sont traitées par la bibliothèque Rust `unsafedisk` dans le même processus. Seul l'EXE 1.02 final est produit temporairement, puis activé via la transaction existante et sa sauvegarde du chargeur protégé CD. Aucun fichier propriétaire n'est embarqué.
 
@@ -16,8 +16,9 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 | C_SKIES_FR_002 (FR ancienne) | 107 | Correctif officiel 1.02 local |
 | C_SKIES_DISC_001 (US/Europe) | 112 | Correctif officiel 1.02 local |
 | C_SKIES_DE_001 (DE) | 107 | Correctif officiel 1.02 local |
+| C_SKIES_DISC_002 (Europe anglais 1.02) | 118 | Aucune — expérimental, test réel requis |
 
-Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les noms des images et leurs tailles globales ne déterminent pas l'édition.
+Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les éditions non officielles, repacks et traductions non authentifiées ne sont pas pris en charge. Les noms des images et leurs tailles globales ne déterminent pas l'édition.
 
 ## Test d'installation neuve
 
@@ -66,6 +67,8 @@ Les données exécutables finales sont validées sur le SHA-256 officiel de notr
 La source CD protégée est conservée en `game/CRIMSON.EXE.protected.bak`. Les données sauvegardées `SavedGames/` et `Planes/` et le mécanisme de rollback restent pris en charge. Le jeu et `fix.dll` résident dans `game/`, avec `state/`, `docs/` et les logs à côté du lanceur.
 
 Le **CD français révision 1.02** (`C_SKIES_FR_001`, 112 fichiers) reste utilisable sans correctif externe. Le nouveau profil expérimental `C_SKIES_FR_002` (107 fichiers, ancien ICD, CRIMPTCH.ROF absent) nécessite le correctif local comme US/DE. Une première installation réelle suivie d’un lancement sous Windows 11 a réussi avec `3b7b5597` (code de sortie 0). Un CD non reconnu est refusé avec une erreur d'identification explicite, sans demander inutilement un EXE.
+
+Le candidat `C_SKIES_DISC_002` a été inventorié intégralement. Son `SETUP.EXE` confirme les 40 noms longs de FR_001, son ICD correspond à la référence anglaise 1.02 et son chargeur exact est reconnu par la bibliothèque épinglée. Aucun fichier propriétaire n'est ajouté au projet. La reconstruction complète et le lancement depuis ce CD restent à tester avant validation.
 
 ## Limites
 

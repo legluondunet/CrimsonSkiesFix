@@ -574,7 +574,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Sou
     // The automatic install preflight has already authenticated the updater
     // and executable before extraction. The update application rechecks it.
     println!("Building original game installation from verified CD; update source: {}...",
-        if updater.is_some(){"authenticated official 1.02 updater"}else{"original French 1.02 CD"});
+        if updater.is_some(){"authenticated official 1.02 updater"}else{"original 1.02 CD"});
     let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
@@ -587,7 +587,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Sou
         Some(verified_update)=>{update102::apply_asset(&stage,extracted.edition,verified_update)?;}
         None=>{
             if !cfg!(feature="native-fr-cd") {return Err("missing authenticated updater".into());}
-            update102::verify_original_french_cd_asset(&stage,extracted.edition)?;
+            update102::verify_original_cd102_asset(&stage,extracted.edition)?;
         }
     }
     // Before publication, independently compare all expanded members against
@@ -622,7 +622,7 @@ fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Sou
          RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
-        if updater.is_some(){update102::PATCH_SHA256}else{"NOT_REQUIRED_ORIGINAL_FR_102_CD"},
+        if updater.is_some(){update102::PATCH_SHA256}else if extracted.edition=="C_SKIES_FR_001"{"NOT_REQUIRED_ORIGINAL_FR_102_CD"}else{"NOT_REQUIRED_ORIGINAL_EU_102_CD"},
         update102::ASSET_SHA256,
         finalized.members,finalized.zbd_files,finalized.payload_bytes,
         finalized.manifest_sha,finalized.short_name_candidates,
@@ -689,7 +689,7 @@ fn usage() {
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
          Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
-         EXPERIMENTAL: FR_001 uses CD alone; US/DE/FR_002 use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
+         EXPERIMENTAL: FR_001 and DISC_002 use CD alone; DISC_001/DE/FR_002 use CD + authenticated local 1.02 updater, with NO decrypted EXE.\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]

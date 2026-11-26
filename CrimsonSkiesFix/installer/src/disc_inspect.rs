@@ -437,11 +437,12 @@ impl Walker<'_> {
 // Edition signatures contain only internal CD file paths/sizes/SHA-256.
 // Raw ISO/BIN length, whole image hash, volume label and CUE tracks are
 // diagnostics only, not identifying signals.
-const PROFILES: [(&str,&str);4]=[
+const PROFILES: [(&str,&str);5]=[
     ("C_SKIES_DISC_001",include_str!("../profiles/c_skies_disc_001.tsv")),
     ("C_SKIES_FR_001",include_str!("../profiles/c_skies_fr_001.tsv")),
     ("C_SKIES_DE_001",include_str!("../profiles/c_skies_de_001.tsv")),
     ("C_SKIES_FR_002",include_str!("../profiles/c_skies_fr_002.tsv")),
+    ("C_SKIES_DISC_002",include_str!("../profiles/c_skies_disc_002.tsv")),
 ];
 fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
     let mut seen=0usize;
@@ -465,6 +466,7 @@ fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
 pub fn edition_selector(label:&str)->Option<&'static str> {
     match label.to_ascii_uppercase().as_str() {
         "USA"|"EN"|"C_SKIES_DISC_001"=>Some("C_SKIES_DISC_001"),
+        "C_SKIES_DISC_002"=>Some("C_SKIES_DISC_002"),
         "FR"|"C_SKIES_FR_001"=>Some("C_SKIES_FR_001"),
         "C_SKIES_FR_002"=>Some("C_SKIES_FR_002"),
         "DE"|"C_SKIES_DE_001"=>Some("C_SKIES_DE_001"),
@@ -475,6 +477,7 @@ pub fn edition_selector(label:&str)->Option<&'static str> {
 fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
     let suffix=match edition {
         "C_SKIES_DISC_001"=>"USA",
+        "C_SKIES_DISC_002"=>"EU102",
         "C_SKIES_FR_001"=>"FR",
         "C_SKIES_FR_002"=>"FR002",
         "C_SKIES_DE_001"=>"DE",
@@ -515,7 +518,7 @@ pub const RETAIL_SUPPORT_FILES:usize=8; // seven common + regional Readme
 fn retail_readme(edition:&str)->Result<(&'static str,&'static str),String>{
     match edition{
         "C_SKIES_FR_001"|"C_SKIES_FR_002"=>Ok(("LISEZMOI.RTF","Readme.rtf")),
-        "C_SKIES_DE_001"|"C_SKIES_DISC_001"=>Ok(("README.RTF","Readme.rtf")),
+        "C_SKIES_DE_001"|"C_SKIES_DISC_001"|"C_SKIES_DISC_002"=>Ok(("README.RTF","Readme.rtf")),
         _=>Err("unrecognized retail installer edition".into()),
     }
 }
@@ -546,7 +549,7 @@ pub fn normalize_game_filenames(game:&Path,edition:&str)->Result<usize,String>{
     }
     let originals=if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002"){
         &["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"][..]
-    } else if edition=="C_SKIES_DISC_001"||edition=="C_SKIES_DE_001" {
+    } else if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DISC_002"|"C_SKIES_DE_001") {
         &["CRIMSO_1.IFR","CSZONE_1.EXE"][..]
     } else {
         return Err("unsupported edition for retail filename normalization".into());
@@ -921,8 +924,8 @@ mod tests {
         dir
     }
     #[test]
-    fn all_four_profiles_recognize_only_exact_internal_file_content() {
-        let expected=[("C_SKIES_DISC_001",112),("C_SKIES_FR_001",112),("C_SKIES_DE_001",107),("C_SKIES_FR_002",107)];
+    fn all_five_profiles_recognize_only_exact_internal_file_content() {
+        let expected=[("C_SKIES_DISC_001",112),("C_SKIES_FR_001",112),("C_SKIES_DE_001",107),("C_SKIES_FR_002",107),("C_SKIES_DISC_002",118)];
         for ((edition,profile),(expected_edition,count)) in PROFILES.iter().zip(expected) {
             assert_eq!(*edition,expected_edition);
             let mut files=BTreeMap::new();
@@ -1003,6 +1006,7 @@ mod tests {
             ("C_SKIES_FR_002",3),
             ("C_SKIES_DE_001",2),
             ("C_SKIES_DISC_001",2),
+            ("C_SKIES_DISC_002",2),
         ]{
             let count=["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"]
                 .iter().filter(|s|!installed_game_name(edition,s).is_empty()).count();
@@ -1040,6 +1044,8 @@ mod tests {
         assert_eq!(edition_selector("C_SKIES_FR_002"),Some("C_SKIES_FR_002"));
         assert_ne!(stage_path(base,"C_SKIES_FR_001").unwrap(),stage_path(base,"C_SKIES_FR_002").unwrap());
         assert_eq!(edition_selector("USA"),Some("C_SKIES_DISC_001"));
+        assert_eq!(edition_selector("C_SKIES_DISC_002"),Some("C_SKIES_DISC_002"));
+        assert_ne!(stage_path(base,"C_SKIES_DISC_001").unwrap(),stage_path(base,"C_SKIES_DISC_002").unwrap());
         assert_eq!(edition_selector("unknown"),None);
     }
     #[test]

@@ -311,7 +311,7 @@ const US_DE_C2B_NAMES:[(&str,&str);5]=[
 ];
 
 fn valid_retail_edition(edition:&str)->bool{
-    matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002"|"C_SKIES_DE_001"|"C_SKIES_DISC_001")
+    matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002"|"C_SKIES_DE_001"|"C_SKIES_DISC_001"|"C_SKIES_DISC_002")
 }
 
 fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathBuf,String>{
@@ -326,7 +326,7 @@ fn canonical_chapter_name(source:&str,relative:&Path,edition:&str)->Result<PathB
     if !original.split('/').next().is_some_and(|c|c.eq_ignore_ascii_case(source_chapter)){
         return Err(format!("CAB member outside expected chapter {source}: {original}"));
     }
-    let matched=if source=="C2B.CAB" && edition!="C_SKIES_FR_001"{
+    let matched=if source=="C2B.CAB" && matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DE_001"|"C_SKIES_FR_002"){
         // USA, DE and FR_002 carry the SAME original C2B.CAB bytes. Their actual
         // CAB member aliases must be interpreted with this common table.
         US_DE_C2B_NAMES.iter().find(|(short,_)|short.eq_ignore_ascii_case(&original))
@@ -732,6 +732,13 @@ mod tests{
             PathBuf::from("C1/rtexture15.zbd"));
         assert_eq!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT60AC~1.ZBD"),"C_SKIES_FR_001").unwrap(),
             PathBuf::from("C2B/rtexture9.zbd"));
+        // Europe's 1.02 SETUP.EXE has all 40 exact FR_001 aliases.
+        for (short,long) in RETAIL_ZBD_NAMES {
+            let chapter=short.split('/').next().unwrap();
+            let cab=format!("{chapter}.CAB");
+            assert_eq!(canonical_chapter_name(&cab,Path::new(short),"C_SKIES_DISC_002").unwrap(),PathBuf::from(long));
+        }
+        assert!(canonical_chapter_name("C2B.CAB",Path::new("C2B/RT6C9C~1.ZBD"),"C_SKIES_DISC_002").is_err());
         assert!(canonical_chapter_name("C1.CAB",Path::new("C1/UNKNOWN~1.ZBD"),"C_SKIES_DE_001").is_err());
         assert!(canonical_chapter_name("C3.CAB",Path::new("C2B/RTEXTU~1.ZBD"),"C_SKIES_FR_001").is_err());
         assert_eq!(canonical_chapter_name("C4.CAB",Path::new("C4/IA1/mis_anim.zbd"),"C_SKIES_DISC_001").unwrap(),
