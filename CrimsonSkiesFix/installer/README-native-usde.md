@@ -16,7 +16,7 @@ L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il l
 | C_SKIES_FR_002 (FR ancienne) | 107 | Correctif officiel 1.02 local |
 | C_SKIES_DISC_001 (US/Europe) | 112 | Correctif officiel 1.02 local |
 | C_SKIES_DE_001 (DE) | 107 | Correctif officiel 1.02 local |
-| C_SKIES_DISC_002 (Europe anglais 1.02) | 118 | Aucune — expérimental, test réel requis |
+| C_SKIES_DISC_002 (Europe anglais 1.02) | 118 | Aucune — validé sous Wine 11.19 |
 
 Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 internes. Les éditions non officielles, repacks et traductions non authentifiées ne sont pas pris en charge. Les noms des images et leurs tailles globales ne déterminent pas l'édition.
 
@@ -33,7 +33,7 @@ Les profils sont identifiés par la totalité des chemins, tailles et SHA-256 in
 
 ## Diagnostic des sorties anormales
 
-Le lanceur affiche le code de retour du jeu dans la console et le consigne dans un rapport non cumulatif lors d’une installation, réparation ou sortie non nulle. Les relancements ordinaires réussis préservent le dernier rapport. Un code non nul ne prouve pas à lui seul un bug. Les lancements ordinaires ne créent plus de journal de session séparé ; les anciens fichiers peuvent être supprimés manuellement. Si le lanceur est interrompu, le code de retour peut rester inconnu.
+Le lanceur affiche le code de retour du jeu dans la console et le consigne dans un rapport non cumulatif lors d’une installation, réparation ou sortie non nulle. Le rapport identifie aussi la compilation, le profil vérifié (`Edition`) et la source du correctif consignée dans le reçu (`RecordedUpdateSource`). Une source non reconnue ou absente est signalée `UNKNOWN` ; cette information n'est pas un nouveau contrôle d'intégrité. Les relancements ordinaires réussis préservent le dernier rapport. Un code non nul ne prouve pas à lui seul un bug. Les lancements ordinaires ne créent plus de journal de session séparé ; les anciens fichiers peuvent être supprimés manuellement. Si le lanceur est interrompu, le code de retour peut rester inconnu.
 
 Pour obtenir le journal détaillé du runtime sans changer les réglages
 graphiques, définir temporairement `[Debug] Log=1` dans le fichier
@@ -68,7 +68,7 @@ La source CD protégée est conservée en `game/CRIMSON.EXE.protected.bak`. Les 
 
 Le **CD français révision 1.02** (`C_SKIES_FR_001`, 112 fichiers) reste utilisable sans correctif externe. Le nouveau profil expérimental `C_SKIES_FR_002` (107 fichiers, ancien ICD, CRIMPTCH.ROF absent) nécessite le correctif local comme US/DE. Une première installation réelle suivie d’un lancement sous Windows 11 a réussi avec `3b7b5597` (code de sortie 0). Un CD non reconnu est refusé avec une erreur d'identification explicite, sans demander inutilement un EXE.
 
-Le candidat `C_SKIES_DISC_002` a été inventorié intégralement. Son `SETUP.EXE` confirme les 40 noms longs de FR_001, son ICD correspond à la référence anglaise 1.02 et son chargeur exact est reconnu par la bibliothèque épinglée. Aucun fichier propriétaire n'est ajouté au projet. La reconstruction complète et le lancement depuis ce CD restent à tester avant validation.
+Le candidat `C_SKIES_DISC_002` a été inventorié intégralement. Son `SETUP.EXE` confirme les 40 noms longs de FR_001, son ICD correspond à la référence anglaise 1.02 et son chargeur exact est reconnu par la bibliothèque épinglée. Aucun fichier propriétaire n'est ajouté au projet. Le test réel `771b566e` sous Wine 11.19 a confirmé une installation neuve depuis le CD seul, 178 ZBD extraits, aucun alias restant, exécutable vérifié et sortie 0. Le reçu confirme `C_SKIES_DISC_002` et `NOT_REQUIRED_ORIGINAL_EU_102_CD`. La confirmation sous Windows natif reste à réaliser.
 
 ## Limites
 

@@ -843,6 +843,36 @@ fn finish_first_launch_log(base:&Path,code:i32)->Result<bool,String>{
 }
 
 
+// Provenance fields are diagnostic only. The edition passed here has
+// already passed independent installed-asset verification. Never print
+// arbitrary receipt text as a log line or infer the original update path
+// just from a known edition or the currently installed patch asset.
+fn recorded_update_source(edition:&str,receipt:&str)->&'static str{
+    let mut values=receipt.lines().filter_map(|line|line.strip_prefix("UpdateSHA256="));
+    let value=values.next();
+    if values.next().is_some(){return "UNKNOWN";}
+    match value{
+        Some("NOT_REQUIRED_ORIGINAL_FR_102_CD") if edition=="C_SKIES_FR_001"=>
+            "ORIGINAL_FR_102_CD",
+        Some("NOT_REQUIRED_ORIGINAL_EU_102_CD") if edition=="C_SKIES_DISC_002"=>
+            "ORIGINAL_EU_102_CD",
+        Some(hash) if hash==update102::PATCH_SHA256=>"OFFICIAL_102_UPDATER",
+        _=>"UNKNOWN",
+    }
+}
+
+fn install_provenance_fields(game:&Path,edition:Option<&str>)->String{
+    let Some(edition)=edition else{
+        return "Edition=UNKNOWN\nRecordedUpdateSource=UNKNOWN\n".into();
+    };
+    let path=receipt_path(game);
+    let source=if regular(&path) && fs::metadata(&path).is_ok_and(|m|m.len()<=2048){
+        fs::read_to_string(path).ok().map(|receipt|recorded_update_source(edition,&receipt))
+            .unwrap_or("UNKNOWN")
+    }else{"UNKNOWN"};
+    format!("Edition={edition}\nRecordedUpdateSource={source}\n")
+}
+
 /// Entry point for no-argument execution. The installer keeps its last
 /// meaningful installation/repair/error report in the root installer log.
 /// The DLL writes an independent fresh gameplay log on every game start.
@@ -855,7 +885,9 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
     }
     // Never log READY unless the final independent validation succeeded.
     let result=auto_prepare(base,game).and_then(|action|{
-        if regular(&receipt_path(game)){verify_installed_cd_assets(game)?;}
+        let edition=if regular(&receipt_path(game)){
+            Some(verify_installed_cd_assets(game)?.0)
+        }else{None};
         let exe=verify(game)?;
         // The unified installer records a one-shot first-launch log only
         // for an INI it created. Manually supplied INIs remain untouched.
@@ -867,34 +899,35 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
                 [Graphics]\nAspectRatio=auto\nFPSLimit=60\n\n[Debug]\nLog=1\n";
             ensure_new_text(&patch_dir(game).join("CrimsonSkiesFix.ini"),content)?;
         }
-        Ok((action,exe))
+        Ok((action,exe,edition))
     });
-    let needed=report_needed(result.as_ref().ok().map(|(action,_)|*action));
+    let needed=report_needed(result.as_ref().ok().map(|(action,_,_)|*action));
     let message=match &result{
-        Ok((action,_exe))=>{
+        Ok((action,_exe,edition))=>{
             let result_action=if launch {(*action).to_owned()}else{
                 format!("{}_ONLY",action.strip_suffix("_AND_LAUNCH").unwrap_or(action))
             };
             let launch_line=if launch {""}else{"GameLaunch=SKIPPED\n"};
+            let provenance=install_provenance_fields(game,*edition);
             format!(
-            "CrimsonSkiesFix AUTO INSTALL v1\nAction={result_action}\nGame={}\n\
-             VerifiedGameData={}\nApprovedExecutable={}\n\
+            "CrimsonSkiesFix AUTO INSTALL v1\nBuild={VERSION}-{}\nAction={result_action}\nGame={}\n\
+             {provenance}VerifiedGameData={}\nApprovedExecutable={}\n\
              OriginalProtectedBackup={}\nGosOverlayState={}\n{launch_line}AUTO_INSTALL_RESULT=READY\n",
-            game.display(),if regular(&receipt_path(game)){"YES"}else{"LEGACY_ONLY"},
+            &COMMIT[..8],game.display(),if edition.is_some(){"YES"}else{"LEGACY_ONLY"},
             if validated_game_exe(game).is_ok(){"SHA256_VERIFIED"}else{"NO"},
             if regular(&game.join(EXE_BACKUP)){"PRESERVED"}else{"LEGACY_OR_UNKNOWN"},
             crate::managed_gos_patch::verify_game_overlay(game)
                 .map(|state|state.label()).unwrap_or("INVALID_OR_UNKNOWN"))
         },
         Err(err)=>format!(
-            "CrimsonSkiesFix AUTO INSTALL v1\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
-            game.display()),
+            "CrimsonSkiesFix AUTO INSTALL v1\nBuild={VERSION}-{}\nGame={}\nAUTO_INSTALL_RESULT=ERROR\nERROR={err}\n",
+            &COMMIT[..8],game.display()),
     };
     write_installer_report(base,&message,needed)?;
     // Return the complete preflight error to the caller: main() prints it
     // to stderr for both interactive terminals and non-interactive scripts.
     // Never display a modal GUI dialog.
-    let (action,exe)=result?;
+    let (action,exe,edition)=result?;
     if !launch{
         println!("--install-only: installation verified and ready at {}; game NOT launched.",
             game.display());
@@ -947,9 +980,10 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
         Err(err)=>{
             // A failed game start is a new launcher error worth recording,
             // but never alters the independent DLL-owned gameplay log.
+            let provenance=install_provenance_fields(game,edition);
             let failure=format!(
-                "CrimsonSkiesFix AUTO INSTALL v1\nAction={action}\nGame={}\n                 AUTO_INSTALL_RESULT=ERROR\nERROR=GAME_LAUNCH_FAILED: {err}\n",
-                game.display());
+                "CrimsonSkiesFix AUTO INSTALL v1\nBuild={VERSION}-{}\nAction={action}\nGame={}\n{provenance}AUTO_INSTALL_RESULT=ERROR\nERROR=GAME_LAUNCH_FAILED: {err}\n",
+                &COMMIT[..8],game.display());
             write_installer_report(base,&failure,true)?;
             Err(error(err))
         }
@@ -978,6 +1012,36 @@ mod tests{
             }
         }
         panic!("could not reserve distinct auto-install test directory")
+    }
+    #[test]
+    fn update_source_diagnostic_reports_only_recognized_receipt_values(){
+        assert_eq!(recorded_update_source("C_SKIES_FR_001","UpdateSHA256=NOT_REQUIRED_ORIGINAL_FR_102_CD\n"),"ORIGINAL_FR_102_CD");
+        assert_eq!(recorded_update_source("C_SKIES_DISC_002","UpdateSHA256=NOT_REQUIRED_ORIGINAL_EU_102_CD\n"),"ORIGINAL_EU_102_CD");
+        for edition in ["C_SKIES_DISC_001","C_SKIES_FR_002","C_SKIES_DE_001"]{
+            let receipt=format!("UpdateSHA256={}\n",update102::PATCH_SHA256);
+            assert_eq!(recorded_update_source(edition,&receipt),"OFFICIAL_102_UPDATER");
+        }
+        for receipt in ["","UpdateSHA256=unverified\n",
+            "UpdateSHA256=NOT_REQUIRED_ORIGINAL_FR_102_CD\n",
+            "UpdateSHA256=NOT_REQUIRED_ORIGINAL_EU_102_CD\nUpdateSHA256=unknown\n"]{
+            assert_eq!(recorded_update_source("C_SKIES_DISC_002",receipt),"UNKNOWN");
+        }
+    }
+    #[test]
+    fn provenance_diagnostic_does_not_infer_missing_source_or_legacy_edition(){
+        let root=temp();
+        let game=root.join(GAME_FOLDER);
+        let receipt=receipt_path(&game);
+        fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+        fs::write(&receipt,b"Edition=C_SKIES_DISC_002\nUpdateSHA256=NOT_REQUIRED_ORIGINAL_EU_102_CD\n").unwrap();
+        assert_eq!(install_provenance_fields(&game,Some("C_SKIES_DISC_002")),
+            "Edition=C_SKIES_DISC_002\nRecordedUpdateSource=ORIGINAL_EU_102_CD\n");
+        assert_eq!(install_provenance_fields(&game,None),
+            "Edition=UNKNOWN\nRecordedUpdateSource=UNKNOWN\n");
+        fs::write(&receipt,b"Edition=C_SKIES_DISC_002\n").unwrap();
+        assert_eq!(install_provenance_fields(&game,Some("C_SKIES_DISC_002")),
+            "Edition=C_SKIES_DISC_002\nRecordedUpdateSource=UNKNOWN\n");
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn old_generated_installer_log_removed_only_when_replaced(){
