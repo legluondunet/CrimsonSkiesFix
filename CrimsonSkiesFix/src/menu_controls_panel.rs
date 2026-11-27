@@ -1,6 +1,6 @@
 //! Modal static controls diagram, with active SDL3 controller artwork.
 //! Only the exact observed Controls Preferences page; original UI remains.
-use std::{ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicBool,AtomicU8,Ordering}},time::{Duration,Instant}};
+use std::{ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicU8,Ordering}},time::{Duration,Instant}};
 use crate::borderless_native_blt::Rect;
 type H=*mut c_void;
 const NONE:u8=0;
@@ -23,10 +23,10 @@ impl Default for Input{
 }
 static INPUT:OnceLock<Mutex<Input>>=OnceLock::new();
 fn input()->&'static Mutex<Input>{INPUT.get_or_init(||Mutex::new(Input::default()))}
-fn close(s:&mut Input){
+fn close(s:&mut Input,reason:&str){
     if s.open{
         s.open=false;s.present=None;
-        if crate::cfg().log_enabled{crate::log("MENU-CONTROLS-PANEL: closed");}
+        if crate::cfg().log_enabled{crate::log(&format!("MENU-CONTROLS-PANEL: closed reason={reason}"));}
     }
 }
 fn family_for(kind:i32,name:&str)->u8{
@@ -43,24 +43,31 @@ fn family_for(kind:i32,name:&str)->u8{
 pub fn device_selected(kind:i32,name:&str){
     let family=family_for(kind,name);
     FAMILY.store(family,Ordering::Release);
-    if let Ok(mut s)=input().lock(){close(&mut s);s.buttons=0;s.axis=false;s.pad_block=false;}
+    if let Ok(mut s)=input().lock(){takeover(&mut s);}
     if crate::cfg().log_enabled{crate::log(&format!("MENU-CONTROLS-PANEL: active family={family} SDL type={kind}"));}
+}
+fn takeover(s:&mut Input){
+    // Selection happens before the new controller's first sample. Carry
+    // the modal dismissal block across the change, until neutral.
+    let block=s.open||s.pad_block;
+    close(s,"controller-change");
+    s.buttons=0;s.axis=false;s.pad_block=block;
 }
 pub fn device_removed(){
     FAMILY.store(0,Ordering::Release);
-    reset_input();
+    if let Ok(mut s)=input().lock(){takeover(&mut s);}
 }
 pub fn reset_input(){
-    if let Ok(mut s)=input().lock(){close(&mut s);*s=Input::default();}
+    if let Ok(mut s)=input().lock(){close(&mut s,"focus-reset");*s=Input::default();}
 }
 fn context()->bool{page_active()&&crate::menu_gos_event::preferences_transaction_active()&&crate::menu_video_probe::legacy_ui_active()}
 fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     let pressed=buttons&!s.buttons;
     let moved=axis&&!s.axis;
     s.buttons=buttons;s.axis=axis;
-    if !eligible{close(s);s.pad_block=false;return false;}
+    if !eligible{close(s,"page-exit");s.pad_block=false;return false;}
     if s.open{
-        if pressed!=0||moved{close(s);s.pad_block=true;}
+        if pressed!=0||moved{close(s,if pressed!=0{"gamepad-button"}else{"gamepad-axis"});s.pad_block=true;}
         return true;
     }
     if s.pad_block{
@@ -76,14 +83,14 @@ fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool
 }
 pub fn pad_event(buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     let Ok(mut s)=input().lock()else{return false;};
-    if s.open&&s.present.is_some_and(|t|t.elapsed()>Duration::from_secs(2)){close(&mut s);}
+    if s.open&&s.present.is_some_and(|t|t.elapsed()>Duration::from_secs(2)){close(&mut s,"presentation-timeout");}
     pad_step(&mut s,buttons,axis,neutral,eligible&&context()&&FAMILY.load(Ordering::Acquire)!=0)
 }
 pub fn mouse_event(buttons:u32,moved:bool)->bool{
     if !context(){return false;}
     let Ok(mut s)=input().lock()else{return false;};
     if s.open{
-        if buttons!=0||moved{close(&mut s);s.mouse_block=buttons!=0;}
+        if buttons!=0||moved{close(&mut s,if buttons!=0{"mouse-button"}else{"mouse-motion"});s.mouse_block=buttons!=0;}
         return true;
     }
     if s.mouse_block{
@@ -99,11 +106,11 @@ pub fn keyboard_event(scan:usize,pressed:bool){
     if scan>=256{return;}
     if let Ok(mut s)=input().lock(){
         s.keys[scan]=pressed;
-        if pressed{close(&mut s);}
+        if pressed{close(&mut s,"keyboard");}
     }
 }
 pub fn is_open()->bool{context()&&input().lock().is_ok_and(|s|s.open)}
-pub fn fail_preview(){if let Ok(mut s)=input().lock(){close(&mut s);}}
+pub fn fail_preview(){if let Ok(mut s)=input().lock(){close(&mut s,"page-or-render-reset");}}
 fn edition_language(s:&str)->u8{
     let mut ids=s.lines().filter_map(|l|l.strip_prefix("Edition="));
     let code=match ids.next(){Some("C_SKIES_FR_001"|"C_SKIES_FR_002")=>2,Some("C_SKIES_DE_001")=>3,_=>1};
@@ -140,7 +147,7 @@ fn labels(family:u8)->Labels{
 static DRAW_KIND:AtomicU8=AtomicU8::new(0);
 static PENDING:AtomicU8=AtomicU8::new(0);
 static LAST_PRESENT:AtomicU8=AtomicU8::new(0);
-static SEEN:AtomicBool=AtomicBool::new(false);
+static SEEN:AtomicU8=AtomicU8::new(0);
 fn next_page(old:u8,name:&str)->u8{
     match name{
         "cp_background"=>CANDIDATE,
@@ -192,17 +199,41 @@ extern "system"{
     fn RoundRect(dc:H,l:i32,t:i32,r:i32,b:i32,ew:i32,eh:i32)->i32;
     fn Polygon(dc:H,points:*const Point,count:i32)->i32;
     fn MoveToEx(dc:H,x:i32,y:i32,old:*mut Point)->i32;
+    fn BeginPath(dc:H)->i32;
+    fn EndPath(dc:H)->i32;
+    fn CloseFigure(dc:H)->i32;
+    fn PolyBezierTo(dc:H,points:*const Point,count:u32)->i32;
+    fn StrokeAndFillPath(dc:H)->i32;
+    fn AbortPath(dc:H)->i32;
+    fn CreateCompatibleDC(dc:H)->H;
+    fn DeleteDC(dc:H)->i32;
+    fn CreateDIBSection(dc:H,info:*const BitmapInfo,usage:u32,bits:*mut H,section:H,offset:u32)->H;
+    fn GdiFlush()->i32;
+    fn StretchDIBits(dc:H,x:i32,y:i32,w:i32,h:i32,sx:i32,sy:i32,sw:i32,sh:i32,bits:*const c_void,info:*const BitmapInfo,usage:u32,rop:u32)->i32;
     fn LineTo(dc:H,x:i32,y:i32)->i32;
 }
 #[repr(C)]#[derive(Clone,Copy)]struct Point{x:i32,y:i32}
+#[repr(C)]struct BitmapInfo{size:u32,width:i32,height:i32,planes:u16,bits:u16,compression:u32,image_size:u32,xppm:i32,yppm:i32,used:u32,important:u32}
+fn bitmap_info()->BitmapInfo{BitmapInfo{size:40,width:800,height:-360,planes:1,bits:32,compression:0,image_size:800*360*4,xppm:0,yppm:0,used:0,important:0}}
+struct Artwork{family:u8,lang:u8,pixels:Vec<u32>}
+static ART:OnceLock<Mutex<Option<Artwork>>>=OnceLock::new();
 fn rect(l:i32,t:i32,r:i32,b:i32)->Rect{Rect{left:l,top:t,right:r,bottom:b}}
-fn rgb(r:u32,g:u32,b:u32)->u32{r|(g<<8)|(b<<16)}
-const INK:u32=0x00263849;
-const PAPER:u32=0x009dbcd1;
-const PANEL:u32=0x0085a5bd;
-const EDGE:u32=0x00485c72;
-const DARK:u32=0x00364655;
-const LIGHT:u32=0x00b9d1e5;
+const fn rgb(r:u32,g:u32,b:u32)->u32{r|(g<<8)|(b<<16)}
+const INK:u32=rgb(17,12,10);
+const PAPER:u32=rgb(84,13,16);
+const PANEL:u32=rgb(47,42,37);
+const EDGE:u32=rgb(155,113,55);
+const DARK:u32=rgb(23,21,20);
+const LIGHT:u32=rgb(246,219,158);
+const GOLD:u32=rgb(223,176,77);
+const STEEL:u32=rgb(103,99,89);
+const SHINE:u32=rgb(172,159,131);
+const RED:u32=rgb(106,17,20);
+const BRASS_DARK:u32=rgb(91,58,27);
+fn mix(a:u32,b:u32,t:u32,n:u32)->u32{
+    let c=|shift:u32|(((a>>shift)&255)*(n-t)+((b>>shift)&255)*t)/n;
+    rgb(c(0),c(8),c(16))
+}
 pub fn eligible(view:Rect)->bool{
     context()&&FAMILY.load(Ordering::Acquire)!=0&&view==rect(0,0,800,600)
 }
@@ -242,9 +273,9 @@ impl Painter{
         let points:Vec<Point>=pts.iter().map(|&(x,y)|Point{x,y}).collect();
         self.with_shape(c,INK,|d|Polygon(d,points.as_ptr(),points.len() as i32));
     }
-    unsafe fn line(&mut self,pts:&[(i32,i32)]){
+    unsafe fn line_color(&mut self,pts:&[(i32,i32)],color:u32,width:i32){
         if pts.len()<2{return;}
-        let pen=CreatePen(0,1,EDGE);if pen.is_null(){self.ok=false;return;}
+        let pen=CreatePen(0,width,color);if pen.is_null(){self.ok=false;return;}
         let old=SelectObject(self.dc,pen);
         if old.is_null()||old as isize == -1{self.ok=false;}else{
             self.ok&=MoveToEx(self.dc,pts[0].0,pts[0].1,ptr::null_mut())!=0;
@@ -254,7 +285,7 @@ impl Painter{
         DeleteObject(pen);
     }
     unsafe fn text(&mut self,r:Rect,s:&str,size:i32,bold:bool,align:u32,color:u32){
-        let face:Vec<u16>=if bold{"Georgia"}else{"Arial"}.encode_utf16().chain([0]).collect();
+        let face:Vec<u16>=if bold{"Arial Narrow"}else{"Arial"}.encode_utf16().chain([0]).collect();
         let font=CreateFontW(-size,0,0,0,if bold{700}else{400},0,0,0,1,0,0,4,0,face.as_ptr());
         if font.is_null(){self.ok=false;return;}
         let old=SelectObject(self.dc,font);
@@ -266,96 +297,204 @@ impl Painter{
         }
         DeleteObject(font);
     }
-    unsafe fn legend(&mut self,x:i32,y:i32,w:i32,head:&str,body:&str,right:bool){
-        let align=if right{2}else{0};
-        self.text(rect(x,y,x+w,y+20),head,15,true,align,INK);
-        self.text(rect(x,y+21,x+w,y+41),body,14,false,align,INK);
+    unsafe fn plate(&mut self,r:Rect){
+        self.rounded(r,INK,12);
+        self.rounded(rect(r.left+1,r.top+1,r.right-1,r.bottom-1),BRASS_DARK,10);
+        self.rounded(rect(r.left+2,r.top+2,r.right-2,r.bottom-2),GOLD,9);
+        self.rounded(rect(r.left+4,r.top+4,r.right-4,r.bottom-4),PANEL,7);
+        self.line_color(&[(r.left+9,r.top+4),(r.right-9,r.top+4)],SHINE,1);
+        self.line_color(&[(r.left+9,r.bottom-5),(r.right-9,r.bottom-5)],DARK,1);
     }
-    unsafe fn panel(&mut self,family:u8){
-        let b=labels(family);
-        self.fill(rect(42,49,758,551),DARK);
-        self.fill(rect(46,53,754,547),PAPER);
-        self.fill(rect(53,60,747,540),EDGE);
-        self.fill(rect(55,62,745,538),PAPER);
-        for (x,y) in [(62,69),(738,69),(62,531),(738,531)]{self.circle(x,y,3,EDGE);}
-        self.text(rect(75,73,725,111),tr("FLIGHT CONTROLS","COMMANDES DE VOL","FLUGSTEUERUNG"),28,true,1,INK);
-        self.line(&[(90,115),(710,115)]);
-        self.text(rect(75,120,725,142),match family{PS=>"PLAYSTATION",XBOX=>"XBOX",_=>tr("STANDARD GAMEPAD","MANETTE STANDARD","STANDARD-GAMEPAD")},14,false,1,INK);
-        // Original vectors; independent geometry for symmetric PlayStation
-        // sticks and offset Xbox sticks. Unidentified pads use positional labels.
-        self.rounded(rect(275,192,341,226),PANEL,12);
-        self.rounded(rect(459,192,525,226),PANEL,12);
-        self.rounded(rect(268,216,344,239),EDGE,8);
-        self.rounded(rect(456,216,532,239),EDGE,8);
-        let (lx,ly,dx,dy,rx,ry)=if family==PS{
-            self.poly(&[(285,238),(310,229),(350,235),(450,235),(490,229),(515,238),
-                (535,262),(546,304),(550,351),(546,378),(533,395),(514,398),(496,386),(470,351),
-                (330,351),(304,386),(286,398),(267,395),(254,378),(250,351),(254,304),(265,262)],PANEL);
-            self.rounded(rect(354,237,446,285),EDGE,8);
-            self.rounded(rect(337,249,348,261),DARK,5);
-            self.rounded(rect(452,249,463,261),DARK,5);
-            self.circle(400,317,10,LIGHT);
-            (346,327,315,267,454,327)
-        }else{
-            self.poly(&[(285,238),(310,228),(350,238),(450,238),(490,228),(515,238),
-                (540,273),(553,333),(550,370),(536,394),(518,398),(496,376),(465,344),
-                (335,344),(304,376),(282,398),(264,394),(250,370),(247,333),(260,273)],PANEL);
-            self.rounded(rect(373,268,391,279),DARK,5);
-            self.rounded(rect(409,268,427,279),DARK,5);
-            self.circle(400,248,11,LIGHT);
-            (321,267,344,317,454,327)
-        };
-        for (x,y) in [(lx,ly),(rx,ry)]{self.circle(x,y,28,DARK);self.circle(x,y,20,EDGE);}
-        self.poly(&[(dx-6,dy-19),(dx+6,dy-19),(dx+6,dy-6),(dx+19,dy-6),
-            (dx+19,dy+6),(dx+6,dy+6),(dx+6,dy+19),(dx-6,dy+19),
-            (dx-6,dy+6),(dx-19,dy+6),(dx-19,dy-6),(dx-6,dy-6)],DARK);
-        for ((x,y),t) in [(487,251),(509,273),(465,273),(487,295)].into_iter().zip(b.face){
-            self.circle(x,y,10,DARK);
-            // Draw the PS glyphs as geometry so no symbol font is required.
-            if family==PS{
-                match t{
-                    "△"=>self.poly(&[(x,y-5),(x-5,y+4),(x+5,y+4)],LIGHT),
-                    "○"=>{self.circle(x,y,5,LIGHT);self.circle(x,y,3,DARK);},
-                    "□"=>self.rounded(rect(x-5,y-5,x+5,y+5),LIGHT,1),
-                    _=>{self.line(&[(x-5,y-5),(x+5,y+5)]);self.line(&[(x+5,y-5),(x-5,y+5)]);}
-                }
-            }else{self.text(rect(x-9,y-9,x+9,y+9),t,11,true,1,LIGHT);}
+    unsafe fn rivet(&mut self,x:i32,y:i32){
+        self.circle(x,y,4,INK);self.circle(x,y,3,EDGE);
+        self.line_color(&[(x-1,y-1),(x+1,y+1)],LIGHT,1);
+    }
+    unsafe fn label(&mut self,x:i32,y:i32,head:&str,body:&str){
+        self.plate(rect(x,y,x+196,y+31));
+        self.rounded(rect(x+7,y+6,x+54,y+25),DARK,6);
+        self.text(rect(x+8,y+5,x+53,y+26),head,12,true,1,LIGHT);
+        self.text(rect(x+58,y+4,x+190,y+27),body,13,true,0,LIGHT);
+    }
+    unsafe fn wire(&mut self,pts:&[(i32,i32)]){
+        self.line_color(pts,INK,4);
+        self.line_color(pts,GOLD,2);
+        if let Some(&(x,y))=pts.last(){
+            self.circle(x,y,4,BRASS_DARK);self.circle(x,y,3,GOLD);
+            self.line_color(&[(x-1,y-1),(x+1,y-1)],LIGHT,1);
         }
-        self.legend(72,152,175,b.lt,tr("Fire rockets","Tirer les roquettes","Raketen abfeuern"),false);
-        self.legend(72,202,175,b.lb,tr("Previous enemy","Ennemi précédent","Vorheriger Gegner"),false);
-        self.legend(72,252,175,tr("LEFT STICK","STICK GAUCHE","LINKER STICK"),tr("Pitch / Roll","Tangage / Roulis","Nicken / Rollen"),false);
-        self.legend(72,302,175,if family==PS{"L3"}else{tr("L3 / LS","L3 / LS","L3 / LS")},tr("Cycle rockets","Changer de roquettes","Raketen wechseln"),false);
-        self.legend(72,352,175,tr("D-PAD","CROIX DIRECTIONNELLE","STEUERKREUZ"),tr("Menu cursor","Curseur des menus","Menüzeiger"),false);
-        self.legend(553,146,175,b.rt,tr("Fire guns","Tirer aux mitrailleuses","MG abfeuern"),true);
-        self.legend(553,190,175,b.rb,tr("Next enemy","Ennemi suivant","Nächster Gegner"),true);
-        self.legend(553,234,175,b.north,tr("Target attacker","Cibler l'attaquant","Angreifer anvisieren"),true);
-        self.legend(553,278,175,b.east,tr("Nitro","Nitro","Nitro"),true);
-        self.legend(553,322,175,b.south,tr("Cycle guns","Changer d'arme","Waffen wechseln"),true);
-        self.legend(553,366,175,b.west,tr("Cycle views","Changer de vue","Ansicht wechseln"),true);
-        self.line(&[(205,173),(259,173),(300,192)]);
-        self.line(&[(205,223),(254,223),(276,226)]);
-        self.line(&[(205,273),(lx-28,ly)]);
-        self.line(&[(205,323),(249,323),(lx-19,ly+20)]);
-        self.line(&[(205,373),(dx-20,373),(dx,dy+19)]);
-        self.line(&[(595,167),(541,167),(500,192)]);
-        self.line(&[(595,211),(546,211),(524,226)]);
-        self.line(&[(595,255),(539,255),(497,251)]);
-        self.line(&[(595,299),(564,299),(519,273)]);
-        self.line(&[(595,343),(559,343),(497,295)]);
-        self.line(&[(465,283),(477,308),(482,371),(595,387)]);
-        self.line(&[(rx,ry+28),(rx,399)]);
-        self.text(rect(260,400,540,421),tr("RIGHT STICK: Yaw / Throttle","STICK DROIT : Lacet / Gaz","RECHTER STICK: Gieren / Gas"),15,true,1,INK);
-        self.text(rect(260,422,540,441),tr("Up: increase / Down: decrease","Haut : augmenter / Bas : réduire","Oben: mehr / Unten: weniger"),14,false,1,INK);
-        let pause=format!("{} : {}",b.start,tr("Pause","Pause","Pause"));
-        self.text(rect(72,402,245,439),&pause,14,true,0,INK);
-        self.fill(rect(73,451,727,510),PANEL);
-        let menus=format!("{}: {} = {}     {} = {}",tr("MENUS","MENUS","MENÜS"),b.south,tr("Select","Valider","Auswählen"),b.east,tr("Back","Retour","Zurück"));
-        let movies=format!("{}: {} / {} / {} = {}",tr("CINEMATICS","CINÉMATIQUES","ZWISCHENSEQUENZEN"),b.south,b.east,b.start,tr("Skip","Passer","Überspringen"));
-        self.text(rect(78,456,722,473),&menus,14,false,1,INK);
-        self.text(rect(78,474,722,491),&movies,14,false,1,INK);
-        self.text(rect(78,492,722,509),tr("Press any button or key to return","Une touche ou un bouton pour revenir","Beliebige Taste zum Schließen"),14,true,1,INK);
-        self.text(rect(80,515,720,534),"CrimsonSkiesFix",12,true,1,EDGE);
     }
+    unsafe fn shell(&mut self,ps:bool,c:u32,edge:u32,offset:i32){
+        let start=Point{x:286,y:64+offset};
+        let pts=if ps{[
+            (313,50),(332,61),(352,65),(385,66),(415,66),(448,65),
+            (468,61),(487,50),(514,64),(544,81),(556,135),(560,178),
+            (566,211),(553,239),(532,240),(506,242),(487,211),(473,192),
+            (455,179),(345,179),(327,192),(313,211),(294,242),(268,240),
+            (247,239),(234,211),(240,178),(244,135),(256,81),(286,64),
+        ]}else{[
+            (313,50),(332,58),(352,62),(385,63),(415,63),(448,62),
+            (468,58),(487,50),(514,64),(545,88),(558,131),(561,177),
+            (567,211),(551,239),(530,240),(506,242),(485,210),(470,186),
+            (451,174),(349,174),(330,186),(315,210),(294,242),(270,240),
+            (249,239),(233,211),(239,177),(242,131),(255,88),(286,64),
+        ]};
+        let points:Vec<Point>=pts.into_iter().map(|(x,y)|Point{x,y:y+offset}).collect();
+        self.with_shape(c,edge,|dc|{
+            if BeginPath(dc)==0{return 0;}
+            if MoveToEx(dc,start.x,start.y,ptr::null_mut())==0||
+                PolyBezierTo(dc,points.as_ptr(),points.len() as u32)==0||
+                CloseFigure(dc)==0||EndPath(dc)==0{
+                AbortPath(dc);return 0;
+            }
+            StrokeAndFillPath(dc)
+        });
+    }
+    unsafe fn stick(&mut self,x:i32,y:i32){
+        self.circle(x,y,29,INK);self.circle(x,y,26,STEEL);
+        self.circle(x,y,23,DARK);self.circle(x,y,19,INK);
+        for r in (3..=17).rev(){
+            let c=mix(rgb(31,29,27),rgb(76,72,65),(17-r) as u32,14);
+            self.circle(x,y-1,r,c);
+        }
+        self.line_color(&[(x-11,y-13),(x-4,y-15),(x+5,y-15),(x+12,y-11)],SHINE,1);
+    }
+    unsafe fn face_symbol(&mut self,x:i32,y:i32,i:usize,ps:bool,t:&str){
+        self.circle(x,y,13,INK);self.circle(x,y,11,STEEL);self.circle(x,y,9,DARK);
+        let c=if ps{[rgb(92,214,177),rgb(228,91,92),rgb(215,118,190),rgb(115,170,235)][i]}
+            else{[rgb(234,197,72),rgb(222,88,81),rgb(105,166,224),rgb(99,191,110)][i]};
+        if ps{
+            match i{
+                0=>self.line_color(&[(x,y-6),(x-6,y+5),(x+6,y+5),(x,y-6)],c,2),
+                1=>{self.with_shape(DARK,c,|d|Ellipse(d,x-6,y-6,x+6,y+6));},
+                2=>self.line_color(&[(x-5,y-5),(x+5,y-5),(x+5,y+5),(x-5,y+5),(x-5,y-5)],c,2),
+                _=>{self.line_color(&[(x-5,y-5),(x+5,y+5)],c,2);self.line_color(&[(x+5,y-5),(x-5,y+5)],c,2);}
+            }
+        }else{self.text(rect(x-9,y-9,x+9,y+9),t,13,true,1,c);}
+    }
+    // Cached 800x360 bottom panel, preserving the game's own title/emblem.
+    unsafe fn panel(&mut self,family:u8){
+        let b=labels(family);let ps=family==PS;
+        self.fill(rect(0,0,800,360),PAPER);
+        // Original procedural red leather/paint texture. Deterministic,
+        // restrained noise; no external game graphics are distributed.
+        for y in 0..360{
+            let tone=if y<180{y}else{360-y};
+            self.fill(rect(0,y,800,y+1),mix(rgb(43,7,10),RED,tone as u32,180));
+        }
+        self.rounded(rect(7,12,793,354),INK,24);
+        self.rounded(rect(9,13,791,352),STEEL,22);
+        self.rounded(rect(13,17,787,348),SHINE,20);
+        self.rounded(rect(16,20,784,345),BRASS_DARK,18);
+        self.rounded(rect(19,23,781,342),DARK,16);
+        self.rounded(rect(23,27,777,338),PAPER,14);
+        for y in 30..335{
+            let tone=if y<180{y}else{360-y};
+            self.fill(rect(27,y,773,y+1),mix(rgb(54,8,11),RED,tone as u32,180));
+        }
+        for i in 0..24{
+            let x=35+i*32;
+            for y in [20,345]{self.circle(x,y,5,INK);self.circle(x,y,3,PAPER);}
+        }
+        for (x,y) in [(16,25),(784,25),(16,339),(784,339)]{self.rivet(x,y);}
+        self.plate(rect(224,1,576,38));
+        self.text(rect(232,3,568,35),tr("GAMEPAD CONTROLS","COMMANDES - MANETTE","GAMEPAD-STEUERUNG"),23,true,1,LIGHT);
+        self.text(rect(242,39,558,56),match family{PS=>"PLAYSTATION",XBOX=>"XBOX",_=>tr("STANDARD GAMEPAD","MANETTE STANDARD","STANDARD-GAMEPAD")},12,true,1,GOLD);
+        // Rounded shoulder controls and layered, curved controller shell.
+        for x in [282,468]{
+            self.rounded(rect(x,47,x+52,82),INK,12);
+            self.rounded(rect(x+2,49,x+50,72),STEEL,10);
+            self.rounded(rect(x-5,68,x+57,91),DARK,9);
+            self.line_color(&[(x+3,70),(x+49,70)],SHINE,1);
+        }
+        self.shell(ps,INK,INK,4);
+        self.shell(ps,STEEL,INK,0);
+        self.shell(ps,PANEL,SHINE,1);
+        self.line_color(&[(270,101),(260,139),(253,179),(254,199)],STEEL,2);
+        self.line_color(&[(530,101),(540,139),(547,179),(546,199)],STEEL,2);
+        let (lx,ly,dx,dy,rx,ry,options)=if ps{
+            self.rounded(rect(353,71,447,126),INK,10);
+            self.rounded(rect(356,74,444,123),DARK,8);
+            for y in (80..120).step_by(5){self.line_color(&[(362,y),(438,y)],PANEL,1);}
+            self.rounded(rect(337,76,349,96),STEEL,5);
+            self.rounded(rect(451,76,463,96),STEEL,5);
+            self.circle(400,165,11,INK);self.circle(400,165,8,STEEL);
+            (345,169,306,111,455,169,(457,86))
+        }else{
+            self.circle(400,83,13,INK);self.circle(400,83,10,STEEL);
+            self.rounded(rect(374,112,390,125),DARK,5);
+            self.rounded(rect(410,112,426,125),DARK,5);
+            (310,111,345,169,455,169,(418,118))
+        };
+        self.circle(dx,dy,25,INK);self.circle(dx,dy,23,DARK);
+        self.poly(&[(dx-7,dy-19),(dx+7,dy-19),(dx+7,dy-7),(dx+19,dy-7),
+            (dx+19,dy+7),(dx+7,dy+7),(dx+7,dy+19),(dx-7,dy+19),
+            (dx-7,dy+7),(dx-19,dy+7),(dx-19,dy-7),(dx-7,dy-7)],STEEL);
+        self.stick(lx,ly);self.stick(rx,ry);
+        for (i,((x,y),t)) in [(494,87),(514,111),(474,111),(494,135)].into_iter().zip(b.face).enumerate(){
+            self.face_symbol(x,y,i,ps,t);
+        }
+        // Callout rows: left and right aligned, leaders terminate on the
+        // actual controls. Route the west face key around the lower edge
+        // rather than across the other face-button symbols.
+        let l=28;let r=576;
+        self.wire(&[(224,66),(255,66),(294,53)]);
+        self.wire(&[(224,103),(246,103),(284,76)]);
+        self.wire(&[(224,140),(245,140),(dx-19,dy)]);
+        self.wire(&[(224,177),(249,177),(lx-19,ly+8)]);
+        self.wire(&[(224,214),(265,214),(lx,ly+24)]);
+        self.wire(&[(576,66),(545,66),(506,53)]);
+        self.wire(&[(576,103),(552,103),(518,76)]);
+        self.wire(&[(576,140),(549,140),(529,87),(506,87)]);
+        self.wire(&[(576,177),(559,177),(527,111)]);
+        self.wire(&[(576,214),(546,214),(507,148),(494,147)]);
+        self.wire(&[(576,251),(524,251),(478,224),(474,123)]);
+        self.wire(&[(224,251),(268,251),(rx,251),(rx,ry+29)]);
+        self.wire(&[(400,261),(400,221),(427,208),(427,137),options]);
+        self.label(l,50,b.lt,tr("Fire rockets","Tir roquettes","Raketenfeuer"));
+        self.label(l,87,b.lb,tr("Previous enemy","Ennemi précédent","Voriger Gegner"));
+        self.label(l,124,tr("D-PAD","CROIX","KREUZ"),tr("Menu cursor","Curseur menu","Menüzeiger"));
+        self.label(l,161,tr("L STICK","STICK G","L STICK"),tr("Pitch / Roll","Tangage / roulis","Nicken / Rollen"));
+        self.label(l,198,if ps{"L3"}else{"LS"},tr("Cycle rockets","Changer roquettes","Raketen wechseln"));
+        self.label(l,235,tr("R STICK","STICK D","R STICK"),tr("Yaw / Throttle","Lacet / gaz","Gieren / Gas"));
+        self.label(r,50,b.rt,tr("Fire guns","Tir mitrailleuses","MG-Feuer"));
+        self.label(r,87,b.rb,tr("Next enemy","Ennemi suivant","Nächster Gegner"));
+        self.label(r,124,b.north,tr("Target attacker","Cibler l'attaquant","Angreifer wählen"));
+        self.label(r,161,b.east,tr("Nitro","Nitro","Nitro"));
+        self.label(r,198,b.south,tr("Cycle guns","Changer d'arme","Waffen wechseln"));
+        self.label(r,235,b.west,tr("Cycle views","Changer de vue","Ansicht wechseln"));
+        self.plate(rect(306,260,494,283));
+        let pause=format!("{} : {}",b.start,tr("Pause","Pause","Pause"));
+        self.text(rect(311,261,489,282),&pause,13,true,1,LIGHT);
+        let menus=format!("{}: {} = {}   {} = {}",tr("MENUS","MENUS","MENÜS"),b.south,tr("Select","Valider","Auswählen"),b.east,tr("Back","Retour","Zurück"));
+        let movies=format!("{}: {} / {} / {} = {}",tr("CINEMATICS","CINÉMATIQUES","ZWISCHENSEQUENZEN"),b.south,b.east,b.start,tr("Skip","Passer","Überspringen"));
+        self.text(rect(38,284,762,300),&menus,13,false,1,LIGHT);
+        self.text(rect(38,301,762,317),&movies,13,false,1,LIGHT);
+        self.plate(rect(214,319,586,341));
+        self.text(rect(221,319,579,341),tr("PRESS ANY KEY OR BUTTON TO RETURN","UNE TOUCHE OU UN BOUTON POUR REVENIR","BELIEBIGE TASTE ZUM SCHLIESSEN"),13,true,1,LIGHT);
+    }
+}
+unsafe fn cached_panel(dc:H,family:u8)->bool{
+    let lang=language();
+    let Ok(mut slot)=ART.get_or_init(||Mutex::new(None)).lock()else{return false;};
+    if slot.as_ref().is_none_or(|a|a.family!=family||a.lang!=lang){
+        let mem=CreateCompatibleDC(dc);if mem.is_null(){return false;}
+        let info=bitmap_info();let mut bits:H=ptr::null_mut();
+        let dib=CreateDIBSection(mem,&info,0,&mut bits,ptr::null_mut(),0);
+        if dib.is_null()||bits.is_null(){if !dib.is_null(){DeleteObject(dib);}DeleteDC(mem);return false;}
+        let old=SelectObject(mem,dib);
+        if old.is_null()||old as isize == -1{DeleteObject(dib);DeleteDC(mem);return false;}
+        let mut p=Painter{dc:mem,ok:true};p.panel(family);
+        let flushed=GdiFlush()!=0;
+        if p.ok&&flushed{
+            let pixels=std::slice::from_raw_parts(bits.cast::<u32>(),800*360).to_vec();
+            *slot=Some(Artwork{family,lang,pixels});
+        }
+        SelectObject(mem,old);DeleteObject(dib);DeleteDC(mem);
+        if !p.ok||!flushed{return false;}
+    }
+    let Some(a)=slot.as_ref()else{return false;};
+    StretchDIBits(dc,0,240,800,360,0,0,800,360,a.pixels.as_ptr().cast(),&bitmap_info(),0,0x00cc0020)>0
+
 }
 pub unsafe fn draw(dc:H,view:Rect)->bool{
     if dc.is_null()||!eligible(view){return false;}
@@ -364,13 +503,12 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
     let shown=is_open();
     let family=FAMILY.load(Ordering::Acquire);
     let mut p=Painter{dc,ok:true};
-    if shown{p.panel(family);}
+    if shown{p.ok=cached_panel(dc,family);}
     else{
         // Below the native Apply/Reset bar, not across the game logo.
         let b=labels(family);
         let hint=format!("{} : {}",b.north,tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"));
-        p.fill(rect(230,534,675,560),DARK);
-        p.fill(rect(232,536,673,558),EDGE);
+        p.plate(rect(230,534,675,560));
         p.text(rect(237,536,668,558),&hint,15,true,1,LIGHT);
     }
     let restored=RestoreDC(dc,saved)!=0;
@@ -385,7 +523,8 @@ pub fn note_presented(){
     let old=LAST_PRESENT.swap(kind,Ordering::AcqRel);
     if kind==2&&old!=2&&crate::cfg().log_enabled{
         // Bound diagnostic volume; first successful full panel presentation.
-        if !SEEN.swap(true,Ordering::AcqRel){crate::log("MENU-CONTROLS-PANEL: static 4:3 diagram presented on private scratch");}
+        let family=FAMILY.load(Ordering::Acquire);let bit=1u8<<family;
+        if SEEN.fetch_or(bit,Ordering::AcqRel)&bit==0{crate::log(&format!("MENU-CONTROLS-PANEL: static 4:3 diagram presented family={family} language={} on private scratch",language()));}
     }
 }
 #[cfg(test)]
@@ -428,6 +567,21 @@ mod tests{
         assert!(pad_step(&mut s,0,false,true,true));
         assert!(pad_step(&mut s,8,false,false,true));assert!(s.open);
         assert!(!pad_step(&mut s,8,false,false,false));assert!(!s.open);
+    }
+    #[test]fn takeover_consumes_first_gesture_until_neutral(){
+        for button in [1,2,8,64]{
+            let mut s=Input::default();
+            assert!(pad_step(&mut s,8,false,false,true));
+            assert!(pad_step(&mut s,0,false,true,true));
+            takeover(&mut s);assert!(!s.open);assert!(s.pad_block);
+            assert!(pad_step(&mut s,button,false,false,true));assert!(!s.open);
+            assert!(pad_step(&mut s,0,false,true,true));
+            assert!(!pad_step(&mut s,1,false,false,true));
+        }
+    }
+    #[test]fn takeover_outside_modal_does_not_swallow_normal_input(){
+        let mut s=Input::default();takeover(&mut s);
+        assert!(!pad_step(&mut s,1,false,false,true));
     }
     #[test]fn rectangle_is_native_4by3(){assert_eq!(rect(0,0,800,600),Rect{left:0,top:0,right:800,bottom:600});}
 }
