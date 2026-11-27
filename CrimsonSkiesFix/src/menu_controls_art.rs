@@ -4,8 +4,8 @@
 use std::{collections::VecDeque,ffi::c_void,io::{Read,Seek,SeekFrom},ptr,sync::{Mutex,OnceLock,atomic::{AtomicBool,AtomicU32,Ordering}}};
 use crate::borderless_native_blt::Rect;
 type H=*mut c_void;
-const PACK_SHA:&str="81639cfa2405fdcdfd0da000abf23dbb731463e9907ac4c94e7e436358802763";
-const PACK_LEN:usize=2511629;
+const PACK_SHA:&str="5cd2e6fa5e897529748a316b814a9f656a3ede0b646385e93858434da5019be8";
+const PACK_LEN:usize=2648529;
 const W:usize=1600;
 const HGT:usize=1200;
 const ART_H:usize=840;
@@ -13,8 +13,8 @@ const ART_Y:usize=360;
 const RAW:usize=W*ART_H*4;
 const FRAME_BYTES:usize=W*HGT*4;
 const NATIVE_BYTES:usize=800*600*4;
-const MAGIC:&[u8;8]=b"CSFART12";
-const END:&[u8;8]=b"CSFEND12";
+const MAGIC:&[u8;8]=b"CSFART13";
+const END:&[u8;8]=b"CSFEND13";
 static PACK:OnceLock<Option<Vec<u8>>>=OnceLock::new();
 static CACHE:OnceLock<Mutex<Option<Art>>>=OnceLock::new();
 static HD_LOG:AtomicBool=AtomicBool::new(false);
@@ -23,10 +23,10 @@ static GENERATION:AtomicU32=AtomicU32::new(1);
 struct Art{family:u8,lang:u8,generation:u32,pixels:Vec<u8>}
 pub fn invalidate(){GENERATION.fetch_add(1,Ordering::AcqRel);}
 fn le32(s:&[u8])->Option<u32>{Some(u32::from_le_bytes(s.try_into().ok()?))}
-fn ranges(p:&[u8])->Option<[(usize,usize);2]>{
+fn ranges(p:&[u8])->Option<[(usize,usize);3]>{
     if p.get(..8)?!=MAGIC||le32(p.get(8..12)?)?!=W as u32||
-        le32(p.get(12..16)?)?!=ART_H as u32||le32(p.get(16..20)?)?!=2{return None;}
-    let mut pos=20usize;let mut r=[(0,0);2];
+        le32(p.get(12..16)?)?!=ART_H as u32||le32(p.get(16..20)?)?!=3{return None;}
+    let mut pos=20usize;let mut r=[(0,0);3];
     for out in &mut r{
         let start=pos.checked_add(4)?;
         let len=le32(p.get(pos..start)?)? as usize;
@@ -53,14 +53,14 @@ fn load()->Option<Vec<u8>>{
 fn pack()->Option<&'static [u8]>{
     PACK.get_or_init(||{
         let p=load();
-        crate::log(if p.is_some(){"MENU-CONTROLS-ART: authenticated generated 1600x840 transparent artwork loaded"}else{"MENU-CONTROLS-ART: no authenticated overlay; prior generic/vector fallback retained"});
+        crate::log(if p.is_some(){"MENU-CONTROLS-ART: authenticated generated 1600x840 controller and native decoration artwork loaded"}else{"MENU-CONTROLS-ART: no authenticated overlay; prior generic/vector fallback retained"});
         p
     }).as_deref()
 }
 pub fn available()->bool{pack().is_some()}
 fn unpack(p:&[u8],family:u8)->Option<Vec<u8>>{
     let r=ranges(p)?;
-    let (a,b)=*r.get(match family{2=>0,3=>1,_=>return None})?;
+    let (a,b)=*r.get(match family{2=>0,3=>1,4=>2,_=>return None})?;
     let mut data=Vec::with_capacity(RAW);
     flate2::read::ZlibDecoder::new(p.get(a..b)?).take((RAW+1) as u64).read_to_end(&mut data).ok()?;
     (data.len()==RAW).then_some(data)
@@ -85,9 +85,13 @@ extern "system"{
     fn RestoreDC(dc:H,saved:i32)->i32;
     fn BitBlt(dst:H,x:i32,y:i32,w:i32,h:i32,src:H,sx:i32,sy:i32,rop:u32)->i32;
     fn SetStretchBltMode(dc:H,mode:i32)->i32;
-    fn CreateRoundRectRgn(l:i32,t:i32,r:i32,b:i32,w:i32,h:i32)->H;
-    fn ExtSelectClipRgn(dc:H,region:H,mode:i32)->i32;
+
     fn StretchDIBits(dc:H,x:i32,y:i32,w:i32,h:i32,sx:i32,sy:i32,sw:i32,sh:i32,bits:*const c_void,info:*const BitmapInfo,usage:u32,rop:u32)->i32;
+}
+// BLENDFUNCTION is four BYTEs passed by value (packed little-endian).
+#[link(name="msimg32")]
+extern "system"{
+    fn AlphaBlend(dst:H,x:i32,y:i32,w:i32,h:i32,src:H,sx:i32,sy:i32,sw:i32,sh:i32,blend:u32)->i32;
 }
 #[link(name="user32")]
 extern "system"{fn DrawTextW(dc:H,text:*const u16,count:i32,rect:*mut Rect,flags:u32)->i32;}
@@ -225,7 +229,12 @@ fn logo_mask(native:&[u8])->Vec<u8>{
         let i=y*NW+x;let (g,r)=(u16::from(native[i*4+1]),u16::from(native[i*4+2]));
         // The red background is excluded, while gold and ivory borders
         // seed the genuine title, wings and skull outline.
-        if r>=80&&g>=55&&g*100>=r*43{seed[i]=1;}
+        // Preserve the red enamel and dark inner ring of the original
+        // skull medallion. This ellipse stays inside the verified logo-safe
+        // region and cannot include the native Controls tab.
+        let dx=x as i32-403;let dy=y as i32-191;
+        let disk=dx*dx*2601+dy*dy*2401<=2401*2601;
+        if disk||(r>=80&&g>=55&&g*100>=r*43){seed[i]=1;}
     }}
     let mut mask=dilate(&seed);
     // Fill only enclosed interiors. Flood the exterior of the full
@@ -270,12 +279,15 @@ fn compose(native:&[u8],art:&[u8])->Option<Vec<u8>>{
         let logo=logo_source(x as i32,y as i32);
         let overlay=if y>=ART_Y{Some(((y-ART_Y)*W+x)*4)}else{None};
         let dx=x as i32/2-400;let dy=y as i32/2-305;
-        let vignette=1000-180*dx*dx/(400*400)-100*dy*dy/(305*305);
+        let vignette=1000-210*dx*dx/(400*400)-140*dy*dy/(305*305);
+        // Fine deterministic film grain, without changing original logo pixels.
+        let n=((x as u32).wrapping_mul(0x9e3779b1)^(y as u32).wrapping_mul(0x85ebca6b)).wrapping_mul(0xc2b2ae35);
+        let grain=((n^(n>>15))%7) as i32-3;
         for c in 0..3{
             // Keep the genuine palette and texture but reduce contrast
             // and introduce a continuous, subtle warm-red base.
             let sampled=(43*i32::from(native[a+c])+39*i32::from(native[b+c])+18*i32::from(native[d+c]))/100;
-            let v=(sampled*72/100+[6,4,41][c])*vignette/1000;
+            let v=(sampled*76/100+[5,4,37][c])*vignette/1000+grain;
             let mut v=v.clamp(0,255) as u8;
             if let Some(src)=logo{v=mix(v,native[src*4+c],i32::from(alpha[src]));}
             if let Some(src)=overlay{v=mix(v,art[src+c],i32::from(art[src+3]));}
@@ -285,33 +297,50 @@ fn compose(native:&[u8],art:&[u8])->Option<Vec<u8>>{
     }}
     Some(out)
 }
-// Reuse the generated, textured closure plaque for the attached invite.
-// The crop contains only original generated art, never a retail asset.
-const INV_W:usize=760;
-const INV_H:usize=50;
-static INVITE:OnceLock<Option<Vec<u8>>>=OnceLock::new();
-fn invite_pixels()->Option<&'static [u8]>{
-    INVITE.get_or_init(||{
-        let raw=unpack(pack()?,3)?;
-        let mut pixels=Vec::with_capacity(INV_W*INV_H*4);
-        for y in 780..830{
-            let at=(y*W+420)*4;
-            pixels.extend_from_slice(raw.get(at..at+INV_W*4)?);
+// Third image: transparent decorative perimeter and winged invite, at the
+// native widget positions. No synthetic widget or hit-test coordinates.
+// Premultiplied 800x420 BGRA, cached as bytes (not cross-thread GDI handles).
+const DEC_W:usize=800;
+const DEC_H:usize=420;
+static DECOR:OnceLock<Option<Vec<u8>>>=OnceLock::new();
+static DECOR_LOG:AtomicBool=AtomicBool::new(false);
+fn premultiplied_half(raw:&[u8])->Option<Vec<u8>>{
+    if raw.len()!=RAW{return None;}
+    let mut dst=vec![0u8;DEC_W*DEC_H*4];
+    for y in 0..DEC_H{for x in 0..DEC_W{
+        let at=(y*DEC_W+x)*4;
+        let s0=(y*2*W+x*2)*4;
+        let ids=[s0,s0+4,s0+W*4,s0+W*4+4];
+        let alpha: u32=ids.iter().map(|&i|u32::from(raw[i+3])).sum();
+        dst[at+3]=((alpha+2)/4) as u8;
+        for c in 0..3{
+            let sum:u32=ids.iter().map(|&i|u32::from(raw[i+c])*u32::from(raw[i+3])).sum();
+            dst[at+c]=((sum+510)/1020) as u8;
         }
-        Some(pixels)
-    }).as_deref()
+    }}
+    Some(dst)
 }
-pub unsafe fn draw_invite(dc:H,dst:Rect)->bool{
-    let Some(pixels)=invite_pixels()else{return false;};
-    let saved=SaveDC(dc);if saved==0{return false;}
-    let region=CreateRoundRectRgn(dst.left,dst.top,dst.right,dst.bottom,16,16);
-    let ok=if region.is_null(){false}else{
-        let ok=ExtSelectClipRgn(dc,region,1)>0&&SetStretchBltMode(dc,4)!=0&&
-            StretchDIBits(dc,dst.left,dst.top,dst.right-dst.left,dst.bottom-dst.top,0,0,
-                INV_W as i32,INV_H as i32,pixels.as_ptr().cast(),&info_for(INV_W,INV_H),0,0x00cc0020)>0;
-        DeleteObject(region);ok
-    };
-    let restored=RestoreDC(dc,saved)!=0;ok&&restored
+fn decoration()->Option<&'static [u8]>{
+    DECOR.get_or_init(||premultiplied_half(&unpack(pack()?,4)?)).as_deref()
+}
+pub unsafe fn draw_native_decoration(dc:H)->bool{
+    if dc.is_null(){return false;}
+    let Some(pixels)=decoration()else{return false;};
+    let mem=CreateCompatibleDC(dc);if mem.is_null(){return false;}
+    let mut bits:H=ptr::null_mut();
+    let dib=CreateDIBSection(mem,&info_for(DEC_W,DEC_H),0,&mut bits,ptr::null_mut(),0);
+    if dib.is_null()||bits.is_null(){if !dib.is_null(){DeleteObject(dib);}DeleteDC(mem);return false;}
+    let old=SelectObject(mem,dib);
+    if old.is_null()||old as isize == -1{DeleteObject(dib);DeleteDC(mem);return false;}
+    ptr::copy_nonoverlapping(pixels.as_ptr(),bits.cast::<u8>(),pixels.len());
+    // AC_SRC_OVER=0, flags=0, constant alpha=255, AC_SRC_ALPHA=1.
+    let ok=AlphaBlend(dc,0,180,800,420,mem,0,0,800,420,0x01ff0000)!=0;
+    GdiFlush();
+    SelectObject(mem,old);DeleteObject(dib);DeleteDC(mem);
+    if ok&&!DECOR_LOG.swap(true,Ordering::AcqRel){
+        crate::log("MENU-CONTROLS-ART: transparent native decoration presented; original widgets and hit tests retained");
+    }
+    ok
 }
 unsafe fn render(dc:H,family:u8,lang:u8,generation:u32)->Option<Art>{
     let raw=unpack(pack()?,family)?;
@@ -368,9 +397,9 @@ pub fn note_hd(view:Rect){
 mod tests{
     use super::*;
     #[test]fn exact_bounded_container_structure(){
-        let mut p=MAGIC.to_vec();p.extend((W as u32).to_le_bytes());p.extend((ART_H as u32).to_le_bytes());p.extend(2u32.to_le_bytes());
-        for v in [b"abc",b"def"]{p.extend(3u32.to_le_bytes());p.extend(v);}
-        assert_eq!(ranges(&p),Some([(24,27),(31,34)]));
+        let mut p=MAGIC.to_vec();p.extend((W as u32).to_le_bytes());p.extend((ART_H as u32).to_le_bytes());p.extend(3u32.to_le_bytes());
+        for v in [b"abc",b"def",b"ghi"]{p.extend(3u32.to_le_bytes());p.extend(v);}
+        assert_eq!(ranges(&p),Some([(24,27),(31,34),(38,41)]));
         assert!(unpack(&p,2).is_none());
         p.push(0);assert!(ranges(&p).is_none());p.pop();p[20]=255;assert!(ranges(&p).is_none());
     }
@@ -406,6 +435,15 @@ mod tests{
         }}
         let alpha=logo_mask(&native);
         assert!(alpha[35*800+210]>0);assert_eq!(alpha[225*800+200],0);
+    }
+    #[test]fn alpha_decoration_is_premultiplied_and_transparent(){
+        let mut raw=vec![0;RAW];
+        raw[..4].copy_from_slice(&[200,100,60,255]);
+        let out=premultiplied_half(&raw).unwrap();
+        assert_eq!(&out[..4],&[50,25,15,64]);
+        assert_eq!(&out[4..8],&[0,0,0,0]);
+        assert!(out.chunks_exact(4).all(|p|p[..3].iter().all(|&c|c<=p[3])));
+        assert!(premultiplied_half(&raw[..4]).is_none());
     }
     #[test]fn transparent_art_composes_to_an_opaque_frame(){
         let native=vec![100;NATIVE_BYTES];let mut art=vec![0;RAW];

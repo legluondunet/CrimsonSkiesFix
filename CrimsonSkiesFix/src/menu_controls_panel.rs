@@ -511,17 +511,17 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
         }else{cached_panel(dc,family)};
     }
     else{
-        // A small textured nameplate physically attached to the bottom
-        // of the original Apply/Reset frame. No F1, no floating banner.
-        let plaque=rect(305,516,595,543);
-        if !crate::menu_controls_art::draw_invite(dc,plaque){p.plate(plaque);}
+        // Decorative translucent perimeter and winged plaque. Never
+        // redraw or move the native widgets; fall back to a compact plate.
+        let plaque=rect(306,518,596,545);
+        if !crate::menu_controls_art::draw_native_decoration(dc){p.plate(plaque);}
         let b=labels(family);
         if family==PS{
-            p.line_color(&[(327,522),(320,536),(334,536),(327,522)],rgb(78,215,173),2);
+            p.line_color(&[(334,523),(327,536),(341,536),(334,523)],rgb(78,215,173),2);
         }else{
-            p.text(rect(311,518,343,541),b.north,14,true,1,if family==XBOX{GOLD}else{LIGHT});
+            p.text(rect(319,521,350,541),b.north,14,true,1,if family==XBOX{GOLD}else{LIGHT});
         }
-        p.text(rect(347,518,586,541),tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"),15,true,1,LIGHT);
+        p.text(rect(354,520,586,543),tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"),15,true,1,LIGHT);
     }
     let restored=RestoreDC(dc,saved)!=0;
     if p.ok&&restored{DRAW_KIND.store(if shown{2}else{1},Ordering::Release);true}else{fail_preview();false}

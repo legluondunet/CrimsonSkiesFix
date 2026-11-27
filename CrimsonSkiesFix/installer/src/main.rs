@@ -105,7 +105,7 @@ const README: &str = include_str!("../README-native-fr.md");
 const README: &str = include_str!("../README-native-usde.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
-const VERSION: &str = if cfg!(feature="sdl3-probe-install") {"1.2.0-dev.12"} else if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
+const VERSION: &str = if cfg!(feature="sdl3-probe-install") {"1.2.0-dev.13"} else if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
 const COMMIT: &str = env!("CRIMSONSKIESFIX_COMMIT");
 // Installer/diagnostic reports are never written into the DLL's gameplay log.
 const INSTALLER_LOG: &str = "CrimsonSkiesFix_installer.log";
@@ -273,7 +273,7 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     #[cfg(feature="sdl3-probe-install")]
     {
         ensure_managed_text(&docs.join("SDL3-LICENSE.txt"), SDL3_LICENSE)?;
-        build_info.push_str(&format!("SDL3Version=3.4.18\nSDL3Sha256={}\nInputMode=SDL3_POLISHED_NATIVE_TEXTURE_CONTROLS_HD_TEST\n",sha256::hex(BUNDLED_SDL3)));
+        build_info.push_str(&format!("SDL3Version=3.4.18\nSDL3Sha256={}\nInputMode=SDL3_WINGED_CONTROLS_DECORATION_TEST\n",sha256::hex(BUNDLED_SDL3)));
     }
     let manifest = docs.join("build-info.txt");
     // This manifest is launcher-managed provenance, not player configuration.
