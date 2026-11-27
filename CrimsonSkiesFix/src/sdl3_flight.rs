@@ -331,6 +331,7 @@ impl Flight{
     }
     unsafe fn tick(&mut self)->bool{
         let now=Instant::now();
+        crate::menu_controls_panel::note_pad(false);
         self.last=now;
         if read32(PLAYER)==0{self.last_aircraft=0;self.last_consume=None;}
         if !foreground(){
@@ -354,6 +355,9 @@ impl Flight{
             publish(&neutral(self.throttle as i32),true,true);return true;
         }
         self.raw=raw;self.previous_buttons=self.buttons;self.buttons=buttons;
+        if crate::menu_controls_panel::page_active() && self.menu_context(now) && buttons==8 && centered(raw,0){
+            crate::menu_controls_panel::note_pad(true);
+        }
         // Outside a recent player-control call, suppress combat slots.
         // Start remains available for the native mission menu.
         let state=if self.flight_recent(now){

@@ -88,3 +88,5 @@ Dev.4: automatic active gamepad selection. All mapped controllers monitored (max
 Dev.5: A, B or Start can request skip in the original FMV reader, including before MainMenu. One press per clip request; release before another press. Native keyboard unchanged. In-engine scripted cinematics are not yet separately validated.
 
 Dev.6: extend A/B/Start skip to the original in-flight 3D animation termination query. The original FMV hook remains, with one shared consumed edge per poll. Test the zeppelin sequence; native animation cleanup is unchanged. No menu replacement yet.
+
+Dev.7 controls-panel preview: enter Preferences > Controls, hold Y/Triangle (without other controls) or F1 to see the static 4:3 flight-controls diagram, release to return to the original controls preferences. A small hint is composited on this page. No settings disabled or changed; English preview labels, original keyboard and mouse settings remain available. Check screenshots and verify the diagram never appears in other menus/flight. Log=1 emits unique Preferences page members and a presentation marker.

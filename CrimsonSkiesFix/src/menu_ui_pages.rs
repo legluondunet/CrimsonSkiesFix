@@ -1,10 +1,10 @@
-//! Bounded, diagnostic-only observers for the original GOS page-loader
+//! Bounded observers for the original GOS page-loader
 //! and localization APIs. Neither wrapper interprets object pointers,
 //! changes the game's script data nor modifies rendered text.
 //!
 //! Exact original 1.02 registration addresses and handler pointers
 //! verified against the unique accepted game EXE SHA-256.
-use std::{ffi::c_void,ptr,sync::atomic::{AtomicU32,Ordering}};
+use std::{collections::HashSet,ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicU32,Ordering}}};
 use crate::log;
 
 const IMAGE_BASE:usize=0x0040_0000;
@@ -15,9 +15,9 @@ const LOCALIZE_SITE:usize=0x0040_764e;
 const LOCALIZE_ORIGINAL:usize=0x0040_4630;
 const LOCALIZE_BYTES:[u8;5]=[0x68,0x30,0x46,0x40,0x00];
 const PAGE_EXECUTE_READWRITE:u32=0x40;
-const MAX_PAGES:u32=160;
+const MAX_PAGES:usize=512;
 const MAX_LOCALIZE:u32=80;
-static PAGE_LOGS:AtomicU32=AtomicU32::new(0);
+static PAGE_NAMES:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
 static LABEL_LOGS:AtomicU32=AtomicU32::new(0);
 static LAST_LABEL_ID:AtomicU32=AtomicU32::new(u32::MAX);
 
@@ -32,7 +32,6 @@ extern "system"{
 type ScriptFn=unsafe extern "system" fn(usize,usize,*const u32)->u32;
 
 fn in_menu_context()->bool{
-    crate::cfg().log_enabled &&
     crate::menu_video_probe::legacy_ui_active() &&
     crate::menu_scene::main_menu_was_seen()
 }
@@ -62,29 +61,28 @@ unsafe fn page_member(args:*const u32)->Option<String>{
     resource_token(&name).map(str::to_owned)
 }
 unsafe extern "system" fn page_passthrough(a:usize,b:usize,args:*const u32)->u32{
-    let record=in_menu_context() &&
-        PAGE_LOGS.load(Ordering::Relaxed)<MAX_PAGES;
-    let member=if record{page_member(args)}else{None};
+    let context=in_menu_context();
+    let member=if context{page_member(args)}else{None};
     let original:ScriptFn=std::mem::transmute(PAGE_ORIGINAL);
     let result=original(a,b,args);
-    if record && PAGE_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
-        |n|if n<MAX_PAGES{Some(n+1)}else{None}).is_ok()
-    {
-        let mut root=[0u8;41];
-        let root=if read_exact(0x647ad4,&mut root){resource_token(&root).unwrap_or("unidentified")}else{"unidentified"};
-        log(&format!("MENU-CONTROLS-PROBE: root={root} member={} result={result}",member.as_deref().unwrap_or("unidentified")));
-        log(&format!(
-            "MENU-GOS-PAGE: gosPageInit invoked after MainMenu; preferences_transaction={} callback_result_class={} [pass-through]",
-            crate::menu_gos_event::preferences_transaction_active(),
-            if result==1{"success"}else if result==0{"zero"}else{"other"}
-        ));
+    if result==1{
+        if let Some(name)=member.as_deref(){
+            crate::menu_controls_panel::observe_member(name);
+            if crate::cfg().log_enabled&&crate::menu_gos_event::preferences_transaction_active(){
+                if let Ok(mut seen)=PAGE_NAMES.get_or_init(||Mutex::new(HashSet::new())).try_lock(){
+                    if seen.len()<MAX_PAGES&&seen.insert(name.to_owned()){
+                        log(&format!("MENU-CONTROLS-PROBE: unique preferences member={name} result=1"));
+                    }
+                }
+            }
+        }
     }
     result
 }
 unsafe extern "system" fn localize_passthrough(a:usize,b:usize,args:*const u32)->u32{
     // Original gosLocalize reads [args+0] as resource ID, then writes a
     // localized text through [args+4]. Never inspect that output pointer.
-    let id=if !args.is_null() && in_menu_context() &&
+    let id=if crate::cfg().log_enabled && !args.is_null() && in_menu_context() &&
        crate::menu_gos_event::preferences_transaction_active() {
         Some(ptr::read_unaligned(args))
     }else{None};
@@ -132,16 +130,16 @@ unsafe fn replace_registration(site:usize,original:[u8;5],replacement:usize)->bo
     }
     true
 }
-/// Instrument only with explicit logging enabled and a verified exact EXE.
+/// Page identity is needed with Log=0 too; only localization and traces require Log=1.
 /// All 3-parameter original calls and return values are forwarded.
 pub unsafe fn install()->(bool,bool){
-    if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE || !crate::cfg().log_enabled{
+    if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE{
         return (false,false);
     }
     let page=replace_registration(PAGE_SITE,PAGE_BYTES,page_passthrough as *const () as usize);
-    let localize=replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
+    let localize=crate::cfg().log_enabled && replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
     log(&format!(
-        "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, no UI modifications"
+        "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, Controls page identity tracked"
     ));
     (page,localize)
 }

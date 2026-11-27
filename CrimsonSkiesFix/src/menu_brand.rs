@@ -107,6 +107,7 @@ pub fn should_probe_menu_frame(width:u32,height:u32)->bool{
 /// Mark a skipped/non-main-menu frame so the next verified successful
 /// composition can be logged as a distinct return-to-menu event.
 pub fn mark_not_drawn(){
+    crate::menu_controls_panel::not_presented();
     DRAWN_LAST_FRAME.store(false,Ordering::Release);
     PENDING_PRESENT_CONFIRMATION.store(false,Ordering::Release);
 }
@@ -114,6 +115,7 @@ pub fn mark_not_drawn(){
 /// presentation with the prepared private scratch as source. This
 /// distinguishes offscreen DrawTextW success from actual Blt success.
 pub fn note_branded_presented(){
+    crate::menu_controls_panel::note_presented();
     if PENDING_PRESENT_CONFIRMATION.swap(false,Ordering::AcqRel) &&
         crate::cfg().log_enabled
     {
@@ -145,6 +147,16 @@ pub fn draw_main_menu(scratch:Surface,viewport:Rect)->bool{
         if hr<0 || dc.is_null(){
             report_error(&format!("offscreen IDirectDrawSurface4::GetDC hr={hr:#010x}"));
             return false;
+        }
+        // Use the same private scratch, never the game-owned backbuffer.
+        // On the exact Controls page do not run the Campaign art heuristic.
+        if crate::menu_controls_panel::eligible(viewport){
+            mark_not_drawn();
+            let drawn=crate::menu_controls_panel::draw(dc,viewport);
+            let released=release_dc(scratch,dc)>=0;
+            if drawn&&released{crate::menu_controls_panel::prepared();return true;}
+            crate::menu_controls_panel::not_presented();
+            return false; // original frame remains authoritative on any error
         }
         let visible=main_menu_art_present(dc,viewport);
         let scene=if visible{2}else{1};
