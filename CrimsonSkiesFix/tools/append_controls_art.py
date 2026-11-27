@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append the exact authenticated dev.10 raster asset pack to an unsigned CI launcher.
+"""Append the exact authenticated dev.11 raster asset pack to an unsigned CI launcher.
 
 No executable code, PE headers or installer DLL bytes are changed. This
 experimental packing step is separate from the bare CI build because
@@ -7,9 +7,9 @@ the generated art sources are currently delivered as a companion archive.
 """
 import argparse, hashlib, struct
 from pathlib import Path
-SHA = "e9bbe0989507242bb64ca84722e9308d2e9308795c7e5782553e0174016f2dd4"
-SIZE = 4177183
-END = b"CSFEND10"
+SHA = "4f32c4a99ac2c450ea777b212d5869bdf3bcbf26fd9a8a14ae2ee28459d3ef3b"
+SIZE = 2484141
+END = b"CSFEND11"
 def assemble(exe: bytes, pack: bytes) -> bytes:
     if len(pack) != SIZE or hashlib.sha256(pack).hexdigest() != SHA:
         raise ValueError("art pack hash or size mismatch")

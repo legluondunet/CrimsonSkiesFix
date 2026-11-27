@@ -26,6 +26,7 @@ fn input()->&'static Mutex<Input>{INPUT.get_or_init(||Mutex::new(Input::default(
 fn close(s:&mut Input,reason:&str){
     if s.open{
         s.open=false;s.present=None;
+        crate::menu_controls_art::invalidate();
         if crate::cfg().log_enabled{crate::log(&format!("MENU-CONTROLS-PANEL: closed reason={reason}"));}
     }
 }
@@ -76,6 +77,7 @@ fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool
     }
     if pressed==OPEN_BUTTON&&buttons==OPEN_BUTTON&&!axis{
         s.open=true;s.pad_block=true;s.present=Some(Instant::now());
+        crate::menu_controls_art::invalidate();
         if crate::cfg().log_enabled{crate::log("MENU-CONTROLS-PANEL: opened by active gamepad");}
         return true;
     }
