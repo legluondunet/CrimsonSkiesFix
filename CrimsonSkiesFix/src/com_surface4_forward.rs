@@ -1408,7 +1408,7 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
             node.mode.width,node.mode.height
         );
         #[cfg(all(feature="sdl3-probe",not(test)))]
-        crate::sdl3_input_probe::on_game_flip();
+        {crate::sdl3_input_probe::note_render_mode(node.mode.width,node.mode.height);crate::sdl3_input_probe::on_game_flip();}
         let movie=graph_node(back).is_some_and(|n|n.native_movie_rgb32);
         let movie_call=if movie{
             let count=NATIVE_MOVIE_RGB32_FLIP_CALLS.fetch_add(1,Ordering::Relaxed)+1;

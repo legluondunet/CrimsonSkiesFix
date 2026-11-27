@@ -17,6 +17,33 @@ const SITE_INIT:usize=0x53510d;
 const SITE_RELEASE:usize=0x53540f;
 const SITE_POLL:usize=0x5355f5;
 const SITE_SELECT:usize=0x487516;
+const SITE_CONSUME:usize=0x489824;
+const CONSUME:usize=0x487460;
+const PLAYER:usize=0x71c298;
+const THROTTLE_INITIALIZED:usize=0x71c524;
+const SITE_SLOT:usize=0x537588;
+const NATIVE_SLOT:usize=0x537130;
+const SITE_ACTION:usize=0x537458;
+const NATIVE_ACTION:usize=0x537b80;
+const SITE_CURSOR:usize=0x53825f;
+const CURSOR_INTEGRATE:usize=0x5382b0;
+const SITE_SCRIPT_KEY:usize=0x5d0616;
+const NATIVE_KEY:usize=0x535fa0;
+// Exact default registrations at 0x4936c0 et seq., cross-checked with
+// the original manual. GOS slots are one-based; no preferences writes.
+const ACTIONS:[u32;10]=[0x13,0x14,0x24,0x25,0x19,0x12,0x31,0x2d,0x20,0x45];
+const START_THROTTLE:i32=1000;
+static UI_RENDER:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+pub(super) fn note_render_mode(w:u32,h:u32){UI_RENDER.store((w,h)==(800,600),Ordering::Release);}
+fn slot_for_action(action:u32)->u32{
+    ACTIONS.iter().position(|&a|a==action).map_or(0,|i|i as u32+1)
+}
+fn action_for_slot(slot:u32)->u32{
+    slot.checked_sub(1).and_then(|i|ACTIONS.get(i as usize)).copied().unwrap_or(0)
+}
+fn key_edge(now:bool,previous:bool)->u32{
+    match(now,previous){(true,false)=>1,(true,true)=>2,(false,true)=>4,_=>0}
+}
 const STATE_LEN:usize=0x110;
 const WAIT:u8=1;
 const ACTIVE:u8=2;
@@ -53,11 +80,10 @@ fn provisional_state(raw:[i16;6],buttons:u32,throttle:i32)->[u8;STATE_LEN]{
     for (offset,axis) in [(0,0),(4,1),(20,2)]{
         b[offset..offset+4].copy_from_slice(&signed_axis(raw[axis]).to_le_bytes());
     }
-    // RT/LT, shoulders, face buttons, stick clicks. The game still resolves
-    // these ten slots via its original action bindings; final mapping follows.
+    // RT/LT, shoulders, face buttons, L3 and Start; fixed action lookup below.
     let bits=[raw[5]>8192,raw[4]>8192,buttons&(1<<10)!=0,buttons&(1<<9)!=0,
         buttons&1!=0,buttons&2!=0,buttons&4!=0,buttons&8!=0,
-        buttons&(1<<7)!=0,buttons&(1<<8)!=0];
+        buttons&(1<<7)!=0,buttons&(1<<6)!=0];
     for (i,pressed) in bits.into_iter().enumerate(){b[48+i]=if pressed{0x80}else{0};}
     let x=i32::from(buttons&(1<<14)!=0)-i32::from(buttons&(1<<13)!=0);
     let y=i32::from(buttons&(1<<12)!=0)-i32::from(buttons&(1<<11)!=0);
@@ -89,7 +115,7 @@ unsafe fn calibrate(){
     }
     write32(AXES_COUNT,4);
     for addr in [0x75c428,0x75c42c,0x75c430]{write32(addr,0);}
-    publish(&neutral(500),false,true);
+    publish(&neutral(START_THROTTLE),false,true);
 }
 unsafe fn foreground()->bool{
     let mut pid=0;let hwnd=GetForegroundWindow();
@@ -99,28 +125,108 @@ struct Flight{
     api:Api,pad:Obj,id:u32,armed:bool,throttle:f32,
     last:Instant,scan:Option<Instant>,last_log:Option<Instant>,last_state:[u8;STATE_LEN],
     was_foreground:bool,
+    raw:[i16;6],buttons:u32,previous_buttons:u32,
+    last_aircraft:usize,last_consume:Option<Instant>,
+    menu_armed:bool,menu_seen:bool,mouse_tick:Option<Instant>,
+    menu_fraction:[f32;2],menu_reported:bool,
 }
 impl Flight{
     unsafe fn new()->Result<Self,String>{
-        Ok(Self{api:Api::load()?,pad:ptr::null_mut(),id:0,armed:false,throttle:500.0,
-            last:Instant::now(),scan:None,last_log:None,last_state:neutral(500),
-            was_foreground:false})
+        Ok(Self{api:Api::load()?,pad:ptr::null_mut(),id:0,armed:false,throttle:START_THROTTLE as f32,
+            last:Instant::now(),scan:None,last_log:None,last_state:neutral(START_THROTTLE),
+            was_foreground:false,raw:[0;6],buttons:0,previous_buttons:0,
+            last_aircraft:0,last_consume:None,menu_armed:false,menu_seen:false,
+            mouse_tick:None,menu_fraction:[0.0;2],menu_reported:false})
     }
     unsafe fn close_pad(&mut self){
         if !self.pad.is_null(){(self.api.close)(self.pad);}
         self.pad=ptr::null_mut();self.id=0;self.armed=false;self.scan=None;
+        self.clear_controls();
+    }
+    fn clear_controls(&mut self){
+        self.raw=[0;6];self.buttons=0;self.previous_buttons=0;
+        self.last_consume=None;self.menu_armed=false;self.menu_seen=false;
+        self.mouse_tick=None;self.menu_fraction=[0.0;2];
+    }
+    fn flight_recent(&self,now:Instant)->bool{
+        self.last_consume.is_some_and(|t|now.saturating_duration_since(t)<Duration::from_millis(250))
+    }
+    unsafe fn menu_context(&self,now:Instant)->bool{
+        self.armed&&self.was_foreground&&foreground()
+            && now.saturating_duration_since(self.last)<Duration::from_millis(150)
+            && UI_RENDER.load(Ordering::Acquire)
+            && crate::menu_scene::main_menu_was_seen()
+            && !self.flight_recent(now)
+            && (read32(0x75ccb8),read32(0x75ccbc))==(800,600)
+    }
+    unsafe fn consume(&mut self,aircraft:Obj){
+        // The authenticated player-control CALL, not input polling, owns
+        // throttle changes. Reset on newly observed player object, not pause.
+        if aircraft.is_null() || aircraft as usize!=read32(PLAYER) as usize
+            || ptr::read_volatile((aircraft as usize+0x91d) as *const u8)!=0{return;}
+        let now=Instant::now();
+        let new=self.last_aircraft!=aircraft as usize;
+        let dt=self.last_consume.map_or(0.0,|t|now.saturating_duration_since(t).as_secs_f32());
+        self.last_consume=Some(now);self.last_aircraft=aircraft as usize;
+        self.menu_seen=false;self.menu_armed=false;
+        if new{
+            self.throttle=START_THROTTLE as f32;
+            ptr::write_volatile(THROTTLE_INITIALIZED as *mut u8,0);
+            crate::log("SDL3-FLIGHT: new player aircraft; throttle initialized to 100 percent");
+        }else if self.armed&&foreground()&&read32(READY)==1&&dt<=0.25{
+            self.throttle=advance_throttle(self.throttle,self.raw[3],dt);
+        }
+        if self.armed&&read32(READY)==1&&foreground(){
+            write32(STATE+8,(1000-2*self.throttle.round() as i32) as u32);
+        }
+    }
+    unsafe fn menu_cursor(&mut self){
+        let now=Instant::now();
+        if !self.menu_context(now){
+            self.menu_seen=false;self.menu_armed=false;self.mouse_tick=None;
+            self.menu_fraction=[0.0;2];return;
+        }
+        let dt=self.mouse_tick.map_or(0.0,|t|now.saturating_duration_since(t).as_secs_f32()).min(0.05);
+        self.mouse_tick=Some(now);
+        if !self.menu_seen{
+            self.menu_seen=true;self.menu_armed=false;self.menu_fraction=[0.0;2];
+        }
+        if !self.menu_armed&&self.buttons&3==0{self.menu_armed=true;}
+        if !self.menu_armed{return;}
+        let horizontal=i32::from(self.buttons&(1<<14)!=0)-i32::from(self.buttons&(1<<13)!=0);
+        let vertical=i32::from(self.buttons&(1<<12)!=0)-i32::from(self.buttons&(1<<11)!=0);
+        let v=[if horizontal==0{signed_axis(self.raw[0])}else{horizontal*1000},
+               if vertical==0{signed_axis(self.raw[1])}else{vertical*1000}];
+        for (i,(address,speed_address)) in [(0x75ccd8,0x6357f4),(0x75ccdc,0x6357f8)].into_iter().enumerate(){
+            let speed=f32::from_bits(read32(speed_address));
+            if !speed.is_finite()||!(0.25..=8.0).contains(&speed){self.menu_fraction[i]=0.0;continue;}
+            let (delta,fraction)=cursor_delta(v[i],dt,speed,self.menu_fraction[i]);
+            self.menu_fraction[i]=fraction;
+            if delta!=0{write32(address,(read32(address) as i32).saturating_add(delta) as u32);}
+        }
+        if self.buttons&1!=0{
+            // Original poll already saved previous mouse state; the native
+            // button edge reader will observe the merged left click.
+            let b=0x75cadc as *mut u8;
+            ptr::write_volatile(b,ptr::read_volatile(b)|0x80);
+        }
+        if !self.menu_reported&&(v!=[0,0]||self.buttons&1!=0){
+            self.menu_reported=true;
+            crate::log("SDL3-MENU: native GOS cursor bridge active; left stick/D-pad move, A clicks, B script Escape");
+        }
     }
     unsafe fn tick(&mut self)->bool{
         let now=Instant::now();
-        let dt=now.duration_since(self.last).as_secs_f32();self.last=now;
+        self.last=now;
+        if read32(PLAYER)==0{self.last_aircraft=0;self.last_consume=None;}
         if !foreground(){
             if self.was_foreground{crate::log("SDL3-FLIGHT: focus lost; neutral and disarmed");}
-            self.was_foreground=false;self.armed=false;
+            self.was_foreground=false;self.armed=false;self.clear_controls();
             publish(&neutral(self.throttle as i32),false,true);return false;
         }
         if !self.was_foreground{
             crate::log("SDL3-FLIGHT: focus acquired; waiting for neutral controls");
-            self.was_foreground=true;self.armed=false;
+            self.was_foreground=true;self.armed=false;self.clear_controls();
         }
         (self.api.update)();
         if !self.pad.is_null()&&!(self.api.connected)(self.pad){
@@ -139,7 +245,7 @@ impl Flight{
                     CStr::from_ptr(n).to_string_lossy().chars().take(100)
                     .map(|c|if c.is_control(){' '}else{c}).collect()
                 };
-                crate::log(&format!("SDL3-FLIGHT: selected id={id} name={name:?}; gyro_available={} touchpads={}",(self.api.sensor)(p,2),(self.api.touchpads)(p)));
+                crate::log(&format!("SDL3-FLIGHT: selected id={id} name={name:?}; basic gamepad controls only"));
                 break;
             }
         }
@@ -151,8 +257,14 @@ impl Flight{
             self.armed=true;crate::log("SDL3-FLIGHT: neutral acquired; analog controls armed");
             publish(&neutral(self.throttle as i32),true,true);return true;
         }
-        self.throttle=advance_throttle(self.throttle,raw[3],dt);
-        let state=provisional_state(raw,buttons,self.throttle.round() as i32);
+        self.raw=raw;self.previous_buttons=self.buttons;self.buttons=buttons;
+        // Outside a recent player-control call, suppress combat slots.
+        // Start remains available for the native mission menu.
+        let state=if self.flight_recent(now){
+            provisional_state(raw,buttons,self.throttle.round() as i32)
+        }else{
+            provisional_state([0;6],buttons&(1<<6),self.throttle.round() as i32)
+        };
         publish(&state,true,false);
         if self.last_log.is_none_or(|t|now.duration_since(t)>=Duration::from_millis(250))&&
             (state!=self.last_state||self.last_log.is_none_or(|t|now.duration_since(t)>=Duration::from_secs(2))){
@@ -233,7 +345,7 @@ unsafe extern "C" fn release_hook()->i32{
                     if let Some(f)=s.as_mut(){f.close_pad();}
                     *s=None;
                 });
-                publish(&neutral(500),false,true);
+                publish(&neutral(START_THROTTLE),false,true);
                 OWNER.store(0,Ordering::Release);
                 MODE.store(CLOSED,Ordering::Release);
                 crate::log("SDL3-FLIGHT: released; native COM unused");
@@ -248,6 +360,44 @@ unsafe extern "C" fn selection_hook()->i32{
     if MODE.load(Ordering::Acquire)==ACTIVE{(read32(READY)==1) as i32}
     else{((read32(MODE_FLAG)&4)!=0) as i32}
 }
+fn cursor_delta(axis:i32,seconds:f32,speed:f32,remainder:f32)->(i32,f32){
+    let motion=axis.clamp(-1000,1000) as f32*0.45*seconds.clamp(0.0,0.05)/speed+remainder;
+    let delta=motion.trunc() as i32;
+    (delta,motion-delta as f32)
+}
+unsafe extern "C" fn consume_hook(aircraft:Obj){
+    if MODE.load(Ordering::Acquire)==ACTIVE&&OWNER.load(Ordering::Acquire)==GetCurrentThreadId(){
+        FLIGHT.with(|s|if let Ok(mut s)=s.try_borrow_mut(){if let Some(f)=s.as_mut(){f.consume(aircraft);}});
+    }
+    let original:unsafe extern "C" fn(Obj)=std::mem::transmute(CONSUME);
+    original(aircraft);
+}
+unsafe extern "thiscall" fn slot_hook(context:Obj,action:u32)->u32{
+    if MODE.load(Ordering::Acquire)==ACTIVE{return slot_for_action(action);}
+    let original:unsafe extern "thiscall" fn(Obj,u32)->u32=std::mem::transmute(NATIVE_SLOT);
+    original(context,action)
+}
+unsafe extern "C" fn action_hook(slot:u32)->u32{
+    if MODE.load(Ordering::Acquire)==ACTIVE{return action_for_slot(slot);}
+    let original:unsafe extern "C" fn(u32)->u32=std::mem::transmute(NATIVE_ACTION);
+    original(slot)
+}
+unsafe extern "C" fn cursor_hook(){
+    if MODE.load(Ordering::Acquire)==ACTIVE&&OWNER.load(Ordering::Acquire)==GetCurrentThreadId(){
+        FLIGHT.with(|s|if let Ok(mut s)=s.try_borrow_mut(){if let Some(f)=s.as_mut(){f.menu_cursor();}});
+    }
+    let original:unsafe extern "C" fn()=std::mem::transmute(CURSOR_INTEGRATE);
+    original();
+}
+unsafe extern "C" fn script_key_hook(key:u32)->u32{
+    let original:unsafe extern "C" fn(u32)->u32=std::mem::transmute(NATIVE_KEY);
+    let native=original(key);
+    if native!=0||key!=1||MODE.load(Ordering::Acquire)!=ACTIVE
+        ||OWNER.load(Ordering::Acquire)!=GetCurrentThreadId(){return native;}
+    FLIGHT.with(|s|s.try_borrow().ok().and_then(|s|s.as_ref().and_then(|f|{
+        (f.menu_armed&&f.menu_context(Instant::now())).then(||key_edge(f.buttons&2!=0,f.previous_buttons&2!=0))
+    })).unwrap_or(0))
+}
 pub fn install(){
     // Caller has already verified the disk hash. Reject all modified
     // preimages before changing a single byte. No on-disk changes.
@@ -257,6 +407,11 @@ pub fn install(){
             (SITE_INIT,call_bytes(SITE_INIT,INIT).to_vec(),call_bytes(SITE_INIT,init_hook as usize).to_vec()),
             (SITE_RELEASE,call_bytes(SITE_RELEASE,RELEASE).to_vec(),call_bytes(SITE_RELEASE,release_hook as usize).to_vec()),
             (SITE_POLL,call_bytes(SITE_POLL,POLL).to_vec(),call_bytes(SITE_POLL,poll_hook as usize).to_vec()),
+            (SITE_CONSUME,call_bytes(SITE_CONSUME,CONSUME).to_vec(),call_bytes(SITE_CONSUME,consume_hook as usize).to_vec()),
+            (SITE_SLOT,call_bytes(SITE_SLOT,NATIVE_SLOT).to_vec(),call_bytes(SITE_SLOT,slot_hook as usize).to_vec()),
+            (SITE_ACTION,call_bytes(SITE_ACTION,NATIVE_ACTION).to_vec(),call_bytes(SITE_ACTION,action_hook as usize).to_vec()),
+            (SITE_CURSOR,call_bytes(SITE_CURSOR,CURSOR_INTEGRATE).to_vec(),call_bytes(SITE_CURSOR,cursor_hook as usize).to_vec()),
+            (SITE_SCRIPT_KEY,call_bytes(SITE_SCRIPT_KEY,NATIVE_KEY).to_vec(),call_bytes(SITE_SCRIPT_KEY,script_key_hook as usize).to_vec()),
             (SITE_SELECT,vec![0xf6,0x05,0xa0,0xc2,0x71,0,4,0x0f,0x84,0x3a,1,0,0],{
                 let mut b=call_bytes(SITE_SELECT,selection_hook as usize).to_vec();
                 b.extend([0x85,0xc0,0x0f,0x84,0x3a,1,0,0]);b
@@ -268,8 +423,8 @@ pub fn install(){
                 return;
             }
         }
-        let pages=[0x535000usize,0x487000usize];let mut prot=[0u32;2];
-        for i in 0..2{
+        let pages=[0x535000usize,0x487000usize,0x489000usize,0x537000usize,0x538000usize,0x5d0000usize];let mut prot=[0u32;6];
+        for i in 0..pages.len(){
             if VirtualProtect(pages[i] as Obj,0x1000,0x40,&mut prot[i])==0{
                 for j in 0..i{let mut ignored=0;VirtualProtect(pages[j] as Obj,0x1000,prot[j],&mut ignored);}
                 crate::log("SDL3-FLIGHT: patch page access denied; no changes");return;
@@ -281,8 +436,8 @@ pub fn install(){
             for (addr,old,_) in &patches{ptr::copy_nonoverlapping(old.as_ptr(),*addr as *mut u8,old.len());}
             for p in pages{FlushInstructionCache(GetCurrentProcess(),p as *const c_void,0x1000);}
         }
-        for i in 0..2{let mut ignored=0;VirtualProtect(pages[i] as Obj,0x1000,prot[i],&mut ignored);}
-        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: four exact in-memory sites installed; awaiting GOS joystick lifecycle");}
+        for i in 0..pages.len(){let mut ignored=0;VirtualProtect(pages[i] as Obj,0x1000,prot[i],&mut ignored);}
+        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: nine exact in-memory sites installed; fixed actions, flight-only throttle, menu bridge");}
         else{crate::log("SDL3-FLIGHT: instruction cache flush failed; restored original calls");}
     }
 }
@@ -311,9 +466,29 @@ mod tests{
         assert!(!centered([0,0,0,0,0,9000],0));
         assert!(!centered([0;6],1));assert!(!centered([10000,0,0,0,0,0],0));
     }
+    #[test]fn fixed_slots_are_bijective(){
+        for (i,&action) in ACTIONS.iter().enumerate(){
+            assert_eq!(slot_for_action(action),i as u32+1);
+            assert_eq!(action_for_slot(i as u32+1),action);
+        }
+        assert_eq!(slot_for_action(0x7),0);
+        assert_eq!(action_for_slot(0),0);assert_eq!(action_for_slot(11),0);
+    }
+    #[test]fn menu_click_edges_and_fractional_cursor_motion(){
+        assert_eq!([key_edge(false,false),key_edge(true,false),key_edge(true,true),key_edge(false,true)],[0,1,2,4]);
+        let (delta,rem)=cursor_delta(1000,0.01,2.0,0.0);
+        assert_eq!(delta,2);assert!((rem-0.25).abs()<0.0001);
+        assert_eq!(cursor_delta(-1000,0.05,1.0,0.0).0,-22);
+        assert_eq!(axis(&neutral(START_THROTTLE),2),-1000);
+    }
     #[test]fn verified_call_encodings(){
         assert_eq!(call_bytes(SITE_INIT,INIT),[0xe8,0x8e,0x12,0,0]);
         assert_eq!(call_bytes(SITE_POLL,POLL),[0xe8,0x56,0x15,0,0]);
         assert_eq!(call_bytes(SITE_RELEASE,RELEASE),[0xe8,0xfc,0x16,0,0]);
+        assert_eq!(call_bytes(SITE_CONSUME,CONSUME),[0xe8,0x37,0xdc,0xff,0xff]);
+        assert_eq!(call_bytes(SITE_SLOT,NATIVE_SLOT),[0xe8,0xa3,0xfb,0xff,0xff]);
+        assert_eq!(call_bytes(SITE_ACTION,NATIVE_ACTION),[0xe8,0x23,0x07,0,0]);
+        assert_eq!(call_bytes(SITE_CURSOR,CURSOR_INTEGRATE),[0xe8,0x4c,0,0,0]);
+        assert_eq!(call_bytes(SITE_SCRIPT_KEY,NATIVE_KEY),[0xe8,0x85,0x59,0xf6,0xff]);
     }
 }

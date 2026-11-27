@@ -3,6 +3,7 @@
 #[path="sdl3_flight.rs"]
 mod flight;
 pub use flight::install;
+pub fn note_render_mode(w:u32,h:u32){flight::note_render_mode(w,h);}
 use std::{cell::RefCell, ffi::{c_char,c_void,CStr}, fs, os::windows::ffi::OsStrExt,
     ptr, sync::atomic::{AtomicU32,Ordering}, time::{Duration,Instant}};
 type Obj=*mut c_void;
@@ -182,7 +183,8 @@ impl Probe {
                             .map(|c|if c.is_control(){' '}else{c}).collect()
                     };
                     let gyro=(self.api.sensor)(pad,GYRO);
-                    self.gyro=gyro&&(self.api.sensor_enable)(pad,GYRO,true);
+                    // Owner deferred motion controls; never enable a sensor in dev.3.
+                    self.gyro=false;
                     crate::log(&format!("SDL3-PROBE: selected id={id} name={name:?} gyro_present={gyro} gyro_enabled={} accelerometer={} touchpads={}",self.gyro,(self.api.sensor)(pad,1),(self.api.touchpads)(pad)));
                     break;
                 }

@@ -2,7 +2,7 @@
 
 **Build expérimental Win32 x86, non destiné à une release publique.**
 
-Branche 1.2 dev.2 : premier pilotage analogique SDL3 expérimental. Le lanceur embarque SDL3 x86 3.4.18 et sa licence. Le chemin joystick est remplacé en mémoire si les préimages correspondent exactement. Stick gauche roulis/tangage, stick droit lacet/gaz progressifs ; boutons encore reliés aux emplacements historiques, non au mappage d'actions final. Aucun changement de préférence persistante. Activer [Debug] Log=1 pour le test. Les menus, le gyroscope actif et les vibrations ne sont pas encore implémentés.
+Branche 1.2 dev.3 : pilotage SDL3, mappage d'actions fixe et premier essai de navigation. Gauche roulis/tangage, droite lacet/gaz (gaz modifiés uniquement dans le traitement réel du pilote ; initialisation à 100 % lors d'un nouvel avion joueur observé). RT canons, LT roquettes, RB ennemi suivant, LB précédent, A changer de canon, B nitro, X vue, Y cible sous le viseur, L3 changer de roquette, Start carte/pause. Menu 800x600 : stick gauche/croix déplacent le curseur natif, A clic, B Échap dans les scripts qui lisent cette touche. Le mappage ne dépend pas des affectations joystick sauvegardées. Activer [Debug] Log=1 pour tester. Pas de gyroscope, pavé tactile, LED ou vibration active.
 
 Ce test apporte une installation automatisée pour cinq profils de CD originaux. Le launcher vérifie l'image de CD et une copie **déjà possédée** du correctif officiel Microsoft 1.02, mais **n'exige plus d'exécutable déchiffré**.
 
