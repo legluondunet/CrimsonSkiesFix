@@ -511,11 +511,17 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
         }else{cached_panel(dc,family)};
     }
     else{
-        // Below the native Apply/Reset bar, not across the game logo.
+        // A small textured nameplate physically attached to the bottom
+        // of the original Apply/Reset frame. No F1, no floating banner.
+        let plaque=rect(305,516,595,543);
+        if !crate::menu_controls_art::draw_invite(dc,plaque){p.plate(plaque);}
         let b=labels(family);
-        let hint=format!("{} : {}",b.north,tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"));
-        p.plate(rect(230,534,675,560));
-        p.text(rect(237,536,668,558),&hint,15,true,1,LIGHT);
+        if family==PS{
+            p.line_color(&[(327,522),(320,536),(334,536),(327,522)],rgb(78,215,173),2);
+        }else{
+            p.text(rect(311,518,343,541),b.north,14,true,1,if family==XBOX{GOLD}else{LIGHT});
+        }
+        p.text(rect(347,518,586,541),tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"),15,true,1,LIGHT);
     }
     let restored=RestoreDC(dc,saved)!=0;
     if p.ok&&restored{DRAW_KIND.store(if shown{2}else{1},Ordering::Release);true}else{fail_preview();false}
