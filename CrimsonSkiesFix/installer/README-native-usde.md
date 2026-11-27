@@ -86,3 +86,5 @@ Le candidat `C_SKIES_DISC_002` a été inventorié intégralement. Son `SETUP.EX
 Dev.4: automatic active gamepad selection. All mapped controllers monitored (max 32); an intentional stick/trigger/button gesture after neutral selects the first controller. Another controller takes over only after the current one is neutral for 350 ms and a new intentional gesture occurs. Disconnect releases the selected device and waits for activity on another. No Start activation. Log=1 also records bounded GOS page resource tokens to identify the original Joystick settings screen; no visual replacement yet. Enter Joystick preferences and return in the test.
 
 Dev.5: A, B or Start can request skip in the original FMV reader, including before MainMenu. One press per clip request; release before another press. Native keyboard unchanged. In-engine scripted cinematics are not yet separately validated.
+
+Dev.6: extend A/B/Start skip to the original in-flight 3D animation termination query. The original FMV hook remains, with one shared consumed edge per poll. Test the zeppelin sequence; native animation cleanup is unchanged. No menu replacement yet.

@@ -31,6 +31,12 @@ const SITE_SCRIPT_KEY:usize=0x5d0616;
 // FMV update 0x44af20 tests Space at this call; on a fresh press it
 // branches to its own skip/cleanup at 0x44af7c. No global key injection.
 const SITE_FMV_SPACE:usize=0x44af3f;
+// In-flight cinematic: original checks active animation at 0x4a02ac,
+// then asks the nonblocking keyboard event reader for any key. A
+// nonzero result follows the game's own animation termination path.
+const SITE_SCENE_SKIP:usize=0x4a02b5;
+const NATIVE_ANY_KEY:usize=0x536000;
+const ACTIVE_SCENE_ANIMATION:usize=0x71c50c;
 const FMV_SKIP_MASK:u32=(1<<0)|(1<<1)|(1<<6); // A, B, Start
 const NATIVE_KEY:usize=0x535fa0;
 // Exact default registrations at 0x4936c0 et seq., cross-checked with
@@ -244,7 +250,7 @@ impl Flight{
     }
     // The movie reader consumes at most one rising edge per GOS poll.
     // A held button cannot skip a chain of successive clips.
-    unsafe fn fmv_skip(&mut self,now:Instant)->bool{
+    unsafe fn cinematic_skip(&mut self,now:Instant,scene_3d:bool)->bool{
         if !self.armed||!self.was_foreground||self.pad.is_null()||!foreground()
             || !(self.api.connected)(self.pad)
             || now.saturating_duration_since(self.last)>=Duration::from_millis(150)
@@ -252,7 +258,8 @@ impl Flight{
             return false;
         }
         self.last_fmv_skip_poll=Some(self.last);
-        crate::log(&format!("SDL3-FMV: skip requested by active gamepad id={}; native FMV skip path",self.id));
+        let path=if scene_3d{"SDL3-CINEMATIC3D: skip requested by active gamepad"}else{"SDL3-FMV: skip requested by active gamepad"};
+        crate::log(&format!("{path} id={}; native cinematic skip path",self.id));
         true
     }
     fn flight_recent(&self,now:Instant)->bool{
@@ -496,7 +503,19 @@ unsafe extern "C" fn fmv_space_hook(key:u32)->u32{
     if native==1||key!=0x39||MODE.load(Ordering::Acquire)!=ACTIVE
         ||OWNER.load(Ordering::Acquire)!=GetCurrentThreadId(){return native;}
     let skip=FLIGHT.with(|s|s.try_borrow_mut().ok()
-        .and_then(|mut s|s.as_mut().map(|f|f.fmv_skip(Instant::now()))).unwrap_or(false));
+        .and_then(|mut s|s.as_mut().map(|f|f.cinematic_skip(Instant::now(),false))).unwrap_or(false));
+    if skip{1}else{native}
+}
+unsafe extern "C" fn scene_skip_hook(wait:u32)->u32{
+    let original:unsafe extern "C" fn(u32)->u32=std::mem::transmute(NATIVE_ANY_KEY);
+    let native=original(wait);
+    if native!=0||wait!=0||MODE.load(Ordering::Acquire)!=ACTIVE
+        ||OWNER.load(Ordering::Acquire)!=GetCurrentThreadId()
+        ||read32(ACTIVE_SCENE_ANIMATION)==0{return native;}
+    let skip=FLIGHT.with(|s|s.try_borrow_mut().ok()
+        .and_then(|mut s|s.as_mut().map(|f|f.cinematic_skip(Instant::now(),true))).unwrap_or(false));
+    // The verified caller only tests zero/nonzero; no synthetic global
+    // keyboard event or direct animation-state mutation is required.
     if skip{1}else{native}
 }
 pub fn install(){
@@ -514,6 +533,7 @@ pub fn install(){
             (SITE_CURSOR,call_bytes(SITE_CURSOR,CURSOR_INTEGRATE).to_vec(),call_bytes(SITE_CURSOR,cursor_hook as usize).to_vec()),
             (SITE_SCRIPT_KEY,call_bytes(SITE_SCRIPT_KEY,NATIVE_KEY).to_vec(),call_bytes(SITE_SCRIPT_KEY,script_key_hook as usize).to_vec()),
             (SITE_FMV_SPACE,call_bytes(SITE_FMV_SPACE,NATIVE_KEY).to_vec(),call_bytes(SITE_FMV_SPACE,fmv_space_hook as usize).to_vec()),
+            (SITE_SCENE_SKIP,call_bytes(SITE_SCENE_SKIP,NATIVE_ANY_KEY).to_vec(),call_bytes(SITE_SCENE_SKIP,scene_skip_hook as usize).to_vec()),
             (SITE_SELECT,vec![0xf6,0x05,0xa0,0xc2,0x71,0,4,0x0f,0x84,0x3a,1,0,0],{
                 let mut b=call_bytes(SITE_SELECT,selection_hook as usize).to_vec();
                 b.extend([0x85,0xc0,0x0f,0x84,0x3a,1,0,0]);b
@@ -525,7 +545,7 @@ pub fn install(){
                 return;
             }
         }
-        let pages=[0x535000usize,0x487000usize,0x489000usize,0x537000usize,0x538000usize,0x5d0000usize,0x44a000usize];let mut prot=[0u32;7];
+        let pages=[0x535000usize,0x487000usize,0x489000usize,0x537000usize,0x538000usize,0x5d0000usize,0x44a000usize,0x4a0000usize];let mut prot=[0u32;8];
         for i in 0..pages.len(){
             if VirtualProtect(pages[i] as Obj,0x1000,0x40,&mut prot[i])==0{
                 for j in 0..i{let mut ignored=0;VirtualProtect(pages[j] as Obj,0x1000,prot[j],&mut ignored);}
@@ -539,7 +559,7 @@ pub fn install(){
             for p in pages{FlushInstructionCache(GetCurrentProcess(),p as *const c_void,0x1000);}
         }
         for i in 0..pages.len(){let mut ignored=0;VirtualProtect(pages[i] as Obj,0x1000,prot[i],&mut ignored);}
-        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: ten exact in-memory sites installed; fixed actions, flight-only throttle, menu bridge, FMV skip");}
+        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: eleven exact in-memory sites installed; fixed actions, flight-only throttle, menu bridge, FMV and 3D skip");}
         else{crate::log("SDL3-FLIGHT: instruction cache flush failed; restored original calls");}
     }
 }
@@ -612,6 +632,7 @@ mod tests{
         assert!(!fresh_fmv_skip(0,1,false));
         assert!(!fresh_fmv_skip(2,1,false));
         assert_eq!(call_bytes(SITE_FMV_SPACE,NATIVE_KEY),[0xe8,0x5c,0xb0,0x0e,0]);
+        assert_eq!(call_bytes(SITE_SCENE_SKIP,NATIVE_ANY_KEY),[0xe8,0x46,0x5d,0x09,0]);
     }
     #[test]fn verified_call_encodings(){
         assert_eq!(call_bytes(SITE_INIT,INIT),[0xe8,0x8e,0x12,0,0]);
