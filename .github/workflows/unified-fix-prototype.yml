@@ -7,6 +7,8 @@ on:
       - 'CrimsonSkiesFix/runtime-unified/**'
       - 'CrimsonSkiesFix/loader-alias/tools/**'
       - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/assets/controls/**'
+      - 'CrimsonSkiesFix/tools/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
       - '.github/workflows/unified-fix-prototype.yml'
@@ -15,6 +17,8 @@ on:
       - 'CrimsonSkiesFix/runtime-unified/**'
       - 'CrimsonSkiesFix/loader-alias/tools/**'
       - 'CrimsonSkiesFix/src/**'
+      - 'CrimsonSkiesFix/assets/controls/**'
+      - 'CrimsonSkiesFix/tools/**'
       - 'CrimsonSkiesFix/installer/**'
       - 'CrimsonSkiesFix/loader-winmm/src/bin/alias_import_*.rs'
       - '.github/workflows/unified-fix-prototype.yml'
@@ -57,6 +61,22 @@ jobs:
           $dll=Join-Path $out 'SDL3.dll'
           "CRIMSONSKIESFIX_SDL3_DLL=$dll" | Add-Content -Encoding utf8 $env:GITHUB_ENV
           "CRIMSONSKIESFIX_SDL3_SHA256=$((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant())" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+      - name: Validate frozen controller artwork and packaging tools
+        shell: pwsh
+        run: |
+          python tools/test_append_controls_art.py
+          if($LASTEXITCODE -ne 0){throw 'Controls art tooling tests failed'}
+          $pack='assets/controls/controls-art.pack'
+          if(Test-Path $pack){
+            python tools/append_controls_art.py --verify-pack $pack
+            if($LASTEXITCODE -ne 0){throw 'Invalid checked-in controls art'}
+            "CRIMSONSKIESFIX_REQUIRE_CONTROLS_ART=1" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+            "CONTROLS_ART_MODE=embedded" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+          } else {
+            if("${{ github.event_name }}" -ne 'pull_request'){throw 'Controller artwork is required for non-PR builds'}
+            Write-Warning 'Missing checked-in artwork: migration-only PR artifact; do not distribute bare launcher'
+            "CONTROLS_ART_MODE=external-overlay-required" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+          }
       - name: Record resolved dependency and compiler metadata
         shell: pwsh
         run: |
@@ -180,6 +200,12 @@ jobs:
           New-Item -ItemType Directory -Force 'unified-dist' | Out-Null
           $exe='unified-dist/CrimsonSkiesFix.exe'
           Copy-Item installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe $exe
+          if($env:CONTROLS_ART_MODE -eq 'embedded'){
+            python tools/append_controls_art.py --verify-embedded $exe assets/controls/controls-art.pack
+            if($LASTEXITCODE -ne 0){throw 'Embedded controls art absent or invalid'}
+          } elseif($env:CONTROLS_ART_MODE -ne 'external-overlay-required'){
+            throw 'Missing controls art build state'
+          }
           Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
           Copy-Item $env:CRIMSONSKIESFIX_NOTICES_FILE 'unified-dist/THIRD-PARTY-NOTICES.txt'
           Copy-Item ../LICENSE 'unified-dist/LICENSE'
@@ -193,6 +219,8 @@ jobs:
             "Feature=$env:INSTALLER_FEATURE",
             "SDL3Source=https://github.com/libsdl-org/SDL/tree/release-3.4.18",
             "SDL3SHA256=$env:CRIMSONSKIESFIX_SDL3_SHA256",
+            "ControlsArtMode=$env:CONTROLS_ART_MODE",
+            "ControlsArtSHA256=79e6ac7529f3234dd364d752ff5405915d6daf537f5114cc4c1751813a0e6044",
             (rustc -V),
             (cargo -V)) | Set-Content -Encoding utf8 'unified-dist/SOURCE-INFO.txt'
           python -c "from pathlib import Path; a=Path('unified-dist/CrimsonSkiesFix.exe').read_bytes(); n=Path('unified-dist/THIRD-PARTY-NOTICES.txt').read_bytes(); assert n and n in a, 'Packaged notices must match embedded bytes'"

@@ -45,3 +45,7 @@ Before any public release, arrange durable access to the actual corresponding
 source and build scripts, including applicable third-party sources and notices.
 The test package's references and generated notices do not by themselves
 complete that review.
+
+## Frozen controls artwork (dev.15 onward)
+
+Import the original generated assets under `CrimsonSkiesFix/assets/controls/` at repository root. `controls-art.pack` must be exactly 2555973 bytes, SHA-256 `79e6ac7529f3234dd364d752ff5405915d6daf537f5114cc4c1751813a0e6044`. It contains three 1600x840 BGRA images. Run `python tools/append_controls_art.py --verify-pack assets/controls/controls-art.pack` from CrimsonSkiesFix/. Set `$env:CRIMSONSKIESFIX_REQUIRE_CONTROLS_ART = '1'` before building runtime for a complete candidate. The runtime embeds the exact bytes; no post-build overlay is required. Verify final EXE with `python tools/append_controls_art.py --verify-embedded installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe assets/controls/controls-art.pack`. PRs missing the binary import are migration-only; they require the exact overlay and must not be released. Source inputs and generation script accompany the pack. Original game textures are read at runtime and never committed.

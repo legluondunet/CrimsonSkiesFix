@@ -1,6 +1,7 @@
-//! Textured controller artwork, bounded and authenticated. The generated
-//! asset bytes are appended to the unsigned experimental launcher by the
-//! companion packer after CI. No game asset, font, or new dependency.
+//! Textured controller artwork, bounded and authenticated. Prefer the
+//! exact checked-in asset embedded by the build. The unsigned launcher
+//! overlay remains a compatibility path for migration/test candidates.
+//! No game asset, font, or new dependency.
 use std::{collections::VecDeque,ffi::c_void,io::{Read,Seek,SeekFrom},ptr,sync::{Mutex,OnceLock,atomic::{AtomicBool,AtomicU32,Ordering}}};
 use crate::borderless_native_blt::Rect;
 type H=*mut c_void;
@@ -37,7 +38,10 @@ fn ranges(p:&[u8])->Option<[(usize,usize);3]>{
     }
     (pos==p.len()).then_some(r)
 }
-fn load()->Option<Vec<u8>>{
+fn authenticated_pack(p:&[u8])->bool{
+    p.len()==PACK_LEN&&ranges(p).is_some()&&crate::exe_gate::sha256(p)==PACK_SHA
+}
+fn load_overlay()->Option<Vec<u8>>{
     let path=std::env::var_os("CRIMSONSKIESFIX_ART_LAUNCHER")?;
     let mut f=std::fs::File::open(path).ok()?;
     let meta=f.metadata().ok()?;
@@ -47,13 +51,22 @@ fn load()->Option<Vec<u8>>{
     if &tail[..8]!=END||u64::from_le_bytes(tail[8..].try_into().ok()?)!=PACK_LEN as u64{return None;}
     f.seek(SeekFrom::End(-((PACK_LEN+16) as i64))).ok()?;
     let mut p=vec![0u8;PACK_LEN];f.read_exact(&mut p).ok()?;
-    if crate::exe_gate::sha256(&p)!=PACK_SHA||ranges(&p).is_none(){return None;}
+    if !authenticated_pack(&p){return None;}
     Some(p)
 }
 fn pack()->Option<&'static [u8]>{
     PACK.get_or_init(||{
-        let p=load();
-        crate::log(if p.is_some(){"MENU-CONTROLS-ART: authenticated generated 1600x840 controller and native decoration artwork loaded"}else{"MENU-CONTROLS-ART: no authenticated overlay; prior generic/vector fallback retained"});
+        #[cfg(crimson_controls_embedded)]
+        {
+            let p=include_bytes!("../assets/controls/controls-art.pack");
+            if authenticated_pack(p){
+                crate::log("MENU-CONTROLS-ART: authenticated embedded 1600x840 artwork loaded");
+                return Some(p.to_vec());
+            }
+            crate::log("MENU-CONTROLS-ART: invalid embedded artwork; checking migration overlay");
+        }
+        let p=load_overlay();
+        crate::log(if p.is_some(){"MENU-CONTROLS-ART: authenticated generated 1600x840 controller and native decoration artwork loaded (migration overlay)"}else{"MENU-CONTROLS-ART: no authenticated artwork; prior generic/vector fallback retained"});
         p
     }).as_deref()
 }
@@ -402,6 +415,16 @@ mod tests{
         assert_eq!(ranges(&p),Some([(24,27),(31,34),(38,41)]));
         assert!(unpack(&p,2).is_none());
         p.push(0);assert!(ranges(&p).is_none());p.pop();p[20]=255;assert!(ranges(&p).is_none());
+    }
+    #[test]fn wrong_or_truncated_art_is_never_authenticated(){
+        assert!(!authenticated_pack(&[]));
+        assert!(!authenticated_pack(&vec![0;PACK_LEN]));
+    }
+    #[cfg(crimson_controls_embedded)]
+    #[test]fn checked_in_art_authenticates_and_all_images_decode(){
+        let bytes=include_bytes!("../assets/controls/controls-art.pack");
+        assert!(authenticated_pack(bytes));
+        for family in [2,3,4]{assert_eq!(unpack(bytes,family).unwrap().len(),RAW);}
     }
     #[test]fn full_frame_uses_exact_4by3_viewport(){
         for r in [rect(0,0,800,600),rect(240,0,1680,1080),rect(0,0,1600,1200)]{assert_eq!(layout(r),Some(r));}

@@ -87,11 +87,22 @@ fn open_panel(s:&mut Input,reason:&str){
     crate::menu_controls_art::invalidate();
     if crate::cfg().log_enabled{crate::log(&format!("MENU-CONTROLS-PANEL: opened by {reason}"));}
 }
+fn expire_preview(s:&mut Input,now:Instant){
+    if s.open&&s.present.is_some_and(|t|now.saturating_duration_since(t)>Duration::from_secs(2)){
+        close(s,"presentation-timeout");
+    }
+}
+fn leave_controls(s:&mut Input){
+    close(s,"page-exit");
+    s.mouse_block=false;
+    s.keys.fill(false);
+    s.pad_block=false;
+}
 fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     let pressed=buttons&!s.buttons;
     let moved=axis&&!s.axis;
     s.buttons=buttons;s.axis=axis;
-    if !eligible{close(s,"page-exit");s.pad_block=false;return false;}
+    if !eligible{leave_controls(s);return false;}
     if s.open{
         if pressed!=0||moved{close(s,if pressed!=0{"gamepad-button"}else{"gamepad-axis"});s.pad_block=true;}
         return true;
@@ -108,7 +119,7 @@ fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool
 }
 pub fn pad_event(buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     let Ok(mut s)=input().lock()else{return false;};
-    if s.open&&s.present.is_some_and(|t|t.elapsed()>Duration::from_secs(2)){close(&mut s,"presentation-timeout");}
+    expire_preview(&mut s,Instant::now());
     pad_step(&mut s,buttons,axis,neutral,eligible&&context()&&FAMILY.load(Ordering::Acquire)!=0)
 }
 // Match the exact painted button, not any underlying native widget.
@@ -139,11 +150,12 @@ fn mouse_step(s:&mut Input,buttons:u32,moved:bool,open_click:bool)->bool{
 pub fn mouse_event(buttons:u32,moved:bool,x:i32,y:i32,left_edge:bool)->bool{
     if !context(){return false;}
     let Ok(mut s)=input().lock()else{return false;};
+    expire_preview(&mut s,Instant::now());
     let open_click=display_family()!=0&&LAST_PRESENT.load(Ordering::Acquire)==1&&left_edge&&invite_hit(x,y);
     mouse_step(&mut s,buttons,moved,open_click)
 }
 pub fn keyboard_capture()->bool{
-    context()&&input().lock().is_ok_and(|s|s.open||s.keys.iter().any(|&v|v))
+    context()&&input().lock().is_ok_and(|mut s|{expire_preview(&mut s,Instant::now());s.open||s.keys.iter().any(|&v|v)})
 }
 pub fn keyboard_event(scan:usize,pressed:bool){
     if scan>=256{return;}
@@ -152,7 +164,7 @@ pub fn keyboard_event(scan:usize,pressed:bool){
         if pressed{close(&mut s,"keyboard");}
     }
 }
-pub fn is_open()->bool{context()&&input().lock().is_ok_and(|s|s.open)}
+pub fn is_open()->bool{context()&&input().lock().is_ok_and(|mut s|{expire_preview(&mut s,Instant::now());s.open})}
 pub fn fail_preview(){if let Ok(mut s)=input().lock(){close(&mut s,"page-or-render-reset");}}
 fn edition_language(s:&str)->u8{
     let mut ids=s.lines().filter_map(|l|l.strip_prefix("Edition="));
@@ -205,14 +217,19 @@ pub fn observe_member(name:&str){
     let after=next_page(before,name);
     if before!=after{
         PAGE.store(after,Ordering::Release);
-        if after!=CONTROLS{fail_preview();}
+        if after!=CONTROLS{
+            if let Ok(mut s)=input().lock(){leave_controls(&mut s);}
+            not_presented();
+        }
         if after==CONTROLS&&crate::cfg().log_enabled{
             crate::log("MENU-CONTROLS-PANEL: verified cp_background + cp_t_joysticktitle; preview available");
         }
     }
 }
 pub fn clear_page(){
-    if PAGE.swap(NONE,Ordering::AcqRel)!=NONE{fail_preview();}
+    if PAGE.swap(NONE,Ordering::AcqRel)!=NONE{
+        if let Ok(mut s)=input().lock(){leave_controls(&mut s);}
+    }
     not_presented();
 }
 pub fn page_active()->bool{PAGE.load(Ordering::Acquire)==CONTROLS}
@@ -677,6 +694,27 @@ mod tests{
         assert!(invite_hit(450,534));assert!(!invite_hit(450,510));
         assert!(!invite_hit(299,534));assert!(!invite_hit(606,534));
         assert!(!invite_hit(450,552));
+    }
+    #[test]fn page_exit_clears_captured_input_without_inventing_a_pad_edge(){
+        let mut s=Input::default();
+        assert!(mouse_step(&mut s,0x80,false,true));
+        s.keys[30]=true;s.buttons=8;s.axis=true;
+        leave_controls(&mut s);
+        assert!(!s.open&&!s.mouse_block&&!s.pad_block);
+        assert!(s.keys.iter().all(|&k|!k));
+        assert_eq!(s.buttons,8);assert!(s.axis);
+        assert!(!pad_step(&mut s,8,true,false,true));
+        assert!(!s.open);
+    }
+    #[test]fn stale_modal_expires_even_without_active_gamepad(){
+        let mut s=Input::default();
+        assert!(mouse_step(&mut s,0x80,false,true));assert!(s.open);
+        let t=s.present.unwrap();
+        expire_preview(&mut s,t+Duration::from_secs(1));assert!(s.open);
+        expire_preview(&mut s,t+Duration::from_secs(3));assert!(!s.open);
+        assert!(s.mouse_block); // release remains consumed
+        assert!(mouse_step(&mut s,0,false,false));
+        assert!(!s.mouse_block);
     }
     #[test]fn rectangle_is_native_4by3(){assert_eq!(rect(0,0,800,600),Rect{left:0,top:0,right:800,bottom:600});}
 }
