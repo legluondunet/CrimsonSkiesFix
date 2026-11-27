@@ -242,6 +242,17 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(include_bytes!("../Cargo.lock")),
         sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock"))
     ));
+    #[cfg(feature="native-usde-updater")]
+    {
+        const NOTICES:&str=include_str!(concat!(env!("OUT_DIR"),"/third-party-notices.txt"));
+        let path=docs.join("THIRD-PARTY-NOTICES.txt");
+        if any_entry(&path) && !regular(&path) {
+            return Err("unsafe THIRD-PARTY-NOTICES.txt (not a regular file)".into());
+        }
+        // Like build-info, this generated notice describes the current build.
+        fs::write(&path,NOTICES).map_err(error)?;
+        build_info.push_str(&format!("ThirdPartyNoticesSHA256={}\n",sha256::hex(NOTICES.as_bytes())));
+    }
     let manifest = docs.join("build-info.txt");
     if any_entry(&manifest) && !regular(&manifest) {
         return Err("unsafe build-info.txt (not a regular file)".into());
@@ -871,6 +882,9 @@ mod tests {
         {
             assert!(info.lines().any(|line|line==format!("InstallerCargoLockSHA256={}",sha256::hex(include_bytes!("../Cargo.lock")))));
             assert!(info.lines().any(|line|line==format!("RuntimeCargoLockSHA256={}",sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock")))));
+            let notices=fs::read(root.join("docs").join("THIRD-PARTY-NOTICES.txt")).unwrap();
+            assert_eq!(notices,include_bytes!(concat!(env!("OUT_DIR"),"/third-party-notices.txt")));
+            assert!(info.lines().any(|line|line==format!("ThirdPartyNoticesSHA256={}",sha256::hex(&notices))));
         }
         assert!(!any_entry(&root.join("state"))); // no CD receipt for manual import
         assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\nAspectRatio=4:3\n");

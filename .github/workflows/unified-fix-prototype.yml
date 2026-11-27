@@ -56,6 +56,16 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Runtime metadata failed'}
           $installer = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE
           if($LASTEXITCODE -ne 0){throw 'Installer metadata failed'}
+          $runtimeMeta=Join-Path $env:RUNNER_TEMP 'crimson-runtime-metadata.json'
+          $installerMeta=Join-Path $env:RUNNER_TEMP 'crimson-installer-metadata.json'
+          $runtime | Set-Content -Encoding utf8 $runtimeMeta
+          $installer | Set-Content -Encoding utf8 $installerMeta
+          python installer/tools/test_collect_dependency_notices.py
+          if($LASTEXITCODE -ne 0){throw 'Dependency notice collector tests failed'}
+          $notices=Join-Path $env:RUNNER_TEMP 'CrimsonSkiesFix-THIRD-PARTY-NOTICES.txt'
+          python installer/tools/collect_dependency_notices.py --metadata $runtimeMeta $installerMeta --output $notices
+          if($LASTEXITCODE -ne 0){throw 'Dependency notice collection failed'}
+          "CRIMSONSKIESFIX_NOTICES_FILE=$notices" | Add-Content -Encoding utf8 $env:GITHUB_ENV
           foreach($item in @(@{Name='runtime-unified';Data=$runtime},@{Name='installer';Data=$installer})){
             $meta=($item.Data -join "`n") | ConvertFrom-Json
             $inventory=@($meta.packages | Sort-Object name,version | ForEach-Object {
@@ -162,6 +172,8 @@ jobs:
           $exe='unified-dist/CrimsonSkiesFix.exe'
           Copy-Item installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe $exe
           Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
+          Copy-Item $env:CRIMSONSKIESFIX_NOTICES_FILE 'unified-dist/THIRD-PARTY-NOTICES.txt'
+          Copy-Item ../LICENSE 'unified-dist/LICENSE'
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
           $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
           if($bytes.Length -lt 256 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90){throw 'Missing MZ header'}
@@ -174,7 +186,7 @@ jobs:
             throw 'Launcher must be an x86 PE32 EXE, not a DLL'
           }
           $files=@(Get-ChildItem 'unified-dist' -File -Recurse | ForEach-Object {$_.FullName.Substring((Resolve-Path 'unified-dist').Path.Length+1)})
-          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md')
+          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE')
           if(Compare-Object $files $expected){throw 'Unexpected test artifact contents'}
           Write-Host "CANDIDATE-PACKAGE PASS: single x86 launcher, hash and instructions; commit $env:CRIMSONSKIESFIX_COMMIT"
       - name: Check that dependency locks stayed unchanged

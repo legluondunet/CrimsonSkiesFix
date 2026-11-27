@@ -199,6 +199,6 @@ CrimsonSkiesFix is designed for the **original Crimson Skies (2000) PC game** on
 
 ## License
 
-CrimsonSkiesFix is licensed under **GPL-3.0-or-later** ([source license](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/LICENSE)). The GPL covers the project code, not Microsoft game files. The launcher does not bundle the original game, CD images, the official updater or a decrypted game executable. The official update remains a separate Microsoft file; hosting it separately requires applicable redistribution permission.
+CrimsonSkiesFix is licensed under **GPL-3.0-or-later** ([source license](https://github.com/legluondunet/CrimsonSkiesFix/blob/v1.0/LICENSE)). The GPL covers the project code, not Microsoft game files. Candidate CI collects dependency license texts into `THIRD-PARTY-NOTICES.txt`, also installed under `docs/`. Local developer builds without generated notices are not distribution-ready. The launcher does not bundle the original game, CD images, the official updater or a decrypted game executable. The official update remains a separate Microsoft file; hosting it separately requires applicable redistribution permission.
 
 legluondunet assisted by ChatGPT (OpenAI)

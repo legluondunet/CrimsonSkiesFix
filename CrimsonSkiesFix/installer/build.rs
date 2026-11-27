@@ -7,6 +7,24 @@ mod sha256;
 use std::{env,fs,path::PathBuf};
 
 fn main() {
+    // Candidate CI provides the notices generated from the same locked metadata.
+    // Local developer builds without this input are explicitly not release-ready.
+    const NOTICES:&str="CRIMSONSKIESFIX_NOTICES_FILE";
+    println!("cargo:rerun-if-env-changed={NOTICES}");
+    if env::var_os("CARGO_FEATURE_NATIVE_USDE_UPDATER").is_some(){
+        let text=match env::var_os(NOTICES){
+            Some(path)=>{
+                let path=PathBuf::from(path);
+                println!("cargo:rerun-if-changed={}",path.display());
+                let text=fs::read_to_string(path).expect("cannot read generated dependency notices");
+                assert!(text.starts_with("CrimsonSkiesFix - third-party dependency notices"),"invalid notices");
+                text
+            },
+            None=>"Developer build: dependency notices not generated; not for distribution.\n".to_owned()
+        };
+        let out=PathBuf::from(env::var_os("OUT_DIR").expect("cargo OUT_DIR missing"));
+        fs::write(out.join("third-party-notices.txt"),text).expect("cannot stage notices");
+    }
     const ENV:&str="CRIMSONSKIESFIX_OWNER_PATCH102";
     println!("cargo:rerun-if-env-changed={ENV}");
     // Public/release builds retain the external-updater behavior.

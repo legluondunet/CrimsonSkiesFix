@@ -1,6 +1,6 @@
 # CrimsonSkiesFix 1.1 — draft release notes
 
-**Not published.** The current stable release is v1.0. Candidate baseline: 1.1.0-rc.1-09aad277, validated on 26 November 2026 (existing installation; 3287914a for the earlier fresh German installation). Do not publish these notes as a completed release until the release gates are satisfied.
+**Not published.** The current stable release is v1.0. Candidate baseline: 1.1.0-rc.1-cb3a581f, validated on 27 November 2026 (existing installation; 3287914a for the earlier fresh German installation). Do not publish these notes as a completed release until the release gates are satisfied.
 
 ## What's new since 1.0
 
