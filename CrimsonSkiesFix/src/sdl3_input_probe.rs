@@ -1,6 +1,8 @@
-//! 1.2 input research: compare authenticated GOS joystick state and SDL3.
-//! No input injection or native joystick suppression in this diagnostic build.
-//! SDL is initialized only on the foreground game's verified Flip thread.
+//! SDL3 shared backend; passive fallback telemetry on the verified Flip thread.
+//! The flight adapter is driven by the original GOS polling call.
+#[path="sdl3_flight.rs"]
+mod flight;
+pub use flight::install;
 use std::{cell::RefCell, ffi::{c_char,c_void,CStr}, fs, os::windows::ffi::OsStrExt,
     ptr, sync::atomic::{AtomicU32,Ordering}, time::{Duration,Instant}};
 type Obj=*mut c_void;
@@ -90,7 +92,7 @@ impl Api {
         hint(c"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS".as_ptr(),c"1".as_ptr());
         if !init(GAMEPAD){FreeLibrary(module);return Err("SDL_InitSubSystem failed".into());}
         events(false);jevents(false);
-        crate::log(&format!("SDL3-PROBE: initialized version={} sha256={expected}; input injection=false",version()));
+        crate::log(&format!("SDL3-PROBE: initialized version={} sha256={expected}; SDL backend loaded",version()));
         Ok(api)
     }
     unsafe fn ids(&self,get:GetIds)->Vec<u32>{
@@ -218,7 +220,7 @@ impl Probe {
 enum Slot{Waiting,Failed,Active(Probe)}
 thread_local!{static PROBE:RefCell<Slot>=const{RefCell::new(Slot::Waiting)};}
 pub fn on_game_flip(){
-    if !crate::cfg().log_enabled || !crate::exe_gate::verify_once(){return;}
+    if flight::owns_or_waits() || !crate::cfg().log_enabled || !crate::exe_gate::verify_once(){return;}
     unsafe{
         let mut process=0;
         let hwnd=GetForegroundWindow();

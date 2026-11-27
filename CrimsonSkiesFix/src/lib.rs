@@ -396,6 +396,11 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if !config.directdraw_passthrough {
         static ROF_LOADER_ONCE:Once=Once::new();
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
+        #[cfg(feature="sdl3-probe")]
+        {
+            static SDL3_FLIGHT_ONCE:Once=Once::new();
+            SDL3_FLIGHT_ONCE.call_once(sdl3_input_probe::install);
+        }
     }
     if diagnostics::is_native_windows() && !config.directdraw_passthrough {
         // Historical Windows #22 fix: the game may obtain its IDirectDraw4

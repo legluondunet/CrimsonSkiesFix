@@ -2,7 +2,7 @@
 
 **Build expérimental Win32 x86, non destiné à une release publique.**
 
-Branche 1.2: avec la feature sdl3-probe-install, le lanceur embarque SDL3 x86 3.4.18 et sa licence. Activer [Debug] Log=1 pour observer les manettes SDL3 et l’état joystick original dans le journal. Ce premier essai ne modifie PAS les commandes du jeu.
+Branche 1.2 dev.2 : premier pilotage analogique SDL3 expérimental. Le lanceur embarque SDL3 x86 3.4.18 et sa licence. Le chemin joystick est remplacé en mémoire si les préimages correspondent exactement. Stick gauche roulis/tangage, stick droit lacet/gaz progressifs ; boutons encore reliés aux emplacements historiques, non au mappage d'actions final. Aucun changement de préférence persistante. Activer [Debug] Log=1 pour le test. Les menus, le gyroscope actif et les vibrations ne sont pas encore implémentés.
 
 Ce test apporte une installation automatisée pour cinq profils de CD originaux. Le launcher vérifie l'image de CD et une copie **déjà possédée** du correctif officiel Microsoft 1.02, mais **n'exige plus d'exécutable déchiffré**.
 

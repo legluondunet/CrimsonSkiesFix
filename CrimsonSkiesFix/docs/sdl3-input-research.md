@@ -30,3 +30,7 @@ No mapping is applied to gameplay yet. This deliberate test gate verifies
 hardware/SDL availability, not gameplay mapping. Existing Log=0 defaults
 remain unchanged. Modern features are planned after analog ownership.
 SDL official reference: https://wiki.libsdl.org/SDL3/CategoryGamepad
+
+## Stage 2 — initial SDL-only analog flight adapter
+
+The owner test of a926c1ba confirms SDL3 stick, trigger, button and gyro transport (PR #72 comment 7211556195). Three exact CALL sites (0x53510d init, 0x53540f release, 0x5355f5 poll) are replaced transactionally, plus the 13-byte input-selection condition at 0x487516. Fixed centered -1000..1000 calibration, original analog state X/Y/Z/Rz, four neutral POV fields, no native force feedback capability, original button transition callback if requested and valid. Z is absolute, so right stick Y integrates throttle at 500 units/s, bounded 0..1000. No native COM pointer is fabricated. Mouse and keyboard untouched. An already-initialized native joystick can be released at the first original polling call only after SDL initialization; if existing force feedback is present or guard fails, native path remains. With no pad, readiness false but original polling registration kept enabled after SDL init so hotplug is possible. Focus loss and disconnection neutralize axes/buttons and require centered sticks/released buttons before rearming. Provisional physical button slots 1..10 are not the final imposed action map; no claims about menu navigation or gyro-driven flight. All mutations are memory only. See log SDL3-FLIGHT.
