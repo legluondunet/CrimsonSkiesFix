@@ -121,10 +121,28 @@ unsafe fn foreground()->bool{
     let mut pid=0;let hwnd=GetForegroundWindow();
     !hwnd.is_null()&&GetWindowThreadProcessId(hwnd,&mut pid)!=0&&pid==GetCurrentProcessId()
 }
+// Every connected SDL gamepad is monitored on the existing GOS poll thread.
+// Only the chosen device can publish state. Never combine controller axes.
+const BASIC_MASK:u32=0x7fff & !(1<<5); // exclude Guide
+const SWITCH_IDLE:Duration=Duration::from_millis(350);
+#[derive(Clone,Copy,Debug,Default)]
+struct Activity{neutral_seen:bool,was_intent:bool}
+impl Activity{
+    fn observe(&mut self,raw:[i16;6],buttons:u32)->bool{
+        if centered(raw,buttons&BASIC_MASK){self.neutral_seen=true;}
+        let intent=raw[..4].iter().any(|&v|i32::from(v).abs()>=10000)
+            ||raw[4]>8192||raw[5]>8192||buttons&BASIC_MASK!=0;
+        let edge=self.neutral_seen&&intent&&!self.was_intent;
+        self.was_intent=intent;
+        edge
+    }
+}
+struct Candidate{id:u32,handle:Obj,activity:Activity}
 struct Flight{
     api:Api,pad:Obj,id:u32,armed:bool,throttle:f32,
     last:Instant,scan:Option<Instant>,last_log:Option<Instant>,last_state:[u8;STATE_LEN],
     was_foreground:bool,
+    candidates:Vec<Candidate>,idle_since:Option<Instant>,
     raw:[i16;6],buttons:u32,previous_buttons:u32,
     last_aircraft:usize,last_consume:Option<Instant>,
     menu_armed:bool,menu_seen:bool,mouse_tick:Option<Instant>,
@@ -134,14 +152,85 @@ impl Flight{
     unsafe fn new()->Result<Self,String>{
         Ok(Self{api:Api::load()?,pad:ptr::null_mut(),id:0,armed:false,throttle:START_THROTTLE as f32,
             last:Instant::now(),scan:None,last_log:None,last_state:neutral(START_THROTTLE),
-            was_foreground:false,raw:[0;6],buttons:0,previous_buttons:0,
+            was_foreground:false,candidates:Vec::new(),idle_since:None,raw:[0;6],buttons:0,previous_buttons:0,
             last_aircraft:0,last_consume:None,menu_armed:false,menu_seen:false,
             mouse_tick:None,menu_fraction:[0.0;2],menu_reported:false})
     }
     unsafe fn close_pad(&mut self){
-        if !self.pad.is_null(){(self.api.close)(self.pad);}
+        for c in self.candidates.drain(..){(self.api.close)(c.handle);}
         self.pad=ptr::null_mut();self.id=0;self.armed=false;self.scan=None;
-        self.clear_controls();
+        self.idle_since=None;self.clear_controls();
+    }
+    unsafe fn select(&mut self,id:u32,handle:Obj){
+        let old=self.id;
+        self.id=id;self.pad=handle;self.armed=true;self.idle_since=None;
+        self.raw=[0;6];self.buttons=0;self.previous_buttons=0;
+        self.menu_armed=false;self.menu_seen=false;
+        self.mouse_tick=None;self.menu_fraction=[0.0;2];
+        self.last_log=None;
+        publish(&neutral(self.throttle as i32),true,true);
+        let n=(self.api.name)(handle);
+        let name=if n.is_null(){"unknown".to_owned()}else{
+            CStr::from_ptr(n).to_string_lossy().chars().take(100)
+                .map(|c|if c.is_control(){' '}else{c}).collect()
+        };
+        crate::log(&format!("SDL3-FLIGHT: selected id={id} name={name:?}; previous={old}; automatic activity; basic gamepad controls only"));
+    }
+    unsafe fn refresh_devices(&mut self,now:Instant){
+        let mut i=0;
+        while i<self.candidates.len(){
+            let c=&self.candidates[i];
+            if (self.api.connected)(c.handle){i+=1;continue;}
+            let c=self.candidates.remove(i);
+            if c.id==self.id{
+                crate::log(&format!("SDL3-FLIGHT: disconnected id={}",self.id));
+                self.pad=ptr::null_mut();self.id=0;self.armed=false;self.idle_since=None;
+                self.clear_controls();
+                publish(&neutral(self.throttle as i32),false,true);
+            }
+            (self.api.close)(c.handle);
+            self.scan=None;
+        }
+        if self.scan.is_none_or(|t|now.saturating_duration_since(t)>=Duration::from_millis(500)){
+            self.scan=Some(now);
+            let mut ids=self.api.ids(self.api.pads);ids.sort_unstable();ids.dedup();
+            let before=self.candidates.len();
+            for id in ids{
+                if self.candidates.len()>=32{break;}
+                if self.candidates.iter().any(|c|c.id==id){continue;}
+                let handle=(self.api.open)(id);
+                if !handle.is_null(){self.candidates.push(Candidate{id,handle,activity:Activity::default()});}
+            }
+            self.candidates.sort_by_key(|c|c.id);
+            if before!=self.candidates.len(){
+                crate::log(&format!("SDL3-FLIGHT: monitored gamepads={:?}; selection requires neutral then activity",self.candidates.iter().map(|c|c.id).collect::<Vec<_>>()));
+            }
+        }
+    }
+    unsafe fn choose_device(&mut self,now:Instant)->Option<([i16;6],u32)>{
+        self.refresh_devices(now);
+        let mut current=None;
+        let mut contender=None;
+        for c in &mut self.candidates{
+            let raw=std::array::from_fn(|i|(self.api.axis)(c.handle,i as i32));
+            let buttons=(0..15).fold(0u32,|m,i|m|(((self.api.button)(c.handle,i) as u32)<<i))&BASIC_MASK;
+            let edge=c.activity.observe(raw,buttons);
+            if c.id==self.id{current=Some((raw,buttons));}
+            else if edge&&contender.is_none(){contender=Some((c.id,c.handle,raw,buttons));}
+        }
+        let idle=if let Some((raw,buttons))=current{
+            if centered(raw,buttons){
+                let since=*self.idle_since.get_or_insert(now);
+                now.saturating_duration_since(since)>=SWITCH_IDLE
+            }else{self.idle_since=None;false}
+        }else{true};
+        if idle{
+            if let Some((id,handle,raw,buttons))=contender{
+                self.select(id,handle);
+                return Some((raw,buttons));
+            }
+        }
+        current
     }
     fn clear_controls(&mut self){
         self.raw=[0;6];self.buttons=0;self.previous_buttons=0;
@@ -222,6 +311,8 @@ impl Flight{
         if !foreground(){
             if self.was_foreground{crate::log("SDL3-FLIGHT: focus lost; neutral and disarmed");}
             self.was_foreground=false;self.armed=false;self.clear_controls();
+            self.idle_since=None;
+            for c in &mut self.candidates{c.activity=Activity::default();}
             publish(&neutral(self.throttle as i32),false,true);return false;
         }
         if !self.was_foreground{
@@ -229,29 +320,9 @@ impl Flight{
             self.was_foreground=true;self.armed=false;self.clear_controls();
         }
         (self.api.update)();
-        if !self.pad.is_null()&&!(self.api.connected)(self.pad){
-            crate::log(&format!("SDL3-FLIGHT: disconnected id={}",self.id));
-            self.close_pad();
-            publish(&neutral(self.throttle as i32),false,true);
-        }
-        if self.pad.is_null()&&self.scan.is_none_or(|t|now.duration_since(t)>=Duration::from_millis(500)){
-            self.scan=Some(now);
-            let mut ids=self.api.ids(self.api.pads);ids.sort_unstable();
-            for id in ids{
-                let p=(self.api.open)(id);if p.is_null(){continue;}
-                self.pad=p;self.id=id;self.armed=false;
-                let n=(self.api.name)(p);
-                let name=if n.is_null(){"unknown".to_owned()}else{
-                    CStr::from_ptr(n).to_string_lossy().chars().take(100)
-                    .map(|c|if c.is_control(){' '}else{c}).collect()
-                };
-                crate::log(&format!("SDL3-FLIGHT: selected id={id} name={name:?}; basic gamepad controls only"));
-                break;
-            }
-        }
-        if self.pad.is_null(){publish(&neutral(self.throttle as i32),false,true);return false;}
-        let raw=std::array::from_fn(|i|(self.api.axis)(self.pad,i as i32));
-        let buttons=(0..26).fold(0u32,|m,i|m|(((self.api.button)(self.pad,i) as u32)<<i));
+        let Some((raw,buttons))=self.choose_device(now) else{
+            publish(&neutral(self.throttle as i32),false,true);return false;
+        };
         if !self.armed{
             if !centered(raw,buttons){publish(&neutral(self.throttle as i32),false,true);return false;}
             self.armed=true;crate::log("SDL3-FLIGHT: neutral acquired; analog controls armed");
@@ -465,6 +536,25 @@ mod tests{
         assert!(centered([128,0,0,0,0,0],0));
         assert!(!centered([0,0,0,0,0,9000],0));
         assert!(!centered([0;6],1));assert!(!centered([10000,0,0,0,0,0],0));
+    }
+    #[test]fn selection_requires_neutral_and_intent_edge(){
+        let mut a=Activity::default();
+        assert!(!a.observe([20000,0,0,0,0,0],0));
+        assert!(!a.observe([0;6],1));
+        assert!(!a.observe([0;6],0));
+        assert!(!a.observe([9000,0,0,0,0,0],0));
+        assert!(a.observe([10000,0,0,0,0,0],0));
+        assert!(!a.observe([15000,0,0,0,0,0],0));
+        assert!(!a.observe([0;6],0));
+        assert!(a.observe([0;6],1));
+        assert!(!a.observe([0;6],1));
+    }
+    #[test]fn inactive_guide_and_small_drift_do_not_select(){
+        let mut a=Activity::default();
+        assert!(!a.observe([128;6],0));
+        assert!(!a.observe([0;6],1<<5));
+        assert!(!a.observe([0;6],1<<20));
+        assert!(a.observe([0,0,0,0,0,12000],0));
     }
     #[test]fn fixed_slots_are_bijective(){
         for (i,&action) in ACTIONS.iter().enumerate(){

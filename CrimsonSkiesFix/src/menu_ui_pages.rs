@@ -15,7 +15,7 @@ const LOCALIZE_SITE:usize=0x0040_764e;
 const LOCALIZE_ORIGINAL:usize=0x0040_4630;
 const LOCALIZE_BYTES:[u8;5]=[0x68,0x30,0x46,0x40,0x00];
 const PAGE_EXECUTE_READWRITE:u32=0x40;
-const MAX_PAGES:u32=24;
+const MAX_PAGES:u32=160;
 const MAX_LOCALIZE:u32=80;
 static PAGE_LOGS:AtomicU32=AtomicU32::new(0);
 static LABEL_LOGS:AtomicU32=AtomicU32::new(0);
@@ -27,6 +27,7 @@ extern "system"{
     fn VirtualProtect(site:*mut c_void,size:usize,protection:u32,old:*mut u32)->i32;
     fn FlushInstructionCache(proc:*mut c_void,site:*const c_void,size:usize)->i32;
     fn GetCurrentProcess()->*mut c_void;
+    fn ReadProcessMemory(process:*mut c_void,address:*const c_void,buffer:*mut c_void,size:usize,read:*mut usize)->i32;
 }
 type ScriptFn=unsafe extern "system" fn(usize,usize,*const u32)->u32;
 
@@ -36,14 +37,42 @@ fn in_menu_context()->bool{
     crate::menu_scene::main_menu_was_seen()
 }
 fn is_small_resource_id(id:u32)->bool{(1..=0xffff).contains(&id)}
+// Exact original 0x403680 reads *args[1] as a member-name pointer
+// (0x403765..0x403768); it stores the root name at 0x647ad4
+// through the original lstrcpyA call at 0x403703. Only short ASCII
+// resource tokens are logged; no generic pointer or path dump.
+fn resource_token(bytes:&[u8])->Option<&str>{
+    let end=bytes.iter().position(|&b|b==0)?;
+    let v=&bytes[..end];
+    if v.is_empty()||v.len()>40||!v.iter().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'|b'.')){return None;}
+    std::str::from_utf8(v).ok()
+}
+unsafe fn read_exact(address:usize,buf:&mut [u8])->bool{
+    let mut count=0;
+    address!=0&&ReadProcessMemory(GetCurrentProcess(),address as *const c_void,buf.as_mut_ptr().cast(),buf.len(),&mut count)!=0&&count==buf.len()
+}
+unsafe fn page_member(args:*const u32)->Option<String>{
+    if args.is_null(){return None;}
+    let mut p=[0u8;4];
+    if !read_exact((args as usize).checked_add(4)?,&mut p){return None;}
+    let slot=u32::from_le_bytes(p) as usize;
+    if !read_exact(slot,&mut p){return None;}
+    let mut name=[0u8;41];
+    if !read_exact(u32::from_le_bytes(p) as usize,&mut name){return None;}
+    resource_token(&name).map(str::to_owned)
+}
 unsafe extern "system" fn page_passthrough(a:usize,b:usize,args:*const u32)->u32{
     let record=in_menu_context() &&
         PAGE_LOGS.load(Ordering::Relaxed)<MAX_PAGES;
+    let member=if record{page_member(args)}else{None};
     let original:ScriptFn=std::mem::transmute(PAGE_ORIGINAL);
     let result=original(a,b,args);
     if record && PAGE_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
         |n|if n<MAX_PAGES{Some(n+1)}else{None}).is_ok()
     {
+        let mut root=[0u8;41];
+        let root=if read_exact(0x647ad4,&mut root){resource_token(&root).unwrap_or("unidentified")}else{"unidentified"};
+        log(&format!("MENU-CONTROLS-PROBE: root={root} member={} result={result}",member.as_deref().unwrap_or("unidentified")));
         log(&format!(
             "MENU-GOS-PAGE: gosPageInit invoked after MainMenu; preferences_transaction={} callback_result_class={} [pass-through]",
             crate::menu_gos_event::preferences_transaction_active(),
@@ -119,6 +148,14 @@ pub unsafe fn install()->(bool,bool){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn resource_names_are_bounded_and_not_paths(){
+        assert_eq!(resource_token(b"Joystick\0"),Some("Joystick"));
+        assert_eq!(resource_token(b"Preferences.V1\0"),Some("Preferences.V1"));
+        assert_eq!(resource_token(b"C:\\Users\\name\0"),None);
+        assert_eq!(resource_token(b"../foo\0"),None);
+        assert_eq!(resource_token(b"no terminator"),None);
+    }
     #[test]
     fn registration_preimages_match_original_1_02(){
         assert_eq!(PAGE_BYTES[0],0x68);
