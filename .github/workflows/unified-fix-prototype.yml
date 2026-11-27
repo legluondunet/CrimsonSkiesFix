@@ -39,18 +39,56 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static
       CRIMSONSKIESFIX_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       CRIMSONSKIESFIX_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Build the same five-edition candidate on PRs and main after merge.
+      # This workflow produces test artifacts only, never publishes a release.
+      INSTALLER_FEATURE: native-usde-updater
       CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: rustup target add i686-pc-windows-msvc
+      - name: Record resolved dependency and compiler metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'unified-dependency-locks' | Out-Null
+          $runtime = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml
+          if($LASTEXITCODE -ne 0){throw 'Runtime metadata failed'}
+          $installer = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE
+          if($LASTEXITCODE -ne 0){throw 'Installer metadata failed'}
+          $runtimeMeta=Join-Path $env:RUNNER_TEMP 'crimson-runtime-metadata.json'
+          $installerMeta=Join-Path $env:RUNNER_TEMP 'crimson-installer-metadata.json'
+          $runtime | Set-Content -Encoding utf8 $runtimeMeta
+          $installer | Set-Content -Encoding utf8 $installerMeta
+          python installer/tools/test_collect_dependency_notices.py
+          if($LASTEXITCODE -ne 0){throw 'Dependency notice collector tests failed'}
+          $notices=Join-Path $env:RUNNER_TEMP 'CrimsonSkiesFix-THIRD-PARTY-NOTICES.txt'
+          python installer/tools/collect_dependency_notices.py --metadata $runtimeMeta $installerMeta --output $notices
+          if($LASTEXITCODE -ne 0){throw 'Dependency notice collection failed'}
+          "CRIMSONSKIESFIX_NOTICES_FILE=$notices" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+          foreach($item in @(@{Name='runtime-unified';Data=$runtime},@{Name='installer';Data=$installer})){
+            $meta=($item.Data -join "`n") | ConvertFrom-Json
+            $inventory=@($meta.packages | Sort-Object name,version | ForEach-Object {
+              [ordered]@{name=$_.name;version=$_.version;source=$_.source;license=$_.license;license_file=if($_.license_file){Split-Path -Leaf $_.license_file}else{$null};repository=$_.repository}
+            })
+            ConvertTo-Json -InputObject $inventory -Depth 5 | Set-Content -Encoding utf8 "unified-dependency-locks/$($item.Name)-packages.json"
+            if($item.Name -eq 'runtime-unified'){
+              $root=@($meta.packages | Where-Object name -eq 'crimsonskiesfix-unified-runtime')
+              if($root.Count -ne 1){throw 'Missing unique runtime package'}
+              "EXPECTED_CANDIDATE_VERSION=$($root[0].version)" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+            }
+          }
+          $rust=rustc -Vv
+          if($LASTEXITCODE -ne 0){throw 'rustc version failed'}
+          $cargo=cargo -Vv
+          if($LASTEXITCODE -ne 0){throw 'cargo version failed'}
+          @($rust; $cargo; "ImageOS=$env:ImageOS"; "ImageVersion=$env:ImageVersion") | Set-Content -Encoding utf8 'unified-dependency-locks/toolchain.txt'
       - name: Unit-test and compile combined fix.dll
         shell: pwsh
         run: |
-          cargo test --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime tests failed'}
-          cargo build --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          cargo build --locked --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime build failed'}
       - name: Verify exact DirectDraw export surface and no static WinMM/DDraw dependencies
         shell: pwsh
@@ -62,20 +100,47 @@ jobs:
       - name: Compile and test unified installer with only fix.dll embedded
         shell: pwsh
         run: |
-          cargo test --manifest-path installer/Cargo.toml --features unified-fix-install --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer tests failed'}
-          cargo build --manifest-path installer/Cargo.toml --features unified-fix-install --release --target i686-pc-windows-msvc
+          cargo build --locked --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified installer compilation failed'}
           $exe='installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe'
           $version=(& $exe --version) -join "`n"
-          if($LASTEXITCODE -ne 0 -or $version -notmatch 'EXPERIMENTAL UNIFIED'){
+          if($LASTEXITCODE -ne 0 -or $version -notmatch 'NATIVE US/DE LOCAL UPDATE' -or $version -notmatch $env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)){
             throw "Wrong installer variant: $version"
           }
+          $expectedIdentity="CrimsonSkiesFix $env:EXPECTED_CANDIDATE_VERSION-$($env:CRIMSONSKIESFIX_COMMIT.Substring(0,8)) Windows-x86"
+          if(!$version.StartsWith($expectedIdentity+' ')){throw "Launcher/runtime version mismatch: $version; expected $expectedIdentity"}
           New-Item -ItemType Directory -Force 'unified-empty-tree' | Out-Null
           Copy-Item $exe 'unified-empty-tree/CrimsonSkiesFix.exe'
           & './unified-empty-tree/CrimsonSkiesFix.exe' --launch-no-verify
           if($LASTEXITCODE -ne 2){throw 'Unchecked launch of nonexistent game should fail, not install'}
           if(Test-Path 'unified-empty-tree/game'){throw 'Unchecked launch created unexpected game folder'}
+          if($env:INSTALLER_FEATURE -eq 'native-usde-updater'){
+            & './unified-empty-tree/CrimsonSkiesFix.exe' --install-only
+            if($LASTEXITCODE -ne 2){throw 'Missing authenticated media must be refused'}
+            if(Test-Path 'unified-empty-tree/game'){throw 'Missing media created a game directory'}
+            if(!(Test-Path 'unified-empty-tree/CrimsonSkiesFix_installer.log')){throw 'Missing installer diagnostic'}
+            # A no-argument, detached process must also fail without a modal
+            # dialog when the existing noninteractive flag is set.
+            $psi=[System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName=(Resolve-Path 'unified-empty-tree/CrimsonSkiesFix.exe').Path
+            $psi.UseShellExecute=$false
+            $psi.CreateNoWindow=$true
+            $psi.Environment.Remove('CI') | Out-Null
+            $psi.Environment.Remove('GITHUB_ACTIONS') | Out-Null
+            $psi.Environment['CRIMSONSKIESFIX_NONINTERACTIVE']='1'
+            $child=[System.Diagnostics.Process]::Start($psi)
+            try {
+              if(!$child.WaitForExit(20000)){
+                $child.Kill()
+                throw 'Unattended installer did not exit (unexpected blocking dialog)'
+              }
+              if($child.ExitCode -ne 2){throw "Unexpected unattended exit: $($child.ExitCode)"}
+            } finally { $child.Dispose() }
+            if(Test-Path 'unified-empty-tree/game'){throw 'Unattended missing-media launch created game folder'}
+            Write-Host 'INSTALLER-NONINTERACTIVE PASS: detached no-argument launch exits with 2'
+          }
           $global:LASTEXITCODE=0
       - name: Build synthetic suspended-process DirectDraw import fixture for fix.dll
         shell: pwsh
@@ -106,8 +171,59 @@ jobs:
           New-Item -ItemType Directory -Force 'unified-dist' | Out-Null
           $exe='unified-dist/CrimsonSkiesFix.exe'
           Copy-Item installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe $exe
-          Copy-Item installer/README-unified.md 'unified-dist/README-EXPERIMENTAL.md'
+          Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
+          Copy-Item $env:CRIMSONSKIESFIX_NOTICES_FILE 'unified-dist/THIRD-PARTY-NOTICES.txt'
+          Copy-Item ../LICENSE 'unified-dist/LICENSE'
+          @("Source=https://github.com/legluondunet/CrimsonSkiesFix/tree/$env:CRIMSONSKIESFIX_COMMIT",
+            "DependencySource=https://github.com/legluondunet/unsafedisk/tree/a869653e85f3786fdb82f9f9856d7b14bd25d585",
+            "DependencyRetentionRef=https://github.com/legluondunet/unsafedisk/tree/dependency/crimsonskiesfix-1.1",
+            "BuildRecipe=https://github.com/legluondunet/CrimsonSkiesFix/blob/$env:CRIMSONSKIESFIX_COMMIT/.github/workflows/unified-fix-prototype.yml",
+            "BuildInstructions=https://github.com/legluondunet/CrimsonSkiesFix/blob/$env:CRIMSONSKIESFIX_COMMIT/CrimsonSkiesFix/docs/build-candidate.md",
+            "Target=i686-pc-windows-msvc",
+            "Feature=$env:INSTALLER_FEATURE",
+            (rustc -V),
+            (cargo -V)) | Set-Content -Encoding utf8 'unified-dist/SOURCE-INFO.txt'
+          python -c "from pathlib import Path; a=Path('unified-dist/CrimsonSkiesFix.exe').read_bytes(); n=Path('unified-dist/THIRD-PARTY-NOTICES.txt').read_bytes(); assert n and n in a, 'Packaged notices must match embedded bytes'"
+          if($LASTEXITCODE -ne 0){throw 'Embedded notices verification failed'}
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
+          $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
+          if($bytes.Length -lt 256 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90){throw 'Missing MZ header'}
+          $pe=[BitConverter]::ToInt32($bytes,60)
+          if($pe -lt 64 -or $pe -gt ($bytes.Length-26)){throw 'Invalid PE offset'}
+          if([BitConverter]::ToUInt32($bytes,$pe) -ne 0x4550 -or
+             [BitConverter]::ToUInt16($bytes,$pe+4) -ne 0x14c -or
+             [BitConverter]::ToUInt16($bytes,$pe+24) -ne 0x10b -or
+             ([BitConverter]::ToUInt16($bytes,$pe+22) -band 0x2000) -ne 0){
+            throw 'Launcher must be an x86 PE32 EXE, not a DLL'
+          }
+          $files=@(Get-ChildItem 'unified-dist' -File -Recurse | ForEach-Object {$_.FullName.Substring((Resolve-Path 'unified-dist').Path.Length+1)})
+          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE','SOURCE-INFO.txt')
+          if(Compare-Object $files $expected){throw 'Unexpected test artifact contents'}
+          Write-Host "CANDIDATE-PACKAGE PASS: single x86 launcher, hash and instructions; commit $env:CRIMSONSKIESFIX_COMMIT"
+      - name: Check that dependency locks stayed unchanged
+        shell: pwsh
+        run: |
+          git diff --exit-code -- installer/Cargo.lock runtime-unified/Cargo.lock
+          if($LASTEXITCODE -ne 0){throw 'Cargo dependency locks changed during build'}
+      - name: Record resolved Cargo dependency locks for review
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'unified-dependency-locks' | Out-Null
+          Copy-Item installer/Cargo.lock 'unified-dependency-locks/installer-Cargo.lock'
+          Copy-Item runtime-unified/Cargo.lock 'unified-dependency-locks/runtime-unified-Cargo.lock'
+          @("Commit=$env:CRIMSONSKIESFIX_COMMIT",
+            "CandidateVersion=$env:EXPECTED_CANDIDATE_VERSION",
+            "LauncherSHA256=$((Get-FileHash 'unified-dist/CrimsonSkiesFix.exe' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "RuntimeSHA256=$((Get-FileHash 'runtime-unified/target/i686-pc-windows-msvc/release/fix.dll' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "InstallerCargoLockSHA256=$((Get-FileHash 'installer/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "RuntimeCargoLockSHA256=$((Get-FileHash 'runtime-unified/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "ThirdPartyNoticesSHA256=$((Get-FileHash 'unified-dist/THIRD-PARTY-NOTICES.txt' -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-DEPENDENCY-LOCKS
+          path: CrimsonSkiesFix/unified-dependency-locks/*
+          retention-days: 7
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-UNIFIED-X86-TEST-ONLY
@@ -131,6 +247,10 @@ jobs:
         with:
           name: CrimsonSkiesFix-UNIFIED-SYNTHETIC-WINE-SMOKE
           path: smoke
+      - uses: actions/download-artifact@v4
+        with:
+          name: CrimsonSkiesFix-UNIFIED-X86-TEST-ONLY
+          path: installer-smoke
       - name: Install clean Wine32 and virtual display
         run: |
           sudo dpkg --add-architecture i386
@@ -156,3 +276,32 @@ jobs:
             exit 1
           fi
           echo 'UNIFIED-WINE32-SMOKE PASS: native WinMM unaffected; synthetic executable rejected by core'
+
+      - name: Wine32 unattended installer error path (no game data)
+        env:
+          WINEARCH: win32
+          WINEPREFIX: ${{ runner.temp }}/crimson-unified-smoke-prefix
+          WINEDEBUG: -all
+          CRIMSONSKIESFIX_NONINTERACTIVE: '1'
+        run: |
+          set -euo pipefail
+          version="$(timeout 60s xvfb-run -a wine "$PWD/installer-smoke/CrimsonSkiesFix.exe" --version)"
+          if [[ "$version" != *"NATIVE US/DE LOCAL UPDATE"* ]]; then
+            echo 'Wrong installer variant: expected the five-edition candidate'
+            exit 1
+          fi
+          expected="$(sed -n 's/^SHA256=//p' installer-smoke/CrimsonSkiesFix.sha256 | tr -d '\r')"
+          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+          actual="$(sha256sum installer-smoke/CrimsonSkiesFix.exe | cut -d' ' -f1)"
+          test "$actual" = "$expected"
+          set +e
+          timeout 60s xvfb-run -a env -u CI -u GITHUB_ACTIONS wine "$PWD/installer-smoke/CrimsonSkiesFix.exe"
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "Expected unattended missing-media exit 2, got $code"
+            exit 1
+          fi
+          test ! -e installer-smoke/game
+          grep -q 'AUTO_INSTALL_RESULT=ERROR' installer-smoke/CrimsonSkiesFix_installer.log
+          echo 'INSTALLER-WINE32-NONINTERACTIVE PASS: no-argument launch exits with 2'

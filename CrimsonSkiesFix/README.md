@@ -19,34 +19,7 @@ CrimsonSkiesFix 1.0 is a standalone Windows x86 installer, launcher and open-sou
 
 ## 1.1 development candidate (not released)
 
-The experimental **WinMM-based 1.1** branch is being consolidated and tested
-on Windows 11 and Wine/Proton. The **v1.0 download above remains the published
-stable release**; the development candidate is not a v1.1 release yet.
-
-- The 1.1 launcher installs its integrated **`winmm.dll`** compatibility
-  runtime, rather than the `ddraw.dll` used by the 1.0 release.
-- **Widescreen FOV/camera correction is automatic** for verified native
-  3D gameplay. It preserves the horizontal field of view, uses the actual
-  monitor height/width ratio before software projection, and returns to
-  the game's original 4:3 camera values for menus and movies. No special
-  debug option or logging is required.
-- With `AspectRatio=4:3`, 3D is rendered at the largest suitable native
-  4:3 raster (for example **1600×1200** on a **1920×1200** display),
-  not upscaled from the game's original 640×480 mode.
-- The **Graphics → Resolution** label reports the actual verified
-  **3D rendering resolution** (for example 1600×1200 in forced 4:3,
-  1920×1200 in 16:10, or 1920×1080 in 16:9). This display-only change
-  does **not** alter the original GOS mode table or the 800×600
-  menu/movie surfaces.
-- Obsolete 1.1 test INI keys such as `ExperimentalProjectedY43Probe`,
-  `ExperimentalY43ReticleGuard`, and `ExperimentalUpstreamAspectProbe`
-  are ignored; **existing INI files are preserved**. Keep
-  `[Graphics] AspectRatio=auto` (or `4:3`) and use
-  `[Debug] Log=1` only when a diagnostic log is needed.
-
-These features have undergone native Windows and Proton field testing,
-but the current branch still requires a final regression check before
-merging and publishing 1.1.
+The current five-edition candidate uses `game/fix.dll`, not an application-local WinMM proxy. See the [main project README](https://github.com/legluondunet/CrimsonSkiesFix) for current 1.1 instructions, and [the candidate developer README](installer/README-native-usde.md) for validation details. The instructions below describe the historical 1.0 launcher only; 1.1 does not require a separate decrypted executable for its five recognized CD profiles. No automatic migration between layouts is provided.
 
 ## Files you must provide (not included)
 

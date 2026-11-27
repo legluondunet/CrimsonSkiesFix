@@ -6,6 +6,8 @@ mod update102;
 mod managed_gos_patch;
 mod chapter_cabs;
 mod auto_install;
+#[cfg(feature="native-usde-updater")]
+mod error_dialog;
 #[cfg(all(feature="winmm-split-install",not(feature="import-alias-install")))]
 mod split_process_probe;
 #[cfg(feature="import-alias-install")]
@@ -91,8 +93,12 @@ const README: &str = include_str!("../README-winmm-candidate.md");
 const README: &str = include_str!("../README-winmm-split.md");
 #[cfg(all(feature="import-alias-install",not(feature="unified-fix-install")))]
 const README: &str = include_str!("../README-import-alias.md");
-#[cfg(feature="unified-fix-install")]
+#[cfg(all(feature="unified-fix-install",not(feature="native-fr-cd")))]
 const README: &str = include_str!("../README-unified.md");
+#[cfg(all(feature="native-fr-cd",not(feature="native-usde-updater")))]
+const README: &str = include_str!("../README-native-fr.md");
+#[cfg(feature="native-usde-updater")]
+const README: &str = include_str!("../README-native-usde.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
 const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
@@ -205,6 +211,22 @@ fn ensure_new_text(path: &Path, text: &str) -> Result<(), String> {
     file.sync_all().map_err(error)
 }
 
+// Only launcher-managed metadata uses this helper. Never rewrite a matching
+// file, and never follow a link or replace a directory.
+fn ensure_managed_text(path: &Path, text: &str) -> Result<bool, String> {
+    if any_entry(path) {
+        if !regular(path) {
+            return Err(format!("unsafe managed documentation path: {}", path.display()));
+        }
+        if fs::metadata(path).map_err(error)?.len() == text.len() as u64
+            && fs::read(path).map_err(error)? == text.as_bytes() {
+            return Ok(false);
+        }
+    }
+    fs::write(path, text).map_err(error)?;
+    Ok(true)
+}
+
 // Never overwrite the active INI. The proxy creates it on its first game launch.
 fn deploy_documentation(game: &Path) -> Result<(), String> {
     // The unified installer stores documentation under docs/; launcher INI
@@ -230,12 +252,23 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         sha256::hex(BUNDLED_CORE),BUNDLED_CORE.len()));
     #[cfg(feature="unified-fix-install")]
     build_info.push_str("GameFolder=game\nCoreDll=game/fix.dll\nFixFolder=.\n");
-    let manifest = docs.join("build-info.txt");
-    if any_entry(&manifest) && !regular(&manifest) {
-        return Err("unsafe build-info.txt (not a regular file)".into());
+    #[cfg(feature="native-usde-updater")]
+    build_info.push_str(&format!(
+        "InstallerCargoLockSHA256={}\nRuntimeCargoLockSHA256={}\n",
+        sha256::hex(include_bytes!("../Cargo.lock")),
+        sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock"))
+    ));
+    #[cfg(feature="native-usde-updater")]
+    {
+        const NOTICES:&str=include_str!(concat!(env!("OUT_DIR"),"/third-party-notices.txt"));
+        let path=docs.join("THIRD-PARTY-NOTICES.txt");
+        // Like build-info, this generated notice describes the current build.
+        ensure_managed_text(&path,NOTICES)?;
+        build_info.push_str(&format!("ThirdPartyNoticesSHA256={}\n",sha256::hex(NOTICES.as_bytes())));
     }
+    let manifest = docs.join("build-info.txt");
     // This manifest is launcher-managed provenance, not player configuration.
-    fs::write(manifest, build_info).map_err(error)
+    ensure_managed_text(&manifest,&build_info).map(|_|())
 }
 
 // The experimental WinMM installer deliberately requires a clean graphics
@@ -558,7 +591,8 @@ fn verify_installed_cd_assets(game:&Path)->Result<(&'static str,usize),String> {
 
 /// Install authenticated retail files into a private staged directory.
 /// The protected original EXE is kept until the approved EXE activation.
-fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->Result<(),String> {
+fn install_from_cd(base:&Path,game:&Path,updater:Option<&update102::Update102Source>,
+    expected_edition:Option<&str>)->Result<(),String> {
     if any_entry(game) {
         return Err(format!("existing game directory is never overwritten: {}",game.display()));
     }
@@ -569,8 +603,9 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     }
     // The automatic install preflight has already authenticated the updater
     // and executable before extraction. The update application rechecks it.
-    println!("Building original game installation from verified CD and official 1.02 updater...");
-    let extracted=disc_inspect::extract_for_install(base,None,&stage)?;
+    println!("Building original game installation from verified CD; update source: {}...",
+        if updater.is_some(){"authenticated official 1.02 updater"}else{"original 1.02 CD"});
+    let extracted=disc_inspect::extract_for_install(base,None,&stage,expected_edition)?;
     println!("Original CD edition authenticated: {}.",extracted.edition);
     // Follow source→destination file table of the original Microsoft setup:
     // expand all eight chapter CABs with edition-specific long ZBD names
@@ -578,7 +613,13 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
     let chapters=chapter_cabs::expand(&stage)?;
     // Extraction has already SHA-verified every original file against the
     // exact corresponding edition manifest. The updater verifies again.
-    update102::apply_asset(&stage,extracted.edition,updater)?;
+    match updater {
+        Some(verified_update)=>{update102::apply_asset(&stage,extracted.edition,verified_update)?;}
+        None=>{
+            if !cfg!(feature="native-fr-cd") {return Err("missing authenticated updater".into());}
+            update102::verify_original_cd102_asset(&stage,extracted.edition)?;
+        }
+    }
     // Before publication, independently compare all expanded members against
     // their authenticated CAB inputs. Seal per-file hashes in a manifest and
     // remove ONLY the eight temporary chapter CABs from this new staging tree.
@@ -611,7 +652,8 @@ fn install_from_cd(base:&Path,game:&Path,updater:&update102::Update102Source)->R
          RetailSupportFiles={}\nRetailSupportBytes={}\nRetailFilenameCorrections={}\n\
          ExecutablePolicy=ORIGINAL_PROTECTED_PRESERVED\n",
         extracted.edition,extracted.file_count,extracted.bytes,
-        update102::PATCH_SHA256,update102::ASSET_SHA256,
+        if updater.is_some(){update102::PATCH_SHA256}else if extracted.edition=="C_SKIES_FR_001"{"NOT_REQUIRED_ORIGINAL_FR_102_CD"}else{"NOT_REQUIRED_ORIGINAL_EU_102_CD"},
+        update102::ASSET_SHA256,
         finalized.members,finalized.zbd_files,finalized.payload_bytes,
         finalized.manifest_sha,finalized.short_name_candidates,
         extracted.retail_support_files,extracted.retail_support_bytes,renamed
@@ -660,6 +702,20 @@ fn supported_command(args:&[OsString])->bool{
 }
 
 fn usage() {
+    #[cfg(feature="native-usde-updater")]
+    let sources=format!("\
+        Supported original CDs already in version 1.02: CD image only.\n\
+        Supported original CDs in version 1.0: CD image + official Microsoft 1.02 update (crmsk102.exe).\n\
+        Place all required files beside CrimsonSkiesFix.exe. No separate decrypted EXE is needed.\n\
+        {}\n\
+        Extract crmsk102.exe if downloaded in an archive.\n\
+        The launcher verifies and applies the update offline.\n\
+        Blocking errors are printed to the terminal and shown in a native error dialog.\n\
+        Set CRIMSONSKIESFIX_NONINTERACTIVE=1 for unattended execution.",
+        update102::download_help());
+    #[cfg(not(feature="native-usde-updater"))]
+    let sources="Standard installs require a separately approved 1.02 EXE and authentic updater.\n\
+        Experimental native CD support depends on this build's enabled features.";
     println!(
         "CrimsonSkiesFix {VERSION} ({})\n\
          Automatic installer / verifier / launcher for Crimson Skies 1.02.\n\
@@ -676,8 +732,7 @@ fn usage() {
          CrimsonSkiesFix.exe --help (-h also accepted)\n\
          \nA verified unwrapped 1.02 CRIMSON.EXE and installed GOSDATA files are required.\n\
          CD GAME files and official 1.02 ROF can be installed; protected CD executables are preserved.\n\
-         A full installation requires the approved 1.02 EXE, bundled {RUNTIME_DLL} patch,\n\
-         and official 1.02 updater BEFORE CD extraction starts.\n\
+         {sources}\n\
          --launch-no-verify bypasses verification by explicit user request; it never installs.\n\
          The original game and its data are never distributed by this project.\n",
         &COMMIT[..8]
@@ -712,7 +767,11 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     if args.len() == 1 && args[0] == "--version" {
-        if cfg!(feature="unified-fix-install"){
+        if cfg!(feature="native-usde-updater"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE US/DE LOCAL UPDATE 1.02 EXPERIMENTAL", &COMMIT[..8]);
+        }else if cfg!(feature="native-fr-cd"){
+            println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll NATIVE FR 1.02 EXPERIMENTAL", &COMMIT[..8]);
+        }else if cfg!(feature="unified-fix-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=game/fix.dll native_winmm=yes EXPERIMENTAL UNIFIED", &COMMIT[..8]);
         }else if cfg!(feature="import-alias-install"){
             println!("CrimsonSkiesFix {VERSION}-{} Windows-x86 runtime=CSFIX.dll+crimsonskiesfix/CrimsonSkiesFix.dll native_winmm=yes EXPERIMENTAL IMPORT ALIAS", &COMMIT[..8]);
@@ -772,7 +831,12 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(err) => {
-            eprintln!("CrimsonSkiesFix: ERROR: {err}");
+            // A detached GUI launch may have no writable console. Keep the
+            // complete stderr diagnostic when possible, but do not let a
+            // closed stderr pipe prevent the native error notification.
+            let _=writeln!(std::io::stderr().lock(),"CrimsonSkiesFix: ERROR: {err}");
+            #[cfg(feature="native-usde-updater")]
+            error_dialog::show_unless_noninteractive(&err);
             std::process::exit(2);
         }
     }
@@ -820,10 +884,55 @@ mod tests {
             assert!(!any_entry(&root.join(name)),"unexpected root document: {name}");
             assert!(!any_entry(&game.join(name)));
         }
+        let info=fs::read_to_string(root.join("docs").join("build-info.txt")).unwrap();
+        assert!(info.lines().any(|line|line==format!("Version={VERSION}")));
+        assert!(info.lines().any(|line|line==format!("Commit={COMMIT}")));
+        assert!(info.lines().any(|line|line==format!("DllSha256={}",sha256::hex(BUNDLED_RUNTIME))));
+        #[cfg(feature="native-usde-updater")]
+        {
+            assert!(info.lines().any(|line|line==format!("InstallerCargoLockSHA256={}",sha256::hex(include_bytes!("../Cargo.lock")))));
+            assert!(info.lines().any(|line|line==format!("RuntimeCargoLockSHA256={}",sha256::hex(include_bytes!("../../runtime-unified/Cargo.lock")))));
+            let notices=fs::read(root.join("docs").join("THIRD-PARTY-NOTICES.txt")).unwrap();
+            assert_eq!(notices,include_bytes!(concat!(env!("OUT_DIR"),"/third-party-notices.txt")));
+            assert!(info.lines().any(|line|line==format!("ThirdPartyNoticesSHA256={}",sha256::hex(&notices))));
+        }
         assert!(!any_entry(&root.join("state"))); // no CD receipt for manual import
         assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\nAspectRatio=4:3\n");
         assert_eq!(fs::read(&gameplay_log).unwrap(),b"owner gameplay log");
         assert_eq!(fs::read(&installer_log).unwrap(),b"owner installer log");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn managed_documentation_is_idempotent_and_restores_missing_notices(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-managed-docs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        deploy_documentation(&game).unwrap();
+        let docs=docs_dir(&game);
+        let notices=docs.join("THIRD-PARTY-NOTICES.txt");
+        let manifest=docs.join("build-info.txt");
+        let original=fs::read_to_string(&notices).unwrap();
+        let info=fs::read_to_string(&manifest).unwrap();
+        assert!(!ensure_managed_text(&notices,&original).unwrap());
+        assert!(!ensure_managed_text(&manifest,&info).unwrap());
+        fs::remove_file(&notices).unwrap();
+        deploy_documentation(&game).unwrap();
+        assert_eq!(fs::read_to_string(&notices).unwrap(),original);
+        fs::write(&notices,"damaged").unwrap();
+        deploy_documentation(&game).unwrap();
+        assert_eq!(fs::read_to_string(&notices).unwrap(),original);
+        assert_eq!(fs::read_to_string(&manifest).unwrap(),info);
+        fs::remove_file(&notices).unwrap();
+        fs::create_dir(&notices).unwrap();
+        assert!(deploy_documentation(&game).is_err());
+        assert!(directory(&notices));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -972,7 +1081,16 @@ mod tests {
         fs::write(root.join("disc.iso"),b"fake authenticated source").unwrap();
         let game=root.join("CrimsonSkiesFix");
         let err=auto_install::preflight_install_sources(&root,&game,None).unwrap_err();
-        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"));
+        // Native media preflight now identifies unreadable media directly,
+        // instead of asking for an unrelated decrypted executable.
+        #[cfg(feature="native-fr-cd")]
+        {
+            assert!(err.contains("CD content inspection failed"),"{err}");
+            assert!(!err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        }
+        #[cfg(not(feature="native-fr-cd"))]
+        assert!(err.contains("approved decrypted Crimson Skies 1.02 EXE"),"{err}");
+        assert_eq!(fs::read(root.join("disc.iso")).unwrap(),b"fake authenticated source");
         assert!(!any_entry(&root.join("CrimsonSkiesFix")));
         // The preflight must not create ANY directory, regardless of how
         // future staging names are changed.
@@ -1246,7 +1364,7 @@ mod tests {
         let dest=root.join("CrimsonSkiesFix");
         fs::create_dir(&dest).unwrap();
         fs::write(dest.join("user-save.dat"),b"keep").unwrap();
-        assert!(install_from_cd(&root,&dest,&update102::Update102Source::OwnerFile(root.join("update102.exe"))).is_err());
+        assert!(install_from_cd(&root,&dest,Some(&update102::Update102Source::OwnerFile(root.join("update102.exe"))),None).is_err());
         assert_eq!(fs::read(dest.join("user-save.dat")).unwrap(),b"keep");
         fs::remove_dir_all(root).unwrap();
     }

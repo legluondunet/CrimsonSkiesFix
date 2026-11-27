@@ -52,8 +52,7 @@ fn select(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     match candidates.len() {
         1=>Ok(candidates.remove(0)),
         count=>Err(format!(
-            "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}. \
-             Keep exactly one original ISO or CUE beside CrimsonSkiesFix.exe."
+            "expected exactly one ISO or CUE beside CrimsonSkiesFix.exe; found {count}"
         ))
     }
 }
@@ -437,10 +436,12 @@ impl Walker<'_> {
 // Edition signatures contain only internal CD file paths/sizes/SHA-256.
 // Raw ISO/BIN length, whole image hash, volume label and CUE tracks are
 // diagnostics only, not identifying signals.
-const PROFILES: [(&str,&str);3]=[
+const PROFILES: [(&str,&str);5]=[
     ("C_SKIES_DISC_001",include_str!("../profiles/c_skies_disc_001.tsv")),
     ("C_SKIES_FR_001",include_str!("../profiles/c_skies_fr_001.tsv")),
     ("C_SKIES_DE_001",include_str!("../profiles/c_skies_de_001.tsv")),
+    ("C_SKIES_FR_002",include_str!("../profiles/c_skies_fr_002.tsv")),
+    ("C_SKIES_DISC_002",include_str!("../profiles/c_skies_disc_002.tsv")),
 ];
 fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
     let mut seen=0usize;
@@ -459,12 +460,33 @@ fn matches_profile(files:&BTreeMap<String,FileRecord>,profile:&str)->bool {
     seen>0 && seen==files.len()
 }
 
+/// Both inspection and extraction require one, and only one, matching
+/// complete profile. A native installation plan may additionally require
+/// the edition already identified before the external-source selection.
+fn recognize_profile(files:&BTreeMap<String,FileRecord>,
+    profiles:&[(&'static str,&str)],expected:Option<&str>)->Result<&'static str,String>{
+    let mut matching=profiles.iter().filter(|(_,profile)|matches_profile(files,profile));
+    let edition=matching.next().map(|(name,_)|*name)
+        .ok_or("unknown or ambiguous CD file manifest; no extraction performed")?;
+    if matching.next().is_some(){
+        return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
+    }
+    if let Some(expected)=expected{
+        if edition!=expected{
+            return Err(format!("CD edition changed after preflight: expected {expected}, found {edition}; no extraction performed"));
+        }
+    }
+    Ok(edition)
+}
+
 /// Selectors name an *approved* CD file-content profile, not an image
 /// filename/volume label. FR and DE must never share the same test output.
 pub fn edition_selector(label:&str)->Option<&'static str> {
     match label.to_ascii_uppercase().as_str() {
         "USA"|"EN"|"C_SKIES_DISC_001"=>Some("C_SKIES_DISC_001"),
+        "C_SKIES_DISC_002"=>Some("C_SKIES_DISC_002"),
         "FR"|"C_SKIES_FR_001"=>Some("C_SKIES_FR_001"),
+        "C_SKIES_FR_002"=>Some("C_SKIES_FR_002"),
         "DE"|"C_SKIES_DE_001"=>Some("C_SKIES_DE_001"),
         _=>None,
     }
@@ -473,7 +495,9 @@ pub fn edition_selector(label:&str)->Option<&'static str> {
 fn stage_path(base:&Path,edition:&str)->Result<PathBuf,String> {
     let suffix=match edition {
         "C_SKIES_DISC_001"=>"USA",
+        "C_SKIES_DISC_002"=>"EU102",
         "C_SKIES_FR_001"=>"FR",
+        "C_SKIES_FR_002"=>"FR002",
         "C_SKIES_DE_001"=>"DE",
         _=>return Err(format!("unknown staging edition: {edition}")),
     };
@@ -511,8 +535,8 @@ const RETAIL_ROOT_SUPPORT:[(&str,&str);7]=[
 pub const RETAIL_SUPPORT_FILES:usize=8; // seven common + regional Readme
 fn retail_readme(edition:&str)->Result<(&'static str,&'static str),String>{
     match edition{
-        "C_SKIES_FR_001"=>Ok(("LISEZMOI.RTF","Readme.rtf")),
-        "C_SKIES_DE_001"|"C_SKIES_DISC_001"=>Ok(("README.RTF","Readme.rtf")),
+        "C_SKIES_FR_001"|"C_SKIES_FR_002"=>Ok(("LISEZMOI.RTF","Readme.rtf")),
+        "C_SKIES_DE_001"|"C_SKIES_DISC_001"|"C_SKIES_DISC_002"=>Ok(("README.RTF","Readme.rtf")),
         _=>Err("unrecognized retail installer edition".into()),
     }
 }
@@ -520,7 +544,7 @@ fn installed_game_name(edition:&str,original:&str)->&'static str{
     match original {
         "CRIMSO_1.IFR"=>"crimsonff.ifr",
         "CSZONE_1.EXE"=>"cszoneregister.exe",
-        "CLUF.RTF" if edition=="C_SKIES_FR_001"=>"EULA.RTF",
+        "CLUF.RTF" if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002")=>"EULA.RTF",
         _=>"",
     }
 }
@@ -541,9 +565,9 @@ pub fn normalize_game_filenames(game:&Path,edition:&str)->Result<usize,String>{
     if !fs::symlink_metadata(game).map(|m|m.file_type().is_dir()).unwrap_or(false){
         return Err("missing/unsafe game stage for retail filename normalization".into());
     }
-    let originals=if edition=="C_SKIES_FR_001"{
+    let originals=if matches!(edition,"C_SKIES_FR_001"|"C_SKIES_FR_002"){
         &["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"][..]
-    } else if edition=="C_SKIES_DISC_001"||edition=="C_SKIES_DE_001" {
+    } else if matches!(edition,"C_SKIES_DISC_001"|"C_SKIES_DISC_002"|"C_SKIES_DE_001") {
         &["CRIMSO_1.IFR","CSZONE_1.EXE"][..]
     } else {
         return Err("unsupported edition for retail filename normalization".into());
@@ -727,13 +751,13 @@ fn extract_one(source:&ImageSource,disc:&mut File,rec:&FileRecord,path:&Path)->R
 
 /// The automatic installer extracts only into its own private transaction.
 /// SHA-256 and full retail-edition profile checks run before publishing.
-pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path)
-    ->Result<Extraction,String> {
-    extract_game_to(base,specified,transaction)
+pub fn extract_for_install(base:&Path,specified:Option<&Path>,transaction:&Path,
+    expected_edition:Option<&str>)->Result<Extraction,String> {
+    extract_game_to(base,specified,transaction,expected_edition)
 }
 
-fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
-    ->Result<Extraction,String> {
+fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path,
+    expected_edition:Option<&str>)->Result<Extraction,String> {
     let media=select(base,specified)?;
     let image=if has_ext(&media,"cue"){open_cue(&media,None)?} else {open_iso(&media)?};
     let mut file=File::open(&image.file).map_err(err)?;
@@ -742,11 +766,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
         results:BTreeMap::new(),visited:HashSet::new()};
     walker.walk(volume.root.extent,volume.root.size,"",0)?;
     // Fail *before* creating a directory unless the full known edition matches.
-    let matches=PROFILES.iter().filter(|(_,profile)|matches_profile(&walker.results,profile))
-        .map(|(name,_)|*name).collect::<Vec<_>>();
-    let [edition]=matches.as_slice() else {
-        return Err("unknown or ambiguous CD file manifest; no extraction performed".into());
-    };
+    let edition=recognize_profile(&walker.results,&PROFILES,expected_edition)?;
     let dest=target.to_path_buf();
     if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("{} staging already exists; refusing to overwrite: {}",
@@ -793,7 +813,7 @@ fn extract_game_to(base:&Path,specified:Option<&Path>,target:&Path)
     for (record,name) in &additional {
         extract_one(&image,&mut disc,record,&dest.join(name))?;
     }
-    Ok(Extraction{edition:*edition,file_count:files.len(),bytes,
+    Ok(Extraction{edition,file_count:files.len(),bytes,
         retail_support_files:additional.len(),retail_support_bytes})
 }
 
@@ -824,8 +844,7 @@ pub fn inspect_with_override(base:&Path,specified:Option<&Path>,
     let total=walk.results.values().filter(|r|r.status=="OK")
         .map(|r|r.size as u64).sum::<u64>();
     let edition=if bad==0 {
-        PROFILES.iter().find(|(_,profile)|matches_profile(&walk.results,profile))
-            .map(|(name,_)|*name).unwrap_or("UNKNOWN")
+        recognize_profile(&walk.results,&PROFILES,None).unwrap_or("UNKNOWN")
     } else {"UNKNOWN"};
     let recognition=if edition=="UNKNOWN" {
         "NO_EXACT_INTERNAL_FILE_MANIFEST_MATCH"
@@ -918,8 +937,8 @@ mod tests {
         dir
     }
     #[test]
-    fn all_three_profiles_recognize_only_exact_internal_file_content() {
-        let expected=[("C_SKIES_DISC_001",112),("C_SKIES_FR_001",112),("C_SKIES_DE_001",107)];
+    fn all_five_profiles_recognize_only_exact_internal_file_content() {
+        let expected=[("C_SKIES_DISC_001",112),("C_SKIES_FR_001",112),("C_SKIES_DE_001",107),("C_SKIES_FR_002",107),("C_SKIES_DISC_002",118)];
         for ((edition,profile),(expected_edition,count)) in PROFILES.iter().zip(expected) {
             assert_eq!(*edition,expected_edition);
             let mut files=BTreeMap::new();
@@ -935,9 +954,22 @@ mod tests {
             }
             assert_eq!(files.len(),count);
             assert!(matches_profile(&files,profile),"{edition} failed exact matching");
+            assert_eq!(recognize_profile(&files,&PROFILES,None).unwrap(),*edition);
+            assert_eq!(recognize_profile(&files,&PROFILES,Some(edition)).unwrap(),*edition);
+            for (other,_) in PROFILES {
+                if other!=*edition{
+                    let error=recognize_profile(&files,&PROFILES,Some(other)).unwrap_err();
+                    assert!(error.contains("CD edition changed after preflight"),"{error}");
+                }
+            }
+            // Even two matching compiled-in profiles are ambiguous.
+            let duplicate=[("FIRST",*profile),("SECOND",*profile)];
+            assert!(recognize_profile(&files,&duplicate,None).is_err());
+            assert!(recognize_profile(&files,&duplicate,Some("FIRST")).is_err());
             // A byte-content change must not match.
             files.get_mut("game/crimson.exe").unwrap().sha="0".repeat(64);
             assert!(!matches_profile(&files,profile));
+            assert!(recognize_profile(&files,&PROFILES,Some(edition)).is_err());
             // Neither should an incomplete profile.
             files.remove("game/crimson.exe");
             assert!(!matches_profile(&files,profile));
@@ -951,7 +983,7 @@ mod tests {
         let marker=transaction.join("user-data.txt");
         fs::write(&marker,b"preserve").unwrap();
         let image=dir.join("missing.iso");
-        assert!(extract_for_install(&dir,Some(&image),&transaction).is_err());
+        assert!(extract_for_install(&dir,Some(&image),&transaction,None).is_err());
         assert_eq!(fs::read(marker).unwrap(),b"preserve");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -997,8 +1029,10 @@ mod tests {
         assert_eq!(retail_readme("C_SKIES_DISC_001").unwrap(),("README.RTF","Readme.rtf"));
         for (edition,expected) in [
             ("C_SKIES_FR_001",3),
+            ("C_SKIES_FR_002",3),
             ("C_SKIES_DE_001",2),
             ("C_SKIES_DISC_001",2),
+            ("C_SKIES_DISC_002",2),
         ]{
             let count=["CRIMSO_1.IFR","CSZONE_1.EXE","CLUF.RTF"]
                 .iter().filter(|s|!installed_game_name(edition,s).is_empty()).count();
@@ -1033,7 +1067,11 @@ mod tests {
                    stage_path(base,"C_SKIES_DE_001").unwrap());
         assert_eq!(edition_selector("DE"),Some("C_SKIES_DE_001"));
         assert_eq!(edition_selector("fr"),Some("C_SKIES_FR_001"));
+        assert_eq!(edition_selector("C_SKIES_FR_002"),Some("C_SKIES_FR_002"));
+        assert_ne!(stage_path(base,"C_SKIES_FR_001").unwrap(),stage_path(base,"C_SKIES_FR_002").unwrap());
         assert_eq!(edition_selector("USA"),Some("C_SKIES_DISC_001"));
+        assert_eq!(edition_selector("C_SKIES_DISC_002"),Some("C_SKIES_DISC_002"));
+        assert_ne!(stage_path(base,"C_SKIES_DISC_001").unwrap(),stage_path(base,"C_SKIES_DISC_002").unwrap());
         assert_eq!(edition_selector("unknown"),None);
     }
     #[test]
@@ -1064,7 +1102,7 @@ mod tests {
         changed.sha="0".repeat(64);
         assert!(extract_one(&image,&mut src,&changed,&dir.join("invalid")).is_err());
         let stage=dir.join("CrimsonSkiesFix.installing");
-        assert!(extract_for_install(&dir,Some(&iso_file),&stage).is_err());
+        assert!(extract_for_install(&dir,Some(&iso_file),&stage,None).is_err());
         assert!(!stage.exists());
         fs::remove_dir_all(dir).unwrap();
     }

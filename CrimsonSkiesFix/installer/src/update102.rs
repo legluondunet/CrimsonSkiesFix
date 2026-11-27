@@ -9,6 +9,27 @@ use std::{
     path::{Path,PathBuf},
 };
 
+#[cfg(feature="native-usde-updater")]
+pub const PROJECT_DOWNLOADS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix/releases";
+#[cfg(feature="native-usde-updater")]
+pub const UPDATE_INSTRUCTIONS_URL:&str="https://github.com/legluondunet/CrimsonSkiesFix#official-102-update";
+#[cfg(feature="native-usde-updater")]
+pub const MODDB_DOWNLOAD_URL:&str="https://www.moddb.com/games/crimson-skies/downloads/crimson-skies-update-v102";
+#[cfg(feature="native-usde-updater")]
+pub const LUTRIS_ARCHIVE_URL:&str="https://github.com/legluondunet/MyLittleLutrisScripts/raw/refs/heads/master/Crimson%20Skies/crmsk102.7z";
+#[cfg(feature="native-usde-updater")]
+pub const PCGAMINGWIKI_DOWNLOAD_URL:&str="https://community.pcgamingwiki.com/files/file/62-crimson-skies-patch/";
+#[cfg(feature="native-usde-updater")]
+pub const MYABANDONWARE_DOWNLOAD_URL:&str="https://www.myabandonware.com/game/crimson-skies-be7";
+
+#[cfg(feature="native-usde-updater")]
+pub fn download_help()->String{
+    format!("Project Releases (if listed): {PROJECT_DOWNLOADS_URL}\n\
+        MyLittleLutrisScripts (7z archive): {LUTRIS_ARCHIVE_URL}\n\
+        PCGamingWiki: {PCGAMINGWIKI_DOWNLOAD_URL}\n\
+        ModDB: {MODDB_DOWNLOAD_URL}\n\
+        My Abandonware (Extras > International patch v1.02): {MYABANDONWARE_DOWNLOAD_URL}")
+}
 pub const PATCH_LEN:u64=2_315_728;
 pub const PATCH_SHA256:&str="8e1c04f3e32c318a58ef3e2bbd8f13b9894ff055d4492f80ee14ce53851616af";
 pub const CAB_OFFSET:u64=0x346f0;
@@ -83,6 +104,22 @@ pub fn validate(path:&Path)->Result<(),String> {
 }
 
 // A user can rename this file; recognition is by content, not filename.
+const NO_VERIFIED_UPDATER:&str="no exact verified Crimson Skies 1.02 updater found beside launcher";
+const INVALID_UPDATER_PREFIX:&str="no exact verified Crimson Skies 1.02 updater; a candidate failed verification";
+const DUPLICATE_UPDATER_SUFFIX:&str="verified 1.02 updater copies; keep exactly one beside the launcher";
+
+#[cfg(feature="native-usde-updater")]
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub(super) enum UpdateFailure { Missing, Invalid, Multiple, Other }
+
+#[cfg(feature="native-usde-updater")]
+pub(super) fn failure_kind(detail:&str)->UpdateFailure{
+    if detail==NO_VERIFIED_UPDATER {UpdateFailure::Missing}
+    else if detail.starts_with(INVALID_UPDATER_PREFIX) {UpdateFailure::Invalid}
+    else if detail.starts_with("found ") && detail.ends_with(DUPLICATE_UPDATER_SUFFIX) {UpdateFailure::Multiple}
+    else {UpdateFailure::Other}
+}
+
 pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
     if let Some(name)=specified {
         let path=if name.is_absolute(){name.to_path_buf()}else{base.join(name)};
@@ -90,18 +127,32 @@ pub fn find(base:&Path,specified:Option<&Path>)->Result<PathBuf,String> {
         return Ok(path);
     }
     let mut valid=Vec::new();
+    let mut invalid=Vec::new();
     for item in fs::read_dir(base).map_err(err)? {
         let item=item.map_err(err)?;
         let path=item.path();
-        if !regular_file(&path) {continue;}
-        if fs::metadata(&path).map_err(err)?.len()==PATCH_LEN &&
-            validate(&path).is_ok() {valid.push(path);}
+        let known_name=path.file_name().and_then(|n|n.to_str()).is_some_and(|n|
+            n.eq_ignore_ascii_case("crmsk102.exe") ||
+            n.eq_ignore_ascii_case("Crimson_Skies_Patch_102.exe"));
+        if !regular_file(&path) {
+            if known_name {invalid.push(format!("{} is not a regular file",path.display()));}
+            continue;
+        }
+        if fs::metadata(&path).map_err(err)?.len()==PATCH_LEN || known_name {
+            match validate(&path){
+                Ok(())=>valid.push(path),
+                Err(e)=>invalid.push(format!("{}: {e}",path.display())),
+            }
+        }
     }
     match valid.len() {
         1=>Ok(valid.remove(0)),
-        0=>Err("no exact verified Crimson Skies 1.02 updater found beside launcher; \
-                place exactly one authentic updater beside CrimsonSkiesFix.exe".into()),
-        n=>Err(format!("found {n} verified 1.02 updater copies; keep exactly one beside the launcher")),
+        0 if !invalid.is_empty()=>{
+            invalid.sort();
+            Err(format!("{INVALID_UPDATER_PREFIX}: {}",invalid.join("; ")))
+        },
+        0=>Err(NO_VERIFIED_UPDATER.into()),
+        n=>Err(format!("found {n} {DUPLICATE_UPDATER_SUFFIX}")),
     }
 }
 
@@ -322,6 +373,27 @@ pub fn apply_asset(game:&Path,edition:&str,source:&Update102Source)->Result<&'st
     Ok("EXTRACTED_VERIFIED_FROM_LZX_CAB")
 }
 
+/// Both authenticated French and English 1.02 retail discs contain
+/// the exact 797-byte official CRIMPTCH.ROF. In the native-CD path this
+/// asset is independently authenticated from the owner CD: no external
+/// updater is needed, and nothing is downloaded or modified in place.
+pub fn verify_original_cd102_asset(game:&Path,edition:&str)->Result<(),String>{
+    if !matches!(edition,"C_SKIES_FR_001"|"C_SKIES_DISC_002") {
+        return Err("a local updater is still required for US/DE retail CDs".into());
+    }
+    if disc_inspect::verify_staging(game,edition)?==0 {
+        return Err("no authenticated retail 1.02 CD files in stage".into());
+    }
+    let target=game.join("GOSDATA").join("ASSETS").join("CRIMPTCH.ROF");
+    if !regular_file(&target) || fs::metadata(&target).map_err(err)?.len()!=797 {
+        return Err("original CD 1.02 patch asset is missing or unsafe".into());
+    }
+    if file_sha(&target)?!=ASSET_SHA256 {
+        return Err("original CD 1.02 patch asset SHA-256 mismatch".into());
+    }
+    Ok(())
+}
+
 // Former standalone updater inspector: preserve only for regression tests.
 #[cfg(test)]
 fn inspect(base:&Path,specified:Option<&Path>)->Result<String,String> {
@@ -380,6 +452,21 @@ mod tests {
         assert!(source_for_install(&dir,None).is_err());
         #[cfg(feature="embed-owner-patch102")]
         assert!(matches!(source_for_install(&dir,None).unwrap(),Update102Source::PrivateEmbedded));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn update_discovery_distinguishes_missing_and_invalid_candidates(){
+        let dir=std::env::temp_dir().join(format!(
+            "crimson-update-diagnostic-{}-{:?}",std::process::id(),std::thread::current().id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(failure_kind(&find(&dir,None).unwrap_err()),UpdateFailure::Missing);
+        fs::write(dir.join("unrelated.exe"),b"MZ").unwrap();
+        assert_eq!(failure_kind(&find(&dir,None).unwrap_err()),UpdateFailure::Missing);
+        fs::write(dir.join("crmsk102.exe"),b"MZ").unwrap();
+        let err=find(&dir,None).unwrap_err();
+        assert_eq!(failure_kind(&err),UpdateFailure::Invalid);
+        assert!(err.contains("size"),"{err}");
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
