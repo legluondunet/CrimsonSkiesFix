@@ -19,6 +19,7 @@ mod native_winmm_resolution_text;
 mod menu_ui_pages;
 mod menu_brand;
 mod menu_controls_panel;
+mod menu_controls_art;
 mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
 #[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]

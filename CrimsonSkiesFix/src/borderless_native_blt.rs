@@ -30,6 +30,7 @@ pub struct NativeWindowedBlt {
     // BLACK background pixels live in this surface, not in drawn bars.
     full_frame_composite:Ptr,
     composite_black_ready:bool,
+    modal_only_composite:bool,
     composed_frames:u64,
 }
 impl NativeWindowedBlt {
@@ -51,7 +52,7 @@ impl NativeWindowedBlt {
                  ==Some((source.width,source.height)))||
            source.bpp!=16{return Err(BAD);}
         Ok(Self{primary,source_surface,origin,client,output_client:client,source,menu_scratch:ptr::null_mut(),menu_prepared:false,
-            full_frame_composite:ptr::null_mut(),composite_black_ready:false,
+            full_frame_composite:ptr::null_mut(),composite_black_ready:false,modal_only_composite:false,
             composed_frames:0})
     }
     /// Windowed DirectDraw primary coordinates on native Windows are the
@@ -85,6 +86,7 @@ impl NativeWindowedBlt {
         self.composed_frames=0;
         Ok(())
     }
+    pub fn set_modal_only_composition(&mut self,enabled:bool){self.modal_only_composite=enabled;}
     pub fn disable_full_frame_composition(&mut self){
         self.full_frame_composite=ptr::null_mut();
         self.composite_black_ready=false;
@@ -137,6 +139,10 @@ impl NativeWindowedBlt {
         // color fills or GDI after the full-frame presentation.
         unsafe{
             Self::blt_to(surface,&dest,source,WAIT,ptr::null_mut())?;
+            if crate::menu_controls_panel::hd_candidate(dest)&&!crate::menu_controls_panel::draw_hd_surface(surface,dest){
+                // A failed DC/HD draw never leaves partially composed pixels.
+                Self::blt_to(surface,&dest,source,WAIT,ptr::null_mut())?;
+            }
             self.blt(&full,surface,WAIT,ptr::null_mut())?;
         }
         self.composed_frames=self.composed_frames.saturating_add(1);
@@ -273,7 +279,7 @@ impl NativeWindowedBlt {
 impl WindowedBlt for NativeWindowedBlt {
     fn clear_full_window_black(&mut self,w:u32,h:u32)->Result<(),i32>{
         if (w,h)!=self.client{return Err(BAD);}
-        if self.full_frame_composition_enabled(){
+        if self.full_frame_composition_enabled()&&!self.modal_only_composite{
             match self.fill_composite_black(){
                 Ok(())=>return Ok(()),
                 Err(hr)=>{
@@ -291,7 +297,8 @@ impl WindowedBlt for NativeWindowedBlt {
     }
     fn stretch_rgb565_into_viewport(&mut self,mode:Mode,view:Viewport)->Result<(),i32>{
         if mode!=self.source{return Err(BAD);}
-        if self.full_frame_composition_enabled(){
+        let use_composite=self.full_frame_composition_enabled()&&(!self.modal_only_composite||self.composite_content_rect(view).is_ok_and(crate::menu_controls_panel::hd_candidate));
+        if use_composite{
             match self.present_composite(view){
                 Ok(())=>return Ok(()),
                 Err(hr)=>{

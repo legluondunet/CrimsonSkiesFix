@@ -503,7 +503,11 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
     let shown=is_open();
     let family=FAMILY.load(Ordering::Acquire);
     let mut p=Painter{dc,ok:true};
-    if shown{p.ok=cached_panel(dc,family);}
+    if shown{
+        p.ok=if matches!(family,PS|XBOX)&&crate::menu_controls_art::available(){
+            crate::menu_controls_art::draw(dc,view,family,language()) || cached_panel(dc,family)
+        }else{cached_panel(dc,family)};
+    }
     else{
         // Below the native Apply/Reset bar, not across the game logo.
         let b=labels(family);
@@ -513,6 +517,20 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
     }
     let restored=RestoreDC(dc,saved)!=0;
     if p.ok&&restored{DRAW_KIND.store(if shown{2}else{1},Ordering::Release);true}else{fail_preview();false}
+}
+pub fn hd_candidate(view:Rect)->bool{
+    view.right-view.left>800&&view.bottom-view.top>600&&is_open()&&matches!(FAMILY.load(Ordering::Acquire),PS|XBOX)&&crate::menu_controls_art::available()
+}
+pub unsafe fn draw_hd_surface(surface:H,view:Rect)->bool{
+    if surface.is_null()||!hd_candidate(view){return false;}
+    let table=*(surface as *const *const usize);if table.is_null(){return false;}
+    let get:unsafe extern "system" fn(H,*mut H)->i32=std::mem::transmute(*table.add(17));
+    let release:unsafe extern "system" fn(H,H)->i32=std::mem::transmute(*table.add(26));
+    let mut dc:H=ptr::null_mut();
+    if get(surface,&mut dc)<0||dc.is_null(){return false;}
+    let drawn=crate::menu_controls_art::draw(dc,view,FAMILY.load(Ordering::Acquire),language());
+    let released=release(surface,dc)>=0;
+    if drawn&&released{crate::menu_controls_art::note_hd(view);true}else{false}
 }
 pub fn prepared(){PENDING.store(DRAW_KIND.load(Ordering::Acquire),Ordering::Release);}
 pub fn not_presented(){PENDING.store(0,Ordering::Release);DRAW_KIND.store(0,Ordering::Release);LAST_PRESENT.store(0,Ordering::Release);}
