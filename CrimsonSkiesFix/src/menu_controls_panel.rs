@@ -8,6 +8,26 @@ const CANDIDATE:u8=1;
 const CONTROLS:u8=2;
 static PAGE:AtomicU8=AtomicU8::new(NONE);
 static FAMILY:AtomicU8=AtomicU8::new(0);
+// Low two bits are the first detected mapped pad family; high bits
+// are the mask of available families. Independent of pilot ownership.
+static INVENTORY:AtomicU8=AtomicU8::new(0);
+fn preferred_family(active:u8,inventory:u8)->u8{
+    if active!=0{active}else{inventory&3}
+}
+fn display_family()->u8{preferred_family(FAMILY.load(Ordering::Acquire),INVENTORY.load(Ordering::Acquire))}
+fn mixed_unselected()->bool{
+    FAMILY.load(Ordering::Acquire)==0&&(INVENTORY.load(Ordering::Acquire)>>2).count_ones()>1
+}
+pub fn detected_family(kind:i32,name:&str)->u8{family_for(kind,name)}
+pub fn update_inventory(first:u8,mask:u8){
+    let state=(first&3)|((mask&15)<<2);
+    let old=INVENTORY.swap(state,Ordering::AcqRel);
+    if state!=old&&crate::cfg().log_enabled{
+        crate::log(&format!("MENU-CONTROLS-PANEL: detected families mask={mask:#x} preferred={first}; independent of active device"));
+    }
+    if state==0&&old!=0{fail_preview();}
+}
+
 static LANGUAGE:AtomicU8=AtomicU8::new(0);
 static RECEIPT_LANGUAGE:OnceLock<u8>=OnceLock::new();
 const GENERIC:u8=1;
@@ -62,6 +82,11 @@ pub fn reset_input(){
     if let Ok(mut s)=input().lock(){close(&mut s,"focus-reset");*s=Input::default();}
 }
 fn context()->bool{page_active()&&crate::menu_gos_event::preferences_transaction_active()&&crate::menu_video_probe::legacy_ui_active()}
+fn open_panel(s:&mut Input,reason:&str){
+    s.open=true;s.pad_block=true;s.present=Some(Instant::now());
+    crate::menu_controls_art::invalidate();
+    if crate::cfg().log_enabled{crate::log(&format!("MENU-CONTROLS-PANEL: opened by {reason}"));}
+}
 fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     let pressed=buttons&!s.buttons;
     let moved=axis&&!s.axis;
@@ -76,9 +101,7 @@ fn pad_step(s:&mut Input,buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool
         return true;
     }
     if pressed==OPEN_BUTTON&&buttons==OPEN_BUTTON&&!axis{
-        s.open=true;s.pad_block=true;s.present=Some(Instant::now());
-        crate::menu_controls_art::invalidate();
-        if crate::cfg().log_enabled{crate::log("MENU-CONTROLS-PANEL: opened by active gamepad");}
+        open_panel(s,"active gamepad");
         return true;
     }
     false
@@ -88,18 +111,36 @@ pub fn pad_event(buttons:u32,axis:bool,neutral:bool,eligible:bool)->bool{
     if s.open&&s.present.is_some_and(|t|t.elapsed()>Duration::from_secs(2)){close(&mut s,"presentation-timeout");}
     pad_step(&mut s,buttons,axis,neutral,eligible&&context()&&FAMILY.load(Ordering::Acquire)!=0)
 }
-pub fn mouse_event(buttons:u32,moved:bool)->bool{
-    if !context(){return false;}
-    let Ok(mut s)=input().lock()else{return false;};
-    if s.open{
-        if buttons!=0||moved{close(&mut s,if buttons!=0{"mouse-button"}else{"mouse-motion"});s.mouse_block=buttons!=0;}
-        return true;
-    }
+// Match the exact painted button, not any underlying native widget.
+// GOS cursor coordinates are in the original 800x600 logical viewport.
+const INVITE_LEFT:i32=300;
+const INVITE_TOP:i32=516;
+const INVITE_RIGHT:i32=606;
+const INVITE_BOTTOM:i32=552;
+fn invite_hit(x:i32,y:i32)->bool{
+    (INVITE_LEFT..INVITE_RIGHT).contains(&x)&&(INVITE_TOP..INVITE_BOTTOM).contains(&y)
+}
+fn mouse_step(s:&mut Input,buttons:u32,moved:bool,open_click:bool)->bool{
+    // Consume the opening click and its release before accepting another
+    // dismissal, including movement while the opening button is held.
     if s.mouse_block{
         if buttons==0{s.mouse_block=false;}
         return true;
     }
+    if s.open{
+        if buttons!=0||moved{close(s,if buttons!=0{"mouse-button"}else{"mouse-motion"});s.mouse_block=buttons!=0;}
+        return true;
+    }
+    if open_click&&buttons==0x80{
+        open_panel(s,"native cursor click");s.mouse_block=true;return true;
+    }
     false
+}
+pub fn mouse_event(buttons:u32,moved:bool,x:i32,y:i32,left_edge:bool)->bool{
+    if !context(){return false;}
+    let Ok(mut s)=input().lock()else{return false;};
+    let open_click=display_family()!=0&&LAST_PRESENT.load(Ordering::Acquire)==1&&left_edge&&invite_hit(x,y);
+    mouse_step(&mut s,buttons,moved,open_click)
 }
 pub fn keyboard_capture()->bool{
     context()&&input().lock().is_ok_and(|s|s.open||s.keys.iter().any(|&v|v))
@@ -237,7 +278,7 @@ fn mix(a:u32,b:u32,t:u32,n:u32)->u32{
     rgb(c(0),c(8),c(16))
 }
 pub fn eligible(view:Rect)->bool{
-    context()&&FAMILY.load(Ordering::Acquire)!=0&&view==rect(0,0,800,600)
+    context()&&display_family()!=0&&view==rect(0,0,800,600)
 }
 unsafe fn foreground()->bool{
     let w=GetForegroundWindow();let mut pid=0;
@@ -503,7 +544,7 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
     let saved=SaveDC(dc);if saved==0{return false;}
     if !foreground(){fail_preview();}
     let shown=is_open();
-    let family=FAMILY.load(Ordering::Acquire);
+    let family=display_family();
     let mut p=Painter{dc,ok:true};
     if shown{
         p.ok=if matches!(family,PS|XBOX)&&crate::menu_controls_art::available(){
@@ -511,23 +552,31 @@ pub unsafe fn draw(dc:H,view:Rect)->bool{
         }else{cached_panel(dc,family)};
     }
     else{
-        // Decorative translucent perimeter and winged plaque. Never
-        // redraw or move the native widgets; fall back to a compact plate.
-        let plaque=rect(306,518,596,545);
-        if !crate::menu_controls_art::draw_native_decoration(dc){p.plate(plaque);}
+        // Single gold button attached to the existing native frame.
+        // Its logical bounds are shared with the cursor hit test.
+        let plaque=rect(INVITE_LEFT,INVITE_TOP,INVITE_RIGHT,INVITE_BOTTOM);
+        let textured=crate::menu_controls_art::draw_native_decoration(dc);
+        if !textured{p.plate(plaque);}
         let b=labels(family);
-        if family==PS{
-            p.line_color(&[(334,523),(327,536),(341,536),(334,523)],rgb(78,215,173),2);
+        if mixed_unselected(){
+            p.text(rect(321,523,341,543),"Y",13,true,1,GOLD);
+            p.line_color(&[(352,527),(346,539),(358,539),(352,527)],rgb(78,215,173),2);
+        }else if family==PS{
+            p.line_color(&[(342,526),(335,539),(349,539),(342,526)],rgb(78,215,173),2);
         }else{
-            p.text(rect(319,521,350,541),b.north,14,true,1,if family==XBOX{GOLD}else{LIGHT});
+            p.text(rect(321,523,364,543),b.north,14,true,1,if family==XBOX{GOLD}else{LIGHT});
         }
-        p.text(rect(354,520,586,543),tr("Gamepad controls","Commandes manette","Gamepad-Steuerung"),15,true,1,LIGHT);
+        let label=tr("GAMEPAD CONTROLS","COMMANDES MANETTE","GAMEPAD-STEUERUNG");
+        if textured{
+            p.text(rect(370,524,596,546),label,15,true,1,DARK);
+            p.text(rect(370,523,596,545),label,15,true,1,rgb(255,235,174));
+        }else{p.text(rect(370,523,596,545),label,15,true,1,LIGHT);}
     }
     let restored=RestoreDC(dc,saved)!=0;
     if p.ok&&restored{DRAW_KIND.store(if shown{2}else{1},Ordering::Release);true}else{fail_preview();false}
 }
 pub fn hd_candidate(view:Rect)->bool{
-    view.right-view.left>800&&view.bottom-view.top>600&&is_open()&&matches!(FAMILY.load(Ordering::Acquire),PS|XBOX)&&crate::menu_controls_art::available()
+    view.right-view.left>800&&view.bottom-view.top>600&&is_open()&&matches!(display_family(),PS|XBOX)&&crate::menu_controls_art::available()
 }
 pub unsafe fn draw_hd_surface(surface:H,view:Rect)->bool{
     if surface.is_null()||!hd_candidate(view){return false;}
@@ -536,7 +585,7 @@ pub unsafe fn draw_hd_surface(surface:H,view:Rect)->bool{
     let release:unsafe extern "system" fn(H,H)->i32=std::mem::transmute(*table.add(26));
     let mut dc:H=ptr::null_mut();
     if get(surface,&mut dc)<0||dc.is_null(){return false;}
-    let drawn=crate::menu_controls_art::draw(dc,view,FAMILY.load(Ordering::Acquire),language());
+    let drawn=crate::menu_controls_art::draw(dc,view,display_family(),language());
     let released=release(surface,dc)>=0;
     if drawn&&released{crate::menu_controls_art::note_hd(view);true}else{false}
 }
@@ -549,7 +598,7 @@ pub fn note_presented(){
     let old=LAST_PRESENT.swap(kind,Ordering::AcqRel);
     if kind==2&&old!=2&&crate::cfg().log_enabled{
         // Bound diagnostic volume; first successful full panel presentation.
-        let family=FAMILY.load(Ordering::Acquire);let bit=1u8<<family;
+        let family=display_family();let bit=1u8<<family;
         if SEEN.fetch_or(bit,Ordering::AcqRel)&bit==0{crate::log(&format!("MENU-CONTROLS-PANEL: static 4:3 diagram presented family={family} language={} on private scratch",language()));}
     }
 }
@@ -608,6 +657,26 @@ mod tests{
     #[test]fn takeover_outside_modal_does_not_swallow_normal_input(){
         let mut s=Input::default();takeover(&mut s);
         assert!(!pad_step(&mut s,1,false,false,true));
+    }
+    #[test]fn detected_family_without_pilot_owner(){
+        assert_eq!(preferred_family(0,0),0);
+        assert_eq!(preferred_family(0,PS|((1<<PS)<<2)),PS);
+        assert_eq!(preferred_family(XBOX,PS|(((1<<PS)|(1<<XBOX))<<2)),XBOX);
+    }
+    #[test]fn cursor_click_opens_consumes_release_then_closes(){
+        let mut s=Input::default();
+        assert!(!mouse_step(&mut s,0x80,false,false));assert!(!s.open);
+        assert!(mouse_step(&mut s,0x80,false,true));assert!(s.open);
+        assert!(mouse_step(&mut s,0x80,true,false));assert!(s.open);
+        assert!(mouse_step(&mut s,0,true,false));assert!(s.open);
+        assert!(mouse_step(&mut s,0x80,false,false));assert!(!s.open);
+        assert!(mouse_step(&mut s,0,false,false));
+        assert!(!mouse_step(&mut s,0,false,false));
+    }
+    #[test]fn invite_hit_matches_visible_bounds(){
+        assert!(invite_hit(450,534));assert!(!invite_hit(450,510));
+        assert!(!invite_hit(299,534));assert!(!invite_hit(606,534));
+        assert!(!invite_hit(450,552));
     }
     #[test]fn rectangle_is_native_4by3(){assert_eq!(rect(0,0,800,600),Rect{left:0,top:0,right:800,bottom:600});}
 }

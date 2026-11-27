@@ -4,8 +4,8 @@
 use std::{collections::VecDeque,ffi::c_void,io::{Read,Seek,SeekFrom},ptr,sync::{Mutex,OnceLock,atomic::{AtomicBool,AtomicU32,Ordering}}};
 use crate::borderless_native_blt::Rect;
 type H=*mut c_void;
-const PACK_SHA:&str="5cd2e6fa5e897529748a316b814a9f656a3ede0b646385e93858434da5019be8";
-const PACK_LEN:usize=2648529;
+const PACK_SHA:&str="79e6ac7529f3234dd364d752ff5405915d6daf537f5114cc4c1751813a0e6044";
+const PACK_LEN:usize=2555973;
 const W:usize=1600;
 const HGT:usize=1200;
 const ART_H:usize=840;
@@ -13,8 +13,8 @@ const ART_Y:usize=360;
 const RAW:usize=W*ART_H*4;
 const FRAME_BYTES:usize=W*HGT*4;
 const NATIVE_BYTES:usize=800*600*4;
-const MAGIC:&[u8;8]=b"CSFART13";
-const END:&[u8;8]=b"CSFEND13";
+const MAGIC:&[u8;8]=b"CSFART14";
+const END:&[u8;8]=b"CSFEND14";
 static PACK:OnceLock<Option<Vec<u8>>>=OnceLock::new();
 static CACHE:OnceLock<Mutex<Option<Art>>>=OnceLock::new();
 static HD_LOG:AtomicBool=AtomicBool::new(false);
@@ -160,8 +160,8 @@ unsafe fn lettering(dc:H,family:u8,lang:u8)->bool{
     draw(rect(271,319,529,334),t("RIGHT STICK: Yaw / Throttle","STICK DROIT : Lacet / gaz","RECHTER STICK: Gieren / Gas"),14,true,GOLD,true);
     draw(rect(271,334,529,348),t("Up: increase / Down: decrease","Haut : augmenter / Bas : réduire","Oben: mehr / Unten: weniger"),12,true,LIGHT,false);
     let (south,east)=if ps{(t("Cross","Croix","Kreuz"),t("Circle","Rond","Kreis"))}else{("A","B")};
-    draw(rect(35,353,765,369),&format!("{}: {} = {}   {} = {}",t("MENUS","MENUS","MENÜS"),south,t("Select","Valider","Auswählen"),east,t("Back","Retour","Zurück")),12,true,LIGHT,false);
-    draw(rect(35,371,765,387),&format!("{}: {} / {} / {} = {}",t("CINEMATICS","CINÉMATIQUES","ZWISCHENSEQUENZEN"),south,east,pause,t("Skip","Passer","Überspringen")),12,true,LIGHT,false);
+    draw(rect(216,353,765,369),&format!("{}: {} = {}   {} = {}",t("MENUS","MENUS","MENÜS"),south,t("Select","Valider","Auswählen"),east,t("Back","Retour","Zurück")),12,false,LIGHT,false);
+    draw(rect(216,371,765,387),&format!("{}: {} / {} / {} = {}",t("CINEMATICS","CINÉMATIQUES","ZWISCHENSEQUENZEN"),south,east,pause,t("Skip","Passer","Überspringen")),12,false,LIGHT,false);
     draw(rect(215,392,585,414),t("PRESS ANY KEY OR BUTTON TO RETURN","UNE TOUCHE OU UN BOUTON POUR REVENIR","BELIEBIGE TASTE ZUM SCHLIESSEN"),13,true,GOLD,true);
     ok
 }
@@ -338,7 +338,7 @@ pub unsafe fn draw_native_decoration(dc:H)->bool{
     GdiFlush();
     SelectObject(mem,old);DeleteObject(dib);DeleteDC(mem);
     if ok&&!DECOR_LOG.swap(true,Ordering::AcqRel){
-        crate::log("MENU-CONTROLS-ART: transparent native decoration presented; original widgets and hit tests retained");
+        crate::log("MENU-CONTROLS-ART: single native-style gamepad button composed; original widgets retained");
     }
     ok
 }

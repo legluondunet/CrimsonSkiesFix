@@ -174,6 +174,7 @@ impl Flight{
         self.pad=ptr::null_mut();self.id=0;self.armed=false;self.scan=None;
         self.idle_since=None;self.clear_controls();
         crate::menu_controls_panel::device_removed();
+        crate::menu_controls_panel::update_inventory(0,0);
     }
     unsafe fn select(&mut self,id:u32,handle:Obj){
         let old=self.id;
@@ -218,6 +219,15 @@ impl Flight{
                 if !handle.is_null(){self.candidates.push(Candidate{id,handle,activity:Activity::default()});}
             }
             self.candidates.sort_by_key(|c|c.id);
+            let mut first=0u8;let mut mask=0u8;
+            for c in &self.candidates{
+                let n=(self.api.name)(c.handle);
+                let name=if n.is_null(){std::borrow::Cow::Borrowed("")}else{CStr::from_ptr(n).to_string_lossy()};
+                let family=crate::menu_controls_panel::detected_family((self.api.kind)(c.handle),&name);
+                if first==0{first=family;}
+                mask|=1u8<<family;
+            }
+            crate::menu_controls_panel::update_inventory(first,mask);
             if before!=self.candidates.len(){
                 crate::log(&format!("SDL3-FLIGHT: monitored gamepads={:?}; selection requires neutral then activity",self.candidates.iter().map(|c|c.id).collect::<Vec<_>>()));
             }
@@ -495,7 +505,20 @@ unsafe fn capture_modal_mouse()->bool{
     let buttons=read32(0x75cadc)&0x80808080;
     let moved=[0x75ccd8,0x75ccdc,0x75cce0].into_iter()
         .any(|a|(read32(a) as i32).unsigned_abs()>=2);
-    if !crate::menu_controls_panel::mouse_event(buttons,moved){return false;}
+    if !foreground()||(read32(0x75ccb8),read32(0x75ccbc))!=(800,600){return false;}
+    // 0x5382b0 integrates these signed integer cursor coordinates with
+    // the same native sensitivity multipliers. Project the next location.
+    let project=|pos:usize,delta:usize,speed:usize,limit:i32|{
+        let factor=f32::from_bits(read32(speed));
+        let shift=if factor.is_finite()&&(0.25..=8.0).contains(&factor){
+            ((read32(delta) as i32 as f32)*factor).round() as i32
+        }else{0};
+        (read32(pos) as i32).saturating_add(shift).clamp(0,limit-1)
+    };
+    let x=project(0x75ccc0,0x75ccd8,0x6357f4,800);
+    let y=project(0x75ccc4,0x75ccdc,0x6357f8,600);
+    let left_edge=buttons&0x80!=0&&read32(0x75caec)&0x80==0;
+    if !crate::menu_controls_panel::mouse_event(buttons,moved,x,y,left_edge){return false;}
     for a in [0x75cad0,0x75cad4,0x75cad8,0x75cadc,0x75caec,0x75ccd8,0x75ccdc,0x75cce0]{write32(a,0);}
     true
 }
@@ -539,7 +562,9 @@ unsafe extern "C" fn keyboard_poll_hook(callback:i32){
 }
 unsafe extern "C" fn cursor_hook(){
     if MODE.load(Ordering::Acquire)==ACTIVE&&OWNER.load(Ordering::Acquire)==GetCurrentThreadId(){
-        if !capture_modal_mouse(){FLIGHT.with(|s|if let Ok(mut s)=s.try_borrow_mut(){if let Some(f)=s.as_mut(){f.menu_cursor();}});}
+        // Merge the already-validated pad cursor before scoped hit testing.
+        FLIGHT.with(|s|if let Ok(mut s)=s.try_borrow_mut(){if let Some(f)=s.as_mut(){f.menu_cursor();}});
+        capture_modal_mouse();
     }
     let original:unsafe extern "C" fn()=std::mem::transmute(CURSOR_INTEGRATE);
     original();
