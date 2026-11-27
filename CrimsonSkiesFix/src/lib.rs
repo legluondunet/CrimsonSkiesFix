@@ -56,6 +56,8 @@ mod native_video_imports;
 mod native_getproc_trace;
 mod native_cursor_trace;
 mod native_dinput_mouse_trace; // opt-in Windows-only DirectInput mouse COM pass-through audit
+#[cfg(feature="sdl3-probe")]
+mod sdl3_input_probe;
 mod native_owner_mode_trace;
 mod native_dd4_bootstrap;
 mod presentation;

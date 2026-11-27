@@ -20,13 +20,16 @@ $env:CRIMSONSKIESFIX_COMMIT = (git rev-parse HEAD).Trim()
 $env:CRIMSONSKIESFIX_BUILD_COMMIT = $env:CRIMSONSKIESFIX_COMMIT
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 rustup target add i686-pc-windows-msvc
-cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml | Set-Content -Encoding utf8 runtime-meta.json
-cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features native-usde-updater | Set-Content -Encoding utf8 installer-meta.json
+python installer/tools/package_sdl3_x86.py sdl3-build
+$env:CRIMSONSKIESFIX_SDL3_DLL = (Resolve-Path sdl3-build/SDL3.dll).Path
+$env:CRIMSONSKIESFIX_SDL3_SHA256 = (Get-FileHash $env:CRIMSONSKIESFIX_SDL3_DLL -Algorithm SHA256).Hash.ToLowerInvariant()
+cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml --features sdl3-probe | Set-Content -Encoding utf8 runtime-meta.json
+cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features sdl3-probe-install | Set-Content -Encoding utf8 installer-meta.json
 python installer/tools/collect_dependency_notices.py --metadata runtime-meta.json installer-meta.json --output THIRD-PARTY-NOTICES.txt
 $env:CRIMSONSKIESFIX_NOTICES_FILE = (Resolve-Path THIRD-PARTY-NOTICES.txt).Path
-cargo build --locked --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+cargo build --locked --manifest-path runtime-unified/Cargo.toml --features sdl3-probe --release --target i686-pc-windows-msvc
 $env:CRIMSONSKIESFIX_BUNDLED_DLL = (Resolve-Path runtime-unified/target/i686-pc-windows-msvc/release/fix.dll).Path
-cargo build --locked --manifest-path installer/Cargo.toml --features native-usde-updater --release --target i686-pc-windows-msvc
+cargo build --locked --manifest-path installer/Cargo.toml --features sdl3-probe-install --release --target i686-pc-windows-msvc
 git diff --exit-code -- installer/Cargo.lock runtime-unified/Cargo.lock
 ```
 

@@ -41,18 +41,27 @@ jobs:
       CRIMSONSKIESFIX_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       # Build the same five-edition candidate on PRs and main after merge.
       # This workflow produces test artifacts only, never publishes a release.
-      INSTALLER_FEATURE: native-usde-updater
+      INSTALLER_FEATURE: sdl3-probe-install
       CRIMSONSKIESFIX_BUNDLED_DLL: ${{ github.workspace }}/CrimsonSkiesFix/runtime-unified/target/i686-pc-windows-msvc/release/fix.dll
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: rustup target add i686-pc-windows-msvc
+      - name: Fetch and authenticate the pinned SDL3 x86 runtime
+        shell: pwsh
+        run: |
+          $out=Join-Path $env:RUNNER_TEMP 'crimson-sdl3'
+          python installer/tools/package_sdl3_x86.py $out
+          if($LASTEXITCODE -ne 0){throw 'SDL3 packaging failed'}
+          $dll=Join-Path $out 'SDL3.dll'
+          "CRIMSONSKIESFIX_SDL3_DLL=$dll" | Add-Content -Encoding utf8 $env:GITHUB_ENV
+          "CRIMSONSKIESFIX_SDL3_SHA256=$((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant())" | Add-Content -Encoding utf8 $env:GITHUB_ENV
       - name: Record resolved dependency and compiler metadata
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force 'unified-dependency-locks' | Out-Null
-          $runtime = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml
+          $runtime = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml --features sdl3-probe
           if($LASTEXITCODE -ne 0){throw 'Runtime metadata failed'}
           $installer = cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features $env:INSTALLER_FEATURE
           if($LASTEXITCODE -ne 0){throw 'Installer metadata failed'}
@@ -86,9 +95,9 @@ jobs:
       - name: Unit-test and compile combined fix.dll
         shell: pwsh
         run: |
-          cargo test --locked --manifest-path runtime-unified/Cargo.toml --target i686-pc-windows-msvc
+          cargo test --locked --manifest-path runtime-unified/Cargo.toml --features sdl3-probe --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime tests failed'}
-          cargo build --locked --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+          cargo build --locked --manifest-path runtime-unified/Cargo.toml --features sdl3-probe --release --target i686-pc-windows-msvc
           if($LASTEXITCODE -ne 0){throw 'Unified runtime build failed'}
       - name: Verify exact DirectDraw export surface and no static WinMM/DDraw dependencies
         shell: pwsh
@@ -116,7 +125,7 @@ jobs:
           & './unified-empty-tree/CrimsonSkiesFix.exe' --launch-no-verify
           if($LASTEXITCODE -ne 2){throw 'Unchecked launch of nonexistent game should fail, not install'}
           if(Test-Path 'unified-empty-tree/game'){throw 'Unchecked launch created unexpected game folder'}
-          if($env:INSTALLER_FEATURE -eq 'native-usde-updater'){
+          if($env:INSTALLER_FEATURE -eq 'sdl3-probe-install'){
             & './unified-empty-tree/CrimsonSkiesFix.exe' --install-only
             if($LASTEXITCODE -ne 2){throw 'Missing authenticated media must be refused'}
             if(Test-Path 'unified-empty-tree/game'){throw 'Missing media created a game directory'}
@@ -174,6 +183,7 @@ jobs:
           Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
           Copy-Item $env:CRIMSONSKIESFIX_NOTICES_FILE 'unified-dist/THIRD-PARTY-NOTICES.txt'
           Copy-Item ../LICENSE 'unified-dist/LICENSE'
+          Copy-Item installer/third_party/SDL3-LICENSE.txt 'unified-dist/SDL3-LICENSE.txt'
           @("Source=https://github.com/legluondunet/CrimsonSkiesFix/tree/$env:CRIMSONSKIESFIX_COMMIT",
             "DependencySource=https://github.com/legluondunet/unsafedisk/tree/a869653e85f3786fdb82f9f9856d7b14bd25d585",
             "DependencyRetentionRef=https://github.com/legluondunet/unsafedisk/tree/dependency/crimsonskiesfix-1.1",
@@ -181,10 +191,14 @@ jobs:
             "BuildInstructions=https://github.com/legluondunet/CrimsonSkiesFix/blob/$env:CRIMSONSKIESFIX_COMMIT/CrimsonSkiesFix/docs/build-candidate.md",
             "Target=i686-pc-windows-msvc",
             "Feature=$env:INSTALLER_FEATURE",
+            "SDL3Source=https://github.com/libsdl-org/SDL/tree/release-3.4.18",
+            "SDL3SHA256=$env:CRIMSONSKIESFIX_SDL3_SHA256",
             (rustc -V),
             (cargo -V)) | Set-Content -Encoding utf8 'unified-dist/SOURCE-INFO.txt'
           python -c "from pathlib import Path; a=Path('unified-dist/CrimsonSkiesFix.exe').read_bytes(); n=Path('unified-dist/THIRD-PARTY-NOTICES.txt').read_bytes(); assert n and n in a, 'Packaged notices must match embedded bytes'"
           if($LASTEXITCODE -ne 0){throw 'Embedded notices verification failed'}
+          python -c "from pathlib import Path; import os; a=Path('unified-dist/CrimsonSkiesFix.exe').read_bytes(); s=Path(os.environ['CRIMSONSKIESFIX_SDL3_DLL']).read_bytes(); assert s and s in a, 'SDL3 runtime missing from launcher'"
+          if($LASTEXITCODE -ne 0){throw 'Embedded SDL3 verification failed'}
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
           $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
           if($bytes.Length -lt 256 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90){throw 'Missing MZ header'}
@@ -197,7 +211,7 @@ jobs:
             throw 'Launcher must be an x86 PE32 EXE, not a DLL'
           }
           $files=@(Get-ChildItem 'unified-dist' -File -Recurse | ForEach-Object {$_.FullName.Substring((Resolve-Path 'unified-dist').Path.Length+1)})
-          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE','SOURCE-INFO.txt')
+          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE','SOURCE-INFO.txt','SDL3-LICENSE.txt')
           if(Compare-Object $files $expected){throw 'Unexpected test artifact contents'}
           Write-Host "CANDIDATE-PACKAGE PASS: single x86 launcher, hash and instructions; commit $env:CRIMSONSKIESFIX_COMMIT"
       - name: Check that dependency locks stayed unchanged
@@ -217,7 +231,8 @@ jobs:
             "RuntimeSHA256=$((Get-FileHash 'runtime-unified/target/i686-pc-windows-msvc/release/fix.dll' -Algorithm SHA256).Hash.ToLowerInvariant())",
             "InstallerCargoLockSHA256=$((Get-FileHash 'installer/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
             "RuntimeCargoLockSHA256=$((Get-FileHash 'runtime-unified/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
-            "ThirdPartyNoticesSHA256=$((Get-FileHash 'unified-dist/THIRD-PARTY-NOTICES.txt' -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
+            "ThirdPartyNoticesSHA256=$((Get-FileHash 'unified-dist/THIRD-PARTY-NOTICES.txt' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "SDL3SHA256=$env:CRIMSONSKIESFIX_SDL3_SHA256") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-UNIFIED-DEPENDENCY-LOCKS

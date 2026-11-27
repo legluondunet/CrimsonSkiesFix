@@ -1,5 +1,6 @@
 use std::{env,process::Command};
 fn main(){
+    println!("cargo:rerun-if-env-changed=CRIMSONSKIESFIX_SDL3_SHA256");
     assert_eq!(env::var("TARGET").as_deref(),Ok("i686-pc-windows-msvc"),
         "Organized runtime supports only 32-bit Windows ABI");
     let sha=env::var("CRIMSONSKIESFIX_COMMIT").ok()

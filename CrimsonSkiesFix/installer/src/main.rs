@@ -29,6 +29,10 @@ const GAME_EXE_SIZE: u64 = 2_580_480;
 // The opt-in WinMM installer is compiled separately from the v1.0 DirectDraw
 // installer, with a distinct bundled runtime and version identity.
 const BUNDLED_RUNTIME: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_DLL"));
+#[cfg(feature="sdl3-probe-install")]
+const BUNDLED_SDL3: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_SDL3_DLL"));
+#[cfg(feature="sdl3-probe-install")]
+const SDL3_LICENSE: &str = include_str!("../third_party/SDL3-LICENSE.txt");
 #[cfg(all(feature="winmm-split-install",not(feature="unified-fix-install")))]
 const BUNDLED_CORE: &[u8] = include_bytes!(env!("CRIMSONSKIESFIX_BUNDLED_CORE_DLL"));
 const RUNTIME_DLL: &str = if cfg!(feature="unified-fix-install") {"fix.dll"}
@@ -101,7 +105,7 @@ const README: &str = include_str!("../README-native-fr.md");
 const README: &str = include_str!("../README-native-usde.md");
 const EXAMPLE_INI: &str = include_str!("../../CrimsonSkiesFix/CrimsonSkiesFix.ini.example");
 const LICENSE: &str = include_str!("../../../LICENSE");
-const VERSION: &str = if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
+const VERSION: &str = if cfg!(feature="sdl3-probe-install") {"1.2.0-dev.1"} else if cfg!(feature="winmm-installer") {"1.1.0-rc.1"} else {env!("CARGO_PKG_VERSION")};
 const COMMIT: &str = env!("CRIMSONSKIESFIX_COMMIT");
 // Installer/diagnostic reports are never written into the DLL's gameplay log.
 const INSTALLER_LOG: &str = "CrimsonSkiesFix_installer.log";
@@ -265,6 +269,11 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
         // Like build-info, this generated notice describes the current build.
         ensure_managed_text(&path,NOTICES)?;
         build_info.push_str(&format!("ThirdPartyNoticesSHA256={}\n",sha256::hex(NOTICES.as_bytes())));
+    }
+    #[cfg(feature="sdl3-probe-install")]
+    {
+        ensure_managed_text(&docs.join("SDL3-LICENSE.txt"), SDL3_LICENSE)?;
+        build_info.push_str(&format!("SDL3Version=3.4.18\nSDL3Sha256={}\nInputMode=SDL3_DIAGNOSTIC_ONLY\n",sha256::hex(BUNDLED_SDL3)));
     }
     let manifest = docs.join("build-info.txt");
     // This manifest is launcher-managed provenance, not player configuration.

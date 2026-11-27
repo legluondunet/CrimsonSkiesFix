@@ -2,6 +2,8 @@
 
 **Build expérimental Win32 x86, non destiné à une release publique.**
 
+Branche 1.2: avec la feature sdl3-probe-install, le lanceur embarque SDL3 x86 3.4.18 et sa licence. Activer [Debug] Log=1 pour observer les manettes SDL3 et l’état joystick original dans le journal. Ce premier essai ne modifie PAS les commandes du jeu.
+
 Ce test apporte une installation automatisée pour cinq profils de CD originaux. Le launcher vérifie l'image de CD et une copie **déjà possédée** du correctif officiel Microsoft 1.02, mais **n'exige plus d'exécutable déchiffré**.
 
 L'installateur ne télécharge et n'exécute jamais le correctif Microsoft. Il lit le CAB intégré **en mémoire** après vérification de la taille, du SHA-256 et de sa structure ; les sources protégées 1.02 sont traitées par la bibliothèque Rust `unsafedisk` dans le même processus. Seul l'EXE 1.02 final est produit temporairement, puis activé via la transaction existante et sa sauvegarde du chargeur protégé CD. Aucun fichier propriétaire n'est embarqué.
