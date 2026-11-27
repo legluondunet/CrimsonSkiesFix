@@ -82,14 +82,20 @@ unsafe extern "system" fn page_passthrough(a:usize,b:usize,args:*const u32)->u32
 unsafe extern "system" fn localize_passthrough(a:usize,b:usize,args:*const u32)->u32{
     // Original gosLocalize reads [args+0] as resource ID, then writes a
     // localized text through [args+4]. Never inspect that output pointer.
-    let id=if crate::cfg().log_enabled && !args.is_null() && in_menu_context() &&
+    let id=if !args.is_null() && in_menu_context() &&
        crate::menu_gos_event::preferences_transaction_active() {
         Some(ptr::read_unaligned(args))
     }else{None};
     let original:ScriptFn=std::mem::transmute(LOCALIZE_ORIGINAL);
     let result=original(a,b,args);
     if let Some(id)=id {
-        if is_small_resource_id(id) &&
+        // gosLocalize's 0x4050c0 helper writes the exact original string to
+        // 0x646acc (verified 0x4050ce); id 1118 is the Controls title.
+        if id==1118&&result==1{
+            let mut title=[0u8;64];
+            if read_exact(0x646acc,&mut title){crate::menu_controls_panel::observe_title(&title);}
+        }
+        if crate::cfg().log_enabled&&is_small_resource_id(id) &&
             LAST_LABEL_ID.swap(id,Ordering::Relaxed)!=id &&
             LABEL_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
                 |n|if n<MAX_LOCALIZE{Some(n+1)}else{None}).is_ok()
@@ -130,14 +136,14 @@ unsafe fn replace_registration(site:usize,original:[u8;5],replacement:usize)->bo
     }
     true
 }
-/// Page identity is needed with Log=0 too; only localization and traces require Log=1.
+/// Page identity is needed with Log=0 too; localization reads the title even with Log=0; traces require Log=1.
 /// All 3-parameter original calls and return values are forwarded.
 pub unsafe fn install()->(bool,bool){
     if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE{
         return (false,false);
     }
     let page=replace_registration(PAGE_SITE,PAGE_BYTES,page_passthrough as *const () as usize);
-    let localize=crate::cfg().log_enabled && replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
+    let localize=replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
     log(&format!(
         "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, Controls page identity tracked"
     ));
