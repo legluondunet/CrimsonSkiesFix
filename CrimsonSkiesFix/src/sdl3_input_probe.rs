@@ -27,8 +27,9 @@ extern "system" {
 }
 type GetIds=unsafe extern "C" fn(*mut i32)->*mut u32;
 struct Api {
-    module:Obj,
-    quit:unsafe extern "C" fn(u32),
+    // Process-lifetime module reference. Never unload SDL or call SDL_Quit
+    // from a TLS destructor (Windows DLL detach may hold the loader lock).
+    _module:Obj,
     free:unsafe extern "C" fn(Obj),
     pads:GetIds,
     sticks:GetIds,
@@ -68,8 +69,7 @@ impl Api {
         let jevents=sym!("SDL_SetJoystickEventsEnabled",unsafe extern "C" fn(bool));
         let version=sym!("SDL_GetVersion",unsafe extern "C" fn()->i32);
         let api=Self {
-            module,
-            quit:sym!("SDL_QuitSubSystem",unsafe extern "C" fn(u32)),
+            _module:module,
             free:sym!("SDL_free",unsafe extern "C" fn(Obj)),
             pads:sym!("SDL_GetGamepads",GetIds),
             sticks:sym!("SDL_GetJoysticks",GetIds),
@@ -137,12 +137,14 @@ struct Probe {
     api:Api,pad:Obj,id:u32,gyro:bool,last_poll:Instant,last_scan:Option<Instant>,
     inventory:Vec<u32>,last_native:Option<Native>,last_buttons:u32,last_axes:[i32;4],
     had_sample:bool,foreground:bool,empty_reported:bool,
+    last_sample:Option<Instant>,last_raw:[i16;6],last_gyro:Option<[f32;3]>,
 }
 impl Probe {
     unsafe fn new()->Result<Self,String>{
         Ok(Self{api:Api::load()?,pad:ptr::null_mut(),id:0,gyro:false,
             last_poll:Instant::now()-Duration::from_secs(1),last_scan:None,inventory:Vec::new(),
-            last_native:None,last_buttons:0,last_axes:[0;4],had_sample:false,foreground:true,empty_reported:false})
+            last_native:None,last_buttons:0,last_axes:[0;4],had_sample:false,foreground:true,empty_reported:false,
+            last_sample:None,last_raw:[0;6],last_gyro:None})
     }
     unsafe fn tick(&mut self,foreground:bool){
         if !foreground {
@@ -194,22 +196,25 @@ impl Probe {
         let mapped=mapped_axes(raw);
         let buttons=(0..26).fold(0u32,|m,i|m|(((self.api.button)(self.pad,i) as u32)<<i));
         let changed=mapped.iter().zip(self.last_axes).any(|(x,y)|(*x-y).abs()>=100);
-        if !self.had_sample || changed || buttons!=self.last_buttons || native_changed {
-            let mut gyro=[0.0;3];
-            let g=(self.gyro&&(self.api.sensor_data)(self.pad,GYRO,gyro.as_mut_ptr(),3)).then_some(gyro);
+        let mut gyro=[0.0;3];
+        let g=(self.gyro&&(self.api.sensor_data)(self.pad,GYRO,gyro.as_mut_ptr(),3)).then_some(gyro);
+        let motion=match (g,self.last_gyro){
+            (Some(a),Some(b))=>a.iter().zip(b).any(|(x,y)|(*x-y).abs()>=0.15),
+            (None,None)=>false,_=>true,
+        };
+        let trigger_changed=(4..6).any(|i|(i32::from(raw[i])-i32::from(self.last_raw[i])).abs()>=1000);
+        let heartbeat=self.last_sample.is_none_or(|t|now.duration_since(t)>=Duration::from_secs(2));
+        if !self.had_sample || changed || buttons!=self.last_buttons || native_changed || motion || trigger_changed || heartbeat {
             crate::log(&format!("SDL3-PROBE: sample id={} raw={raw:?} roll/pitch/yaw/throttle={mapped:?} buttons={buttons:#010x} gyro_rad_s={g:?} native={native:?}",self.id));
             self.last_axes=mapped;self.last_buttons=buttons;self.had_sample=true;
+            self.last_sample=Some(now);self.last_raw=raw;self.last_gyro=g;
         }
         self.last_native=native;
     }
 }
-impl Drop for Probe{
-    fn drop(&mut self){unsafe{
-        if !self.pad.is_null(){(self.api.close)(self.pad);}
-        (self.api.quit)(GAMEPAD);
-        FreeLibrary(self.api.module);
-    }}
-}
+// Disconnect closes the old handle on the owner thread. The selected
+// gamepad and SDL module otherwise live until process exit; the OS reclaims
+// them. No SDL API or loader operation is invoked from TLS teardown.
 enum Slot{Waiting,Failed,Active(Probe)}
 thread_local!{static PROBE:RefCell<Slot>=const{RefCell::new(Slot::Waiting)};}
 pub fn on_game_flip(){
