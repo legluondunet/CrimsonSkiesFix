@@ -28,6 +28,10 @@ const NATIVE_ACTION:usize=0x537b80;
 const SITE_CURSOR:usize=0x53825f;
 const CURSOR_INTEGRATE:usize=0x5382b0;
 const SITE_SCRIPT_KEY:usize=0x5d0616;
+// FMV update 0x44af20 tests Space at this call; on a fresh press it
+// branches to its own skip/cleanup at 0x44af7c. No global key injection.
+const SITE_FMV_SPACE:usize=0x44af3f;
+const FMV_SKIP_MASK:u32=(1<<0)|(1<<1)|(1<<6); // A, B, Start
 const NATIVE_KEY:usize=0x535fa0;
 // Exact default registrations at 0x4936c0 et seq., cross-checked with
 // the original manual. GOS slots are one-based; no preferences writes.
@@ -147,6 +151,7 @@ struct Flight{
     last_aircraft:usize,last_consume:Option<Instant>,
     menu_armed:bool,menu_seen:bool,mouse_tick:Option<Instant>,
     menu_fraction:[f32;2],menu_reported:bool,
+    last_fmv_skip_poll:Option<Instant>,
 }
 impl Flight{
     unsafe fn new()->Result<Self,String>{
@@ -154,7 +159,7 @@ impl Flight{
             last:Instant::now(),scan:None,last_log:None,last_state:neutral(START_THROTTLE),
             was_foreground:false,candidates:Vec::new(),idle_since:None,raw:[0;6],buttons:0,previous_buttons:0,
             last_aircraft:0,last_consume:None,menu_armed:false,menu_seen:false,
-            mouse_tick:None,menu_fraction:[0.0;2],menu_reported:false})
+            mouse_tick:None,menu_fraction:[0.0;2],menu_reported:false,last_fmv_skip_poll:None})
     }
     unsafe fn close_pad(&mut self){
         for c in self.candidates.drain(..){(self.api.close)(c.handle);}
@@ -236,6 +241,19 @@ impl Flight{
         self.raw=[0;6];self.buttons=0;self.previous_buttons=0;
         self.last_consume=None;self.menu_armed=false;self.menu_seen=false;
         self.mouse_tick=None;self.menu_fraction=[0.0;2];
+    }
+    // The movie reader consumes at most one rising edge per GOS poll.
+    // A held button cannot skip a chain of successive clips.
+    unsafe fn fmv_skip(&mut self,now:Instant)->bool{
+        if !self.armed||!self.was_foreground||self.pad.is_null()||!foreground()
+            || !(self.api.connected)(self.pad)
+            || now.saturating_duration_since(self.last)>=Duration::from_millis(150)
+            || !fresh_fmv_skip(self.buttons,self.previous_buttons,self.last_fmv_skip_poll==Some(self.last)){
+            return false;
+        }
+        self.last_fmv_skip_poll=Some(self.last);
+        crate::log(&format!("SDL3-FMV: skip requested by active gamepad id={}; native FMV skip path",self.id));
+        true
     }
     fn flight_recent(&self,now:Instant)->bool{
         self.last_consume.is_some_and(|t|now.saturating_duration_since(t)<Duration::from_millis(250))
@@ -469,6 +487,18 @@ unsafe extern "C" fn script_key_hook(key:u32)->u32{
         (f.menu_armed&&f.menu_context(Instant::now())).then(||key_edge(f.buttons&2!=0,f.previous_buttons&2!=0))
     })).unwrap_or(0))
 }
+fn fresh_fmv_skip(buttons:u32,previous:u32,consumed:bool)->bool{
+    !consumed && buttons&FMV_SKIP_MASK!=0 && previous&FMV_SKIP_MASK==0
+}
+unsafe extern "C" fn fmv_space_hook(key:u32)->u32{
+    let original:unsafe extern "C" fn(u32)->u32=std::mem::transmute(NATIVE_KEY);
+    let native=original(key);
+    if native==1||key!=0x39||MODE.load(Ordering::Acquire)!=ACTIVE
+        ||OWNER.load(Ordering::Acquire)!=GetCurrentThreadId(){return native;}
+    let skip=FLIGHT.with(|s|s.try_borrow_mut().ok()
+        .and_then(|mut s|s.as_mut().map(|f|f.fmv_skip(Instant::now()))).unwrap_or(false));
+    if skip{1}else{native}
+}
 pub fn install(){
     // Caller has already verified the disk hash. Reject all modified
     // preimages before changing a single byte. No on-disk changes.
@@ -483,6 +513,7 @@ pub fn install(){
             (SITE_ACTION,call_bytes(SITE_ACTION,NATIVE_ACTION).to_vec(),call_bytes(SITE_ACTION,action_hook as usize).to_vec()),
             (SITE_CURSOR,call_bytes(SITE_CURSOR,CURSOR_INTEGRATE).to_vec(),call_bytes(SITE_CURSOR,cursor_hook as usize).to_vec()),
             (SITE_SCRIPT_KEY,call_bytes(SITE_SCRIPT_KEY,NATIVE_KEY).to_vec(),call_bytes(SITE_SCRIPT_KEY,script_key_hook as usize).to_vec()),
+            (SITE_FMV_SPACE,call_bytes(SITE_FMV_SPACE,NATIVE_KEY).to_vec(),call_bytes(SITE_FMV_SPACE,fmv_space_hook as usize).to_vec()),
             (SITE_SELECT,vec![0xf6,0x05,0xa0,0xc2,0x71,0,4,0x0f,0x84,0x3a,1,0,0],{
                 let mut b=call_bytes(SITE_SELECT,selection_hook as usize).to_vec();
                 b.extend([0x85,0xc0,0x0f,0x84,0x3a,1,0,0]);b
@@ -494,7 +525,7 @@ pub fn install(){
                 return;
             }
         }
-        let pages=[0x535000usize,0x487000usize,0x489000usize,0x537000usize,0x538000usize,0x5d0000usize];let mut prot=[0u32;6];
+        let pages=[0x535000usize,0x487000usize,0x489000usize,0x537000usize,0x538000usize,0x5d0000usize,0x44a000usize];let mut prot=[0u32;7];
         for i in 0..pages.len(){
             if VirtualProtect(pages[i] as Obj,0x1000,0x40,&mut prot[i])==0{
                 for j in 0..i{let mut ignored=0;VirtualProtect(pages[j] as Obj,0x1000,prot[j],&mut ignored);}
@@ -508,7 +539,7 @@ pub fn install(){
             for p in pages{FlushInstructionCache(GetCurrentProcess(),p as *const c_void,0x1000);}
         }
         for i in 0..pages.len(){let mut ignored=0;VirtualProtect(pages[i] as Obj,0x1000,prot[i],&mut ignored);}
-        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: nine exact in-memory sites installed; fixed actions, flight-only throttle, menu bridge");}
+        if flushed{MODE.store(WAIT,Ordering::Release);crate::log("SDL3-FLIGHT: ten exact in-memory sites installed; fixed actions, flight-only throttle, menu bridge, FMV skip");}
         else{crate::log("SDL3-FLIGHT: instruction cache flush failed; restored original calls");}
     }
 }
@@ -570,6 +601,17 @@ mod tests{
         assert_eq!(delta,2);assert!((rem-0.25).abs()<0.0001);
         assert_eq!(cursor_delta(-1000,0.05,1.0,0.0).0,-22);
         assert_eq!(axis(&neutral(START_THROTTLE),2),-1000);
+    }
+    #[test]fn fmv_skip_is_fresh_and_only_allowed_buttons(){
+        for button in [1,2,1<<6]{
+            assert!(fresh_fmv_skip(button,0,false));
+            assert!(!fresh_fmv_skip(button,button,false));
+            assert!(!fresh_fmv_skip(button,0,true));
+        }
+        assert!(!fresh_fmv_skip(4,0,false));
+        assert!(!fresh_fmv_skip(0,1,false));
+        assert!(!fresh_fmv_skip(2,1,false));
+        assert_eq!(call_bytes(SITE_FMV_SPACE,NATIVE_KEY),[0xe8,0x5c,0xb0,0x0e,0]);
     }
     #[test]fn verified_call_encodings(){
         assert_eq!(call_bytes(SITE_INIT,INIT),[0xe8,0x8e,0x12,0,0]);
