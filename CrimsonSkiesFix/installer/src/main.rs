@@ -211,6 +211,22 @@ fn ensure_new_text(path: &Path, text: &str) -> Result<(), String> {
     file.sync_all().map_err(error)
 }
 
+// Only launcher-managed metadata uses this helper. Never rewrite a matching
+// file, and never follow a link or replace a directory.
+fn ensure_managed_text(path: &Path, text: &str) -> Result<bool, String> {
+    if any_entry(path) {
+        if !regular(path) {
+            return Err(format!("unsafe managed documentation path: {}", path.display()));
+        }
+        if fs::metadata(path).map_err(error)?.len() == text.len() as u64
+            && fs::read(path).map_err(error)? == text.as_bytes() {
+            return Ok(false);
+        }
+    }
+    fs::write(path, text).map_err(error)?;
+    Ok(true)
+}
+
 // Never overwrite the active INI. The proxy creates it on its first game launch.
 fn deploy_documentation(game: &Path) -> Result<(), String> {
     // The unified installer stores documentation under docs/; launcher INI
@@ -246,19 +262,13 @@ fn deploy_documentation(game: &Path) -> Result<(), String> {
     {
         const NOTICES:&str=include_str!(concat!(env!("OUT_DIR"),"/third-party-notices.txt"));
         let path=docs.join("THIRD-PARTY-NOTICES.txt");
-        if any_entry(&path) && !regular(&path) {
-            return Err("unsafe THIRD-PARTY-NOTICES.txt (not a regular file)".into());
-        }
         // Like build-info, this generated notice describes the current build.
-        fs::write(&path,NOTICES).map_err(error)?;
+        ensure_managed_text(&path,NOTICES)?;
         build_info.push_str(&format!("ThirdPartyNoticesSHA256={}\n",sha256::hex(NOTICES.as_bytes())));
     }
     let manifest = docs.join("build-info.txt");
-    if any_entry(&manifest) && !regular(&manifest) {
-        return Err("unsafe build-info.txt (not a regular file)".into());
-    }
     // This manifest is launcher-managed provenance, not player configuration.
-    fs::write(manifest, build_info).map_err(error)
+    ensure_managed_text(&manifest,&build_info).map(|_|())
 }
 
 // The experimental WinMM installer deliberately requires a clean graphics
@@ -890,6 +900,39 @@ mod tests {
         assert_eq!(fs::read(&ini).unwrap(),b"[Graphics]\nAspectRatio=4:3\n");
         assert_eq!(fs::read(&gameplay_log).unwrap(),b"owner gameplay log");
         assert_eq!(fs::read(&installer_log).unwrap(),b"owner installer log");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature="native-usde-updater")]
+    #[test]
+    fn managed_documentation_is_idempotent_and_restores_missing_notices(){
+        let root=std::env::temp_dir().join(format!(
+            "crimson-managed-docs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let game=root.join("game");
+        fs::create_dir(&game).unwrap();
+        deploy_documentation(&game).unwrap();
+        let docs=docs_dir(&game);
+        let notices=docs.join("THIRD-PARTY-NOTICES.txt");
+        let manifest=docs.join("build-info.txt");
+        let original=fs::read_to_string(&notices).unwrap();
+        let info=fs::read_to_string(&manifest).unwrap();
+        assert!(!ensure_managed_text(&notices,&original).unwrap());
+        assert!(!ensure_managed_text(&manifest,&info).unwrap());
+        fs::remove_file(&notices).unwrap();
+        deploy_documentation(&game).unwrap();
+        assert_eq!(fs::read_to_string(&notices).unwrap(),original);
+        fs::write(&notices,"damaged").unwrap();
+        deploy_documentation(&game).unwrap();
+        assert_eq!(fs::read_to_string(&notices).unwrap(),original);
+        assert_eq!(fs::read_to_string(&manifest).unwrap(),info);
+        fs::remove_file(&notices).unwrap();
+        fs::create_dir(&notices).unwrap();
+        assert!(deploy_documentation(&game).is_err());
+        assert!(directory(&notices));
         fs::remove_dir_all(root).unwrap();
     }
 

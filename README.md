@@ -176,7 +176,7 @@ Log=0
 
 Set `AspectRatio=4:3` for 4:3 gameplay with black sidebars. An existing custom INI is not overwritten.
 
-The installer-managed `docs/build-info.txt` records the build version, source commit, bundled DLL SHA-256 and (in the five-edition candidate) the two Cargo lockfile SHA-256 hashes for build traceability.
+The installer-managed `docs/build-info.txt` records the build version, source commit, bundled DLL SHA-256 and (in the five-edition candidate) the two Cargo lockfile SHA-256 hashes and third-party notice SHA-256. Verified launches restore missing or changed launcher-managed notices without requiring the CD. Existing player configuration and matching documents are left unchanged. Candidate packages include exact source and build-recipe references in `SOURCE-INFO.txt`.
 
 ## Commands
 

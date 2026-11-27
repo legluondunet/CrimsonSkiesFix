@@ -708,6 +708,10 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     if regular(&receipt_path(game)){
         match verify_installed_cd_assets(game){
             Ok((_edition,_count))=>{
+                // Restore launcher-managed documents independently of CD data
+                // and DLL repair; matching documents are left untouched.
+                #[cfg(feature="native-usde-updater")]
+                deploy_documentation(game)?;
                 if validated_game_exe(game).is_ok() {
                     return Ok("VERIFIED_EXISTING_AND_LAUNCH");
                 }
@@ -766,7 +770,11 @@ fn auto_prepare(base:&Path,game:&Path)->Result<&'static str,String>{
     // may lack an original-CD receipt. Its old-format verification is less
     // comprehensive than the new immutable CD file manifest.
     match verify(game){
-        Ok(_)=>Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH"),
+        Ok(_)=>{
+            #[cfg(feature="native-usde-updater")]
+            deploy_documentation(game)?;
+            Ok("VERIFIED_LEGACY_IMPORT_AND_LAUNCH")
+        },
         Err(reason)=>{
             build_and_publish(base,game,true).map_err(|err|format!(
                 "legacy installed game verification failed: {reason}; \

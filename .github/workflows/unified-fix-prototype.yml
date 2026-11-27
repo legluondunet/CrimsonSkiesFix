@@ -174,6 +174,17 @@ jobs:
           Copy-Item installer/README-native-usde.md 'unified-dist/README-EXPERIMENTAL.md'
           Copy-Item $env:CRIMSONSKIESFIX_NOTICES_FILE 'unified-dist/THIRD-PARTY-NOTICES.txt'
           Copy-Item ../LICENSE 'unified-dist/LICENSE'
+          @("Source=https://github.com/legluondunet/CrimsonSkiesFix/tree/$env:CRIMSONSKIESFIX_COMMIT",
+            "DependencySource=https://github.com/legluondunet/unsafedisk/tree/a869653e85f3786fdb82f9f9856d7b14bd25d585",
+            "DependencyRetentionRef=https://github.com/legluondunet/unsafedisk/tree/dependency/crimsonskiesfix-1.1",
+            "BuildRecipe=https://github.com/legluondunet/CrimsonSkiesFix/blob/$env:CRIMSONSKIESFIX_COMMIT/.github/workflows/unified-fix-prototype.yml",
+            "BuildInstructions=https://github.com/legluondunet/CrimsonSkiesFix/blob/$env:CRIMSONSKIESFIX_COMMIT/CrimsonSkiesFix/docs/build-candidate.md",
+            "Target=i686-pc-windows-msvc",
+            "Feature=$env:INSTALLER_FEATURE",
+            (rustc -V),
+            (cargo -V)) | Set-Content -Encoding utf8 'unified-dist/SOURCE-INFO.txt'
+          python -c "from pathlib import Path; a=Path('unified-dist/CrimsonSkiesFix.exe').read_bytes(); n=Path('unified-dist/THIRD-PARTY-NOTICES.txt').read_bytes(); assert n and n in a, 'Packaged notices must match embedded bytes'"
+          if($LASTEXITCODE -ne 0){throw 'Embedded notices verification failed'}
           "SHA256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())" | Set-Content 'unified-dist/CrimsonSkiesFix.sha256'
           $bytes=[IO.File]::ReadAllBytes((Resolve-Path $exe))
           if($bytes.Length -lt 256 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90){throw 'Missing MZ header'}
@@ -186,7 +197,7 @@ jobs:
             throw 'Launcher must be an x86 PE32 EXE, not a DLL'
           }
           $files=@(Get-ChildItem 'unified-dist' -File -Recurse | ForEach-Object {$_.FullName.Substring((Resolve-Path 'unified-dist').Path.Length+1)})
-          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE')
+          $expected=@('CrimsonSkiesFix.exe','CrimsonSkiesFix.sha256','README-EXPERIMENTAL.md','THIRD-PARTY-NOTICES.txt','LICENSE','SOURCE-INFO.txt')
           if(Compare-Object $files $expected){throw 'Unexpected test artifact contents'}
           Write-Host "CANDIDATE-PACKAGE PASS: single x86 launcher, hash and instructions; commit $env:CRIMSONSKIESFIX_COMMIT"
       - name: Check that dependency locks stayed unchanged
@@ -205,7 +216,8 @@ jobs:
             "LauncherSHA256=$((Get-FileHash 'unified-dist/CrimsonSkiesFix.exe' -Algorithm SHA256).Hash.ToLowerInvariant())",
             "RuntimeSHA256=$((Get-FileHash 'runtime-unified/target/i686-pc-windows-msvc/release/fix.dll' -Algorithm SHA256).Hash.ToLowerInvariant())",
             "InstallerCargoLockSHA256=$((Get-FileHash 'installer/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
-            "RuntimeCargoLockSHA256=$((Get-FileHash 'runtime-unified/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
+            "RuntimeCargoLockSHA256=$((Get-FileHash 'runtime-unified/Cargo.lock' -Algorithm SHA256).Hash.ToLowerInvariant())",
+            "ThirdPartyNoticesSHA256=$((Get-FileHash 'unified-dist/THIRD-PARTY-NOTICES.txt' -Algorithm SHA256).Hash.ToLowerInvariant())") | Set-Content -Encoding utf8 'unified-dependency-locks/build-commit.txt'
       - uses: actions/upload-artifact@v4
         with:
           name: CrimsonSkiesFix-UNIFIED-DEPENDENCY-LOCKS
