@@ -1,6 +1,6 @@
 [package]
 name = "crimsonskiesfix-unified-runtime"
-version = "1.1.0-rc.1"
+version = "1.2.0-dev.15"
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
@@ -17,6 +17,7 @@ winmm-bootstrap = []
 winmm-split-runtime = ["winmm-bootstrap"]
 import-alias-bootstrap = ["winmm-split-runtime"]
 unified-fix-dll = ["import-alias-bootstrap"]
+sdl3-probe = ["unified-fix-dll"]
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

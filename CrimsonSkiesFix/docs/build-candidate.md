@@ -20,13 +20,16 @@ $env:CRIMSONSKIESFIX_COMMIT = (git rev-parse HEAD).Trim()
 $env:CRIMSONSKIESFIX_BUILD_COMMIT = $env:CRIMSONSKIESFIX_COMMIT
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 rustup target add i686-pc-windows-msvc
-cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml | Set-Content -Encoding utf8 runtime-meta.json
-cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features native-usde-updater | Set-Content -Encoding utf8 installer-meta.json
+python installer/tools/package_sdl3_x86.py sdl3-build
+$env:CRIMSONSKIESFIX_SDL3_DLL = (Resolve-Path sdl3-build/SDL3.dll).Path
+$env:CRIMSONSKIESFIX_SDL3_SHA256 = (Get-FileHash $env:CRIMSONSKIESFIX_SDL3_DLL -Algorithm SHA256).Hash.ToLowerInvariant()
+cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path runtime-unified/Cargo.toml --features sdl3-probe | Set-Content -Encoding utf8 runtime-meta.json
+cargo metadata --locked --format-version 1 --filter-platform i686-pc-windows-msvc --manifest-path installer/Cargo.toml --features sdl3-probe-install | Set-Content -Encoding utf8 installer-meta.json
 python installer/tools/collect_dependency_notices.py --metadata runtime-meta.json installer-meta.json --output THIRD-PARTY-NOTICES.txt
 $env:CRIMSONSKIESFIX_NOTICES_FILE = (Resolve-Path THIRD-PARTY-NOTICES.txt).Path
-cargo build --locked --manifest-path runtime-unified/Cargo.toml --release --target i686-pc-windows-msvc
+cargo build --locked --manifest-path runtime-unified/Cargo.toml --features sdl3-probe --release --target i686-pc-windows-msvc
 $env:CRIMSONSKIESFIX_BUNDLED_DLL = (Resolve-Path runtime-unified/target/i686-pc-windows-msvc/release/fix.dll).Path
-cargo build --locked --manifest-path installer/Cargo.toml --features native-usde-updater --release --target i686-pc-windows-msvc
+cargo build --locked --manifest-path installer/Cargo.toml --features sdl3-probe-install --release --target i686-pc-windows-msvc
 git diff --exit-code -- installer/Cargo.lock runtime-unified/Cargo.lock
 ```
 
@@ -42,3 +45,7 @@ Before any public release, arrange durable access to the actual corresponding
 source and build scripts, including applicable third-party sources and notices.
 The test package's references and generated notices do not by themselves
 complete that review.
+
+## Frozen controls artwork (dev.15 onward)
+
+Import the original generated assets under `CrimsonSkiesFix/assets/controls/` at repository root. `controls-art.pack` must be exactly 2555973 bytes, SHA-256 `79e6ac7529f3234dd364d752ff5405915d6daf537f5114cc4c1751813a0e6044`. It contains three 1600x840 BGRA images. Run `python tools/append_controls_art.py --verify-pack assets/controls/controls-art.pack` from CrimsonSkiesFix/. Set `$env:CRIMSONSKIESFIX_REQUIRE_CONTROLS_ART = '1'` before building runtime for a complete candidate. The runtime embeds the exact bytes; no post-build overlay is required. Verify final EXE with `python tools/append_controls_art.py --verify-embedded installer/target/i686-pc-windows-msvc/release/CrimsonSkiesFix.exe assets/controls/controls-art.pack`. PRs missing the binary import are migration-only; they require the exact overlay and must not be released. Source inputs and generation script accompany the pack. Original game textures are read at runtime and never committed.

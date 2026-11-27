@@ -30,6 +30,8 @@ native-fr-cd = ["unified-fix-install", "dep:unsafedisk-native"]
 # Experimental US/DE CDs: authentic local Microsoft 1.02 update supplied by owner;
 # reconstruct approved 1.02 binary from in-memory CAB, no decrypted EXE needed.
 native-usde-updater = ["native-fr-cd"]
+# Separate input research build, not a 1.1 release variant.
+sdl3-probe-install = ["native-usde-updater"]
 
 [dependencies]
 # GPL native library from draft unsafedisk PR #7 (stacked on #5), pinned

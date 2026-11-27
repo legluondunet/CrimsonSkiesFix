@@ -18,6 +18,8 @@ mod menu_resolution_label;
 mod native_winmm_resolution_text;
 mod menu_ui_pages;
 mod menu_brand;
+mod menu_controls_panel;
+mod menu_controls_art;
 mod win32;
 // Native Windows requires the complete DDRAW export surface for hardware HAL.
 #[cfg(all(target_arch = "x86", target_env = "msvc", not(feature = "winmm-bootstrap")))]
@@ -56,6 +58,8 @@ mod native_video_imports;
 mod native_getproc_trace;
 mod native_cursor_trace;
 mod native_dinput_mouse_trace; // opt-in Windows-only DirectInput mouse COM pass-through audit
+#[cfg(feature="sdl3-probe")]
+mod sdl3_input_probe;
 mod native_owner_mode_trace;
 mod native_dd4_bootstrap;
 mod presentation;
@@ -394,6 +398,11 @@ unsafe fn symbol(name:&[u8])->*const c_void {
     if !config.directdraw_passthrough {
         static ROF_LOADER_ONCE:Once=Once::new();
         ROF_LOADER_ONCE.call_once(native_rof_load_trace::install);
+        #[cfg(feature="sdl3-probe")]
+        {
+            static SDL3_FLIGHT_ONCE:Once=Once::new();
+            SDL3_FLIGHT_ONCE.call_once(sdl3_input_probe::install);
+        }
     }
     if diagnostics::is_native_windows() && !config.directdraw_passthrough {
         // Historical Windows #22 fix: the game may obtain its IDirectDraw4

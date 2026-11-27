@@ -959,6 +959,15 @@ pub(super) fn auto_run(base:&Path,game:&Path,launch:bool)->Result<i32,String>{
             Some(verify_installed_cd_assets(game)?.0)
         }else{None};
         let exe=verify(game)?;
+        #[cfg(feature="sdl3-probe-install")]
+        {
+            // Deploy only after authenticated game verification. A missing CD
+            // never creates a game folder just to install the optional probe.
+            deploy_binary(game,"SDL3.dll",BUNDLED_SDL3)?;
+            if digest(&game.join("SDL3.dll"))?!=sha256::hex(BUNDLED_SDL3){
+                return Err("installed SDL3.dll failed verification".into());
+            }
+        }
         // The unified installer records a one-shot first-launch log only
         // for an INI it created. Manually supplied INIs remain untouched.
         #[cfg(feature="unified-fix-install")]

@@ -56,6 +56,7 @@ pub fn main_menu_unobstructed()->bool{
 /// Command 13 is *not* a reliable screen-transition signal: the game calls
 /// it several times when editing/reopening menus.
 pub fn on_main_menu_script_loaded(){
+    crate::menu_controls_panel::clear_page();
     PREFERENCES_DATA_SESSION.store(false,Ordering::Release);
     if VIDEO_PREFERENCES_OPEN.swap(false,Ordering::AcqRel) &&
        crate::cfg().log_enabled
@@ -159,6 +160,7 @@ unsafe extern "system" fn observe_callback(
         std::mem::transmute(ORIGINAL_CALLBACK);
     let result=original(first,second,third);
     let in_ui=crate::menu_video_probe::legacy_ui_active();
+    if in_ui && matches!(command,14|16){crate::menu_controls_panel::clear_page();}
     // The original game commits ALL selected Video fields and persists
     // preferences on Apply=14. Only after that event completes successfully
     // do we mark the one-time default as offered; future user changes stay

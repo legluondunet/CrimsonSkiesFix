@@ -182,7 +182,8 @@ unsafe fn native_desc(surface:&Com)->Result<[u32;31],String>{
 /// the CURRENT verified DPI-logical Win32 game client, not a hardcoded
 /// user's desktop resolution. Primary stays clipped and non-exclusive;
 /// gameplay D3D/Z surfaces and source 800x600 movie are left untouched.
-/// Never enter this path on Wine/Proton or for widescreen 3D gameplay.
+/// Never enter this path for widescreen 3D gameplay. Wine RGB565 may
+/// borrow it only for authenticated modal artwork after the same Blt preflight.
 unsafe fn allocate_full_frame_composite(
     dd4:*mut c_void,primary:&Com,output:(u32,u32)
 )->Result<Com,String>{
@@ -1016,13 +1017,15 @@ unsafe fn prepare_epoch(dd4:*mut c_void,hwnd:Hwnd,client:(u32,u32),
     // EXACTLY the HWND's current DPI-logical client size and pixel format.
     // A failure is nonfatal: keep the known-good direct DD4 Blt backend.
     // movie_rgb32 already includes native host gating and real DD4 format.
-    let mut full_frame_composite=if movie_rgb32 &&
+    let modal_hd=!movie_rgb32&&(mode.width,mode.height,mode.bpp)==(800,600,16)&&
+        crate::menu_controls_art::available();
+    let mut full_frame_composite=if (movie_rgb32||modal_hd) &&
         crate::cfg().native_full_frame_compose {
         match allocate_full_frame_composite(dd4,&real_primary,output_client){
             Ok(surface)=>{
                 match backend.enable_full_frame_composition(surface.ptr()){
                     Ok(())=>{
-                        log("NATIVE-FULL-FRAME-COMPOSE: enabled for native 800x600 movie/menu; offscreen black and 4:3 image, one full-window primary Blt; no GDI");
+                        log(if modal_hd{"MENU-CONTROLS-HD: preflighting optional full-client surface; ordinary Wine frames retain direct Blt"}else{"NATIVE-FULL-FRAME-COMPOSE: enabled for native 800x600 movie/menu; offscreen black and 4:3 image, one full-window primary Blt"});
                         Some(surface)
                     },
                     Err(hr)=>{

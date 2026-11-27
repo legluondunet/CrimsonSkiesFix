@@ -1,10 +1,10 @@
-//! Bounded, diagnostic-only observers for the original GOS page-loader
+//! Bounded observers for the original GOS page-loader
 //! and localization APIs. Neither wrapper interprets object pointers,
 //! changes the game's script data nor modifies rendered text.
 //!
 //! Exact original 1.02 registration addresses and handler pointers
 //! verified against the unique accepted game EXE SHA-256.
-use std::{ffi::c_void,ptr,sync::atomic::{AtomicU32,Ordering}};
+use std::{collections::HashSet,ffi::c_void,ptr,sync::{Mutex,OnceLock,atomic::{AtomicU32,Ordering}}};
 use crate::log;
 
 const IMAGE_BASE:usize=0x0040_0000;
@@ -15,9 +15,9 @@ const LOCALIZE_SITE:usize=0x0040_764e;
 const LOCALIZE_ORIGINAL:usize=0x0040_4630;
 const LOCALIZE_BYTES:[u8;5]=[0x68,0x30,0x46,0x40,0x00];
 const PAGE_EXECUTE_READWRITE:u32=0x40;
-const MAX_PAGES:u32=24;
+const MAX_PAGES:usize=512;
 const MAX_LOCALIZE:u32=80;
-static PAGE_LOGS:AtomicU32=AtomicU32::new(0);
+static PAGE_NAMES:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
 static LABEL_LOGS:AtomicU32=AtomicU32::new(0);
 static LAST_LABEL_ID:AtomicU32=AtomicU32::new(u32::MAX);
 
@@ -27,28 +27,55 @@ extern "system"{
     fn VirtualProtect(site:*mut c_void,size:usize,protection:u32,old:*mut u32)->i32;
     fn FlushInstructionCache(proc:*mut c_void,site:*const c_void,size:usize)->i32;
     fn GetCurrentProcess()->*mut c_void;
+    fn ReadProcessMemory(process:*mut c_void,address:*const c_void,buffer:*mut c_void,size:usize,read:*mut usize)->i32;
 }
 type ScriptFn=unsafe extern "system" fn(usize,usize,*const u32)->u32;
 
 fn in_menu_context()->bool{
-    crate::cfg().log_enabled &&
     crate::menu_video_probe::legacy_ui_active() &&
     crate::menu_scene::main_menu_was_seen()
 }
 fn is_small_resource_id(id:u32)->bool{(1..=0xffff).contains(&id)}
+// Exact original 0x403680 reads *args[1] as a member-name pointer
+// (0x403765..0x403768); it stores the root name at 0x647ad4
+// through the original lstrcpyA call at 0x403703. Only short ASCII
+// resource tokens are logged; no generic pointer or path dump.
+fn resource_token(bytes:&[u8])->Option<&str>{
+    let end=bytes.iter().position(|&b|b==0)?;
+    let v=&bytes[..end];
+    if v.is_empty()||v.len()>40||!v.iter().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-'|b'.')){return None;}
+    std::str::from_utf8(v).ok()
+}
+unsafe fn read_exact(address:usize,buf:&mut [u8])->bool{
+    let mut count=0;
+    address!=0&&ReadProcessMemory(GetCurrentProcess(),address as *const c_void,buf.as_mut_ptr().cast(),buf.len(),&mut count)!=0&&count==buf.len()
+}
+unsafe fn page_member(args:*const u32)->Option<String>{
+    if args.is_null(){return None;}
+    let mut p=[0u8;4];
+    if !read_exact((args as usize).checked_add(4)?,&mut p){return None;}
+    let slot=u32::from_le_bytes(p) as usize;
+    if !read_exact(slot,&mut p){return None;}
+    let mut name=[0u8;41];
+    if !read_exact(u32::from_le_bytes(p) as usize,&mut name){return None;}
+    resource_token(&name).map(str::to_owned)
+}
 unsafe extern "system" fn page_passthrough(a:usize,b:usize,args:*const u32)->u32{
-    let record=in_menu_context() &&
-        PAGE_LOGS.load(Ordering::Relaxed)<MAX_PAGES;
+    let context=in_menu_context();
+    let member=if context{page_member(args)}else{None};
     let original:ScriptFn=std::mem::transmute(PAGE_ORIGINAL);
     let result=original(a,b,args);
-    if record && PAGE_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
-        |n|if n<MAX_PAGES{Some(n+1)}else{None}).is_ok()
-    {
-        log(&format!(
-            "MENU-GOS-PAGE: gosPageInit invoked after MainMenu; preferences_transaction={} callback_result_class={} [pass-through]",
-            crate::menu_gos_event::preferences_transaction_active(),
-            if result==1{"success"}else if result==0{"zero"}else{"other"}
-        ));
+    if result==1{
+        if let Some(name)=member.as_deref(){
+            crate::menu_controls_panel::observe_member(name);
+            if crate::cfg().log_enabled&&crate::menu_gos_event::preferences_transaction_active(){
+                if let Ok(mut seen)=PAGE_NAMES.get_or_init(||Mutex::new(HashSet::new())).try_lock(){
+                    if seen.len()<MAX_PAGES&&seen.insert(name.to_owned()){
+                        log(&format!("MENU-CONTROLS-PROBE: unique preferences member={name} result=1"));
+                    }
+                }
+            }
+        }
     }
     result
 }
@@ -62,7 +89,13 @@ unsafe extern "system" fn localize_passthrough(a:usize,b:usize,args:*const u32)-
     let original:ScriptFn=std::mem::transmute(LOCALIZE_ORIGINAL);
     let result=original(a,b,args);
     if let Some(id)=id {
-        if is_small_resource_id(id) &&
+        // gosLocalize's 0x4050c0 helper writes the exact original string to
+        // 0x646acc (verified 0x4050ce); id 1118 is the Controls title.
+        if id==1118&&result==1{
+            let mut title=[0u8;64];
+            if read_exact(0x646acc,&mut title){crate::menu_controls_panel::observe_title(&title);}
+        }
+        if crate::cfg().log_enabled&&is_small_resource_id(id) &&
             LAST_LABEL_ID.swap(id,Ordering::Relaxed)!=id &&
             LABEL_LOGS.try_update(Ordering::Relaxed,Ordering::Relaxed,
                 |n|if n<MAX_LOCALIZE{Some(n+1)}else{None}).is_ok()
@@ -103,22 +136,30 @@ unsafe fn replace_registration(site:usize,original:[u8;5],replacement:usize)->bo
     }
     true
 }
-/// Instrument only with explicit logging enabled and a verified exact EXE.
+/// Page identity is needed with Log=0 too; localization reads the title even with Log=0; traces require Log=1.
 /// All 3-parameter original calls and return values are forwarded.
 pub unsafe fn install()->(bool,bool){
-    if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE || !crate::cfg().log_enabled{
+    if GetModuleHandleW(ptr::null()) as usize!=IMAGE_BASE{
         return (false,false);
     }
     let page=replace_registration(PAGE_SITE,PAGE_BYTES,page_passthrough as *const () as usize);
     let localize=replace_registration(LOCALIZE_SITE,LOCALIZE_BYTES,localize_passthrough as *const () as usize);
     log(&format!(
-        "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, no UI modifications"
+        "MENU-GOS-PAGE: page_hook={page} localize_hook={localize}; read-only callbacks, Controls page identity tracked"
     ));
     (page,localize)
 }
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn resource_names_are_bounded_and_not_paths(){
+        assert_eq!(resource_token(b"Joystick\0"),Some("Joystick"));
+        assert_eq!(resource_token(b"Preferences.V1\0"),Some("Preferences.V1"));
+        assert_eq!(resource_token(b"C:\\Users\\name\0"),None);
+        assert_eq!(resource_token(b"../foo\0"),None);
+        assert_eq!(resource_token(b"no terminator"),None);
+    }
     #[test]
     fn registration_preimages_match_original_1_02(){
         assert_eq!(PAGE_BYTES[0],0x68);

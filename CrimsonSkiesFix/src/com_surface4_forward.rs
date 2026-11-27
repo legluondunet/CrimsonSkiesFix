@@ -590,7 +590,7 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     menu_scratch:*mut c_void,native_movie_rgb32:bool,
     full_frame_composite:*mut c_void
 )->Result<(),i32>{
-    if !full_frame_composite.is_null() && !native_movie_rgb32{
+    if !full_frame_composite.is_null() && !native_movie_rgb32 && !crate::menu_controls_art::available(){
         return Err(E_INVALIDARG);
     }
     if !is_our_forwarder(primary){return Err(E_INVALIDARG);}
@@ -638,6 +638,9 @@ pub unsafe fn arm_graph_primary_flip_with_output_movie_rgb32_composed(
     if !full_frame_composite.is_null(){
         backend.enable_full_frame_composition(full_frame_composite)
             .map_err(|_|E_INVALIDARG)?;
+        // Wine/RGB565 uses the optional HD surface ONLY for the modal.
+        // All ordinary frames and FMVs retain their tested direct Blt.
+        backend.set_modal_only_composition(!native_movie_rgb32);
     }
     backend.set_menu_scratch(menu_scratch);
     let mut state=p.virtual_flip.lock().map_err(|_|E_FAIL)?;
@@ -1407,6 +1410,8 @@ unsafe extern "system" fn forward_flip(this:SurfaceThis,p1:SurfaceThis,p2:u32)->
         crate::native_widescreen::sample_hud_render_branch_on_game_flip(
             node.mode.width,node.mode.height
         );
+        #[cfg(all(feature="sdl3-probe",not(test)))]
+        {crate::sdl3_input_probe::note_render_mode(node.mode.width,node.mode.height);crate::sdl3_input_probe::on_game_flip();}
         let movie=graph_node(back).is_some_and(|n|n.native_movie_rgb32);
         let movie_call=if movie{
             let count=NATIVE_MOVIE_RGB32_FLIP_CALLS.fetch_add(1,Ordering::Relaxed)+1;

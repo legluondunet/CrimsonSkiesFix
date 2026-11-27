@@ -58,6 +58,7 @@ fn is_legacy_ui_mode(w:u32,h:u32)->bool{
 }
 pub fn observe_ui_flip(w:u32,h:u32){
     LEGACY_UI_ACTIVE.store(is_legacy_ui_mode(w,h),Ordering::Release);
+    if (w,h)!=(800,600){crate::menu_controls_panel::clear_page();}
     if !crate::cfg().log_enabled || !crate::cfg().experimental_windowed_adapter{return;}
     let state=STATE.get_or_init(||Mutex::new(State::default()));
     let Ok(mut state)=state.try_lock() else{return;};
